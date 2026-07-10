@@ -5,7 +5,7 @@ import logo from '../../assets/images/logo.png'
 const Headers = () => {
   return (
 
-    <header className ="flex justify-between items-center p-4 px-8 bg-gray-800 text-white">
+    <header className ="flex justify-between items-center p-4 px-8 bg-gray-900 text-white">
         {/*LOGO*/}
         <div className="flex items-center gap-2">
             <img src={logo} alt="Logo" className="h-8 w-auto" />
@@ -29,8 +29,8 @@ const Headers = () => {
             <div className="flex items-center gap-3 cursor-pointer">
                 <FaUserCircle className="text-white text-2xl" />
                 <div>
-                    <h1>Test User</h1>
-                    <p>Admin</p>
+                    <h1 className="text-md text-gray-200 font-semibold">Test User</h1>
+                    <p className="text-sm text-gray-400 font-medium">Admin</p>
                 </div>
             </div>
         </div>

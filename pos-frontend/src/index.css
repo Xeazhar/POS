@@ -5,3 +5,7 @@ body {
   margin: 0;
   font-family: 'Inter', sans-serif;
 }
+.scrollbar-hide {
+  -ms-overflow-style: none; /* Internet Explorer and Edge */
+  scrollbar-width: none; /* Firefox */
+}
