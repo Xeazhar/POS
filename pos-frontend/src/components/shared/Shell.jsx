@@ -5,59 +5,55 @@ import { useAuthStore } from '../../stores/posStore'
 import { useSyncStore } from '../../stores/syncStore'
 import Clock from './Clock'
 
-function SyncPill({ online, pending, status, lastError }) {
+function syncCopy({ online, pending, status, lastError }) {
   const syncing = status === 'syncing' || status === 'pushing'
-  let label = 'Online'
-  let title = 'Synced'
-  let tone = 'ok'
-
   if (!online) {
-    label = pending ? `Offline · ${pending}` : 'Offline'
-    title = pending
-      ? `Offline — ${pending} action(s) waiting to sync`
-      : 'Offline'
-    tone = 'off'
-  } else if (syncing) {
-    label = pending ? `Syncing · ${pending}` : 'Syncing…'
-    title = pending ? `Uploading ${pending} queued action(s)…` : 'Syncing with server…'
-    tone = 'sync'
-  } else if (pending) {
-    label = `${pending} queued`
-    title = `${pending} action(s) waiting to sync`
-    tone = 'warn'
-  } else if (lastError) {
-    label = 'Sync issue'
-    title = lastError
-    tone = 'warn'
-  } else if (status === 'error') {
-    label = 'Sync issue'
-    title = lastError || 'Last sync failed'
-    tone = 'warn'
-  } else {
-    label = 'Synced'
-    title = 'All changes synced'
-    tone = 'ok'
+    return {
+      label: pending ? `Offline · ${pending}` : 'Offline',
+      detail: pending ? `${pending} saved locally` : 'No network',
+      tone: 'off',
+    }
   }
+  if (syncing) {
+    return {
+      label: 'Syncing…',
+      detail: pending ? `${pending} queued` : 'Updating',
+      tone: 'sync',
+    }
+  }
+  if (pending) {
+    return {
+      label: `${pending} queued`,
+      detail: 'Waiting to sync',
+      tone: 'warn',
+    }
+  }
+  if (status === 'error' || lastError) {
+    return {
+      label: 'Sync issue',
+      detail: String(lastError || 'Retrying').slice(0, 28),
+      tone: 'warn',
+    }
+  }
+  return {
+    label: 'Synced',
+    detail: 'Up to date',
+    tone: 'ok',
+  }
+}
 
-  const tones = {
-    ok: 'bg-[#2a332c] text-[#9dcea8]',
-    sync: 'bg-[#2a3038] text-[#a8c4e8]',
-    warn: 'bg-[#3d3830] text-[#e8c47a]',
-    off: 'bg-[#3a2e2a] text-[#e8b4a0]',
-  }
-  const dots = {
-    ok: 'bg-[#9dcea8]',
-    sync: 'bg-[#a8c4e8] animate-pulse',
-    warn: 'bg-[#e8c47a]',
-    off: 'bg-[#e8b4a0]',
-  }
+const toneDot = {
+  ok: 'bg-[#6f9b78]',
+  sync: 'bg-[#7a9cc8] animate-pulse',
+  warn: 'bg-[#c9a45a]',
+  off: 'bg-[#c48978]',
+}
 
-  return (
-    <span title={title} className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide ${tones[tone]}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${dots[tone]}`} />
-      {label}
-    </span>
-  )
+const toneText = {
+  ok: 'text-[#6f9b78]',
+  sync: 'text-[#5a7fa8]',
+  warn: 'text-[#a8843a]',
+  off: 'text-[#a86a5a]',
 }
 
 function Shell({ children }) {
@@ -70,7 +66,7 @@ function Shell({ children }) {
   const navigate = useNavigate()
   const isManager = user?.role === 'manager' || user?.role === 'admin'
   const links = isManager ? managerLinks : staffLinks
-  const syncing = status === 'syncing' || status === 'pushing'
+  const sync = syncCopy({ online, pending, status, lastError })
 
   return (
     <div className="min-h-screen bg-brand-canvas">
@@ -88,11 +84,7 @@ function Shell({ children }) {
           <small className="max-w-full truncate text-[11px] font-semibold text-brand-gold">
             {user?.branchName || 'Bayombong Branch #001'}
           </small>
-          <div className="flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[12px]">
-            <Clock className="text-[12px]" />
-            <span className="hidden text-[#6d7470] min-[480px]:inline">·</span>
-            <SyncPill online={online} pending={pending} status={status} lastError={lastError} />
-          </div>
+          <Clock className="text-[12px]" />
         </div>
 
         <div className="flex shrink-0 items-center gap-2.5 text-[13px]">
@@ -115,39 +107,46 @@ function Shell({ children }) {
           </button>
         </div>
       </header>
-      {syncing && (
-        <div className="bg-[#2a3038] px-4 py-1.5 text-center text-[11px] font-bold tracking-wide text-[#a8c4e8]">
-          Syncing{pending ? ` ${pending} queued change${pending === 1 ? '' : 's'}` : ''}… Please keep the app open.
-        </div>
-      )}
-      {!syncing && !online && pending > 0 && (
-        <div className="bg-[#3a2e2a] px-4 py-1.5 text-center text-[11px] font-bold tracking-wide text-[#e8b4a0]">
-          Offline — {pending} change{pending === 1 ? '' : 's'} saved on this device. Will sync when back online.
-        </div>
-      )}
-      <div className={`flex ${syncing || (!online && pending > 0) ? 'h-[calc(100vh-62px-32px)]' : 'h-[calc(100vh-62px)]'}`}>
-        <aside className="w-[88px] overflow-auto bg-brand-panel px-3 py-[25px] max-[700px]:w-[62px] max-[700px]:px-1.5 max-[700px]:py-3">
+
+      <div className="flex h-[calc(100vh-62px)]">
+        <aside className="flex w-[88px] flex-col overflow-hidden bg-brand-panel px-3 py-[25px] max-[700px]:w-[62px] max-[700px]:px-1.5 max-[700px]:py-3">
           {isManager && (
             <div className="mb-3 text-center text-[9px] tracking-wide text-[#7c827f] uppercase max-[700px]:hidden">
               Manager
             </div>
           )}
-          {links.map(([path, label, Icon]) => (
-            <NavLink
-              key={path}
-              to={path}
-              end={path === '/'}
-              className={({ isActive }) =>
-                `mb-2 grid justify-items-center gap-2 rounded-lg px-1 py-4 text-[10px] no-underline ${
-                  isActive ? 'bg-brand-gold text-brand-dark' : 'text-[#9da4a1]'
-                }`
-              }
-            >
-              <Icon className="text-xl" />
-              <span className="max-[700px]:hidden">{label}</span>
-            </NavLink>
-          ))}
+          <div className="min-h-0 flex-1 overflow-auto">
+            {links.map(([path, label, Icon]) => (
+              <NavLink
+                key={path}
+                to={path}
+                end={path === '/'}
+                className={({ isActive }) =>
+                  `mb-2 grid justify-items-center gap-2 rounded-lg px-1 py-4 text-[10px] no-underline ${
+                    isActive ? 'bg-brand-gold text-brand-dark' : 'text-[#9da4a1]'
+                  }`
+                }
+              >
+                <Icon className="text-xl" />
+                <span className="max-[700px]:hidden">{label}</span>
+              </NavLink>
+            ))}
+          </div>
+
+          <div
+            className="mt-2 shrink-0 rounded-lg bg-[#e8e9e4] px-1.5 py-2.5 text-center max-[700px]:px-1"
+            title={lastError || sync.detail}
+          >
+            <span className={`mx-auto mb-1 block h-1.5 w-1.5 rounded-full ${toneDot[sync.tone]}`} />
+            <strong className={`block text-[9px] font-bold leading-tight ${toneText[sync.tone]}`}>
+              {sync.label}
+            </strong>
+            <span className="mt-0.5 hidden text-[8px] leading-tight text-[#8a908c] max-[700px]:hidden min-[701px]:block">
+              {sync.detail}
+            </span>
+          </div>
         </aside>
+
         <section className="min-h-0 min-w-0 flex-1 overflow-auto px-[22px] py-3.5 max-[700px]:px-3.5 max-[700px]:py-[22px]">
           {children}
         </section>

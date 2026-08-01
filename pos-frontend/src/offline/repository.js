@@ -143,12 +143,40 @@ export async function putDayEnds(branchId, dayEnds) {
   })
 }
 
-export async function upsertLocalSale({ transaction, movements, products }) {
-  await db.transaction('rw', db.transactions, db.movements, db.products, async () => {
-    await db.transactions.put(transaction)
+export async function upsertLocalSale({ transaction, movements, products, lines }) {
+  const lineRows = (lines || transaction.itemsList || []).map((line, index) => {
+    const quantity = line.pricingMode === 'kg' ? Number(line.weight || 0) : Number(line.quantity || 0)
+    const unitPrice = Number(line.price || line.unitPrice || 0)
+    return {
+      id: `${transaction.id}-line-${index}`,
+      transactionId: transaction.id,
+      productId: line.id || line.productId || null,
+      name: line.name || 'Item',
+      sku: line.sku || '',
+      pricingMode: line.pricingMode === 'kg' ? 'kg' : 'pc',
+      quantity,
+      unitPrice,
+      lineTotal: unitPrice * quantity,
+    }
+  })
+
+  await db.transaction('rw', db.transactions, db.movements, db.products, db.transactionItems, async () => {
+    await db.transactions.put({
+      ...transaction,
+      itemsList: transaction.itemsList || lines || [],
+    })
+    await db.transactionItems.where('transactionId').equals(transaction.id).delete()
+    if (lineRows.length) await db.transactionItems.bulkPut(lineRows)
     if (movements?.length) await db.movements.bulkPut(movements)
     if (products?.length) await db.products.bulkPut(products)
   })
+}
+
+export async function getLocalTransactionDetail(id) {
+  const txn = await db.transactions.get(id)
+  if (!txn) return null
+  const lines = await db.transactionItems.where('transactionId').equals(id).toArray()
+  return { transaction: txn, lines: lines.length ? lines : txn.itemsList || [] }
 }
 
 export async function updateLocalProducts(products) {

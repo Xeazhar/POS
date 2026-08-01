@@ -1,9 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
 import { Field, PageHeader, PrimaryButton, SecondaryButton, TableCard } from '../../components/ui'
-import { bootstrapBranchData, fetchBranchTelemetry, fetchBranches, hasSupabase, reopenDayEnd, saveBranch } from '../../lib/api'
+import {
+  bootstrapBranchData,
+  fetchBranchTelemetry,
+  fetchBranches,
+  fetchTransactionDetail,
+  hasSupabase,
+  reopenDayEnd,
+  saveBranch,
+} from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
 import { businessDate, formatOpenHourLabel, money, qty } from '../../utils/format'
+import { isUuid } from '../../utils/transactionDetail'
 
 const PAGE_SIZE = 10
 
@@ -18,6 +28,8 @@ function ManagerBranchDashboard() {
   const [invPage, setInvPage] = useState(0)
   const [reopening, setReopening] = useState(null)
   const [telemetry, setTelemetry] = useState({ devices: [] })
+  const [detail, setDetail] = useState(null)
+  const [loadingDetail, setLoadingDetail] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -94,6 +106,33 @@ function ManagerBranchDashboard() {
       setReopening(null)
     }
   }
+
+  const openTxnDetail = async (item) => {
+    setError('')
+    setLoadingDetail(true)
+    setDetail(null)
+    try {
+      if (!hasSupabase || !isUuid(item.id)) {
+        setError('Transaction details are only available after the sale has synced.')
+        return
+      }
+      setDetail(await fetchTransactionDetail(item.id))
+    } catch (err) {
+      setError(err.message || 'Could not load transaction')
+    } finally {
+      setLoadingDetail(false)
+    }
+  }
+
+  const recentTxns = useMemo(() => {
+    return [...(data.transactions || [])]
+      .sort((a, b) => {
+        const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0
+        const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0
+        return tb - ta
+      })
+      .slice(0, 8)
+  }, [data.transactions])
 
   const invPages = Math.max(1, Math.ceil(data.products.length / PAGE_SIZE))
   const pageIndex = Math.min(invPage, invPages - 1)
@@ -173,10 +212,16 @@ function ManagerBranchDashboard() {
             <span>Total</span>
             <span>Status</span>
           </div>
-          {data.transactions.slice(0, 8).map((item) => (
+          {recentTxns.map((item) => (
             <div
               key={item.id}
-              className="grid grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]"
+              role="button"
+              tabIndex={0}
+              className="grid cursor-pointer grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs hover:bg-[#fafaf7] max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]"
+              onClick={() => openTxnDetail(item)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') openTxnDetail(item)
+              }}
             >
               <span className="text-[11px] text-brand-slate">{item.time || item.date || '—'}</span>
               <strong className="truncate text-brand-ink">{item.id.slice(0, 8)}</strong>
@@ -360,6 +405,14 @@ function ManagerBranchDashboard() {
             </div>
           </form>
         </div>
+      )}
+
+      {(detail || loadingDetail) && (
+        <TransactionDetailModal
+          detail={detail}
+          loading={loadingDetail}
+          onClose={() => setDetail(null)}
+        />
       )}
     </div>
   )

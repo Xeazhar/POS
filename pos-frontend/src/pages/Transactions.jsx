@@ -1,67 +1,166 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { FiSearch } from 'react-icons/fi'
-import { Eyebrow, Modal, ModalActions, PageHeader, PrimaryButton, SearchBox, SecondaryButton, TableCard } from '../components/ui'
+import TransactionDetailModal from '../components/transactions/TransactionDetailModal'
+import { Eyebrow, Modal, PageHeader, SearchBox, SecondaryButton, TableCard } from '../components/ui'
 import { fetchTransactionDetail, hasSupabase } from '../lib/api'
+import { getLocalTransactionDetail } from '../offline'
 import { useInventoryStore } from '../stores/posStore'
-import { money, qty } from '../utils/format'
+import { money, today } from '../utils/format'
+import { detailFromLocalTxn, isUuid } from '../utils/transactionDetail'
+
+function txnSortTime(item) {
+  if (item.createdAt) {
+    const t = new Date(item.createdAt).getTime()
+    if (!Number.isNaN(t)) return t
+  }
+  if (item.date) {
+    const t = new Date(`${item.date}T12:00:00`).getTime()
+    if (!Number.isNaN(t)) return t
+  }
+  return 0
+}
+
+const filterSelectClass =
+  'h-10 rounded-md border border-brand-line bg-white px-3 text-xs font-medium text-brand-ink'
 
 function Transactions() {
   const transactions = useInventoryStore((state) => state.transactions)
+  const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const voidTransaction = useInventoryStore((state) => state.voidTransaction)
   const [query, setQuery] = useState('')
+  const [dateFilter, setDateFilter] = useState('all') // all | today | date
+  const [dateValue, setDateValue] = useState(today(dayOpenHour))
+  const [statusFilter, setStatusFilter] = useState('all') // all | Paid | Voided
+  const [sortBy, setSortBy] = useState('newest') // newest | oldest | price_high | price_low
   const [voiding, setVoiding] = useState(null)
   const [detail, setDetail] = useState(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [error, setError] = useState('')
 
-  const list = transactions.filter(
-    (item) =>
-      item.id.toLowerCase().includes(query.toLowerCase()) ||
-      item.cashier.toLowerCase().includes(query.toLowerCase()),
-  )
+  const list = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    let rows = transactions.filter((item) => {
+      if (q) {
+        const hay = `${item.id} ${item.cashier || ''} ${item.time || ''}`.toLowerCase()
+        if (!hay.includes(q)) return false
+      }
+      if (statusFilter !== 'all' && item.status !== statusFilter) return false
+      if (dateFilter === 'today' && item.date !== today(dayOpenHour)) return false
+      if (dateFilter === 'date' && dateValue && item.date !== dateValue) return false
+      return true
+    })
+
+    rows = [...rows].sort((a, b) => {
+      if (sortBy === 'price_high') return Number(b.total || 0) - Number(a.total || 0)
+      if (sortBy === 'price_low') return Number(a.total || 0) - Number(b.total || 0)
+      if (sortBy === 'oldest') return txnSortTime(a) - txnSortTime(b)
+      return txnSortTime(b) - txnSortTime(a) // newest
+    })
+    return rows
+  }, [transactions, query, statusFilter, dateFilter, dateValue, sortBy, dayOpenHour])
 
   const openDetail = async (item) => {
     setError('')
     setLoadingDetail(true)
+    setDetail(null)
     try {
+      if (!isUuid(item.id) || item.syncStatus === 'pending' || item.syncStatus === 'local') {
+        let local = item
+        if (!item.itemsList?.length) {
+          const stored = await getLocalTransactionDetail(item.id)
+          if (stored) local = { ...item, ...stored.transaction, itemsList: stored.lines }
+        }
+        setDetail(detailFromLocalTxn(local))
+        return
+      }
       if (hasSupabase) {
         setDetail(await fetchTransactionDetail(item.id))
-      } else {
-        setDetail({
-          ...item,
-          lines: (item.itemsList || []).map((line, index) => ({
-            id: `${item.id}-${index}`,
-            name: line.name,
-            sku: '',
-            pricingMode: line.pricingMode,
-            quantity: line.pricingMode === 'kg' ? line.weight : line.quantity,
-            unitPrice: line.price,
-            lineTotal: line.price * (line.pricingMode === 'kg' ? line.weight : line.quantity),
-          })),
-        })
+        return
       }
+      setDetail(detailFromLocalTxn(item))
     } catch (err) {
-      setError(err.message || 'Could not load transaction')
+      if (item.itemsList?.length) {
+        setDetail(detailFromLocalTxn(item))
+      } else {
+        const stored = await getLocalTransactionDetail(item.id)
+        if (stored) setDetail(detailFromLocalTxn({ ...item, ...stored.transaction }, stored.lines))
+        else setError(err.message || 'Could not load transaction')
+      }
     } finally {
       setLoadingDetail(false)
     }
   }
 
+  const clearFilters = () => {
+    setQuery('')
+    setDateFilter('all')
+    setDateValue(today(dayOpenHour))
+    setStatusFilter('all')
+    setSortBy('newest')
+  }
+
   return (
     <div>
       <PageHeader eyebrow="AUDIT TRAIL" title="Transactions">
-        <span className="text-xs text-[#797e7b]">{transactions.length} orders</span>
+        <span className="text-xs text-[#797e7b]">
+          {list.length} shown · {transactions.length} total
+        </span>
       </PageHeader>
       {error && <p className="mb-3 text-xs text-brand-danger">{error}</p>}
-      <div className="mb-[18px]">
+
+      <div className="mb-3.5 flex flex-wrap items-end gap-2.5">
         <SearchBox
-          className="w-full max-w-[330px]"
+          className="min-w-[200px] flex-1 max-w-[280px]"
           icon={<FiSearch />}
           placeholder="Search order or cashier"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
+        <label className="grid gap-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+          Date
+          <select className={filterSelectClass} value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}>
+            <option value="all">All dates</option>
+            <option value="today">Today</option>
+            <option value="date">Pick date</option>
+          </select>
+        </label>
+        {dateFilter === 'date' && (
+          <label className="grid gap-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+            On
+            <input
+              type="date"
+              className={filterSelectClass}
+              value={dateValue}
+              onChange={(e) => setDateValue(e.target.value)}
+            />
+          </label>
+        )}
+        <label className="grid gap-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+          Status
+          <select
+            className={filterSelectClass}
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
+            <option value="all">All</option>
+            <option value="Paid">Paid</option>
+            <option value="Voided">Voided</option>
+          </select>
+        </label>
+        <label className="grid gap-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+          Sort
+          <select className={filterSelectClass} value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="price_high">Price high → low</option>
+            <option value="price_low">Price low → high</option>
+          </select>
+        </label>
+        <SecondaryButton compact type="button" onClick={clearFilters}>
+          Reset
+        </SecondaryButton>
       </div>
+
       <TableCard>
         <div className="grid grid-cols-[1.2fr_1.4fr_1.3fr_0.6fr_0.9fr_0.8fr_0.6fr] gap-3 border-0 bg-[#f7f7f4] px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr]">
           <span>Order</span>
@@ -112,70 +211,21 @@ function Transactions() {
             </button>
           </div>
         ))}
+        {list.length === 0 && (
+          <div className="px-5 py-8 text-xs text-brand-subtle">No transactions match these filters.</div>
+        )}
       </TableCard>
 
       {(detail || loadingDetail) && (
-        <Modal wide onClose={() => setDetail(null)}>
-          {loadingDetail || !detail ? (
-            <p className="text-xs text-brand-subtle">Loading…</p>
-          ) : (
-            <>
-              <Eyebrow>TRANSACTION DETAIL</Eyebrow>
-              <h2 className="mb-1 text-[22px]">{detail.id.slice(0, 8)}</h2>
-              <p className="m-0 text-xs text-brand-muted">
-                {detail.time} · {detail.cashier} · {detail.status}
-              </p>
-              <div className="mt-4 max-h-[240px] overflow-auto rounded-md border border-brand-softline">
-                <div className="grid grid-cols-[1.4fr_0.6fr_0.7fr_0.7fr] gap-2 bg-[#f7f7f4] px-3 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
-                  <span>Item</span>
-                  <span className="text-right">Qty</span>
-                  <span className="text-right">Price</span>
-                  <span className="text-right">Total</span>
-                </div>
-                {detail.lines.map((line) => (
-                  <div key={line.id} className="grid grid-cols-[1.4fr_0.6fr_0.7fr_0.7fr] gap-2 border-t border-brand-softline px-3 py-2.5 text-xs">
-                    <div>
-                      <strong className="block text-brand-ink">{line.name}</strong>
-                      {line.sku && <small className="text-[10px] text-brand-subtle">{line.sku}</small>}
-                    </div>
-                    <span className="text-right tabular-nums">
-                      {qty(line.quantity, line.pricingMode === 'kg' ? 'kg' : 'pc')}
-                    </span>
-                    <span className="text-right tabular-nums">{money(line.unitPrice)}</span>
-                    <strong className="text-right tabular-nums">{money(line.lineTotal)}</strong>
-                  </div>
-                ))}
-                {detail.lines.length === 0 && (
-                  <div className="px-3 py-4 text-xs text-brand-subtle">No line items found.</div>
-                )}
-              </div>
-              <div className="mt-3 grid gap-1 text-xs">
-                <div className="flex justify-between"><span>Total</span><strong>{money(detail.total)}</strong></div>
-                {detail.tendered != null && (
-                  <div className="flex justify-between"><span>Cash tendered</span><strong>{money(detail.tendered)}</strong></div>
-                )}
-                {detail.change != null && (
-                  <div className="flex justify-between"><span>Change</span><strong>{money(detail.change)}</strong></div>
-                )}
-              </div>
-              <ModalActions>
-                <SecondaryButton compact type="button" onClick={() => setDetail(null)}>Close</SecondaryButton>
-                {detail.status !== 'Voided' && (
-                  <PrimaryButton
-                    compact
-                    type="button"
-                    onClick={() => {
-                      setVoiding(detail)
-                      setDetail(null)
-                    }}
-                  >
-                    Void
-                  </PrimaryButton>
-                )}
-              </ModalActions>
-            </>
-          )}
-        </Modal>
+        <TransactionDetailModal
+          detail={detail}
+          loading={loadingDetail}
+          onClose={() => setDetail(null)}
+          onVoid={(row) => {
+            setVoiding(row)
+            setDetail(null)
+          }}
+        />
       )}
 
       {voiding && (

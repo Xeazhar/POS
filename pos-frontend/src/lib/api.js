@@ -27,14 +27,18 @@ export function mapProduct(row, stock = 0, meta = {}) {
 
 export function mapTransaction(row) {
   const created = new Date(row.created_at)
+  const createdAt = Number.isNaN(created.getTime()) ? row.created_at || null : created.toISOString()
   return {
     id: row.id,
-    time: created.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    time: Number.isNaN(created.getTime())
+      ? '—'
+      : created.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
     cashier: row.staff?.full_name || 'Staff',
     total: Number(row.total_amount),
     status: row.status === 'voided' ? 'Voided' : 'Paid',
     items: row.transaction_items?.length || row.item_count || 0,
     date: localDateKey(row.created_at),
+    createdAt,
     branchId: row.branch_id,
     voidReason: row.void_reason,
     tendered: row.amount_tendered != null ? Number(row.amount_tendered) : null,
