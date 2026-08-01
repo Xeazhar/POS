@@ -1,0 +1,247 @@
+import { useEffect, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import { Field, PageHeader, PrimaryButton, SecondaryButton, TableCard } from '../../components/ui'
+import { bootstrapBranchData, fetchBranches, hasSupabase, saveBranch } from '../../lib/api'
+import { money, qty } from '../../utils/format'
+
+const PAGE_SIZE = 10
+
+function ManagerBranchDashboard() {
+  const { branchId } = useParams()
+  const [branch, setBranch] = useState(null)
+  const [data, setData] = useState({ products: [], transactions: [], movements: [], dayEnds: [] })
+  const [editing, setEditing] = useState(false)
+  const [form, setForm] = useState(null)
+  const [error, setError] = useState('')
+  const [invPage, setInvPage] = useState(0)
+
+  useEffect(() => {
+    let active = true
+    setInvPage(0)
+    Promise.resolve()
+      .then(async () => {
+        if (!hasSupabase) {
+          if (!active) return
+          setBranch({ id: branchId, name: 'Bayombong Branch #001', address: 'Bayombong', is_active: true })
+          setData({ products: [], transactions: [], movements: [], dayEnds: [] })
+          return
+        }
+        const branches = await fetchBranches()
+        if (!active) return
+        setBranch(branches.find((row) => row.id === branchId) || null)
+        const payload = await bootstrapBranchData(branchId)
+        if (active) setData(payload)
+      })
+      .catch((err) => {
+        if (active) setError(err.message)
+      })
+    return () => {
+      active = false
+    }
+  }, [branchId])
+
+  const reload = async () => {
+    if (!hasSupabase) return
+    const branches = await fetchBranches()
+    setBranch(branches.find((row) => row.id === branchId) || null)
+    setData(await bootstrapBranchData(branchId))
+  }
+
+  const todayKey = new Date().toISOString().slice(0, 10)
+  const todayTx = data.transactions.filter((item) => item.status === 'Paid' && item.date === todayKey)
+  const revenue = todayTx.reduce((sum, item) => sum + item.total, 0)
+  const low = data.products.filter((product) => product.stock <= product.lowStockAt)
+  const shrink = data.movements
+    .filter((item) => item.type === 'Shrinkage')
+    .reduce(
+      (sum, item) =>
+        sum + Math.abs(item.quantityChange) * (data.products.find((p) => p.id === item.productId)?.price || 0),
+      0,
+    )
+
+  const invPages = Math.max(1, Math.ceil(data.products.length / PAGE_SIZE))
+  const pageIndex = Math.min(invPage, invPages - 1)
+  const invSlice = data.products.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
+
+  return (
+    <div>
+      <PageHeader eyebrow="BRANCH" title={branch?.name || 'Branch'}>
+        <div className="flex gap-2">
+          <SecondaryButton compact type="button" onClick={() => { setForm(branch); setEditing(true) }}>
+            Branch settings
+          </SecondaryButton>
+          <Link to="/manager/branches" className="inline-flex h-10 items-center px-2 text-xs font-bold text-brand-slate no-underline">
+            ← All branches
+          </Link>
+        </div>
+      </PageHeader>
+      {error && <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>}
+
+      <div className="mb-4 grid grid-cols-4 gap-3 max-[900px]:grid-cols-2">
+        {[
+          ['Revenue today', money(revenue)],
+          ['Orders today', todayTx.length],
+          ['Low stock', low.length],
+          ['Reseko loss', money(shrink)],
+        ].map(([label, value]) => (
+          <div key={label} className="rounded-[9px] bg-brand-dark p-4 text-white">
+            <span className="block text-[11px] text-[#abb1ad]">{label}</span>
+            <strong className="mt-2 block text-xl text-brand-gold">{value}</strong>
+          </div>
+        ))}
+      </div>
+
+      <div className="mb-3.5 grid grid-cols-2 gap-3.5 max-[900px]:grid-cols-1">
+        <TableCard className="max-h-none">
+          <div className="flex items-center justify-between px-4 py-3">
+            <h2 className="m-0 text-base">Recent transactions</h2>
+            <span className="text-[11px] text-brand-subtle">{data.transactions.length} total</span>
+          </div>
+          <div className="grid grid-cols-[1.1fr_1fr_0.7fr_0.7fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
+            <span>Order</span>
+            <span>Cashier</span>
+            <span>Total</span>
+            <span>Status</span>
+          </div>
+          {data.transactions.slice(0, 8).map((item) => (
+            <div key={item.id} className="grid grid-cols-[1.1fr_1fr_0.7fr_0.7fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs">
+              <strong className="truncate text-brand-ink">{item.id.slice(0, 8)}</strong>
+              <span className="truncate">{item.cashier}</span>
+              <span>{money(item.total)}</span>
+              <span className={item.status === 'Voided' ? 'text-brand-danger' : 'text-brand-success'}>{item.status}</span>
+            </div>
+          ))}
+          {data.transactions.length === 0 && (
+            <div className="px-4 py-6 text-xs text-brand-subtle">No transactions yet.</div>
+          )}
+        </TableCard>
+
+        <TableCard className="max-h-none">
+          <div className="flex items-center justify-between px-4 py-3">
+            <h2 className="m-0 text-base">Day ends</h2>
+            <span className="text-[11px] text-brand-subtle">{(data.dayEnds || []).length} recorded</span>
+          </div>
+          <div className="grid grid-cols-[0.9fr_0.7fr_0.7fr_0.7fr_1.2fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
+            <span>Date</span>
+            <span>Expected</span>
+            <span>Counted</span>
+            <span>Variance</span>
+            <span>Note</span>
+          </div>
+          {(data.dayEnds || []).slice(0, 8).map((entry) => (
+            <div key={entry.id} className="grid grid-cols-[0.9fr_0.7fr_0.7fr_0.7fr_1.2fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs">
+              <div>
+                <strong className="block text-brand-ink">{entry.date}</strong>
+                <small className="text-[10px] text-brand-subtle">
+                  {entry.closedAt || '—'}
+                  {entry.cashier ? ` · ${entry.cashier}` : ''}
+                </small>
+              </div>
+              <span>{money(entry.recordedCash)}</span>
+              <span>{money(entry.cashOnHand)}</span>
+              <span className={Number(entry.variance) === 0 ? 'text-brand-success' : 'text-brand-danger'}>
+                {money(entry.variance)}
+              </span>
+              <span className="truncate text-brand-slate" title={entry.note || ''}>
+                {entry.note || '—'}
+              </span>
+            </div>
+          ))}
+          {(data.dayEnds || []).length === 0 && (
+            <div className="px-4 py-6 text-xs text-brand-subtle">No day-end closings yet.</div>
+          )}
+        </TableCard>
+      </div>
+
+      <TableCard className="max-h-none">
+        <div className="flex items-center justify-between px-4 py-3">
+          <h2 className="m-0 text-base">Inventory</h2>
+          <span className="text-[11px] text-brand-subtle">{data.products.length} SKUs</span>
+        </div>
+        <div className="grid grid-cols-[1.6fr_0.7fr_0.6fr_0.5fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
+          <span>Product</span>
+          <span>SKU</span>
+          <span>On hand</span>
+          <span>Status</span>
+        </div>
+        {invSlice.map((product) => (
+            <div key={product.id} className="grid grid-cols-[1.6fr_0.7fr_0.6fr_0.5fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs">
+              <strong className="truncate text-brand-ink">{product.name}</strong>
+              <span className="truncate text-brand-subtle">{product.sku}</span>
+              <span>{qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}</span>
+              <span className={product.stock <= Number(product.lowStockAt ?? 5) ? 'text-brand-danger' : 'text-brand-success'}>
+                {product.stock <= Number(product.lowStockAt ?? 5) ? 'Low' : 'OK'}
+              </span>
+            </div>
+          ))}
+        {data.products.length === 0 && (
+          <div className="px-4 py-6 text-xs text-brand-subtle">No inventory rows yet.</div>
+        )}
+        {data.products.length > 0 && (
+          <div className="flex items-center justify-between border-t border-brand-softline px-4 py-3">
+            <span className="text-[11px] text-brand-subtle">
+              Page {pageIndex + 1} of {invPages}
+            </span>
+            <div className="flex gap-2">
+              <SecondaryButton
+                compact
+                type="button"
+                disabled={pageIndex <= 0}
+                onClick={() => setInvPage((p) => Math.max(0, p - 1))}
+              >
+                Previous
+              </SecondaryButton>
+              <SecondaryButton
+                compact
+                type="button"
+                disabled={pageIndex >= invPages - 1}
+                onClick={() => setInvPage((p) => Math.min(invPages - 1, p + 1))}
+              >
+                Next
+              </SecondaryButton>
+            </div>
+          </div>
+        )}
+      </TableCard>
+
+      {editing && form && (
+        <div className="fixed inset-0 z-[5] grid place-items-center bg-[#202426aa]">
+          <form
+            className="w-[min(420px,calc(100%-32px))] rounded-[10px] bg-white p-6"
+            onSubmit={async (event) => {
+              event.preventDefault()
+              try {
+                await saveBranch(form)
+                setEditing(false)
+                await reload()
+              } catch (err) {
+                setError(err.message)
+              }
+            }}
+          >
+            <h2 className="mb-4 text-lg">Branch settings</h2>
+            <div className="grid gap-3">
+              <Field label="Branch name" required value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              <Field label="Address" value={form.address || ''} onChange={(e) => setForm({ ...form, address: e.target.value })} />
+              <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
+                <input
+                  type="checkbox"
+                  checked={form.is_active !== false}
+                  onChange={(e) => setForm({ ...form, is_active: e.target.checked })}
+                />
+                Branch active
+              </label>
+              <p className="text-[11px] text-brand-muted">Inactive branches stay in history but are hidden from normal operations.</p>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <SecondaryButton compact type="button" onClick={() => setEditing(false)}>Cancel</SecondaryButton>
+              <PrimaryButton compact type="submit">Save settings</PrimaryButton>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default ManagerBranchDashboard
