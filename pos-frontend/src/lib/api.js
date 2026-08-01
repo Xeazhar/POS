@@ -1,7 +1,8 @@
-import { supabase } from './supabase'
+import { allowDemoMode, supabase } from './supabase'
 import { localDateKey, today } from '../utils/format'
 
 export const hasSupabase = Boolean(supabase)
+export { allowDemoMode }
 
 const mapPricing = (mode) => (mode === 'per_kg' || mode === 'kg' ? 'kg' : 'pc')
 const toDbPricing = (mode) => (mode === 'kg' ? 'per_kg' : 'per_unit')

@@ -40,6 +40,11 @@ export const useAuthStore = create(persist((set, get) => ({
     set({ error: '', booting: true })
     try {
       if (!api.hasSupabase) {
+        if (!api.allowDemoMode) {
+          throw new Error(
+            'CalePOS is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY before publishing.',
+          )
+        }
         const user = {
           id: 'local-staff',
           name: email || 'Demo Cashier',

@@ -81,7 +81,7 @@ function ManagerBranches() {
                   <small className="text-[10px] text-brand-subtle">Low stock</small>
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex justify-end gap-2">
                 <Link
                   className="inline-flex h-10 items-center rounded-[5px] bg-brand-gold px-4 text-xs font-bold text-brand-dark no-underline"
                   to={`/manager/branches/${branch.id}`}

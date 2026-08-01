@@ -1,8 +1,11 @@
 {
-  "name": "pos-frontend",
+  "name": "calepos",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "description": "CalePOS — offline-first multi-branch point of sale by Jazper Bustria",
+  "author": "Jazper Bustria",
+  "license": "UNLICENSED",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
