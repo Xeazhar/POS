@@ -89,7 +89,10 @@ async function pushOne(item) {
   const { type, payload } = item
   switch (type) {
     case QUEUE_TYPES.COMPLETE_SALE: {
-      await api.completeSale(payload)
+      await api.completeSale({
+        ...payload,
+        clientId: payload.clientId || payload.localTransactionId || null,
+      })
       // Drop local pending txn; next pull will bring server row
       if (payload.localTransactionId) {
         await db.transactions.delete(payload.localTransactionId)
@@ -97,7 +100,7 @@ async function pushOne(item) {
       return
     }
     case QUEUE_TYPES.VOID_SALE: {
-      await api.voidSale(payload.id, payload.reason)
+      await api.voidSale(payload.id, payload.reason, payload.staffId || null)
       return
     }
     case QUEUE_TYPES.ADJUST_STOCK: {

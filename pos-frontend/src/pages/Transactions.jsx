@@ -2,10 +2,12 @@ import { useMemo, useState } from 'react'
 import { FiSearch } from 'react-icons/fi'
 import TransactionDetailModal from '../components/transactions/TransactionDetailModal'
 import { Eyebrow, Modal, PageHeader, SearchBox, SecondaryButton, TableCard } from '../components/ui'
-import { fetchTransactionDetail, hasSupabase } from '../lib/api'
+import { fetchBranches, fetchTransactionDetail, hasSupabase } from '../lib/api'
+import { receiptPrinter } from '../devices'
 import { getLocalTransactionDetail } from '../offline'
-import { useInventoryStore } from '../stores/posStore'
+import { useAuthStore, useInventoryStore } from '../stores/posStore'
 import { money, today } from '../utils/format'
+import { buildReceipt } from '../utils/receipt'
 import { detailFromLocalTxn, isUuid } from '../utils/transactionDetail'
 
 function txnSortTime(item) {
@@ -27,6 +29,7 @@ function Transactions() {
   const transactions = useInventoryStore((state) => state.transactions)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const voidTransaction = useInventoryStore((state) => state.voidTransaction)
+  const user = useAuthStore((state) => state.user)
   const [query, setQuery] = useState('')
   const [dateFilter, setDateFilter] = useState('all') // all | today | date
   const [dateValue, setDateValue] = useState(today(dayOpenHour))
@@ -41,7 +44,7 @@ function Transactions() {
     const q = query.trim().toLowerCase()
     let rows = transactions.filter((item) => {
       if (q) {
-        const hay = `${item.id} ${item.cashier || ''} ${item.time || ''}`.toLowerCase()
+        const hay = `${item.id} ${item.orNumber || ''} ${item.cashier || ''} ${item.time || ''}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       if (statusFilter !== 'all' && item.status !== statusFilter) return false
@@ -163,7 +166,7 @@ function Transactions() {
 
       <TableCard>
         <div className="grid grid-cols-[1.2fr_1.4fr_1.3fr_0.6fr_0.9fr_0.8fr_0.6fr] gap-3 border-0 bg-[#f7f7f4] px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr]">
-          <span>Order</span>
+          <span>OR / Invoice</span>
           <span>Time</span>
           <span>Cashier</span>
           <span className="text-right tabular-nums max-[700px]:hidden">Items</span>
@@ -182,7 +185,7 @@ function Transactions() {
               if (event.key === 'Enter' || event.key === ' ') openDetail(item)
             }}
           >
-            <strong className="text-brand-ink">{item.id.slice(0, 8)}</strong>
+            <strong className="text-brand-ink">{item.orNumber || item.id.slice(0, 8)}</strong>
             <span>{item.time}</span>
             <span>{item.cashier}</span>
             <span className="text-right tabular-nums max-[700px]:hidden">{Number(item.items).toFixed(0)}</span>
@@ -221,6 +224,19 @@ function Transactions() {
           detail={detail}
           loading={loadingDetail}
           onClose={() => setDetail(null)}
+          onPrint={async (row) => {
+            try {
+              let branch = { name: user?.branchName, business_name: user?.branchName }
+              if (hasSupabase && user?.branchId) {
+                const branches = await fetchBranches().catch(() => [])
+                branch = branches.find((b) => b.id === user.branchId) || branch
+              }
+              const receipt = buildReceipt({ branch, user, transaction: row, lines: row.lines || [] })
+              await receiptPrinter.printReceipt(receipt)
+            } catch (err) {
+              setError(err.message)
+            }
+          }}
           onVoid={(row) => {
             setVoiding(row)
             setDetail(null)
@@ -231,7 +247,7 @@ function Transactions() {
       {voiding && (
         <Modal onClose={() => setVoiding(null)}>
           <Eyebrow>VOID TRANSACTION</Eyebrow>
-          <h2 className="mb-[5px] text-[22px]">{voiding.id.slice(0, 8)}</h2>
+          <h2 className="mb-[5px] text-[22px]">{voiding.orNumber || voiding.id.slice(0, 8)}</h2>
           <p className="text-[13px] text-brand-muted">Choose a reason for this void.</p>
           <div className="mt-5 grid gap-2">
             {['Wrong item', 'Customer changed mind', 'Damaged', 'Other'].map((reason) => (

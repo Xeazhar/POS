@@ -31,6 +31,7 @@ export function mapTransaction(row) {
   const createdAt = Number.isNaN(created.getTime()) ? row.created_at || null : created.toISOString()
   return {
     id: row.id,
+    orNumber: row.or_number || null,
     time: Number.isNaN(created.getTime())
       ? '—'
       : created.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
@@ -42,8 +43,11 @@ export function mapTransaction(row) {
     createdAt,
     branchId: row.branch_id,
     voidReason: row.void_reason,
+    voidedAt: row.voided_at || null,
+    voidedBy: row.voided_by || null,
     tendered: row.amount_tendered != null ? Number(row.amount_tendered) : null,
     change: row.change_given != null ? Number(row.change_given) : null,
+    clientId: row.client_id || null,
   }
 }
 
@@ -116,7 +120,7 @@ export async function bootstrapBranchData(branchId) {
     supabase.from('branch_inventory').select('*').eq('branch_id', branchId),
     supabase
       .from('transactions')
-      .select('*, staff(full_name), transaction_items(id)')
+      .select('*, staff!staff_id(full_name), transaction_items(id)')
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
       .limit(200),
@@ -351,21 +355,33 @@ export async function adjustStock({ branchId, productId, staffId, action, amount
   return mapMovement({ ...data, products: { name: productName } })
 }
 
-export async function completeSale({ branchId, staffId, items, total, tendered }) {
+export async function completeSale({ branchId, staffId, items, total, tendered, clientId = null }) {
   const { error: tillError } = await supabase.rpc('assert_till_open', { p_branch_id: branchId })
   if (tillError) throw tillError
 
+  // Prefer server-allocated sequential OR; fall back if migration not applied yet
+  let orNumber = null
+  const { data: allocated, error: orError } = await supabase.rpc('allocate_or_number', {
+    p_branch_id: branchId,
+  })
+  if (!orError) orNumber = allocated
+  else if (!String(orError.message || '').includes('Could not find the function')) throw orError
+
+  const insertRow = {
+    branch_id: branchId,
+    staff_id: staffId,
+    total_amount: total,
+    amount_tendered: tendered,
+    change_given: Math.max(0, tendered - total),
+    status: 'completed',
+  }
+  if (orNumber) insertRow.or_number = orNumber
+  if (clientId) insertRow.client_id = clientId
+
   const { data: txn, error } = await supabase
     .from('transactions')
-    .insert({
-      branch_id: branchId,
-      staff_id: staffId,
-      total_amount: total,
-      amount_tendered: tendered,
-      change_given: Math.max(0, tendered - total),
-      status: 'completed',
-    })
-    .select('*, staff(full_name)')
+    .insert(insertRow)
+    .select('*, staff!staff_id(full_name)')
     .single()
   if (error) throw error
 
@@ -394,6 +410,18 @@ export async function completeSale({ branchId, staffId, items, total, tendered }
     if (moveError) throw moveError
   }
 
+  await supabase.from('sale_events').insert({
+    branch_id: branchId,
+    transaction_id: txn.id,
+    staff_id: staffId,
+    event_type: 'sale',
+    or_number: txn.or_number,
+    amount: total,
+    payload: { client_id: clientId },
+  }).then(({ error: eventError }) => {
+    if (eventError) console.warn('sale_events insert skipped:', eventError.message)
+  })
+
   return mapTransaction({ ...txn, transaction_items: lines })
 }
 
@@ -401,7 +429,7 @@ export async function fetchTransactionDetail(id) {
   const { data, error } = await supabase
     .from('transactions')
     .select(
-      '*, staff(full_name), transaction_items(id, quantity, unit_price, line_total, products(id, name, sku, pricing_mode))',
+      '*, staff!staff_id(full_name), transaction_items(id, quantity, unit_price, line_total, products(id, name, sku, pricing_mode))',
     )
     .eq('id', id)
     .single()
@@ -420,12 +448,46 @@ export async function fetchTransactionDetail(id) {
   }
 }
 
-export async function voidSale(id, reason) {
+export async function voidSale(id, reason, staffId = null) {
+  if (staffId) {
+    const { data, error } = await supabase.rpc('void_sale_secure', {
+      p_transaction_id: id,
+      p_staff_id: staffId,
+      p_reason: reason,
+    })
+    if (!error) return data
+    if (!String(error.message || '').includes('Could not find the function')) throw error
+  }
+
+  const { data: existing } = await supabase
+    .from('transactions')
+    .select('id, branch_id, or_number, total_amount')
+    .eq('id', id)
+    .maybeSingle()
+
   const { error } = await supabase
     .from('transactions')
-    .update({ status: 'voided', void_reason: reason })
+    .update({
+      status: 'voided',
+      void_reason: reason,
+      voided_at: new Date().toISOString(),
+      voided_by: staffId,
+    })
     .eq('id', id)
   if (error) throw error
+
+  if (existing?.branch_id) {
+    await supabase.from('sale_events').insert({
+      branch_id: existing.branch_id,
+      transaction_id: id,
+      staff_id: staffId,
+      event_type: 'void',
+      or_number: existing.or_number,
+      reason,
+      amount: existing.total_amount,
+      payload: {},
+    })
+  }
 }
 
 export async function closeDayEnd({ branchId, staffId, entry }) {
@@ -595,10 +657,21 @@ export async function saveBranch(payload) {
     name: payload.name,
     address: payload.address,
     is_active: payload.is_active,
+    business_name: payload.business_name ?? payload.businessName ?? null,
+    tin: payload.tin ?? null,
+    bir_permit_no: payload.bir_permit_no ?? payload.birPermitNo ?? null,
+    machine_identification_no:
+      payload.machine_identification_no ?? payload.machineId ?? null,
+    serial_number: payload.serial_number ?? payload.serialNumber ?? null,
+    or_prefix: payload.or_prefix ?? payload.orPrefix ?? undefined,
   }
   if (payload.day_open_hour != null) {
     fields.day_open_hour = Math.min(23, Math.max(0, Number(payload.day_open_hour)))
   }
+  // Drop undefined so we don't wipe columns when older forms omit them
+  Object.keys(fields).forEach((key) => {
+    if (fields[key] === undefined) delete fields[key]
+  })
   if (payload.id) {
     const { data, error } = await supabase
       .from('branches')
@@ -611,7 +684,7 @@ export async function saveBranch(payload) {
   }
   const { data, error } = await supabase
     .from('branches')
-    .insert({ ...fields, is_active: payload.is_active ?? true })
+    .insert({ ...fields, is_active: payload.is_active ?? true, or_prefix: fields.or_prefix || 'OR' })
     .select('*')
     .single()
   if (error) throw error
@@ -730,17 +803,140 @@ export async function fetchNetworkDashboard(days = 7) {
   }
 }
 
-export async function fetchReportSalesDetail({ start, end, branchId }) {
+export async function fetchReportSalesDetail({ start, end, branchId, includeVoided = false }) {
   let query = supabase
     .from('transaction_items')
-    .select('*, products(name, sku, category_id, categories(name)), transactions!inner(id, created_at, status, branch_id, staff_id, staff(full_name), amount_tendered)')
+    .select(
+      '*, products(name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, staff!staff_id(full_name), amount_tendered, total_amount)',
+    )
     .gte('transactions.created_at', `${start}T00:00:00`)
     .lte('transactions.created_at', `${end}T23:59:59`)
-    .eq('transactions.status', 'completed')
+  if (!includeVoided) query = query.eq('transactions.status', 'completed')
   if (branchId) query = query.eq('transactions.branch_id', branchId)
   const { data, error } = await query
   if (error) throw error
   return data || []
+}
+
+export async function logAuditEvent({ branchId, staffId, eventType, detail, meta = {} }) {
+  if (!supabase) return null
+  const { data, error } = await supabase.rpc('log_audit_event', {
+    p_branch_id: branchId || null,
+    p_staff_id: staffId || null,
+    p_event_type: eventType,
+    p_detail: detail || null,
+    p_meta: meta,
+  })
+  if (error) {
+    // Soft-fail if migration not applied yet
+    if (String(error.message || '').includes('Could not find the function')) return null
+    console.warn('audit log failed', error.message)
+    return null
+  }
+  return data
+}
+
+export async function fetchAuditEvents({ start, end, branchId, limit = 500 } = {}) {
+  let query = supabase
+    .from('audit_events')
+    .select('*, staff(full_name), branches(name)')
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (start) query = query.gte('created_at', `${start}T00:00:00`)
+  if (end) query = query.lte('created_at', `${end}T23:59:59`)
+  if (branchId) query = query.eq('branch_id', branchId)
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
+}
+
+export async function fetchSaleEvents({ start, end, branchId, eventType, limit = 500 } = {}) {
+  let query = supabase
+    .from('sale_events')
+    .select('*, staff(full_name), branches(name)')
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (start) query = query.gte('created_at', `${start}T00:00:00`)
+  if (end) query = query.lte('created_at', `${end}T23:59:59`)
+  if (branchId) query = query.eq('branch_id', branchId)
+  if (eventType) query = query.eq('event_type', eventType)
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
+}
+
+/** Daily Z/X style reading from transactions (operational; not BIR-accredited). */
+export async function fetchDailyReading({ date, branchId }) {
+  let query = supabase
+    .from('transactions')
+    .select('id, or_number, status, total_amount, void_reason, created_at, staff!staff_id(full_name)')
+    .gte('created_at', `${date}T00:00:00`)
+    .lte('created_at', `${date}T23:59:59`)
+    .order('created_at', { ascending: true })
+  if (branchId) query = query.eq('branch_id', branchId)
+  const { data, error } = await query
+  if (error) throw error
+  const rows = data || []
+  const completed = rows.filter((r) => r.status === 'completed')
+  const voided = rows.filter((r) => r.status === 'voided')
+  const salesTotal = completed.reduce((sum, r) => sum + Number(r.total_amount), 0)
+  const voidTotal = voided.reduce((sum, r) => sum + Number(r.total_amount), 0)
+  const orNumbers = rows.map((r) => r.or_number).filter(Boolean)
+  return {
+    date,
+    branchId: branchId || null,
+    transactionCount: completed.length,
+    voidCount: voided.length,
+    salesTotal,
+    voidTotal,
+    netSales: salesTotal,
+    orFrom: orNumbers[0] || null,
+    orTo: orNumbers[orNumbers.length - 1] || null,
+    rows: rows.map((r) => ({
+      or_number: r.or_number,
+      status: r.status,
+      total: Number(r.total_amount),
+      cashier: r.staff?.full_name,
+      time: r.created_at,
+      void_reason: r.void_reason,
+    })),
+  }
+}
+
+/** Fiscal backup pack for a date range (JSON download from UI). */
+export async function fetchFiscalBackup({ start, end, branchId }) {
+  let txnQuery = supabase
+    .from('transactions')
+    .select('*, staff!staff_id(full_name), transaction_items(*, products(name, sku))')
+    .gte('created_at', `${start}T00:00:00`)
+    .lte('created_at', `${end}T23:59:59`)
+    .order('created_at', { ascending: true })
+  if (branchId) txnQuery = txnQuery.eq('branch_id', branchId)
+  const { data: transactions, error: txnError } = await txnQuery
+  if (txnError) throw txnError
+
+  let dayQuery = supabase
+    .from('day_ends')
+    .select('*')
+    .gte('business_date', start)
+    .lte('business_date', end)
+  if (branchId) dayQuery = dayQuery.eq('branch_id', branchId)
+  const { data: dayEnds, error: dayError } = await dayQuery
+  if (dayError) throw dayError
+
+  const [events, audits] = await Promise.all([
+    fetchSaleEvents({ start, end, branchId, limit: 5000 }).catch(() => []),
+    fetchAuditEvents({ start, end, branchId, limit: 5000 }).catch(() => []),
+  ])
+
+  return {
+    exportedAt: new Date().toISOString(),
+    range: { start, end, branchId: branchId || null },
+    transactions: transactions || [],
+    saleEvents: events,
+    auditEvents: audits,
+    dayEnds: dayEnds || [],
+  }
 }
 
 export async function fetchInventoryReport(branchId) {

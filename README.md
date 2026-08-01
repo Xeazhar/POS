@@ -22,6 +22,26 @@ The runnable app lives in [`pos-frontend/`](./pos-frontend/).
 
 ---
 
+## BIR / fiscal readiness (Philippines)
+
+CalePOS includes operational controls commonly requested for POS review. **This is not a substitute for formal BIR POS accreditation** (PTU / accredited software process).
+
+| Requirement | Status in CalePOS |
+|-------------|-------------------|
+| Sequential invoice / OR numbering | Server-allocated `OR-########` per branch (`allocate_or_number`) |
+| Non-editable sales records | DB triggers lock financial fields; line items immutable; void-only updates |
+| Void / refund logs | `sale_events` + void metadata (`voided_at`, `voided_by`, reason); stock restock on secure void |
+| User login & audit trail | `audit_events` on login/logout + void; reportable in Manager → Reports |
+| Daily sales reports | Z / X / BIR summary from live OR range + totals; day-end cash close |
+| Data backup | Manager → **Fiscal Data Backup** JSON export; rely on Supabase project backups too |
+| Receipt / invoice printing | Browser print with TIN, OR, business name, MIN, SN — thermal printer hook ready |
+
+**Required SQL migration:** run `pos-frontend/supabase/migrate_bir_pos_compliance.sql` in Supabase.
+
+Fill branch **TIN**, permit, MIN, and serial under Branches / Branch settings so receipts print correctly.
+
+---
+
 ## Quick start (local)
 
 ```bash

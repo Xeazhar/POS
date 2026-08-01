@@ -1,7 +1,7 @@
 import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
 import { money, qty } from '../../utils/format'
 
-function TransactionDetailModal({ detail, loading, onClose, onVoid }) {
+function TransactionDetailModal({ detail, loading, onClose, onVoid, onPrint }) {
   return (
     <Modal wide onClose={onClose}>
       {loading || !detail ? (
@@ -9,11 +9,14 @@ function TransactionDetailModal({ detail, loading, onClose, onVoid }) {
       ) : (
         <>
           <Eyebrow>TRANSACTION DETAIL</Eyebrow>
-          <h2 className="mb-1 text-[22px]">{String(detail.id).slice(0, 8)}</h2>
+          <h2 className="mb-1 text-[22px]">{detail.orNumber || String(detail.id).slice(0, 8)}</h2>
           <p className="m-0 text-xs text-brand-muted">
             {detail.time || detail.date || '—'} · {detail.cashier || 'Staff'} · {detail.status}
             {detail.syncStatus === 'pending' || detail.syncStatus === 'local' ? ' · Pending sync' : ''}
           </p>
+          {detail.voidReason && (
+            <p className="mt-1 text-xs text-brand-danger">Void reason: {detail.voidReason}</p>
+          )}
           <div className="mt-4 max-h-[240px] overflow-auto rounded-md border border-brand-softline">
             <div className="grid grid-cols-[1.4fr_0.6fr_0.7fr_0.7fr] gap-2 bg-[#f7f7f4] px-3 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
               <span>Item</span>
@@ -59,10 +62,18 @@ function TransactionDetailModal({ detail, loading, onClose, onVoid }) {
               </div>
             )}
           </div>
+          <p className="mt-3 text-[10px] text-brand-subtle">
+            Sales records are non-editable. Use Void to cancel (logged). Print uses browser until a receipt printer is connected.
+          </p>
           <ModalActions>
             <SecondaryButton compact type="button" onClick={onClose}>
               Close
             </SecondaryButton>
+            {onPrint && (
+              <SecondaryButton compact type="button" onClick={() => onPrint(detail)}>
+                Print receipt
+              </SecondaryButton>
+            )}
             {onVoid && detail.status !== 'Voided' && (
               <PrimaryButton compact type="button" onClick={() => onVoid(detail)}>
                 Void

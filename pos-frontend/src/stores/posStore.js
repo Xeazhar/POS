@@ -71,6 +71,13 @@ export const useAuthStore = create(persist((set, get) => ({
       set({ user, booting: false })
       await saveLocalSession(user)
       setSyncBranchId(user.branchId)
+      api.logAuditEvent({
+        branchId: user.branchId,
+        staffId: user.id,
+        eventType: 'login',
+        detail: `Signed in as ${user.name}`,
+        meta: { role: user.role },
+      })
       return user
     } catch (error) {
       set({ error: error.message || 'Login failed', booting: false, user: null })
@@ -101,6 +108,15 @@ export const useAuthStore = create(persist((set, get) => ({
     }
   },
   logout: async () => {
+    const user = get().user
+    if (api.hasSupabase && user) {
+      api.logAuditEvent({
+        branchId: user.branchId,
+        staffId: user.id,
+        eventType: 'logout',
+        detail: `Signed out ${user.name}`,
+      })
+    }
     if (api.hasSupabase && isOnline()) await api.signOut()
     await clearLocalSession()
     setSyncBranchId(null)
@@ -435,6 +451,7 @@ export const useInventoryStore = create((set, get) => ({
           total: payload.total,
           tendered: payload.tendered,
           localTransactionId: localId,
+          clientId: localId,
         },
         { branchId: user.branchId, clientId: localId },
       )
@@ -460,14 +477,21 @@ export const useInventoryStore = create((set, get) => ({
     const user = useAuthStore.getState().user
     set((state) => ({
       transactions: state.transactions.map((transaction) =>
-        transaction.id === id ? { ...transaction, status: 'Voided', voidReason: reason } : transaction,
+        transaction.id === id
+          ? {
+              ...transaction,
+              status: 'Voided',
+              voidReason: reason,
+              voidedAt: new Date().toISOString(),
+            }
+          : transaction,
       ),
     }))
     if (api.hasSupabase && user?.branchId) {
       if (isOnline() && !String(id).startsWith('txn_') && !String(id).startsWith('op_')) {
-        await api.voidSale(id, reason)
+        await api.voidSale(id, reason, user.id)
       } else {
-        await enqueue(QUEUE_TYPES.VOID_SALE, { id, reason }, { branchId: user.branchId })
+        await enqueue(QUEUE_TYPES.VOID_SALE, { id, reason, staffId: user.id }, { branchId: user.branchId })
       }
       useSyncStore.getState().refresh(user.branchId)
       if (isOnline()) await syncBranch(user.branchId)

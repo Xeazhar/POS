@@ -1,8 +1,9 @@
 /**
  * Hardware device service contracts.
- * Implementations today are stubs — swap in Web Serial / USB / native bridge later
- * without changing POS call sites.
+ * Receipt printing falls back to browser print until a thermal printer is wired.
  */
+
+import { printReceiptBrowser } from '../utils/receipt'
 
 /** @typedef {'disconnected' | 'connecting' | 'connected' | 'error'} DeviceConnectionState */
 
@@ -15,41 +16,16 @@
  * @property {string | null} [lastSeenAt]
  */
 
-/**
- * @typedef {Object} BarcodeScannerService
- * @property {() => Promise<DeviceStatus>} getStatus
- * @property {() => Promise<void>} connect
- * @property {() => Promise<void>} disconnect
- * @property {(handler: (code: string) => void) => () => void} onScan
- */
-
-/**
- * @typedef {Object} ReceiptPrinterService
- * @property {() => Promise<DeviceStatus>} getStatus
- * @property {() => Promise<void>} connect
- * @property {() => Promise<void>} disconnect
- * @property {(receipt: object) => Promise<void>} printReceipt
- */
-
-/**
- * @typedef {Object} CashDrawerService
- * @property {() => Promise<DeviceStatus>} getStatus
- * @property {() => Promise<void>} connect
- * @property {() => Promise<void>} disconnect
- * @property {() => Promise<void>} openDrawer
- */
-
-function stubStatus(id, label) {
+function stubStatus(id, label, detail = 'Not Connected') {
   return {
     id,
     label,
     state: /** @type {DeviceConnectionState} */ ('disconnected'),
-    detail: 'Not Connected',
+    detail,
     lastSeenAt: null,
   }
 }
 
-/** @type {BarcodeScannerService} */
 export const barcodeScanner = {
   async getStatus() {
     return stubStatus('barcode-scanner', 'Barcode Scanner')
@@ -63,21 +39,32 @@ export const barcodeScanner = {
   },
 }
 
-/** @type {ReceiptPrinterService} */
 export const receiptPrinter = {
   async getStatus() {
-    return stubStatus('receipt-printer', 'Receipt Printer')
+    return {
+      id: 'receipt-printer',
+      label: 'Receipt Printer',
+      state: /** @type {DeviceConnectionState} */ ('connected'),
+      detail: 'Browser print ready (thermal hardware pending)',
+      lastSeenAt: new Date().toISOString(),
+    }
   },
-  async connect() {
-    throw new Error('Receipt printer hardware not configured yet.')
-  },
+  async connect() {},
   async disconnect() {},
-  async printReceipt() {
+  /**
+   * @param {object} receipt — from buildReceipt()
+   * @param {{ forceBrowser?: boolean }} [options]
+   */
+  async printReceipt(receipt, options = {}) {
+    // Hardware ESC/POS bridge goes here later. Until then, browser print.
+    if (options.forceBrowser !== false) {
+      printReceiptBrowser(receipt)
+      return { mode: 'browser' }
+    }
     throw new Error('Receipt printer hardware not configured yet.')
   },
 }
 
-/** @type {CashDrawerService} */
 export const cashDrawer = {
   async getStatus() {
     return stubStatus('cash-drawer', 'Cash Drawer')

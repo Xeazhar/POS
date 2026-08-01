@@ -1,15 +1,19 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FiTrash2 } from 'react-icons/fi'
-import { Eyebrow, PrimaryButton } from '../ui'
-import { useCartStore, useInventoryStore } from '../../stores/posStore'
+import { receiptPrinter } from '../../devices'
+import { fetchBranches, hasSupabase } from '../../lib/api'
+import { useAuthStore, useCartStore, useInventoryStore } from '../../stores/posStore'
+import { buildReceipt } from '../../utils/receipt'
 import { money, qty, today } from '../../utils/format'
+import { Eyebrow, PrimaryButton } from '../ui'
 import CashConfirm from './CashConfirm'
 
 function Cart({ tillClosed = false }) {
   const { items, removeItem, clear, total } = useCartStore()
   const addTransaction = useInventoryStore((state) => state.addTransaction)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
+  const user = useAuthStore((state) => state.user)
   const [tendered, setTendered] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState('')
@@ -24,10 +28,10 @@ function Cart({ tillClosed = false }) {
     }
     setError('')
     try {
-      await addTransaction({
+      const saved = await addTransaction({
         id: `TX-${items.length}-${Math.round(subtotal * 100)}`,
         time: 'Just now',
-        cashier: 'Staff',
+        cashier: user?.name || 'Staff',
         total: subtotal,
         tendered: Number(tendered),
         status: 'Paid',
@@ -35,9 +39,49 @@ function Cart({ tillClosed = false }) {
         itemsList: items,
         date: today(dayOpenHour),
       })
+      const cartItems = [...items]
+      const cash = Number(tendered)
       clear()
       setTendered('')
       setConfirming(false)
+
+      // Print-ready receipt (browser until thermal printer is connected)
+      try {
+        let branch = {
+          name: user?.branchName,
+          business_name: user?.branchName,
+        }
+        if (hasSupabase && user?.branchId) {
+          const branches = await fetchBranches().catch(() => [])
+          branch = branches.find((b) => b.id === user.branchId) || branch
+        }
+        const receipt = buildReceipt({
+          branch,
+          user,
+          transaction: {
+            ...saved,
+            orNumber: saved?.orNumber || saved?.id,
+            tendered: cash,
+            change: Math.max(0, cash - subtotal),
+            total: subtotal,
+            cashier: user?.name || 'Staff',
+            status: 'Paid',
+            createdAt: saved?.createdAt || new Date().toISOString(),
+          },
+          lines: cartItems.map((item) => ({
+            name: item.name,
+            sku: item.sku,
+            pricingMode: item.pricingMode,
+            quantity: item.pricingMode === 'kg' ? item.weight : item.quantity,
+            unitPrice: item.price,
+            lineTotal: item.price * (item.pricingMode === 'kg' ? item.weight : item.quantity),
+          })),
+        })
+        await receiptPrinter.printReceipt(receipt)
+      } catch (printErr) {
+        console.warn('Receipt print skipped:', printErr.message)
+      }
+
       navigate('/transactions')
     } catch (err) {
       setError(err.message || 'Sale failed — stock was not updated.')
