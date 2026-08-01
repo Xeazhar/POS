@@ -27,7 +27,18 @@ alter table transactions
   add column if not exists or_number text,
   add column if not exists client_id text,
   add column if not exists voided_at timestamptz,
-  add column if not exists voided_by uuid references staff(id) on delete set null;
+  add column if not exists voided_by uuid;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'transactions_voided_by_fkey'
+  ) then
+    alter table transactions
+      add constraint transactions_voided_by_fkey
+      foreign key (voided_by) references staff(id) on delete set null;
+  end if;
+end $$;
 
 create unique index if not exists uq_transactions_branch_or
   on transactions (branch_id, or_number)

@@ -120,7 +120,7 @@ export async function bootstrapBranchData(branchId) {
     supabase.from('branch_inventory').select('*').eq('branch_id', branchId),
     supabase
       .from('transactions')
-      .select('*, staff!staff_id(full_name), transaction_items(id)')
+      .select('*, staff!transactions_staff_id_fkey(full_name), transaction_items(id)')
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
       .limit(200),
@@ -381,7 +381,7 @@ export async function completeSale({ branchId, staffId, items, total, tendered, 
   const { data: txn, error } = await supabase
     .from('transactions')
     .insert(insertRow)
-    .select('*, staff!staff_id(full_name)')
+    .select('*, staff!transactions_staff_id_fkey(full_name)')
     .single()
   if (error) throw error
 
@@ -429,7 +429,7 @@ export async function fetchTransactionDetail(id) {
   const { data, error } = await supabase
     .from('transactions')
     .select(
-      '*, staff!staff_id(full_name), transaction_items(id, quantity, unit_price, line_total, products(id, name, sku, pricing_mode))',
+      '*, staff!transactions_staff_id_fkey(full_name), transaction_items(id, quantity, unit_price, line_total, products(id, name, sku, pricing_mode))',
     )
     .eq('id', id)
     .single()
@@ -807,7 +807,7 @@ export async function fetchReportSalesDetail({ start, end, branchId, includeVoid
   let query = supabase
     .from('transaction_items')
     .select(
-      '*, products(name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, staff!staff_id(full_name), amount_tendered, total_amount)',
+      '*, products(name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, staff!transactions_staff_id_fkey(full_name), amount_tendered, total_amount)',
     )
     .gte('transactions.created_at', `${start}T00:00:00`)
     .lte('transactions.created_at', `${end}T23:59:59`)
@@ -869,7 +869,7 @@ export async function fetchSaleEvents({ start, end, branchId, eventType, limit =
 export async function fetchDailyReading({ date, branchId }) {
   let query = supabase
     .from('transactions')
-    .select('id, or_number, status, total_amount, void_reason, created_at, staff!staff_id(full_name)')
+    .select('id, or_number, status, total_amount, void_reason, created_at, staff!transactions_staff_id_fkey(full_name)')
     .gte('created_at', `${date}T00:00:00`)
     .lte('created_at', `${date}T23:59:59`)
     .order('created_at', { ascending: true })
@@ -907,7 +907,7 @@ export async function fetchDailyReading({ date, branchId }) {
 export async function fetchFiscalBackup({ start, end, branchId }) {
   let txnQuery = supabase
     .from('transactions')
-    .select('*, staff!staff_id(full_name), transaction_items(*, products(name, sku))')
+    .select('*, staff!transactions_staff_id_fkey(full_name), transaction_items(*, products(name, sku))')
     .gte('created_at', `${start}T00:00:00`)
     .lte('created_at', `${end}T23:59:59`)
     .order('created_at', { ascending: true })

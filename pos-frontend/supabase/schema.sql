@@ -93,6 +93,10 @@ create table if not exists transactions (
   change_given numeric(10,2),
   status text not null check (status in ('completed', 'voided')) default 'completed',
   void_reason text,
+  or_number text,
+  client_id text,
+  voided_at timestamptz,
+  voided_by uuid references staff(id) on delete set null,
   created_at timestamptz not null default now()
 );
 
