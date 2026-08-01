@@ -1,4 +1,3 @@
-import React from "react";
 import { popularDishes } from "../../constants";
 
 const PopularDishes = () => {

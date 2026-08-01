@@ -1,5 +1,3 @@
-import React from 'react';
-
 const Minicard = ({ title, icon, number, footerNum }) => {
   return (
     <div className="bg-gray-800 py-5 px-5 rounded-lg w-[50%]">

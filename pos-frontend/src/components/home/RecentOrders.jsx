@@ -1,4 +1,3 @@
-import React from 'react'
 import { FaSearch } from "react-icons/fa";
 import OrderList from './OrderList';
 const RecentOrders = () => {
