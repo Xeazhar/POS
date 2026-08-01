@@ -124,6 +124,28 @@ export function ModalActions({ children }) {
   return <div className="mt-5 flex items-center justify-end gap-2">{children}</div>
 }
 
+/** Table footer pagination — quiet text controls that match table actions. */
+export function Pager({ page, pageCount, total, label = 'items', onPrev, onNext }) {
+  const link =
+    'border-0 bg-transparent p-0 text-[11px] font-bold text-brand-ink underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-brand-subtle disabled:no-underline'
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-brand-softline bg-[#f7f7f4] px-4 py-2">
+      <span className="text-[11px] text-brand-subtle">
+        Page {page} of {pageCount}
+        {total != null ? ` · ${total} ${label}` : ''}
+      </span>
+      <div className="flex items-center gap-3">
+        <button type="button" disabled={page <= 1} onClick={onPrev} className={link}>
+          Previous
+        </button>
+        <button type="button" disabled={page >= pageCount} onClick={onNext} className={link}>
+          Next
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function StockBadge({ tone, children }) {
   const tones = {
     low: 'bg-brand-danger-bg text-brand-danger',

@@ -6,6 +6,7 @@ import {
   Modal,
   ModalActions,
   PageHeader,
+  Pager,
   PrimaryButton,
   SearchBox,
   SecondaryButton,
@@ -273,12 +274,19 @@ function ManagerData() {
     setError('')
     try {
       if (hasSupabase) {
-        const row = await updateProductPrice(priceEdit.id, next)
+        const row = await updateProductPrice(priceEdit.id, next, {
+          branchId: priceEdit.branchId || branchId,
+          staffId: user?.id,
+          previousPrice: priceEdit.price,
+          productName: priceEdit.name,
+        })
         const mapped = mapProduct(row, priceEdit.stock, {
           updatedAt: priceEdit.updatedAt,
           lastMovementAt: priceEdit.lastMovementAt,
         })
         setProducts((prev) => prev.map((item) => (item.id === mapped.id ? { ...item, price: mapped.price } : item)))
+        // Refresh so movement history includes the price change when opened elsewhere
+        await refreshCatalog(branchId)
       } else {
         useProductStore.getState().setProducts(
           useProductStore.getState().products.map((item) =>
@@ -353,6 +361,7 @@ function ManagerData() {
           <table className="min-w-full text-left text-xs">
             <thead className="bg-[#f7f7f4] text-[9px] tracking-[1px] text-[#989e99] uppercase">
               <tr>
+                <th className="px-5 py-3 w-10">#</th>
                 <th className="px-5 py-3">Product</th>
                 <th className="px-5 py-3">SKU</th>
                 <th className="px-5 py-3 max-[700px]:hidden">Category</th>
@@ -363,8 +372,9 @@ function ManagerData() {
               </tr>
             </thead>
             <tbody>
-              {pageRows.map((product) => (
+              {pageRows.map((product, index) => (
                 <tr key={product.id} className="border-t border-brand-softline">
+                  <td className="px-5 py-3 tabular-nums text-brand-subtle">{pageIndex * PAGE_SIZE + index + 1}</td>
                   <td className="px-5 py-3">
                     <strong className="block text-brand-ink">{product.name}</strong>
                     <small className="text-[10px] text-brand-subtle">{product.barcode}</small>
@@ -394,24 +404,13 @@ function ManagerData() {
           )}
         </div>
         {filtered.length > 0 && (
-          <div className="flex items-center justify-between border-t border-brand-softline px-5 py-3">
-            <span className="text-[11px] text-brand-subtle">
-              Page {pageIndex + 1} of {pageCount} · {filtered.length} items
-            </span>
-            <div className="flex gap-2">
-              <SecondaryButton compact type="button" disabled={pageIndex <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-                Previous
-              </SecondaryButton>
-              <SecondaryButton
-                compact
-                type="button"
-                disabled={pageIndex >= pageCount - 1}
-                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-              >
-                Next
-              </SecondaryButton>
-            </div>
-          </div>
+          <Pager
+            page={pageIndex + 1}
+            pageCount={pageCount}
+            total={filtered.length}
+            onPrev={() => setPage((p) => Math.max(0, p - 1))}
+            onNext={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+          />
         )}
       </TableCard>
 

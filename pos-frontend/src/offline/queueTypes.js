@@ -8,6 +8,7 @@ export const QUEUE_TYPES = {
   REOPEN_DAY: 'reopen_day',
   CREATE_PRODUCT: 'create_product',
   UPDATE_PRODUCT: 'update_product',
+  PRICE_CHANGE: 'price_change',
 }
 
 export const QUEUE_STATUS = {

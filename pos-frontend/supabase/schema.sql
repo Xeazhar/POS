@@ -73,12 +73,14 @@ create table if not exists stock_movements (
   branch_id uuid not null references branches(id) on delete cascade,
   product_id uuid not null references products(id) on delete cascade,
   staff_id uuid references staff(id) on delete set null,
-  movement_type text not null check (movement_type in ('restock', 'sale', 'adjustment', 'shrinkage', 'update')),
+  movement_type text not null check (movement_type in ('restock', 'sale', 'adjustment', 'shrinkage', 'update', 'price_change')),
   reference text,
   detail text,
   quantity_in numeric(10,2) not null default 0,
   quantity_out numeric(10,2) not null default 0,
   quantity_on_hand_after numeric(10,2) not null,
+  old_price numeric(10,2),
+  new_price numeric(10,2),
   created_at timestamptz not null default now()
 );
 
@@ -366,6 +368,49 @@ begin
 end;
 $$;
 grant execute on function public.record_stock_movement(uuid, uuid, uuid, text, numeric, numeric, text, text) to authenticated;
+
+create or replace function public.record_price_change(
+  p_branch_id uuid,
+  p_product_id uuid,
+  p_staff_id uuid,
+  p_old_price numeric,
+  p_new_price numeric,
+  p_detail text default null
+)
+returns public.stock_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_stock numeric;
+  v_movement public.stock_movements;
+begin
+  if p_old_price is not distinct from p_new_price then
+    return null;
+  end if;
+
+  select quantity_on_hand into v_stock
+  from branch_inventory
+  where branch_id = p_branch_id and product_id = p_product_id;
+
+  v_stock := coalesce(v_stock, 0);
+
+  insert into stock_movements (
+    branch_id, product_id, staff_id, movement_type, reference, detail,
+    quantity_in, quantity_out, quantity_on_hand_after, old_price, new_price
+  ) values (
+    p_branch_id, p_product_id, p_staff_id, 'price_change', 'price',
+    coalesce(p_detail, 'Price update'),
+    0, 0, v_stock, p_old_price, p_new_price
+  )
+  returning * into v_movement;
+
+  return v_movement;
+end;
+$$;
+
+grant execute on function public.record_price_change(uuid, uuid, uuid, numeric, numeric, text) to authenticated;
 
 create or replace function public.revert_import_batch(p_batch_id uuid, p_staff_id uuid)
 returns public.import_batches

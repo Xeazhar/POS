@@ -48,14 +48,24 @@ export function mapTransaction(row) {
 
 export function mapMovement(row) {
   const change = Number(row.quantity_in || 0) - Number(row.quantity_out || 0)
+  const typeRaw = String(row.movement_type || 'adjustment')
+  const typeLabel =
+    typeRaw === 'price_change'
+      ? 'Price change'
+      : typeRaw.replace(/^\w/, (c) => c.toUpperCase())
   return {
     id: row.id,
     date: localDateKey(row.created_at),
+    createdAt: row.created_at || null,
     productId: row.product_id,
     product: row.products?.name || row.product || '',
-    type: String(row.movement_type || 'adjustment').replace(/^\w/, (c) => c.toUpperCase()),
+    type: typeLabel,
+    movementType: typeRaw,
     quantityChange: change,
     resultingStock: Number(row.quantity_on_hand_after),
+    oldPrice: row.old_price != null ? Number(row.old_price) : null,
+    newPrice: row.new_price != null ? Number(row.new_price) : null,
+    detail: row.detail || '',
     branchId: row.branch_id,
   }
 }
@@ -210,12 +220,19 @@ export async function createProduct({ branchId, staffId, values }) {
   return mapProduct(product, values.stock, { branchId, updatedAt: today(), lastMovementAt: today() })
 }
 
-export async function updateProductRow(id, values) {
+export async function updateProductRow(id, values, { branchId, staffId, previousPrice } = {}) {
   let categoryId = values.categoryId || null
   if (values.category) {
     const { data: cat } = await supabase.from('categories').select('id').eq('name', values.category).maybeSingle()
     categoryId = cat?.id || categoryId
   }
+
+  let oldPrice = previousPrice
+  if (oldPrice == null) {
+    const { data: current } = await supabase.from('products').select('price').eq('id', id).maybeSingle()
+    oldPrice = current?.price != null ? Number(current.price) : null
+  }
+
   const { data, error } = await supabase
     .from('products')
     .update({
@@ -231,10 +248,34 @@ export async function updateProductRow(id, values) {
     .select('*, categories(name)')
     .single()
   if (error) throw error
+
+  if (
+    branchId &&
+    oldPrice != null &&
+    values.price != null &&
+    Number(oldPrice) !== Number(values.price)
+  ) {
+    await recordPriceChange({
+      branchId,
+      productId: id,
+      staffId,
+      oldPrice: Number(oldPrice),
+      newPrice: Number(values.price),
+      detail: values.name || 'Price update',
+    })
+  }
+
   return data
 }
 
-export async function updateProductPrice(id, price) {
+export async function updateProductPrice(id, price, { branchId, staffId, previousPrice, productName } = {}) {
+  let oldPrice = previousPrice
+  if (oldPrice == null) {
+    const { data: current } = await supabase.from('products').select('price, name').eq('id', id).maybeSingle()
+    oldPrice = current?.price != null ? Number(current.price) : null
+    productName = productName || current?.name
+  }
+
   const { data, error } = await supabase
     .from('products')
     .update({ price: Number(price) })
@@ -242,7 +283,34 @@ export async function updateProductPrice(id, price) {
     .select('*, categories(name)')
     .single()
   if (error) throw error
+
+  if (branchId && oldPrice != null && Number(oldPrice) !== Number(price)) {
+    await recordPriceChange({
+      branchId,
+      productId: id,
+      staffId,
+      oldPrice: Number(oldPrice),
+      newPrice: Number(price),
+      detail: productName || data?.name || 'Price update',
+    })
+  }
+
   return data
+}
+
+export async function recordPriceChange({ branchId, productId, staffId, oldPrice, newPrice, detail }) {
+  if (Number(oldPrice) === Number(newPrice)) return null
+  const { data, error } = await supabase.rpc('record_price_change', {
+    p_branch_id: branchId,
+    p_product_id: productId,
+    p_staff_id: staffId || null,
+    p_old_price: Number(oldPrice),
+    p_new_price: Number(newPrice),
+    p_detail: detail || 'Price update',
+  })
+  if (error) throw error
+  if (!data) return null
+  return mapMovement({ ...data, products: { name: detail } })
 }
 
 export async function setInventoryStock({ branchId, productId, staffId, stock, previousStock, productName }) {

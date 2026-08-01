@@ -122,9 +122,22 @@ async function pushOne(item) {
       return
     }
     case QUEUE_TYPES.UPDATE_PRODUCT: {
-      const { id, values, inventory } = payload
-      await api.updateProductRow(id, values)
+      const { id, values, inventory, previousPrice, branchId, staffId } = payload
+      await api.updateProductRow(id, values, {
+        branchId: branchId || payload.branchId,
+        staffId: staffId || payload.staffId,
+        previousPrice,
+      })
       if (inventory) await api.setInventoryStock(inventory)
+      return
+    }
+    case QUEUE_TYPES.PRICE_CHANGE: {
+      await api.updateProductPrice(payload.productId, payload.newPrice, {
+        branchId: payload.branchId,
+        staffId: payload.staffId,
+        previousPrice: payload.oldPrice,
+        productName: payload.detail,
+      })
       return
     }
     default:

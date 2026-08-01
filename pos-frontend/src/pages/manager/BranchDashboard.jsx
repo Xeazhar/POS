@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
+import { FiX } from 'react-icons/fi'
 import { Link, useParams } from 'react-router-dom'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
-import { Field, PageHeader, PrimaryButton, SecondaryButton, TableCard } from '../../components/ui'
+import { Eyebrow, Field, PageHeader, Pager, PrimaryButton, SecondaryButton, TableCard } from '../../components/ui'
 import {
   bootstrapBranchData,
   fetchBranchTelemetry,
@@ -30,10 +31,12 @@ function ManagerBranchDashboard() {
   const [telemetry, setTelemetry] = useState({ devices: [] })
   const [detail, setDetail] = useState(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
+  const [selectedProduct, setSelectedProduct] = useState(null)
 
   useEffect(() => {
     let active = true
     setInvPage(0)
+    setSelectedProduct(null)
     Promise.resolve()
       .then(async () => {
         if (!hasSupabase) {
@@ -86,7 +89,7 @@ function ManagerBranchDashboard() {
   const revenue = todayTx.reduce((sum, item) => sum + item.total, 0)
   const low = data.products.filter((product) => product.stock <= product.lowStockAt)
   const shrink = data.movements
-    .filter((item) => item.type === 'Shrinkage')
+    .filter((item) => item.type === 'Shrinkage' || item.movementType === 'shrinkage')
     .reduce(
       (sum, item) =>
         sum + Math.abs(item.quantityChange) * (data.products.find((p) => p.id === item.productId)?.price || 0),
@@ -133,6 +136,11 @@ function ManagerBranchDashboard() {
       })
       .slice(0, 8)
   }, [data.transactions])
+
+  const productMovements = useMemo(() => {
+    if (!selectedProduct) return []
+    return (data.movements || []).filter((m) => m.productId === selectedProduct.id)
+  }, [data.movements, selectedProduct])
 
   const invPages = Math.max(1, Math.ceil(data.products.length / PAGE_SIZE))
   const pageIndex = Math.min(invPage, invPages - 1)
@@ -300,49 +308,45 @@ function ManagerBranchDashboard() {
           <h2 className="m-0 text-base">Inventory</h2>
           <span className="text-[11px] text-brand-subtle">{data.products.length} SKUs</span>
         </div>
-        <div className="grid grid-cols-[1.6fr_0.7fr_0.6fr_0.5fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
+        <div className="grid grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
+          <span>#</span>
           <span>Product</span>
           <span>SKU</span>
           <span>On hand</span>
           <span>Status</span>
         </div>
-        {invSlice.map((product) => (
-            <div key={product.id} className="grid grid-cols-[1.6fr_0.7fr_0.6fr_0.5fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs">
-              <strong className="truncate text-brand-ink">{product.name}</strong>
-              <span className="truncate text-brand-subtle">{product.sku}</span>
-              <span>{qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}</span>
-              <span className={product.stock <= Number(product.lowStockAt ?? 5) ? 'text-brand-danger' : 'text-brand-success'}>
-                {product.stock <= Number(product.lowStockAt ?? 5) ? 'Low' : 'OK'}
-              </span>
-            </div>
-          ))}
+        {invSlice.map((product, index) => (
+          <div
+            key={product.id}
+            role="button"
+            tabIndex={0}
+            className="grid cursor-pointer grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs hover:bg-[#fafaf7]"
+            onClick={() => setSelectedProduct(product)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') setSelectedProduct(product)
+            }}
+          >
+            <span className="tabular-nums text-brand-subtle">{pageIndex * PAGE_SIZE + index + 1}</span>
+            <strong className="truncate text-brand-ink">{product.name}</strong>
+            <span className="truncate text-brand-subtle">{product.sku}</span>
+            <span>{qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}</span>
+            <span className={product.stock <= Number(product.lowStockAt ?? 5) ? 'text-brand-danger' : 'text-brand-success'}>
+              {product.stock <= Number(product.lowStockAt ?? 5) ? 'Low' : 'OK'}
+            </span>
+          </div>
+        ))}
         {data.products.length === 0 && (
           <div className="px-4 py-6 text-xs text-brand-subtle">No inventory rows yet.</div>
         )}
         {data.products.length > 0 && (
-          <div className="flex items-center justify-between border-t border-brand-softline px-4 py-3">
-            <span className="text-[11px] text-brand-subtle">
-              Page {pageIndex + 1} of {invPages}
-            </span>
-            <div className="flex gap-2">
-              <SecondaryButton
-                compact
-                type="button"
-                disabled={pageIndex <= 0}
-                onClick={() => setInvPage((p) => Math.max(0, p - 1))}
-              >
-                Previous
-              </SecondaryButton>
-              <SecondaryButton
-                compact
-                type="button"
-                disabled={pageIndex >= invPages - 1}
-                onClick={() => setInvPage((p) => Math.min(invPages - 1, p + 1))}
-              >
-                Next
-              </SecondaryButton>
-            </div>
-          </div>
+          <Pager
+            page={pageIndex + 1}
+            pageCount={invPages}
+            total={data.products.length}
+            label="SKUs"
+            onPrev={() => setInvPage((p) => Math.max(0, p - 1))}
+            onNext={() => setInvPage((p) => Math.min(invPages - 1, p + 1))}
+          />
         )}
       </TableCard>
 
@@ -413,6 +417,104 @@ function ManagerBranchDashboard() {
           loading={loadingDetail}
           onClose={() => setDetail(null)}
         />
+      )}
+
+      {selectedProduct && (
+        <div className="fixed inset-0 z-[5] bg-[#20242666]" onClick={() => setSelectedProduct(null)}>
+          <aside
+            className="absolute top-0 right-0 h-full w-[min(520px,92vw)] overflow-auto bg-white p-7 shadow-[-8px_0_24px_#20242622]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="absolute top-[17px] right-[17px] border-0 bg-transparent text-lg text-[#6e7470]"
+              onClick={() => setSelectedProduct(null)}
+            >
+              <FiX />
+            </button>
+            <Eyebrow>PRODUCT HISTORY</Eyebrow>
+            <h2 className="m-0 mb-1 text-lg capitalize">{selectedProduct.name}</h2>
+            <p className="m-0 text-xs text-brand-muted">
+              {selectedProduct.sku}
+              {selectedProduct.barcode ? ` · ${selectedProduct.barcode}` : ''} ·{' '}
+              {selectedProduct.category || '—'}
+            </p>
+
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              <div className="rounded-md bg-[#f7f7f4] px-3 py-2.5">
+                <span className="block text-[10px] text-brand-subtle">On hand</span>
+                <strong className="text-sm text-brand-ink">
+                  {qty(selectedProduct.stock, selectedProduct.pricingMode === 'kg' ? 'kg' : 'pc')}
+                </strong>
+              </div>
+              <div className="rounded-md bg-[#f7f7f4] px-3 py-2.5">
+                <span className="block text-[10px] text-brand-subtle">Price</span>
+                <strong className="text-sm text-brand-gold">{money(selectedProduct.price)}</strong>
+              </div>
+              <div className="rounded-md bg-[#f7f7f4] px-3 py-2.5">
+                <span className="block text-[10px] text-brand-subtle">Status</span>
+                <strong
+                  className={`text-sm ${
+                    selectedProduct.stock <= Number(selectedProduct.lowStockAt ?? 5)
+                      ? 'text-brand-danger'
+                      : 'text-brand-success'
+                  }`}
+                >
+                  {selectedProduct.stock <= Number(selectedProduct.lowStockAt ?? 5) ? 'Low' : 'OK'}
+                </strong>
+              </div>
+            </div>
+
+            <h3 className="mt-6 mb-2.5 text-sm">Movement history</h3>
+            <div className="rounded-none border border-brand-sheet">
+              <div className="grid grid-cols-[1.2fr_0.9fr_1.4fr_1fr] gap-1.5 bg-brand-sheet-head p-2 text-[11px] font-bold">
+                <span>Type</span>
+                <span>Date</span>
+                <span>Change</span>
+                <span className="text-right tabular-nums">Balance</span>
+              </div>
+              {productMovements.length === 0 ? (
+                <div className="border-t border-brand-sheet-line p-2 text-[11px] text-brand-subtle">
+                  No movements yet.
+                </div>
+              ) : (
+                productMovements.map((movement, index) => {
+                  const isPrice =
+                    movement.movementType === 'price_change' || movement.type === 'Price change'
+                  const unit = selectedProduct.pricingMode === 'kg' ? 'kg' : 'pc'
+                  return (
+                    <div
+                      key={movement.id}
+                      className={`grid grid-cols-[1.2fr_0.9fr_1.4fr_1fr] gap-1.5 border-t border-brand-sheet-line p-2 text-[11px] ${
+                        index % 2 === 0 ? 'bg-white' : 'bg-brand-sheet-alt'
+                      }`}
+                    >
+                      <span className={isPrice ? 'font-bold text-brand-ink' : ''}>{movement.type}</span>
+                      <span>{movement.date}</span>
+                      <span className="tabular-nums">
+                        {isPrice
+                          ? `${money(movement.oldPrice)} → ${money(movement.newPrice)}`
+                          : movement.quantityChange > 0
+                            ? `+${qty(movement.quantityChange, unit)}`
+                            : movement.quantityChange < 0
+                              ? `−${qty(Math.abs(movement.quantityChange), unit)}`
+                              : '—'}
+                      </span>
+                      <strong
+                        className={`text-right tabular-nums ${
+                          !isPrice && movement.resultingStock < 0 ? 'text-brand-danger' : ''
+                        }`}
+                      >
+                        {isPrice ? '—' : qty(movement.resultingStock, unit)}
+                      </strong>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+            <p className="mt-4 text-[11px] text-brand-subtle">View only — edit stock or prices from cashier / Data tools.</p>
+          </aside>
+        </div>
       )}
     </div>
   )

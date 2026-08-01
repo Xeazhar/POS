@@ -134,7 +134,7 @@ function Shell({ children }) {
           </div>
 
           <div
-            className="mt-2 shrink-0 rounded-lg bg-[#e8e9e4] px-1.5 py-2.5 text-center max-[700px]:px-1"
+            className="mt-2 shrink-0 rounded-lg bg-brand-panel px-1.5 py-2.5 text-center max-[700px]:px-1"
             title={lastError || sync.detail}
           >
             <span className={`mx-auto mb-1 block h-1.5 w-1.5 rounded-full ${toneDot[sync.tone]}`} />

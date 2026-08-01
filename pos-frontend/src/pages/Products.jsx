@@ -6,6 +6,7 @@ import {
   Modal,
   ModalActions,
   PageHeader,
+  Pager,
   PrimaryButton,
   SearchBox,
   SecondaryButton,
@@ -220,7 +221,8 @@ function Products() {
         />
       </div>
       <TableCard>
-        <div className="grid grid-cols-[1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] gap-3 border-0 bg-[#f7f7f4] px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[1.4fr_0.8fr_0.7fr]">
+        <div className="grid grid-cols-[2.5rem_1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] gap-3 border-0 bg-[#f7f7f4] px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[2rem_1.4fr_0.8fr_0.7fr]">
+          <span>#</span>
           <span>Product</span>
           <span className="max-[700px]:hidden">Type</span>
           <span className="text-right tabular-nums">On hand</span>
@@ -228,7 +230,7 @@ function Products() {
           <span className="text-right max-[700px]:hidden">Updated</span>
           <span className="text-right max-[700px]:hidden">Last move</span>
         </div>
-        {pageRows.map((product) => {
+        {pageRows.map((product, index) => {
           const tone = stockTone(product)
           const label = tone === 'low' ? 'Low' : tone === 'fair' ? 'Fair' : 'Good'
           return (
@@ -236,12 +238,13 @@ function Products() {
               key={product.id}
               role="button"
               tabIndex={0}
-              className="grid cursor-pointer grid-cols-[1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] items-center gap-3 border-t border-brand-softline px-5 py-[17px] text-xs text-brand-slate hover:bg-[#fafaf7] max-[700px]:grid-cols-[1.4fr_0.8fr_0.7fr]"
+              className="grid cursor-pointer grid-cols-[2.5rem_1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] items-center gap-3 border-t border-brand-softline px-5 py-[17px] text-xs text-brand-slate hover:bg-[#fafaf7] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr_0.7fr]"
               onClick={() => open(product)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') open(product)
               }}
             >
+              <span className="tabular-nums text-brand-subtle">{pageIndex * PAGE_SIZE + index + 1}</span>
               <div>
                 <strong className="block text-brand-ink">{product.name}</strong>
                 <small className="text-[10px] text-brand-subtle">{product.sku}</small>
@@ -262,24 +265,13 @@ function Products() {
           <div className="border-t border-brand-softline px-5 py-6 text-xs text-brand-subtle">No products found.</div>
         )}
         {list.length > 0 && (
-          <div className="flex items-center justify-between border-t border-brand-softline px-5 py-3">
-            <span className="text-[11px] text-brand-subtle">
-              Page {pageIndex + 1} of {pageCount} · {list.length} items
-            </span>
-            <div className="flex gap-2">
-              <SecondaryButton compact type="button" disabled={pageIndex <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-                Previous
-              </SecondaryButton>
-              <SecondaryButton
-                compact
-                type="button"
-                disabled={pageIndex >= pageCount - 1}
-                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-              >
-                Next
-              </SecondaryButton>
-            </div>
-          </div>
+          <Pager
+            page={pageIndex + 1}
+            pageCount={pageCount}
+            total={list.length}
+            onPrev={() => setPage((p) => Math.max(0, p - 1))}
+            onNext={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+          />
         )}
       </TableCard>
 
@@ -311,40 +303,48 @@ function Products() {
 
             <h3 className="mt-[22px] mb-2.5 text-sm">Movement history</h3>
                 <div className="rounded-none border border-brand-sheet">
-                  <div className="grid grid-cols-[1.1fr_1fr_1fr_1fr_1.2fr] gap-1.5 bg-brand-sheet-head p-2 text-[11px] font-bold">
+                  <div className="grid grid-cols-[1.2fr_0.9fr_1.4fr_1fr] gap-1.5 bg-brand-sheet-head p-2 text-[11px] font-bold">
                     <span>Type</span>
                     <span>Date</span>
-                    <span className="text-right tabular-nums">In</span>
-                    <span className="text-right tabular-nums">Out</span>
-                    <span className="text-right tabular-nums">On hand</span>
+                    <span>Change</span>
+                    <span className="text-right tabular-nums">Balance</span>
                   </div>
                   {productMovements.length === 0 ? (
                     <div className="border-t border-brand-sheet-line p-2 text-[11px] text-brand-subtle">
                       No movements yet.
                     </div>
                   ) : (
-                    productMovements.map((movement, index) => (
-                      <div
-                        key={movement.id}
-                        className={`grid grid-cols-[1.1fr_1fr_1fr_1fr_1.2fr] gap-1.5 border-t border-brand-sheet-line p-2 text-[11px] ${
-                          index % 2 === 0 ? 'bg-white' : 'bg-brand-sheet-alt'
-                        }`}
-                      >
-                        <span>{movement.type}</span>
-                        <span>{movement.date}</span>
-                        <span className="text-right tabular-nums">
-                          {movement.quantityChange > 0 ? qty(movement.quantityChange, unit) : '—'}
-                        </span>
-                        <span className="text-right tabular-nums">
-                          {movement.quantityChange < 0 ? qty(Math.abs(movement.quantityChange), unit) : '—'}
-                        </span>
-                        <strong
-                          className={`text-right tabular-nums ${movement.resultingStock < 0 ? 'text-brand-danger' : ''}`}
+                    productMovements.map((movement, index) => {
+                      const isPrice =
+                        movement.movementType === 'price_change' || movement.type === 'Price change'
+                      return (
+                        <div
+                          key={movement.id}
+                          className={`grid grid-cols-[1.2fr_0.9fr_1.4fr_1fr] gap-1.5 border-t border-brand-sheet-line p-2 text-[11px] ${
+                            index % 2 === 0 ? 'bg-white' : 'bg-brand-sheet-alt'
+                          }`}
                         >
-                          {qty(movement.resultingStock, unit)}
-                        </strong>
-                      </div>
-                    ))
+                          <span className={isPrice ? 'font-bold text-brand-ink' : ''}>{movement.type}</span>
+                          <span>{movement.date}</span>
+                          <span className="tabular-nums">
+                            {isPrice
+                              ? `${money(movement.oldPrice)} → ${money(movement.newPrice)}`
+                              : movement.quantityChange > 0
+                                ? `+${qty(movement.quantityChange, unit)}`
+                                : movement.quantityChange < 0
+                                  ? `−${qty(Math.abs(movement.quantityChange), unit)}`
+                                  : '—'}
+                          </span>
+                          <strong
+                            className={`text-right tabular-nums ${
+                              !isPrice && movement.resultingStock < 0 ? 'text-brand-danger' : ''
+                            }`}
+                          >
+                            {isPrice ? '—' : qty(movement.resultingStock, unit)}
+                          </strong>
+                        </div>
+                      )
+                    })
                   )}
                 </div>
 

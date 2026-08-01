@@ -202,11 +202,19 @@ export const useProductStore = create((set, get) => ({
     const previous = get().products.find((item) => item.id === id)
     if (api.hasSupabase && user?.branchId) {
       const mapped = { ...previous, ...changes }
+      const priceChanged =
+        previous && changes.price != null && Number(changes.price) !== Number(previous.price)
+
       set((state) => ({
         products: state.products.map((product) => (product.id === id ? mapped : product)),
       }))
+
       if (isOnline()) {
-        const row = await api.updateProductRow(id, mapped)
+        const row = await api.updateProductRow(id, mapped, {
+          branchId: user.branchId,
+          staffId: user.id,
+          previousPrice: previous?.price,
+        })
         const next = api.mapProduct(row, changes.stock ?? previous.stock)
         if (previous && changes.stock != null && Number(changes.stock) !== Number(previous.stock)) {
           await api.setInventoryStock({
@@ -224,6 +232,29 @@ export const useProductStore = create((set, get) => ({
         await syncBranch(user.branchId)
         return
       }
+
+      if (priceChanged) {
+        const priceMove = {
+          id: newClientId('move'),
+          date: today(),
+          createdAt: new Date().toISOString(),
+          productId: id,
+          product: mapped.name,
+          type: 'Price change',
+          movementType: 'price_change',
+          quantityChange: 0,
+          resultingStock: Number(mapped.stock ?? previous.stock),
+          oldPrice: Number(previous.price),
+          newPrice: Number(changes.price),
+          detail: mapped.name,
+          branchId: user.branchId,
+          syncStatus: 'pending',
+        }
+        useInventoryStore.setState((state) => ({
+          movements: [priceMove, ...state.movements],
+        }))
+      }
+
       const inventory =
         previous && changes.stock != null && Number(changes.stock) !== Number(previous.stock)
           ? {
@@ -237,7 +268,14 @@ export const useProductStore = create((set, get) => ({
           : null
       await enqueue(
         QUEUE_TYPES.UPDATE_PRODUCT,
-        { id, values: mapped, inventory },
+        {
+          id,
+          values: mapped,
+          inventory,
+          previousPrice: previous?.price,
+          branchId: user.branchId,
+          staffId: user.id,
+        },
         { branchId: user.branchId },
       )
       useSyncStore.getState().refresh(user.branchId)
