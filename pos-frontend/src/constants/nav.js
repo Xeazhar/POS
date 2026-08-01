@@ -1,4 +1,4 @@
-import { FiBarChart2, FiClipboard, FiGrid, FiMoon, FiPackage, FiUsers, FiMapPin, FiFileText, FiDatabase } from 'react-icons/fi'
+import { FiBarChart2, FiClipboard, FiCpu, FiGrid, FiMoon, FiPackage, FiUsers, FiMapPin, FiFileText, FiDatabase } from 'react-icons/fi'
 
 export const staffLinks = [
   ['/', 'Dashboard', FiBarChart2],
@@ -6,6 +6,7 @@ export const staffLinks = [
   ['/transactions', 'Transactions', FiClipboard],
   ['/inventory', 'Inventory', FiPackage],
   ['/day-end', 'Day end', FiMoon],
+  ['/settings/devices', 'Devices', FiCpu],
 ]
 
 export const managerLinks = [

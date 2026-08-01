@@ -88,34 +88,36 @@ function ManagerOverview() {
       </div>
 
       <TableCard>
-        <div className="grid grid-cols-[1.5fr_1fr_0.8fr_0.8fr_0.8fr_auto] gap-3 bg-[#f7f7f4] px-5 py-3 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[1fr_auto]">
+        <div className="grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem_4.5rem] items-center gap-3 bg-[#f7f7f4] px-5 py-3 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[minmax(0,1fr)_4.5rem]">
           <span>Branch</span>
           <span className="max-[700px]:hidden">Status</span>
-          <span className="max-[700px]:hidden">Revenue</span>
-          <span className="max-[700px]:hidden">Orders</span>
-          <span className="max-[700px]:hidden">Low stock</span>
-          <span />
+          <span className="text-right max-[700px]:hidden">Revenue</span>
+          <span className="text-right max-[700px]:hidden">Orders</span>
+          <span className="text-right max-[700px]:hidden">Low stock</span>
+          <span className="text-right"> </span>
         </div>
         {branches.map((branch) => {
           const summary = summaries[branch.id] || { revenue: 0, orders: 0, lowStock: 0 }
           return (
             <div
               key={branch.id}
-              className="grid grid-cols-[1.5fr_1fr_0.8fr_0.8fr_0.8fr_auto] items-center gap-3 border-t border-brand-softline px-5 py-3 text-xs max-[700px]:grid-cols-[1fr_auto]"
+              className="grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem_4.5rem] items-center gap-3 border-t border-brand-softline px-5 py-3 text-xs max-[700px]:grid-cols-[minmax(0,1fr)_4.5rem]"
             >
-              <div>
-                <strong className="block text-brand-ink">{branch.name}</strong>
-                <small className="text-[10px] text-brand-subtle">{branch.address || '—'}</small>
+              <div className="min-w-0">
+                <strong className="block truncate text-brand-ink">{branch.name}</strong>
+                <small className="block truncate text-[10px] text-brand-subtle">{branch.address || '—'}</small>
               </div>
               <span className={`max-[700px]:hidden ${branch.is_active ? 'text-brand-success' : 'text-brand-danger'}`}>
                 {branch.is_active ? 'Active' : 'Inactive'}
               </span>
-              <strong className="max-[700px]:hidden text-brand-gold">{money(summary.revenue)}</strong>
-              <span className="max-[700px]:hidden">{summary.orders}</span>
-              <span className="max-[700px]:hidden text-brand-danger">{summary.lowStock}</span>
+              <strong className="text-right tabular-nums text-brand-gold max-[700px]:hidden">
+                {money(summary.revenue)}
+              </strong>
+              <span className="text-right tabular-nums max-[700px]:hidden">{summary.orders}</span>
+              <span className="text-right tabular-nums text-brand-danger max-[700px]:hidden">{summary.lowStock}</span>
               <Link
                 to={`/manager/branches/${branch.id}`}
-                className="justify-self-end text-[11px] font-bold text-brand-dark no-underline"
+                className="justify-self-end text-right text-[11px] font-bold whitespace-nowrap text-brand-dark no-underline"
               >
                 Open →
               </Link>

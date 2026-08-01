@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
-function Clock() {
+/** Compact clock for header — time + short date on one line. */
+function Clock({ className = '' }) {
   const [now, setNow] = useState(new Date())
 
   useEffect(() => {
@@ -8,20 +9,15 @@ function Clock() {
     return () => clearInterval(timer)
   }, [])
 
+  const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const date = now.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+
   return (
-    <div className="text-center leading-tight">
-      <strong className="block text-[15px]">
-        {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-      </strong>
-      <small className="mt-1 block text-[10px] text-brand-soft">
-        {now.toLocaleDateString([], {
-          weekday: 'short',
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-        })}
-      </small>
-    </div>
+    <span className={`tabular-nums ${className}`}>
+      <strong className="font-semibold text-white">{time}</strong>
+      <span className="mx-1.5 text-[#6d7470]">·</span>
+      <span className="text-[#abb1ad]">{date}</span>
+    </span>
   )
 }
 

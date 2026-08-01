@@ -1,7 +1,19 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import * as api from '../lib/api'
+import {
+  enqueue,
+  isOnline,
+  newClientId,
+  QUEUE_TYPES,
+  readBranchSnapshot,
+  setSyncBranchId,
+  syncBranch,
+  upsertLocalSale,
+} from '../offline'
+import { clearLocalSession, loadLocalSession, saveLocalSession } from '../offline/session'
 import { isTillClosed, today } from '../utils/format'
+import { useSyncStore } from './syncStore'
 
 const seedProducts = [
   { id: 'beef-rump', branchId: 'demo-main-branch', name: 'Beef Rump Steak', sku: 'BEEF-RUMP', barcode: '480100000001', category: 'Meat', pricingMode: 'kg', price: 18.5, stock: 34.6, lowStockAt: 10, createdAt: today(), updatedAt: today(), lastMovementAt: today() },
@@ -37,11 +49,23 @@ export const useAuthStore = create(persist((set, get) => ({
           dayOpenHour: 7,
         }
         set({ user, booting: false })
+        await saveLocalSession(user)
         return user
+      }
+      if (!isOnline()) {
+        const cached = await loadLocalSession()
+        if (cached) {
+          set({ user: cached, booting: false })
+          setSyncBranchId(cached.branchId)
+          return cached
+        }
+        throw new Error('You are offline and no saved session was found. Connect once to sign in.')
       }
       const user = await api.signIn(email, password)
       if (!user) throw new Error('No staff profile linked to this account.')
       set({ user, booting: false })
+      await saveLocalSession(user)
+      setSyncBranchId(user.branchId)
       return user
     } catch (error) {
       set({ error: error.message || 'Login failed', booting: false, user: null })
@@ -52,16 +76,29 @@ export const useAuthStore = create(persist((set, get) => ({
     if (!api.hasSupabase) return get().user
     set({ booting: true })
     try {
-      const user = await api.fetchSessionStaff()
+      let user = null
+      if (isOnline()) {
+        user = await api.fetchSessionStaff()
+      }
+      if (!user) {
+        user = await loadLocalSession()
+      } else {
+        await saveLocalSession(user)
+      }
       set({ user, booting: false })
+      if (user?.branchId) setSyncBranchId(user.branchId)
       return user
     } catch {
-      set({ user: null, booting: false })
-      return null
+      const cached = await loadLocalSession()
+      set({ user: cached, booting: false })
+      if (cached?.branchId) setSyncBranchId(cached.branchId)
+      return cached
     }
   },
   logout: async () => {
-    if (api.hasSupabase) await api.signOut()
+    if (api.hasSupabase && isOnline()) await api.signOut()
+    await clearLocalSession()
+    setSyncBranchId(null)
     set({ user: null })
   },
 }), { name: 'cale-pos-auth-v4', partialize: (state) => ({ user: api.hasSupabase ? null : state.user }) }))
@@ -112,20 +149,49 @@ export const useProductStore = create((set, get) => ({
   loadBranch: async (branchId) => {
     if (!api.hasSupabase || !branchId) return
     set({ loading: true })
-    const data = await api.bootstrapBranchData(branchId)
-    set({ products: data.products, loading: false })
+    setSyncBranchId(branchId)
+    // Serve IndexedDB immediately, then sync in background when online
+    let data = await readBranchSnapshot(branchId)
+    if (data.products.length) {
+      set({ products: data.products, loading: false })
+      useInventoryStore.getState().hydrate(data)
+    }
+    data = (await syncBranch(branchId)) || data
+    set({ products: data.products || [], loading: false })
+    useSyncStore.getState().refresh(branchId)
     return data
   },
   addProduct: async (values) => {
     const user = useAuthStore.getState().user
     if (api.hasSupabase && user?.branchId) {
-      const product = await api.createProduct({
+      if (isOnline()) {
+        const product = await api.createProduct({
+          branchId: user.branchId,
+          staffId: user.id,
+          values,
+        })
+        set((state) => ({ products: [...state.products, product] }))
+        await syncBranch(user.branchId)
+        return product.id
+      }
+      const id = newClientId('prod')
+      const product = {
+        ...values,
+        id,
+        branchId: user.branchId,
+        createdAt: today(),
+        updatedAt: today(),
+        lastMovementAt: today(),
+      }
+      set((state) => ({ products: [...state.products, product] }))
+      await enqueue(QUEUE_TYPES.CREATE_PRODUCT, {
         branchId: user.branchId,
         staffId: user.id,
         values,
-      })
-      set((state) => ({ products: [...state.products, product] }))
-      return product.id
+        localId: id,
+      }, { branchId: user.branchId })
+      useSyncStore.getState().refresh(user.branchId)
+      return id
     }
     const id = `${values.name.toLowerCase().replaceAll(' ', '-')}-${Date.now()}`
     set((state) => ({ products: [...state.products, { ...values, id }] }))
@@ -135,21 +201,46 @@ export const useProductStore = create((set, get) => ({
     const user = useAuthStore.getState().user
     const previous = get().products.find((item) => item.id === id)
     if (api.hasSupabase && user?.branchId) {
-      const row = await api.updateProductRow(id, { ...previous, ...changes })
-      const mapped = api.mapProduct(row, changes.stock ?? previous.stock)
-      if (previous && changes.stock != null && Number(changes.stock) !== Number(previous.stock)) {
-        await api.setInventoryStock({
-          branchId: user.branchId,
-          productId: id,
-          staffId: user.id,
-          stock: Number(changes.stock),
-          previousStock: Number(previous.stock),
-          productName: mapped.name,
-        })
-      }
+      const mapped = { ...previous, ...changes }
       set((state) => ({
         products: state.products.map((product) => (product.id === id ? mapped : product)),
       }))
+      if (isOnline()) {
+        const row = await api.updateProductRow(id, mapped)
+        const next = api.mapProduct(row, changes.stock ?? previous.stock)
+        if (previous && changes.stock != null && Number(changes.stock) !== Number(previous.stock)) {
+          await api.setInventoryStock({
+            branchId: user.branchId,
+            productId: id,
+            staffId: user.id,
+            stock: Number(changes.stock),
+            previousStock: Number(previous.stock),
+            productName: next.name,
+          })
+        }
+        set((state) => ({
+          products: state.products.map((product) => (product.id === id ? next : product)),
+        }))
+        await syncBranch(user.branchId)
+        return
+      }
+      const inventory =
+        previous && changes.stock != null && Number(changes.stock) !== Number(previous.stock)
+          ? {
+              branchId: user.branchId,
+              productId: id,
+              staffId: user.id,
+              stock: Number(changes.stock),
+              previousStock: Number(previous.stock),
+              productName: mapped.name,
+            }
+          : null
+      await enqueue(
+        QUEUE_TYPES.UPDATE_PRODUCT,
+        { id, values: mapped, inventory },
+        { branchId: user.branchId },
+      )
+      useSyncStore.getState().refresh(user.branchId)
       return
     }
     set((state) => ({
@@ -214,8 +305,8 @@ export const useProductStore = create((set, get) => ({
     }
 
     if (api.hasSupabase && user?.branchId) {
-      const data = await api.bootstrapBranchData(user.branchId)
-      set({ products: data.products })
+      const data = await syncBranch(user.branchId)
+      if (data) set({ products: data.products })
     }
 
     return { created, updated, skipped }
@@ -239,29 +330,14 @@ export const useInventoryStore = create((set, get) => ({
     if (isTillClosed(get().dayEnds, get().dayOpenHour)) {
       throw new Error('Till is closed for this business day. Ask a manager to reopen.')
     }
-    if (api.hasSupabase && user?.branchId) {
-      const txn = await api.completeSale({
-        branchId: user.branchId,
-        staffId: user.id,
-        items,
-        total: payload.total,
-        tendered: payload.tendered,
-      })
-      const branchData = await api.bootstrapBranchData(user.branchId)
-      set({
-        transactions: branchData.transactions,
-        movements: branchData.movements,
-        dayEnds: branchData.dayEnds,
-        dayOpenHour: Number(branchData.dayOpenHour ?? 7),
-      })
-      useProductStore.getState().setProducts(branchData.products)
-      return txn
-    }
-    // Offline: deduct stock + record sale movements
+
+    // Local-first: apply sale to IndexedDB + memory, then queue / sync
     const productStore = useProductStore.getState()
     const saleMoves = []
     let nextProducts = productStore.products
     const bizDate = today(get().dayOpenHour)
+    const localId = payload.id || newClientId('txn')
+
     for (const item of items) {
       const product = nextProducts.find((row) => row.id === item.id)
       if (!product) continue
@@ -271,45 +347,142 @@ export const useInventoryStore = create((set, get) => ({
         row.id === item.id ? { ...row, stock, lastMovementAt: bizDate } : row,
       )
       saleMoves.push({
-        id: `${item.id}-${Date.now()}-${sold}`,
+        id: newClientId('move'),
         date: bizDate,
+        createdAt: new Date().toISOString(),
         productId: item.id,
         product: item.name,
         type: 'Sale',
         quantityChange: -sold,
         resultingStock: stock,
+        branchId: user?.branchId,
+        syncStatus: 'pending',
       })
     }
+
+    const localTxn = {
+      ...payload,
+      id: localId,
+      itemsList: items,
+      date: payload.date || bizDate,
+      branchId: user?.branchId,
+      syncStatus: 'pending',
+      createdAt: new Date().toISOString(),
+      cashier: user?.name || payload.cashier || 'Staff',
+    }
+
     productStore.setProducts(nextProducts)
     set((state) => ({
-      transactions: [{ ...payload, itemsList: items, date: payload.date || bizDate }, ...state.transactions],
+      transactions: [localTxn, ...state.transactions],
       movements: [...saleMoves, ...state.movements],
     }))
-    return payload
+
+    if (api.hasSupabase && user?.branchId) {
+      await upsertLocalSale({
+        transaction: localTxn,
+        movements: saleMoves,
+        products: nextProducts.filter((p) => items.some((i) => i.id === p.id)),
+      })
+      await enqueue(
+        QUEUE_TYPES.COMPLETE_SALE,
+        {
+          branchId: user.branchId,
+          staffId: user.id,
+          items,
+          total: payload.total,
+          tendered: payload.tendered,
+          localTransactionId: localId,
+        },
+        { branchId: user.branchId, clientId: localId },
+      )
+      useSyncStore.getState().refresh(user.branchId)
+      if (isOnline()) {
+        const data = await syncBranch(user.branchId)
+        if (data) {
+          set({
+            transactions: data.transactions,
+            movements: data.movements,
+            dayEnds: data.dayEnds,
+            dayOpenHour: Number(data.dayOpenHour ?? 7),
+          })
+          useProductStore.getState().setProducts(data.products)
+        }
+      }
+      return localTxn
+    }
+
+    return localTxn
   },
   voidTransaction: async (id, reason) => {
-    if (api.hasSupabase) await api.voidSale(id, reason)
+    const user = useAuthStore.getState().user
     set((state) => ({
       transactions: state.transactions.map((transaction) =>
         transaction.id === id ? { ...transaction, status: 'Voided', voidReason: reason } : transaction,
       ),
     }))
+    if (api.hasSupabase && user?.branchId) {
+      if (isOnline() && !String(id).startsWith('txn_') && !String(id).startsWith('op_')) {
+        await api.voidSale(id, reason)
+      } else {
+        await enqueue(QUEUE_TYPES.VOID_SALE, { id, reason }, { branchId: user.branchId })
+      }
+      useSyncStore.getState().refresh(user.branchId)
+      if (isOnline()) await syncBranch(user.branchId)
+    }
   },
   addMovement: async (movement) => {
     const user = useAuthStore.getState().user
     if (api.hasSupabase && user?.branchId && movement.action && movement.amount != null) {
-      const mapped = await api.adjustStock({
-        branchId: user.branchId,
-        productId: movement.productId,
-        staffId: user.id,
-        action: movement.action,
-        amount: movement.amount,
-        productName: movement.product,
-      })
-      const branchData = await api.bootstrapBranchData(user.branchId)
-      set({ movements: branchData.movements })
-      useProductStore.getState().setProducts(branchData.products)
-      return mapped
+      if (isOnline()) {
+        const mapped = await api.adjustStock({
+          branchId: user.branchId,
+          productId: movement.productId,
+          staffId: user.id,
+          action: movement.action,
+          amount: movement.amount,
+          productName: movement.product,
+        })
+        const data = await syncBranch(user.branchId)
+        if (data) {
+          set({ movements: data.movements })
+          useProductStore.getState().setProducts(data.products)
+        }
+        return mapped
+      }
+      // Offline adjust: update local stock + queue
+      const productStore = useProductStore.getState()
+      const product = productStore.products.find((p) => p.id === movement.productId)
+      if (product) {
+        const delta = movement.action === 'restock' ? Number(movement.amount) : -Number(movement.amount)
+        const stock = Number((Number(product.stock) + delta).toFixed(2))
+        productStore.setProducts(
+          productStore.products.map((p) => (p.id === movement.productId ? { ...p, stock } : p)),
+        )
+        const localMove = {
+          ...movement,
+          id: newClientId('move'),
+          quantityChange: delta,
+          resultingStock: stock,
+          branchId: user.branchId,
+          syncStatus: 'pending',
+          createdAt: new Date().toISOString(),
+        }
+        set((state) => ({ movements: [localMove, ...state.movements] }))
+        await enqueue(
+          QUEUE_TYPES.ADJUST_STOCK,
+          {
+            branchId: user.branchId,
+            productId: movement.productId,
+            staffId: user.id,
+            action: movement.action,
+            amount: movement.amount,
+            productName: movement.product,
+          },
+          { branchId: user.branchId },
+        )
+        useSyncStore.getState().refresh(user.branchId)
+        return localMove
+      }
     }
     set((state) => ({
       movements: [{ ...movement, id: `${movement.productId}-${Date.now()}` }, ...state.movements],
@@ -319,64 +492,61 @@ export const useInventoryStore = create((set, get) => ({
     const user = useAuthStore.getState().user
     const existing = get().dayEnds.find((item) => item.date === entry.date)
     if (existing?.status === 'closed') return existing
-    if (api.hasSupabase && user?.branchId) {
-      const row = await api.closeDayEnd({
-        branchId: user.branchId,
-        staffId: user.id,
-        entry: { ...entry, id: existing?.id },
-      })
-      const mapped = {
-        id: row.id,
-        date: row.business_date,
-        recordedCash: Number(row.recorded_cash),
-        cashOnHand: Number(row.cash_on_hand),
-        variance: Number(row.variance),
-        note: row.note || '',
-        status: row.status || 'closed',
-        cashier: row.staff?.full_name || user?.name || entry.cashier,
-        closedAt: new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        reopenedAt: null,
-      }
-      set((state) => ({
-        dayEnds: [mapped, ...state.dayEnds.filter((item) => item.id !== mapped.id && item.date !== mapped.date)],
-      }))
-      return mapped
-    }
+
     const mapped = {
       ...entry,
-      id: existing?.id || `day-${entry.date}`,
+      id: existing?.id || newClientId('day'),
       status: 'closed',
       cashier: user?.name || entry.cashier,
       reopenedAt: null,
+      branchId: user?.branchId,
+      syncStatus: api.hasSupabase ? 'pending' : 'local',
     }
     set((state) => ({
       dayEnds: [mapped, ...state.dayEnds.filter((item) => item.date !== entry.date)],
     }))
+
+    if (api.hasSupabase && user?.branchId) {
+      if (isOnline()) {
+        const row = await api.closeDayEnd({
+          branchId: user.branchId,
+          staffId: user.id,
+          entry: { ...entry, id: existing?.id },
+        })
+        const remote = {
+          id: row.id,
+          date: row.business_date,
+          recordedCash: Number(row.recorded_cash),
+          cashOnHand: Number(row.cash_on_hand),
+          variance: Number(row.variance),
+          note: row.note || '',
+          status: row.status || 'closed',
+          cashier: row.staff?.full_name || user?.name || entry.cashier,
+          closedAt: new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          reopenedAt: null,
+          branchId: user.branchId,
+          syncStatus: 'synced',
+        }
+        set((state) => ({
+          dayEnds: [remote, ...state.dayEnds.filter((item) => item.id !== remote.id && item.date !== remote.date)],
+        }))
+        return remote
+      }
+      await enqueue(
+        QUEUE_TYPES.CLOSE_DAY,
+        {
+          branchId: user.branchId,
+          staffId: user.id,
+          entry: { ...entry, id: existing?.id, localId: mapped.id },
+        },
+        { branchId: user.branchId },
+      )
+      useSyncStore.getState().refresh(user.branchId)
+    }
     return mapped
   },
   reopenDay: async (id) => {
     const user = useAuthStore.getState().user
-    if (api.hasSupabase) {
-      const row = await api.reopenDayEnd({ id, staffId: user.id })
-      const mapped = {
-        id: row.id,
-        date: row.business_date,
-        recordedCash: Number(row.recorded_cash),
-        cashOnHand: Number(row.cash_on_hand),
-        variance: Number(row.variance),
-        note: row.note || '',
-        status: 'reopened',
-        cashier: row.staff?.full_name || '',
-        closedAt: new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        reopenedAt: row.reopened_at
-          ? new Date(row.reopened_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          : null,
-      }
-      set((state) => ({
-        dayEnds: state.dayEnds.map((item) => (item.id === id ? mapped : item)),
-      }))
-      return mapped
-    }
     set((state) => ({
       dayEnds: state.dayEnds.map((item) =>
         item.id === id
@@ -388,5 +558,30 @@ export const useInventoryStore = create((set, get) => ({
           : item,
       ),
     }))
+    if (api.hasSupabase && user) {
+      if (isOnline()) {
+        const row = await api.reopenDayEnd({ id, staffId: user.id })
+        const mapped = {
+          id: row.id,
+          date: row.business_date,
+          recordedCash: Number(row.recorded_cash),
+          cashOnHand: Number(row.cash_on_hand),
+          variance: Number(row.variance),
+          note: row.note || '',
+          status: 'reopened',
+          cashier: row.staff?.full_name || '',
+          closedAt: new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          reopenedAt: row.reopened_at
+            ? new Date(row.reopened_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : null,
+        }
+        set((state) => ({
+          dayEnds: state.dayEnds.map((item) => (item.id === id ? mapped : item)),
+        }))
+        return mapped
+      }
+      await enqueue(QUEUE_TYPES.REOPEN_DAY, { id, staffId: user.id }, { branchId: user.branchId })
+      useSyncStore.getState().refresh(user.branchId)
+    }
   },
 }))

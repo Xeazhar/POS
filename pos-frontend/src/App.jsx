@@ -1,10 +1,13 @@
 import { useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import Shell from './components/shared/Shell'
+import { useBranchHeartbeat } from './hooks/useBranchHeartbeat'
 import { hasSupabase } from './lib/api'
+import { startConnectivityWatcher } from './offline'
 import {
   Dashboard,
   DayEnd,
+  Devices,
   Login,
   ManagerBranchDashboard,
   ManagerBranches,
@@ -17,6 +20,7 @@ import {
   Transactions,
 } from './pages'
 import { useAuthStore, useInventoryStore, useProductStore } from './stores/posStore'
+import { bindSyncStore } from './stores/syncStore'
 
 function useIsManager() {
   const role = useAuthStore((state) => state.user?.role)
@@ -46,6 +50,13 @@ function App() {
   const hydrate = useInventoryStore((state) => state.hydrate)
   const loadBranch = useProductStore((state) => state.loadBranch)
 
+  useBranchHeartbeat(user)
+
+  useEffect(() => {
+    bindSyncStore()
+    startConnectivityWatcher()
+  }, [])
+
   useEffect(() => {
     if (!hasSupabase) return
     restoreSession().then(async (sessionUser) => {
@@ -68,6 +79,7 @@ function App() {
             <Route path="/products" element={<Navigate to="/inventory" replace />} />
             <Route path="/inventory/*" element={<StaffOnly><Products /></StaffOnly>} />
             <Route path="/day-end" element={<StaffOnly><DayEnd /></StaffOnly>} />
+            <Route path="/settings/devices" element={<StaffOnly><Devices /></StaffOnly>} />
             <Route path="/manager/branches" element={<ManagerOnly><ManagerBranches /></ManagerOnly>} />
             <Route path="/manager/branches/:branchId" element={<ManagerOnly><ManagerBranchDashboard /></ManagerOnly>} />
             <Route path="/manager/staff" element={<ManagerOnly><ManagerStaff /></ManagerOnly>} />

@@ -405,6 +405,112 @@ export async function fetchBranches() {
   return data || []
 }
 
+/** Seconds without heartbeat before a branch is considered offline. */
+export const BRANCH_ONLINE_WINDOW_SEC = 120
+
+export function isBranchOnline(presence, now = Date.now()) {
+  if (!presence?.last_seen_at) return false
+  const last = new Date(presence.last_seen_at).getTime()
+  if (Number.isNaN(last)) return false
+  return now - last <= BRANCH_ONLINE_WINDOW_SEC * 1000
+}
+
+export async function heartbeatBranch({ branchId, staffId }) {
+  if (!supabase || !branchId) return null
+  const { data, error } = await supabase.rpc('heartbeat_branch', {
+    p_branch_id: branchId,
+    p_staff_id: staffId || null,
+    p_app_version: import.meta.env.VITE_APP_VERSION || 'web',
+    p_user_agent: typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 180) : null,
+  })
+  if (error) {
+    // Table/RPC may not be migrated yet — don't break the POS
+    console.warn('heartbeat_branch', error.message)
+    return null
+  }
+  return data
+}
+
+const DEVICE_KEY_MAP = {
+  'barcode-scanner': 'barcode_scanner',
+  'receipt-printer': 'receipt_printer',
+  'cash-drawer': 'cash_drawer',
+  barcode_scanner: 'barcode_scanner',
+  receipt_printer: 'receipt_printer',
+  cash_drawer: 'cash_drawer',
+}
+
+const DEVICE_LABELS = {
+  barcode_scanner: 'Barcode Scanner',
+  receipt_printer: 'Receipt Printer',
+  cash_drawer: 'Cash Drawer',
+}
+
+export async function reportBranchDevices(branchId, devices) {
+  if (!supabase || !branchId || !devices?.length) return
+  const rows = devices.map((device) => {
+    const key = DEVICE_KEY_MAP[device.id] || DEVICE_KEY_MAP[device.device_key] || device.id
+    return {
+      branch_id: branchId,
+      device_key: key,
+      state: device.state === 'connected' ? 'connected' : device.state || 'disconnected',
+      detail: device.detail || (device.state === 'connected' ? 'Connected' : 'Not Connected'),
+      updated_at: new Date().toISOString(),
+    }
+  })
+  const { error } = await supabase.from('branch_devices').upsert(rows, { onConflict: 'branch_id,device_key' })
+  if (error) console.warn('reportBranchDevices', error.message)
+}
+
+export async function fetchBranchTelemetry(branchIds = []) {
+  if (!supabase) return { presence: {}, devices: {} }
+  const ids = branchIds.filter(Boolean)
+  if (!ids.length) return { presence: {}, devices: {} }
+
+  const [presenceRes, devicesRes] = await Promise.all([
+    supabase.from('branch_presence').select('*').in('branch_id', ids),
+    supabase.from('branch_devices').select('*').in('branch_id', ids),
+  ])
+
+  if (presenceRes.error) console.warn('branch_presence', presenceRes.error.message)
+  if (devicesRes.error) console.warn('branch_devices', devicesRes.error.message)
+
+  const presence = Object.fromEntries((presenceRes.data || []).map((row) => [row.branch_id, row]))
+  const devices = {}
+  for (const row of devicesRes.data || []) {
+    if (!devices[row.branch_id]) devices[row.branch_id] = []
+    devices[row.branch_id].push({
+      key: row.device_key,
+      label: DEVICE_LABELS[row.device_key] || row.device_key,
+      state: row.state,
+      detail: row.detail || '',
+      updatedAt: row.updated_at,
+    })
+  }
+  // Ensure all three slots exist for UI
+  for (const id of ids) {
+    const list = devices[id] || []
+    const byKey = Object.fromEntries(list.map((d) => [d.key, d]))
+    devices[id] = ['barcode_scanner', 'receipt_printer', 'cash_drawer'].map(
+      (key) =>
+        byKey[key] || {
+          key,
+          label: DEVICE_LABELS[key],
+          state: 'disconnected',
+          detail: 'Not Connected',
+          updatedAt: null,
+        },
+    )
+  }
+
+  return { presence, devices }
+}
+
+export function deviceSummary(deviceList = []) {
+  const connected = deviceList.filter((d) => d.state === 'connected').length
+  return { connected, total: deviceList.length || 3 }
+}
+
 export async function fetchRoles() {
   const { data, error } = await supabase.from('roles').select('*').order('sort_order')
   if (error) throw error

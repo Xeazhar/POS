@@ -446,3 +446,24 @@ select 'Bayombong Branch #001', 'Bayombong, Nueva Vizcaya'
 where not exists (select 1 from branches where name = 'Bayombong Branch #001');
 
 insert into categories (name) values ('Meat'), ('Bakery'), ('Groceries') on conflict (name) do nothing;
+
+-- Branch presence / devices (also see migrate_branch_presence.sql)
+create table if not exists branch_presence (
+  branch_id uuid primary key references branches(id) on delete cascade,
+  staff_id uuid references staff(id) on delete set null,
+  last_seen_at timestamptz not null default now(),
+  is_online boolean not null default true,
+  app_version text,
+  user_agent text,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists branch_devices (
+  branch_id uuid not null references branches(id) on delete cascade,
+  device_key text not null check (device_key in ('barcode_scanner', 'receipt_printer', 'cash_drawer')),
+  state text not null default 'disconnected'
+    check (state in ('disconnected', 'connecting', 'connected', 'error')),
+  detail text,
+  updated_at timestamptz not null default now(),
+  primary key (branch_id, device_key)
+);
