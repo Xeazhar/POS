@@ -61,7 +61,7 @@ export async function fetchSessionStaff() {
   if (!auth?.user) return null
   const { data, error } = await supabase
     .from('staff')
-    .select('id, full_name, role, branch_id, is_active, branches(id, name, address, is_active)')
+    .select('id, full_name, role, branch_id, is_active, branches(id, name, address, is_active, day_open_hour)')
     .eq('auth_user_id', auth.user.id)
     .eq('is_active', true)
     .maybeSingle()
@@ -76,6 +76,7 @@ export async function fetchSessionStaff() {
     branchId: data.branch_id,
     branchName: data.branches?.name || 'Branch',
     branchAddress: data.branches?.address || '',
+    dayOpenHour: Number(data.branches?.day_open_hour ?? 7),
   }
 }
 
@@ -90,7 +91,7 @@ export async function signOut() {
 }
 
 export async function bootstrapBranchData(branchId) {
-  const [productsRes, inventoryRes, txRes, moveRes, dayRes, catsRes] = await Promise.all([
+  const [productsRes, inventoryRes, txRes, moveRes, dayRes, catsRes, branchRes] = await Promise.all([
     supabase
       .from('products')
       .select('*, categories(name)')
@@ -110,11 +111,16 @@ export async function bootstrapBranchData(branchId) {
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
       .limit(500),
-    supabase.from('day_ends').select('*, staff(full_name)').eq('branch_id', branchId).order('business_date', { ascending: false }),
+    supabase
+      .from('day_ends')
+      .select('*, staff!staff_id(full_name)')
+      .eq('branch_id', branchId)
+      .order('business_date', { ascending: false }),
     supabase.from('categories').select('*').order('name'),
+    supabase.from('branches').select('id, day_open_hour').eq('id', branchId).maybeSingle(),
   ])
 
-  for (const res of [productsRes, inventoryRes, txRes, moveRes, dayRes, catsRes]) {
+  for (const res of [productsRes, inventoryRes, txRes, moveRes, dayRes, catsRes, branchRes]) {
     if (res.error) throw res.error
   }
 
@@ -148,10 +154,15 @@ export async function bootstrapBranchData(branchId) {
       cashOnHand: Number(row.cash_on_hand),
       variance: Number(row.variance),
       note: row.note || '',
+      status: row.status || 'closed',
       cashier: row.staff?.full_name || '',
       closedAt: new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      reopenedAt: row.reopened_at
+        ? new Date(row.reopened_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : null,
     })),
     categories: catsRes.data || [],
+    dayOpenHour: Number(branchRes.data?.day_open_hour ?? 7),
   }
 }
 
@@ -268,6 +279,9 @@ export async function adjustStock({ branchId, productId, staffId, action, amount
 }
 
 export async function completeSale({ branchId, staffId, items, total, tendered }) {
+  const { error: tillError } = await supabase.rpc('assert_till_open', { p_branch_id: branchId })
+  if (tillError) throw tillError
+
   const { data: txn, error } = await supabase
     .from('transactions')
     .insert({
@@ -342,19 +356,45 @@ export async function voidSale(id, reason) {
 }
 
 export async function closeDayEnd({ branchId, staffId, entry }) {
+  const payload = {
+    branch_id: branchId,
+    staff_id: staffId,
+    business_date: entry.date,
+    recorded_cash: entry.recordedCash,
+    cash_on_hand: entry.cashOnHand,
+    variance: entry.variance,
+    note: entry.note,
+    status: 'closed',
+    closed_at: new Date().toISOString(),
+    reopened_at: null,
+    reopened_by: null,
+  }
+
+  if (entry.id) {
+    const { data, error } = await supabase
+      .from('day_ends')
+      .update(payload)
+      .eq('id', entry.id)
+      .select('*, staff!staff_id(full_name)')
+      .single()
+    if (error) throw error
+    return data
+  }
+
   const { data, error } = await supabase
     .from('day_ends')
-    .insert({
-      branch_id: branchId,
-      staff_id: staffId,
-      business_date: entry.date,
-      recorded_cash: entry.recordedCash,
-      cash_on_hand: entry.cashOnHand,
-      variance: entry.variance,
-      note: entry.note,
-    })
-    .select('*')
+    .insert(payload)
+    .select('*, staff!staff_id(full_name)')
     .single()
+  if (error) throw error
+  return data
+}
+
+export async function reopenDayEnd({ id, staffId }) {
+  const { data, error } = await supabase.rpc('reopen_day_end', {
+    p_day_end_id: id,
+    p_staff_id: staffId,
+  })
   if (error) throw error
   return data
 }
@@ -372,10 +412,18 @@ export async function fetchRoles() {
 }
 
 export async function saveBranch(payload) {
+  const fields = {
+    name: payload.name,
+    address: payload.address,
+    is_active: payload.is_active,
+  }
+  if (payload.day_open_hour != null) {
+    fields.day_open_hour = Math.min(23, Math.max(0, Number(payload.day_open_hour)))
+  }
   if (payload.id) {
     const { data, error } = await supabase
       .from('branches')
-      .update({ name: payload.name, address: payload.address, is_active: payload.is_active })
+      .update(fields)
       .eq('id', payload.id)
       .select('*')
       .single()
@@ -384,7 +432,7 @@ export async function saveBranch(payload) {
   }
   const { data, error } = await supabase
     .from('branches')
-    .insert({ name: payload.name, address: payload.address, is_active: payload.is_active ?? true })
+    .insert({ ...fields, is_active: payload.is_active ?? true })
     .select('*')
     .single()
   if (error) throw error

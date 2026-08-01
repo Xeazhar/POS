@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import * as api from '../lib/api'
-import { today } from '../utils/format'
+import { isTillClosed, today } from '../utils/format'
 
 const seedProducts = [
   { id: 'beef-rump', branchId: 'demo-main-branch', name: 'Beef Rump Steak', sku: 'BEEF-RUMP', barcode: '480100000001', category: 'Meat', pricingMode: 'kg', price: 18.5, stock: 34.6, lowStockAt: 10, createdAt: today(), updatedAt: today(), lastMovementAt: today() },
@@ -34,6 +34,7 @@ export const useAuthStore = create(persist((set, get) => ({
           role: 'admin',
           branchId: 'demo-main-branch',
           branchName: 'Bayombong Branch #001',
+          dayOpenHour: 7,
         }
         set({ user, booting: false })
         return user
@@ -225,14 +226,19 @@ export const useInventoryStore = create((set, get) => ({
   transactions: offlineDemo ? seedTransactions : [],
   movements: [],
   dayEnds: [],
+  dayOpenHour: 7,
   hydrate: (data) => set({
     transactions: data.transactions,
     movements: data.movements,
     dayEnds: data.dayEnds,
+    dayOpenHour: Number(data.dayOpenHour ?? 7),
   }),
   addTransaction: async (payload) => {
     const user = useAuthStore.getState().user
     const items = payload.itemsList || []
+    if (isTillClosed(get().dayEnds, get().dayOpenHour)) {
+      throw new Error('Till is closed for this business day. Ask a manager to reopen.')
+    }
     if (api.hasSupabase && user?.branchId) {
       const txn = await api.completeSale({
         branchId: user.branchId,
@@ -246,6 +252,7 @@ export const useInventoryStore = create((set, get) => ({
         transactions: branchData.transactions,
         movements: branchData.movements,
         dayEnds: branchData.dayEnds,
+        dayOpenHour: Number(branchData.dayOpenHour ?? 7),
       })
       useProductStore.getState().setProducts(branchData.products)
       return txn
@@ -254,17 +261,18 @@ export const useInventoryStore = create((set, get) => ({
     const productStore = useProductStore.getState()
     const saleMoves = []
     let nextProducts = productStore.products
+    const bizDate = today(get().dayOpenHour)
     for (const item of items) {
       const product = nextProducts.find((row) => row.id === item.id)
       if (!product) continue
       const sold = item.pricingMode === 'kg' ? item.weight : item.quantity
       const stock = Number((Number(product.stock) - sold).toFixed(2))
       nextProducts = nextProducts.map((row) =>
-        row.id === item.id ? { ...row, stock, lastMovementAt: today() } : row,
+        row.id === item.id ? { ...row, stock, lastMovementAt: bizDate } : row,
       )
       saleMoves.push({
         id: `${item.id}-${Date.now()}-${sold}`,
-        date: today(),
+        date: bizDate,
         productId: item.id,
         product: item.name,
         type: 'Sale',
@@ -274,7 +282,7 @@ export const useInventoryStore = create((set, get) => ({
     }
     productStore.setProducts(nextProducts)
     set((state) => ({
-      transactions: [{ ...payload, itemsList: items }, ...state.transactions],
+      transactions: [{ ...payload, itemsList: items, date: payload.date || bizDate }, ...state.transactions],
       movements: [...saleMoves, ...state.movements],
     }))
     return payload
@@ -309,12 +317,76 @@ export const useInventoryStore = create((set, get) => ({
   },
   closeDay: async (entry) => {
     const user = useAuthStore.getState().user
-    if (get().dayEnds.some((item) => item.date === entry.date)) return
+    const existing = get().dayEnds.find((item) => item.date === entry.date)
+    if (existing?.status === 'closed') return existing
     if (api.hasSupabase && user?.branchId) {
-      await api.closeDayEnd({ branchId: user.branchId, staffId: user.id, entry })
+      const row = await api.closeDayEnd({
+        branchId: user.branchId,
+        staffId: user.id,
+        entry: { ...entry, id: existing?.id },
+      })
+      const mapped = {
+        id: row.id,
+        date: row.business_date,
+        recordedCash: Number(row.recorded_cash),
+        cashOnHand: Number(row.cash_on_hand),
+        variance: Number(row.variance),
+        note: row.note || '',
+        status: row.status || 'closed',
+        cashier: row.staff?.full_name || user?.name || entry.cashier,
+        closedAt: new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        reopenedAt: null,
+      }
+      set((state) => ({
+        dayEnds: [mapped, ...state.dayEnds.filter((item) => item.id !== mapped.id && item.date !== mapped.date)],
+      }))
+      return mapped
+    }
+    const mapped = {
+      ...entry,
+      id: existing?.id || `day-${entry.date}`,
+      status: 'closed',
+      cashier: user?.name || entry.cashier,
+      reopenedAt: null,
     }
     set((state) => ({
-      dayEnds: [{ ...entry, id: `day-${entry.date}`, cashier: user?.name || entry.cashier }, ...state.dayEnds],
+      dayEnds: [mapped, ...state.dayEnds.filter((item) => item.date !== entry.date)],
+    }))
+    return mapped
+  },
+  reopenDay: async (id) => {
+    const user = useAuthStore.getState().user
+    if (api.hasSupabase) {
+      const row = await api.reopenDayEnd({ id, staffId: user.id })
+      const mapped = {
+        id: row.id,
+        date: row.business_date,
+        recordedCash: Number(row.recorded_cash),
+        cashOnHand: Number(row.cash_on_hand),
+        variance: Number(row.variance),
+        note: row.note || '',
+        status: 'reopened',
+        cashier: row.staff?.full_name || '',
+        closedAt: new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        reopenedAt: row.reopened_at
+          ? new Date(row.reopened_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : null,
+      }
+      set((state) => ({
+        dayEnds: state.dayEnds.map((item) => (item.id === id ? mapped : item)),
+      }))
+      return mapped
+    }
+    set((state) => ({
+      dayEnds: state.dayEnds.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              status: 'reopened',
+              reopenedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            }
+          : item,
+      ),
     }))
   },
 }))

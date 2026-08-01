@@ -1,19 +1,22 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Field, PageHeader, PrimaryButton, SecondaryButton, TableCard } from '../../components/ui'
-import { bootstrapBranchData, fetchBranches, hasSupabase, saveBranch } from '../../lib/api'
-import { money, qty } from '../../utils/format'
+import { bootstrapBranchData, fetchBranches, hasSupabase, reopenDayEnd, saveBranch } from '../../lib/api'
+import { useAuthStore } from '../../stores/posStore'
+import { businessDate, formatOpenHourLabel, money, qty } from '../../utils/format'
 
 const PAGE_SIZE = 10
 
 function ManagerBranchDashboard() {
   const { branchId } = useParams()
+  const user = useAuthStore((state) => state.user)
   const [branch, setBranch] = useState(null)
   const [data, setData] = useState({ products: [], transactions: [], movements: [], dayEnds: [] })
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
   const [invPage, setInvPage] = useState(0)
+  const [reopening, setReopening] = useState(null)
 
   useEffect(() => {
     let active = true
@@ -22,8 +25,8 @@ function ManagerBranchDashboard() {
       .then(async () => {
         if (!hasSupabase) {
           if (!active) return
-          setBranch({ id: branchId, name: 'Bayombong Branch #001', address: 'Bayombong', is_active: true })
-          setData({ products: [], transactions: [], movements: [], dayEnds: [] })
+          setBranch({ id: branchId, name: 'Bayombong Branch #001', address: 'Bayombong', is_active: true, day_open_hour: 7 })
+          setData({ products: [], transactions: [], movements: [], dayEnds: [], dayOpenHour: 7 })
           return
         }
         const branches = await fetchBranches()
@@ -47,7 +50,8 @@ function ManagerBranchDashboard() {
     setData(await bootstrapBranchData(branchId))
   }
 
-  const todayKey = new Date().toISOString().slice(0, 10)
+  const openHour = Number(branch?.day_open_hour ?? 7)
+  const todayKey = businessDate(new Date(), openHour)
   const todayTx = data.transactions.filter((item) => item.status === 'Paid' && item.date === todayKey)
   const revenue = todayTx.reduce((sum, item) => sum + item.total, 0)
   const low = data.products.filter((product) => product.stock <= product.lowStockAt)
@@ -58,6 +62,20 @@ function ManagerBranchDashboard() {
         sum + Math.abs(item.quantityChange) * (data.products.find((p) => p.id === item.productId)?.price || 0),
       0,
     )
+  const closedToday = (data.dayEnds || []).find((entry) => entry.date === todayKey && entry.status === 'closed')
+
+  const handleReopen = async (entry) => {
+    setReopening(entry.id)
+    setError('')
+    try {
+      await reopenDayEnd({ id: entry.id, staffId: user.id })
+      await reload()
+    } catch (err) {
+      setError(err.message || 'Could not reopen till')
+    } finally {
+      setReopening(null)
+    }
+  }
 
   const invPages = Math.max(1, Math.ceil(data.products.length / PAGE_SIZE))
   const pageIndex = Math.min(invPage, invPages - 1)
@@ -121,15 +139,25 @@ function ManagerBranchDashboard() {
             <h2 className="m-0 text-base">Day ends</h2>
             <span className="text-[11px] text-brand-subtle">{(data.dayEnds || []).length} recorded</span>
           </div>
-          <div className="grid grid-cols-[0.9fr_0.7fr_0.7fr_0.7fr_1.2fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
+          {closedToday && (
+            <div className="mx-4 mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-3 py-2.5 text-xs text-brand-warn">
+              <span>Business day {todayKey} is closed — POS sales locked for this branch.</span>
+              <PrimaryButton compact type="button" disabled={reopening === closedToday.id} onClick={() => handleReopen(closedToday)}>
+                {reopening === closedToday.id ? 'Reopening…' : 'Reopen till'}
+              </PrimaryButton>
+            </div>
+          )}
+          <div className="grid grid-cols-[0.85fr_0.65fr_0.65fr_0.65fr_0.7fr_1fr_auto] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[900px]:grid-cols-[1fr_0.8fr_0.8fr]">
             <span>Date</span>
             <span>Expected</span>
             <span>Counted</span>
             <span>Variance</span>
-            <span>Note</span>
+            <span className="max-[900px]:hidden">Status</span>
+            <span className="max-[900px]:hidden">Note</span>
+            <span />
           </div>
           {(data.dayEnds || []).slice(0, 8).map((entry) => (
-            <div key={entry.id} className="grid grid-cols-[0.9fr_0.7fr_0.7fr_0.7fr_1.2fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs">
+            <div key={entry.id} className="grid grid-cols-[0.85fr_0.65fr_0.65fr_0.65fr_0.7fr_1fr_auto] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[1fr_0.8fr_0.8fr]">
               <div>
                 <strong className="block text-brand-ink">{entry.date}</strong>
                 <small className="text-[10px] text-brand-subtle">
@@ -142,8 +170,21 @@ function ManagerBranchDashboard() {
               <span className={Number(entry.variance) === 0 ? 'text-brand-success' : 'text-brand-danger'}>
                 {money(entry.variance)}
               </span>
-              <span className="truncate text-brand-slate" title={entry.note || ''}>
+              <span className="capitalize max-[900px]:hidden">{entry.status || 'closed'}</span>
+              <span className="truncate text-brand-slate max-[900px]:hidden" title={entry.note || ''}>
                 {entry.note || '—'}
+              </span>
+              <span className="text-right">
+                {entry.status === 'closed' && (
+                  <button
+                    type="button"
+                    className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline disabled:opacity-40"
+                    disabled={reopening === entry.id}
+                    onClick={() => handleReopen(entry)}
+                  >
+                    Reopen
+                  </button>
+                )}
               </span>
             </div>
           ))}
@@ -211,8 +252,14 @@ function ManagerBranchDashboard() {
             onSubmit={async (event) => {
               event.preventDefault()
               try {
-                await saveBranch(form)
+                const saved = await saveBranch(form)
                 setEditing(false)
+                setBranch(saved)
+                if (user?.branchId === saved.id) {
+                  useAuthStore.setState({
+                    user: { ...user, dayOpenHour: Number(saved.day_open_hour ?? 7) },
+                  })
+                }
                 await reload()
               } catch (err) {
                 setError(err.message)
@@ -223,6 +270,24 @@ function ManagerBranchDashboard() {
             <div className="grid gap-3">
               <Field label="Branch name" required value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} />
               <Field label="Address" value={form.address || ''} onChange={(e) => setForm({ ...form, address: e.target.value })} />
+              <label className="grid gap-1.5 text-xs font-bold text-[#646a66]">
+                Day opens at
+                <select
+                  className="h-10 rounded-md border border-brand-line bg-white px-3 text-sm font-medium text-brand-ink"
+                  value={form.day_open_hour ?? 7}
+                  onChange={(e) => setForm({ ...form, day_open_hour: Number(e.target.value) })}
+                >
+                  {Array.from({ length: 12 }, (_, i) => i + 4).map((hour) => (
+                    <option key={hour} value={hour}>
+                      {formatOpenHourLabel(hour)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="text-[11px] text-brand-muted">
+                After day end, POS stays locked until a manager reopens, or until this time starts the next
+                business day (Asia/Manila).
+              </p>
               <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
                 <input
                   type="checkbox"

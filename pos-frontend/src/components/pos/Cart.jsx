@@ -6,9 +6,10 @@ import { useCartStore, useInventoryStore } from '../../stores/posStore'
 import { money, qty, today } from '../../utils/format'
 import CashConfirm from './CashConfirm'
 
-function Cart() {
+function Cart({ tillClosed = false }) {
   const { items, removeItem, clear, total } = useCartStore()
   const addTransaction = useInventoryStore((state) => state.addTransaction)
+  const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const [tendered, setTendered] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState('')
@@ -16,6 +17,11 @@ function Cart() {
   const subtotal = total()
 
   const complete = async () => {
+    if (tillClosed) {
+      setError('Till is closed. Ask a manager to reopen.')
+      setConfirming(false)
+      return
+    }
     setError('')
     try {
       await addTransaction({
@@ -27,7 +33,7 @@ function Cart() {
         status: 'Paid',
         items: items.length,
         itemsList: items,
-        date: today(),
+        date: today(dayOpenHour),
       })
       clear()
       setTendered('')
@@ -65,6 +71,9 @@ function Cart() {
           <span className="text-xs text-[#797e7b]">{items.length} items</span>
         </div>
         {error && <p className="mt-2 text-xs text-[#ffb4b4]">{error}</p>}
+        {tillClosed && (
+          <p className="mt-2 text-xs text-[#ffb4b4]">Till closed — sales unavailable until a manager reopens.</p>
+        )}
         <div className="min-h-0 flex-1 overflow-auto max-[1050px]:min-h-[170px]">
           {items.length ? (
             Object.values(groups).flatMap((group) => [
@@ -128,7 +137,7 @@ function Cart() {
             <strong>{money(Math.max(0, Number(tendered || 0) - subtotal))}</strong>
           </div>
           <PrimaryButton
-            disabled={!items.length || Number(tendered) < subtotal}
+            disabled={tillClosed || !items.length || Number(tendered) < subtotal}
             onClick={() => setConfirming(true)}
           >
             Pay cash <span>→</span>

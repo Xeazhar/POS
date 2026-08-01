@@ -3,15 +3,19 @@ import { FiSearch } from 'react-icons/fi'
 import Cart from '../components/pos/Cart'
 import WeightModal from '../components/pos/WeightModal'
 import { PageHeader, SearchBox } from '../components/ui'
-import { useCartStore, useProductStore } from '../stores/posStore'
-import { money } from '../utils/format'
+import { useCartStore, useInventoryStore, useProductStore } from '../stores/posStore'
+import { businessDate, formatOpenHourLabel, isTillClosed, money } from '../utils/format'
 
 function POS() {
   const products = useProductStore((state) => state.products)
+  const dayEnds = useInventoryStore((state) => state.dayEnds)
+  const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const addItem = useCartStore((state) => state.addItem)
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('All')
   const [weighted, setWeighted] = useState(null)
+  const tillClosed = isTillClosed(dayEnds, dayOpenHour)
+  const bizDate = businessDate(new Date(), dayOpenHour)
   const categories = ['All', ...new Set(products.map((product) => product.category))]
   const visible = products.filter(
     (product) =>
@@ -21,20 +25,33 @@ function POS() {
       ),
   )
 
-  const select = (product) => (product.pricingMode === 'kg' ? setWeighted(product) : addItem(product))
+  const select = (product) => {
+    if (tillClosed) return
+    if (product.pricingMode === 'kg') setWeighted(product)
+    else addItem(product)
+  }
 
   return (
     <div>
       <PageHeader eyebrow="SALES FLOOR" title="New sale">
-        <span className="text-xs font-bold text-brand-success">● Till online</span>
+        <span className={`text-xs font-bold ${tillClosed ? 'text-brand-danger' : 'text-brand-success'}`}>
+          ● {tillClosed ? 'Till closed' : 'Till online'}
+        </span>
       </PageHeader>
+      {tillClosed && (
+        <p className="mb-3 rounded-md bg-brand-danger-bg px-3 py-2.5 text-xs text-brand-danger">
+          Business day {bizDate} is closed. Sales are locked until a manager reopens the till,
+          or automatically at {formatOpenHourLabel(dayOpenHour)} for the next business day.
+        </p>
+      )}
       <div className="grid grid-cols-[minmax(0,1fr)_360px] gap-6 max-[1050px]:grid-cols-1 max-[1050px]:gap-4">
-        <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[10px] border border-brand-line bg-white p-[18px] max-[700px]:p-3.5 max-[1050px]:min-h-[390px]">
+        <div className={`flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[10px] border border-brand-line bg-white p-[18px] max-[700px]:p-3.5 max-[1050px]:min-h-[390px] ${tillClosed ? 'opacity-60' : ''}`}>
           <div className="mb-3.5 flex min-w-0 flex-col gap-3">
             <SearchBox
               className="w-full min-w-0"
               icon={<FiSearch />}
-              autoFocus
+              autoFocus={!tillClosed}
+              disabled={tillClosed}
               placeholder="Search, scan barcode or enter SKU"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -47,7 +64,8 @@ function POS() {
                 <button
                   key={item}
                   type="button"
-                  className={`shrink-0 rounded-[5px] border px-[11px] py-2 text-xs whitespace-nowrap ${
+                  disabled={tillClosed}
+                  className={`shrink-0 rounded-[5px] border px-[11px] py-2 text-xs whitespace-nowrap disabled:cursor-not-allowed ${
                     category === item
                       ? 'border-brand-dark bg-brand-dark text-white'
                       : 'border-brand-border bg-white text-[#606662]'
@@ -64,7 +82,8 @@ function POS() {
               <button
                 key={product.id}
                 type="button"
-                className="flex min-h-[124px] flex-col items-start rounded-[7px] border border-[#e8e9e3] bg-[#fbfbf9] p-[11px] text-left transition-[border-color,transform] duration-150 hover:-translate-y-0.5 hover:border-brand-gold"
+                disabled={tillClosed}
+                className="flex min-h-[124px] flex-col items-start rounded-[7px] border border-[#e8e9e3] bg-[#fbfbf9] p-[11px] text-left transition-[border-color,transform] duration-150 hover:-translate-y-0.5 hover:border-brand-gold disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:border-[#e8e9e3]"
                 onClick={() => select(product)}
               >
                 <div
@@ -87,9 +106,9 @@ function POS() {
             )}
           </div>
         </div>
-        <Cart />
+        <Cart tillClosed={tillClosed} />
       </div>
-      {weighted && (
+      {weighted && !tillClosed && (
         <WeightModal
           product={weighted}
           close={() => setWeighted(null)}
