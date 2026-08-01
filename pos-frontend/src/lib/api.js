@@ -26,6 +26,22 @@ export function mapProduct(row, stock = 0, meta = {}) {
   }
 }
 
+/** Resolve staff full names without embedding (avoids multi-FK PostgREST ambiguity). */
+async function staffNameById(ids) {
+  const unique = [...new Set((ids || []).filter(Boolean))]
+  if (!unique.length || !supabase) return {}
+  const { data, error } = await supabase.from('staff').select('id, full_name').in('id', unique)
+  if (error) throw error
+  return Object.fromEntries((data || []).map((row) => [row.id, row.full_name]))
+}
+
+function withCashierName(row, names) {
+  if (!row) return row
+  const name = names?.[row.staff_id]
+  if (!name) return row
+  return { ...row, staff: { full_name: name } }
+}
+
 export function mapTransaction(row) {
   const created = new Date(row.created_at)
   const createdAt = Number.isNaN(created.getTime()) ? row.created_at || null : created.toISOString()
@@ -120,7 +136,7 @@ export async function bootstrapBranchData(branchId) {
     supabase.from('branch_inventory').select('*').eq('branch_id', branchId),
     supabase
       .from('transactions')
-      .select('*, staff!transactions_staff_id_fkey(full_name), transaction_items(id)')
+      .select('*, transaction_items(id)')
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
       .limit(200),
@@ -143,6 +159,8 @@ export async function bootstrapBranchData(branchId) {
     if (res.error) throw res.error
   }
 
+  const staffNames = await staffNameById((txRes.data || []).map((row) => row.staff_id))
+
   const stockMap = Object.fromEntries(
     (inventoryRes.data || []).map((row) => [
       row.product_id,
@@ -164,7 +182,7 @@ export async function bootstrapBranchData(branchId) {
         lastMovementAt: lastMoveMap[row.id] || null,
       }),
     ),
-    transactions: (txRes.data || []).map(mapTransaction),
+    transactions: (txRes.data || []).map((row) => mapTransaction(withCashierName(row, staffNames))),
     movements: (moveRes.data || []).map(mapMovement),
     dayEnds: (dayRes.data || []).map((row) => ({
       id: row.id,
@@ -381,7 +399,7 @@ export async function completeSale({ branchId, staffId, items, total, tendered, 
   const { data: txn, error } = await supabase
     .from('transactions')
     .insert(insertRow)
-    .select('*, staff!transactions_staff_id_fkey(full_name)')
+    .select('*')
     .single()
   if (error) throw error
 
@@ -422,21 +440,24 @@ export async function completeSale({ branchId, staffId, items, total, tendered, 
     if (eventError) console.warn('sale_events insert skipped:', eventError.message)
   })
 
-  return mapTransaction({ ...txn, transaction_items: lines })
+  const staffNames = await staffNameById([staffId])
+  return mapTransaction(withCashierName({ ...txn, transaction_items: lines }, staffNames))
 }
 
 export async function fetchTransactionDetail(id) {
   const { data, error } = await supabase
     .from('transactions')
     .select(
-      '*, staff!transactions_staff_id_fkey(full_name), transaction_items(id, quantity, unit_price, line_total, products(id, name, sku, pricing_mode))',
+      '*, transaction_items(id, quantity, unit_price, line_total, products(id, name, sku, pricing_mode))',
     )
     .eq('id', id)
     .single()
   if (error) throw error
+  const staffNames = await staffNameById([data.staff_id])
+  const row = withCashierName(data, staffNames)
   return {
-    ...mapTransaction({ ...data, transaction_items: data.transaction_items || [] }),
-    lines: (data.transaction_items || []).map((line) => ({
+    ...mapTransaction({ ...row, transaction_items: row.transaction_items || [] }),
+    lines: (row.transaction_items || []).map((line) => ({
       id: line.id,
       name: line.products?.name || 'Product',
       sku: line.products?.sku || '',
@@ -807,7 +828,7 @@ export async function fetchReportSalesDetail({ start, end, branchId, includeVoid
   let query = supabase
     .from('transaction_items')
     .select(
-      '*, products(name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, staff!transactions_staff_id_fkey(full_name), amount_tendered, total_amount)',
+      '*, products(name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount)',
     )
     .gte('transactions.created_at', `${start}T00:00:00`)
     .lte('transactions.created_at', `${end}T23:59:59`)
@@ -815,7 +836,12 @@ export async function fetchReportSalesDetail({ start, end, branchId, includeVoid
   if (branchId) query = query.eq('transactions.branch_id', branchId)
   const { data, error } = await query
   if (error) throw error
-  return data || []
+  const rows = data || []
+  const staffNames = await staffNameById(rows.map((row) => row.transactions?.staff_id))
+  return rows.map((row) => ({
+    ...row,
+    transactions: withCashierName(row.transactions, staffNames),
+  }))
 }
 
 export async function logAuditEvent({ branchId, staffId, eventType, detail, meta = {} }) {
@@ -869,7 +895,7 @@ export async function fetchSaleEvents({ start, end, branchId, eventType, limit =
 export async function fetchDailyReading({ date, branchId }) {
   let query = supabase
     .from('transactions')
-    .select('id, or_number, status, total_amount, void_reason, created_at, staff!transactions_staff_id_fkey(full_name)')
+    .select('id, or_number, status, total_amount, void_reason, created_at, staff_id')
     .gte('created_at', `${date}T00:00:00`)
     .lte('created_at', `${date}T23:59:59`)
     .order('created_at', { ascending: true })
@@ -877,6 +903,7 @@ export async function fetchDailyReading({ date, branchId }) {
   const { data, error } = await query
   if (error) throw error
   const rows = data || []
+  const staffNames = await staffNameById(rows.map((r) => r.staff_id))
   const completed = rows.filter((r) => r.status === 'completed')
   const voided = rows.filter((r) => r.status === 'voided')
   const salesTotal = completed.reduce((sum, r) => sum + Number(r.total_amount), 0)
@@ -896,7 +923,7 @@ export async function fetchDailyReading({ date, branchId }) {
       or_number: r.or_number,
       status: r.status,
       total: Number(r.total_amount),
-      cashier: r.staff?.full_name,
+      cashier: staffNames[r.staff_id] || null,
       time: r.created_at,
       void_reason: r.void_reason,
     })),
@@ -907,13 +934,16 @@ export async function fetchDailyReading({ date, branchId }) {
 export async function fetchFiscalBackup({ start, end, branchId }) {
   let txnQuery = supabase
     .from('transactions')
-    .select('*, staff!transactions_staff_id_fkey(full_name), transaction_items(*, products(name, sku))')
+    .select('*, transaction_items(*, products(name, sku))')
     .gte('created_at', `${start}T00:00:00`)
     .lte('created_at', `${end}T23:59:59`)
     .order('created_at', { ascending: true })
   if (branchId) txnQuery = txnQuery.eq('branch_id', branchId)
   const { data: transactions, error: txnError } = await txnQuery
   if (txnError) throw txnError
+
+  const staffNames = await staffNameById((transactions || []).map((row) => row.staff_id))
+  const txnsWithStaff = (transactions || []).map((row) => withCashierName(row, staffNames))
 
   let dayQuery = supabase
     .from('day_ends')
@@ -932,7 +962,7 @@ export async function fetchFiscalBackup({ start, end, branchId }) {
   return {
     exportedAt: new Date().toISOString(),
     range: { start, end, branchId: branchId || null },
-    transactions: transactions || [],
+    transactions: txnsWithStaff,
     saleEvents: events,
     auditEvents: audits,
     dayEnds: dayEnds || [],
