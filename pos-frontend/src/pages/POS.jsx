@@ -33,11 +33,7 @@ function POS() {
 
   return (
     <div>
-      <PageHeader eyebrow="SALES FLOOR" title="New sale">
-        <span className={`text-xs font-bold ${tillClosed ? 'text-brand-danger' : 'text-brand-success'}`}>
-          ● {tillClosed ? 'Till closed' : 'Till online'}
-        </span>
-      </PageHeader>
+      <PageHeader eyebrow="SALES FLOOR" title="New sale" />
       {tillClosed && (
         <p className="mb-3 rounded-md bg-brand-danger-bg px-3 py-2.5 text-xs text-brand-danger">
           Business day {bizDate} is closed. Sales are locked until a manager reopens the till,
@@ -77,17 +73,17 @@ function POS() {
               ))}
             </div>
           </div>
-          <div className="grid min-h-0 flex-1 grid-cols-[repeat(auto-fill,minmax(132px,1fr))] content-start gap-2.5 overflow-auto pr-1 max-[700px]:grid-cols-[repeat(auto-fill,minmax(118px,1fr))] max-[1050px]:max-h-[52vh]">
+          <div className="grid min-h-0 flex-1 grid-cols-5 content-start gap-3 overflow-auto px-0.5 pt-1.5 pb-1 pr-1 max-[1050px]:grid-cols-3 max-[1050px]:max-h-[52vh] max-[700px]:grid-cols-2">
             {visible.map((product) => (
               <button
                 key={product.id}
                 type="button"
                 disabled={tillClosed}
-                className="flex min-h-[124px] flex-col items-start rounded-[7px] border border-[#e8e9e3] bg-[#fbfbf9] p-[11px] text-left transition-[border-color,transform] duration-150 hover:-translate-y-0.5 hover:border-brand-gold disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:border-[#e8e9e3]"
+                className="flex min-h-[168px] flex-col items-start rounded-[8px] border border-[#e8e9e3] bg-[#fbfbf9] p-4 text-left transition-[border-color,box-shadow] duration-150 hover:border-brand-gold hover:shadow-[0_2px_8px_#00000012] disabled:cursor-not-allowed disabled:hover:border-[#e8e9e3] disabled:hover:shadow-none"
                 onClick={() => select(product)}
               >
                 <div
-                  className={`grid h-12 w-12 place-items-center rounded-lg text-[11px] font-bold ${
+                  className={`grid h-14 w-14 place-items-center rounded-lg text-xs font-bold ${
                     product.category === 'Meat'
                       ? 'bg-brand-meat text-brand-meat-text'
                       : 'bg-brand-success-bg text-brand-success-text'
@@ -95,8 +91,8 @@ function POS() {
                 >
                   {product.category === 'Meat' ? 'KG' : 'PC'}
                 </div>
-                <strong className="mt-auto line-clamp-2 text-[13px]">{product.name}</strong>
-                <span className="mt-[5px] text-[11px] text-[#808581]">
+                <strong className="mt-auto line-clamp-2 text-[15px] leading-snug">{product.name}</strong>
+                <span className="mt-1.5 text-[12px] text-[#808581]">
                   {money(product.price)} / {product.pricingMode === 'kg' ? 'kg' : 'pc'}
                 </span>
               </button>
