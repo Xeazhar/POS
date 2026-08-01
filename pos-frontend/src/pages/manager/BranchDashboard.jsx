@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Field, PageHeader, PrimaryButton, SecondaryButton, TableCard } from '../../components/ui'
-import { bootstrapBranchData, fetchBranchTelemetry, fetchBranches, hasSupabase, isBranchOnline, reopenDayEnd, saveBranch } from '../../lib/api'
+import { bootstrapBranchData, fetchBranchTelemetry, fetchBranches, hasSupabase, reopenDayEnd, saveBranch } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
 import { businessDate, formatOpenHourLabel, money, qty } from '../../utils/format'
 
@@ -17,7 +17,7 @@ function ManagerBranchDashboard() {
   const [error, setError] = useState('')
   const [invPage, setInvPage] = useState(0)
   const [reopening, setReopening] = useState(null)
-  const [telemetry, setTelemetry] = useState({ presence: null, devices: [] })
+  const [telemetry, setTelemetry] = useState({ devices: [] })
 
   useEffect(() => {
     let active = true
@@ -28,7 +28,7 @@ function ManagerBranchDashboard() {
           if (!active) return
           setBranch({ id: branchId, name: 'Bayombong Branch #001', address: 'Bayombong', is_active: true, day_open_hour: 7 })
           setData({ products: [], transactions: [], movements: [], dayEnds: [], dayOpenHour: 7 })
-          setTelemetry({ presence: null, devices: [] })
+          setTelemetry({ devices: [] })
           return
         }
         const branches = await fetchBranches()
@@ -38,10 +38,7 @@ function ManagerBranchDashboard() {
         const tel = await fetchBranchTelemetry([branchId])
         if (active) {
           setData(payload)
-          setTelemetry({
-            presence: tel.presence[branchId] || null,
-            devices: tel.devices[branchId] || [],
-          })
+          setTelemetry({ devices: tel.devices[branchId] || [] })
         }
       })
       .catch((err) => {
@@ -53,10 +50,7 @@ function ManagerBranchDashboard() {
       fetchBranchTelemetry([branchId])
         .then((tel) => {
           if (!active) return
-          setTelemetry({
-            presence: tel.presence[branchId] || null,
-            devices: tel.devices[branchId] || [],
-          })
+          setTelemetry({ devices: tel.devices[branchId] || [] })
         })
         .catch(() => {})
     }, 30_000)
@@ -87,15 +81,6 @@ function ManagerBranchDashboard() {
       0,
     )
   const closedToday = (data.dayEnds || []).find((entry) => entry.date === todayKey && entry.status === 'closed')
-  const branchOnline = isBranchOnline(telemetry.presence)
-  const lastSeen = telemetry.presence?.last_seen_at
-    ? new Date(telemetry.presence.last_seen_at).toLocaleString([], {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    : 'Never'
 
   const handleReopen = async (entry) => {
     setReopening(entry.id)
@@ -118,14 +103,6 @@ function ManagerBranchDashboard() {
     <div>
       <PageHeader eyebrow="BRANCH" title={branch?.name || 'Branch'}>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <span
-            className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${
-              branchOnline ? 'bg-[#e7f3ea] text-[#2f6b3c]' : 'bg-[#f5e8e4] text-[#a14b3a]'
-            }`}
-            title={`Last seen ${lastSeen}`}
-          >
-            {branchOnline ? '● Till online' : '○ Till offline'}
-          </span>
           <SecondaryButton compact type="button" onClick={() => { setForm(branch); setEditing(true) }}>
             Branch settings
           </SecondaryButton>
@@ -137,14 +114,11 @@ function ManagerBranchDashboard() {
       {error && <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>}
 
       <TableCard className="mb-4 max-h-none">
-        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-          <div>
-            <h2 className="m-0 text-base">Devices &amp; connectivity</h2>
-            <p className="m-0 mt-0.5 text-[11px] text-brand-subtle">Last heartbeat {lastSeen}</p>
-          </div>
-          <span className={`text-xs font-bold ${branchOnline ? 'text-[#2f6b3c]' : 'text-[#a14b3a]'}`}>
-            {branchOnline ? 'Network online' : 'Network offline'}
-          </span>
+        <div className="px-4 py-3">
+          <h2 className="m-0 text-base">Devices</h2>
+          <p className="m-0 mt-0.5 text-[11px] text-brand-subtle">
+            Hardware status for this branch till (not network online/offline)
+          </p>
         </div>
         <div className="grid grid-cols-3 gap-0 border-t border-brand-softline max-[700px]:grid-cols-1">
           {(telemetry.devices.length
@@ -155,7 +129,10 @@ function ManagerBranchDashboard() {
                 { key: 'cash_drawer', label: 'Cash Drawer', state: 'disconnected', detail: 'Not Connected' },
               ]
           ).map((device) => (
-            <div key={device.key} className="border-t border-brand-softline px-4 py-3 max-[700px]:border-t min-[701px]:border-t-0 min-[701px]:border-l min-[701px]:first:border-l-0">
+            <div
+              key={device.key}
+              className="border-t border-brand-softline px-4 py-3 max-[700px]:border-t min-[701px]:border-t-0 min-[701px]:border-l min-[701px]:first:border-l-0"
+            >
               <strong className="block text-xs text-brand-ink">{device.label}</strong>
               <span
                 className={`mt-1 inline-block text-[11px] font-bold ${
@@ -189,16 +166,21 @@ function ManagerBranchDashboard() {
             <h2 className="m-0 text-base">Recent transactions</h2>
             <span className="text-[11px] text-brand-subtle">{data.transactions.length} total</span>
           </div>
-          <div className="grid grid-cols-[1.1fr_1fr_0.7fr_0.7fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
+          <div className="grid grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]">
+            <span>Date</span>
             <span>Order</span>
-            <span>Cashier</span>
+            <span className="max-[900px]:hidden">Cashier</span>
             <span>Total</span>
             <span>Status</span>
           </div>
           {data.transactions.slice(0, 8).map((item) => (
-            <div key={item.id} className="grid grid-cols-[1.1fr_1fr_0.7fr_0.7fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs">
+            <div
+              key={item.id}
+              className="grid grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]"
+            >
+              <span className="text-[11px] text-brand-slate">{item.time || item.date || '—'}</span>
               <strong className="truncate text-brand-ink">{item.id.slice(0, 8)}</strong>
-              <span className="truncate">{item.cashier}</span>
+              <span className="truncate max-[900px]:hidden">{item.cashier}</span>
               <span>{money(item.total)}</span>
               <span className={item.status === 'Voided' ? 'text-brand-danger' : 'text-brand-success'}>{item.status}</span>
             </div>
