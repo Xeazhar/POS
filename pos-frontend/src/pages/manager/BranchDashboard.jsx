@@ -1,8 +1,18 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { FiX } from 'react-icons/fi'
 import { Link, useParams } from 'react-router-dom'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
-import { Eyebrow, Field, PageHeader, Pager, PrimaryButton, SecondaryButton, TableCard } from '../../components/ui'
+import {
+  ErrorBanner,
+  Eyebrow,
+  Field,
+  PageHeader,
+  Pager,
+  PrimaryButton,
+  SecondaryButton,
+  TableCard,
+  ToggleSwitch,
+} from '../../components/ui'
 import {
   bootstrapBranchData,
   fetchBranchTelemetry,
@@ -12,8 +22,10 @@ import {
   reopenDayEnd,
   saveBranch,
 } from '../../lib/api'
+import { BRANCH_DEVICES, normalizeDeviceSettings } from '../../devices'
 import { useAuthStore } from '../../stores/posStore'
-import { businessDate, formatOpenHourLabel, money, qty } from '../../utils/format'
+import { formatSupportError } from '../../utils/errors'
+import { businessDate, formatOpenHourLabel, greetingFor, money, qty } from '../../utils/format'
 import { isUuid } from '../../utils/transactionDetail'
 
 const PAGE_SIZE = 10
@@ -32,11 +44,14 @@ function ManagerBranchDashboard() {
   const [detail, setDetail] = useState(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState(null)
+  const [deviceBusy, setDeviceBusy] = useState(null)
+  const autoOffRef = useRef('')
 
   useEffect(() => {
     let active = true
     setInvPage(0)
     setSelectedProduct(null)
+    autoOffRef.current = ''
     Promise.resolve()
       .then(async () => {
         if (!hasSupabase) {
@@ -84,10 +99,51 @@ function ManagerBranchDashboard() {
   }
 
   const openHour = Number(branch?.day_open_hour ?? 7)
+  const isRestaurant = branch?.branch_type === 'restaurant'
   const todayKey = businessDate(new Date(), openHour)
   const todayTx = data.transactions.filter((item) => item.status === 'Paid' && item.date === todayKey)
   const revenue = todayTx.reduce((sum, item) => sum + item.total, 0)
   const low = data.products.filter((product) => product.stock <= product.lowStockAt)
+  const menuOn = data.products.filter((p) => p.availableToday !== false)
+  const menuOff = data.products.filter((p) => p.availableToday === false)
+  const plateMix = useMemo(() => {
+    const map = {}
+    const comboMap = {}
+    todayTx.forEach((txn) => {
+      if (txn.ulamCombo) {
+        const label =
+          txn.ulamCombo === 'meat_meat'
+            ? 'Meat + Meat'
+            : txn.ulamCombo === 'meat_veggie'
+              ? 'Meat + Veggie'
+              : txn.ulamCombo === 'veggie_veggie'
+                ? 'Veggie + Veggie'
+                : txn.ulamCombo
+        comboMap[label] = (comboMap[label] || 0) + 1
+      }
+      ;(txn.itemsList || []).forEach((line) => {
+        const product = data.products.find((p) => p.id === line.id)
+        const cat = product?.category || product?.menuKind || 'Menu'
+        const qtySold = line.pricingMode === 'kg' ? Number(line.weight || 0) : Number(line.quantity || 0)
+        const amount = Number(line.price || 0) * qtySold
+        map[cat] = (map[cat] || 0) + amount
+      })
+    })
+    if (!Object.keys(map).length) {
+      data.products.forEach((p) => {
+        if (p.availableToday === false) return
+        map[p.category || 'Menu'] = (map[p.category || 'Menu'] || 0) + 0
+      })
+    }
+    return {
+      byCategory: Object.entries(map)
+        .map(([category, value]) => ({ category, value }))
+        .sort((a, b) => b.value - a.value),
+      byCombo: Object.entries(comboMap)
+        .map(([label, count]) => ({ label, count }))
+        .sort((a, b) => b.count - a.count),
+    }
+  }, [todayTx, data.products])
   const shrink = data.movements
     .filter((item) => item.type === 'Shrinkage' || item.movementType === 'shrinkage')
     .reduce(
@@ -104,7 +160,7 @@ function ManagerBranchDashboard() {
       await reopenDayEnd({ id: entry.id, staffId: user.id })
       await reload()
     } catch (err) {
-      setError(err.message || 'Could not reopen till')
+      setError(formatSupportError(err, 'TILL02'))
     } finally {
       setReopening(null)
     }
@@ -124,6 +180,106 @@ function ManagerBranchDashboard() {
       setError(err.message || 'Could not load transaction')
     } finally {
       setLoadingDetail(false)
+    }
+  }
+
+  const deviceSettings = normalizeDeviceSettings(branch?.device_settings)
+
+  // Once per branch visit: if nothing is connected, force all toggles Off.
+  useEffect(() => {
+    if (!branch?.id || deviceBusy) return
+    if (autoOffRef.current === branch.id) return
+    const rows = telemetry.devices || []
+    // Wait for telemetry so we don't auto-off before statuses load
+    if (hasSupabase && rows.length === 0) return
+
+    const anyConnected = rows.some((row) => row.state === 'connected')
+    if (anyConnected) {
+      autoOffRef.current = branch.id
+      return
+    }
+    const current = normalizeDeviceSettings(branch.device_settings)
+    const anyOn = Object.values(current).some(Boolean)
+    autoOffRef.current = branch.id
+    if (!anyOn) return
+
+    const next = {
+      barcode_scanner: false,
+      receipt_printer: false,
+      cash_drawer: false,
+    }
+    const applyLocal = (saved) => {
+      setBranch(saved)
+      if (user?.branchId === saved.id) {
+        useAuthStore.setState({
+          user: { ...user, deviceSettings: next },
+        })
+      }
+    }
+    if (!hasSupabase) {
+      applyLocal({ ...branch, device_settings: next })
+      return
+    }
+    setDeviceBusy('auto')
+    saveBranch({
+      id: branch.id,
+      name: branch.name,
+      address: branch.address,
+      is_active: branch.is_active,
+      device_settings: next,
+    })
+      .then((saved) => applyLocal({ ...saved, device_settings: saved.device_settings || next }))
+      .catch((err) => {
+        autoOffRef.current = ''
+        setError(formatSupportError(err, 'DEV02'))
+      })
+      .finally(() => setDeviceBusy(null))
+  }, [branch, telemetry.devices, deviceBusy, user])
+
+  const persistDeviceSettings = async (next, previousBranch) => {
+    if (!hasSupabase) {
+      const saved = { ...previousBranch, device_settings: next }
+      setBranch(saved)
+      if (user?.branchId === saved.id) {
+        useAuthStore.setState({ user: { ...user, deviceSettings: next } })
+      }
+      return saved
+    }
+    const saved = await saveBranch({
+      id: previousBranch.id,
+      name: previousBranch.name,
+      address: previousBranch.address,
+      is_active: previousBranch.is_active,
+      device_settings: next,
+    })
+    const merged = {
+      ...saved,
+      device_settings: saved.device_settings || next,
+    }
+    setBranch(merged)
+    if (user?.branchId === merged.id) {
+      useAuthStore.setState({
+        user: { ...user, deviceSettings: normalizeDeviceSettings(merged.device_settings) },
+      })
+    }
+    return merged
+  }
+
+  const toggleDevice = async (key, enabled) => {
+    if (!branch?.id || deviceBusy) return
+    const next = { ...deviceSettings, [key]: enabled === true }
+    const previous = branch
+    // Optimistic UI so the switch moves immediately
+    setBranch({ ...branch, device_settings: next })
+    setDeviceBusy(key)
+    setError('')
+    try {
+      await persistDeviceSettings(next, previous)
+    } catch (err) {
+      setBranch(previous)
+      setError(formatSupportError(err, 'DEV02'))
+    } finally {
+      setDeviceBusy(null)
     }
   }
 
@@ -148,7 +304,10 @@ function ManagerBranchDashboard() {
 
   return (
     <div>
-      <PageHeader eyebrow="BRANCH" title={branch?.name || 'Branch'}>
+      <PageHeader
+        eyebrow={isRestaurant ? 'CARINDERIA' : 'BRANCH'}
+        title={`${greetingFor(user)}${branch?.name ? ` - ${branch.name}` : ''}`}
+      >
         <div className="flex flex-wrap items-center justify-end gap-2">
           <SecondaryButton compact type="button" onClick={() => { setForm(branch); setEditing(true) }}>
             Branch settings
@@ -158,54 +317,116 @@ function ManagerBranchDashboard() {
           </Link>
         </div>
       </PageHeader>
-      {error && <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>}
+      {error && (
+        <ErrorBanner error={error} onDismiss={() => setError('')} />
+      )}
 
       <TableCard className="mb-4 max-h-none">
         <div className="px-4 py-3">
           <h2 className="m-0 text-base">Devices</h2>
           <p className="m-0 mt-0.5 text-[11px] text-brand-subtle">
-            Hardware status for this branch till (not network online/offline)
+            Switches start Off when nothing is connected. Turn On when hardware is ready.
           </p>
         </div>
         <div className="grid grid-cols-3 gap-0 border-t border-brand-softline max-[700px]:grid-cols-1">
-          {(telemetry.devices.length
-            ? telemetry.devices
-            : [
-                { key: 'barcode_scanner', label: 'Barcode Scanner', state: 'disconnected', detail: 'Not Connected' },
-                { key: 'receipt_printer', label: 'Receipt Printer', state: 'disconnected', detail: 'Not Connected' },
-                { key: 'cash_drawer', label: 'Cash Drawer', state: 'disconnected', detail: 'Not Connected' },
-              ]
-          ).map((device) => (
-            <div
-              key={device.key}
-              className="border-t border-brand-softline px-4 py-3 max-[700px]:border-t min-[701px]:border-t-0 min-[701px]:border-l min-[701px]:first:border-l-0"
-            >
-              <strong className="block text-xs text-brand-ink">{device.label}</strong>
-              <span
-                className={`mt-1 inline-block text-[11px] font-bold ${
-                  device.state === 'connected' ? 'text-[#2f6b3c]' : 'text-brand-muted'
-                }`}
+          {BRANCH_DEVICES.map((device) => {
+            const telemetryRow = (telemetry.devices || []).find((row) => row.key === device.key)
+            const enabled = deviceSettings[device.key] === true
+            const connected = enabled && telemetryRow?.state === 'connected'
+            return (
+              <div
+                key={device.key}
+                className="border-t border-brand-softline px-4 py-3 max-[700px]:border-t min-[701px]:border-t-0 min-[701px]:border-l min-[701px]:first:border-l-0"
               >
-                {device.state === 'connected' ? 'Connected' : 'Not Connected'}
-              </span>
-            </div>
-          ))}
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <strong className="block text-xs text-brand-ink">{device.label}</strong>
+                    <span className="mt-0.5 block text-[10px] text-brand-subtle">{device.hint}</span>
+                    <span
+                      className={`mt-1 inline-block text-[11px] font-bold ${
+                        !enabled
+                          ? 'text-brand-muted'
+                          : connected
+                            ? 'text-[#2f6b3c]'
+                            : 'text-brand-muted'
+                      }`}
+                    >
+                      {!enabled
+                        ? 'Disabled'
+                        : connected
+                          ? 'Connected'
+                          : telemetryRow?.detail || 'Not Connected'}
+                    </span>
+                  </div>
+                  <ToggleSwitch
+                    checked={enabled}
+                    disabled={Boolean(deviceBusy)}
+                    busy={deviceBusy === device.key}
+                    onChange={(on) => toggleDevice(device.key, on)}
+                    label={device.label}
+                  />
+                </div>
+              </div>
+            )
+          })}
         </div>
       </TableCard>
 
       <div className="mb-4 grid grid-cols-4 gap-3 max-[900px]:grid-cols-2">
-        {[
-          ['Revenue today', money(revenue)],
-          ['Orders today', todayTx.length],
-          ['Low stock', low.length],
-          ['Reseko loss', money(shrink)],
-        ].map(([label, value]) => (
+        {(isRestaurant
+          ? [
+              ['Sales today', money(revenue)],
+              ['Orders today', todayTx.length],
+              ['Potahe on menu', menuOn.length],
+              ['Off today', menuOff.length],
+            ]
+          : [
+              ['Revenue today', money(revenue)],
+              ['Orders today', todayTx.length],
+              ['Low stock', low.length],
+              ['Reseko loss', money(shrink)],
+            ]
+        ).map(([label, value]) => (
           <div key={label} className="rounded-[9px] bg-brand-dark p-4 text-white">
             <span className="block text-[11px] text-[#abb1ad]">{label}</span>
             <strong className="mt-2 block text-xl text-brand-gold">{value}</strong>
           </div>
         ))}
       </div>
+
+      {isRestaurant && plateMix.byCategory.length > 0 && (
+        <TableCard className="mb-4 max-h-none">
+          <div className="px-4 py-3">
+            <h2 className="m-0 text-base">Plate mix today</h2>
+            <p className="m-0 mt-0.5 text-[11px] text-brand-subtle">Sales by menu category (meat, veggie, pancit, etc.)</p>
+          </div>
+          <div className="grid grid-cols-[1.4fr_1fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
+            <span>Category</span>
+            <span className="text-right">Sales</span>
+          </div>
+          {plateMix.byCategory.map((row) => (
+            <div key={row.category} className="grid grid-cols-[1.4fr_1fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs">
+              <strong className="text-brand-ink">{row.category}</strong>
+              <span className="text-right tabular-nums text-brand-gold">{money(row.value)}</span>
+            </div>
+          ))}
+          {plateMix.byCombo.length > 0 && (
+            <div className="border-t border-brand-softline px-4 py-3">
+              <p className="m-0 mb-2 text-[11px] font-bold text-brand-subtle">2-ulam combos (count)</p>
+              <div className="flex flex-wrap gap-2">
+                {plateMix.byCombo.map((row) => (
+                  <span
+                    key={row.label}
+                    className="rounded border border-brand-border bg-white px-2 py-1 text-[11px] text-brand-ink"
+                  >
+                    {row.label}: <strong>{row.count}</strong>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </TableCard>
+      )}
 
       <div className="mb-3.5 grid grid-cols-2 gap-3.5 max-[900px]:grid-cols-1">
         <TableCard className="max-h-none">
@@ -225,7 +446,7 @@ function ManagerBranchDashboard() {
               key={item.id}
               role="button"
               tabIndex={0}
-              className="grid cursor-pointer grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs hover:bg-[#fafaf7] max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]"
+              className="tap-row grid cursor-pointer grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs hover:bg-[#fafaf7] active:bg-[#f0f1ec] max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]"
               onClick={() => openTxnDetail(item)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') openTxnDetail(item)
@@ -271,7 +492,7 @@ function ManagerBranchDashboard() {
                 <strong className="block text-brand-ink">{entry.date}</strong>
                 <small className="text-[10px] text-brand-subtle">
                   {entry.closedAt || '—'}
-                  {entry.cashier ? ` · ${entry.cashier}` : ''}
+                  {entry.cashier ? ` - ${entry.cashier}` : ''}
                 </small>
               </div>
               <span>{money(entry.recordedCash)}</span>
@@ -305,45 +526,76 @@ function ManagerBranchDashboard() {
 
       <TableCard className="max-h-none">
         <div className="flex items-center justify-between px-4 py-3">
-          <h2 className="m-0 text-base">Inventory</h2>
-          <span className="text-[11px] text-brand-subtle">{data.products.length} SKUs</span>
+          <h2 className="m-0 text-base">{isRestaurant ? "Today's menu / potahe" : 'Inventory'}</h2>
+          <span className="text-[11px] text-brand-subtle">
+            {data.products.length} {isRestaurant ? 'items' : 'SKUs'}
+          </span>
         </div>
-        <div className="grid grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
+        <div
+          className={`grid gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase ${
+            isRestaurant ? 'grid-cols-[2.5rem_1.6fr_1fr_0.7fr_0.7fr]' : 'grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr]'
+          }`}
+        >
           <span>#</span>
-          <span>Product</span>
-          <span>SKU</span>
-          <span>On hand</span>
-          <span>Status</span>
+          <span>{isRestaurant ? 'Potahe' : 'Product'}</span>
+          <span>{isRestaurant ? 'Plate' : 'SKU'}</span>
+          <span>{isRestaurant ? 'Price' : 'On hand'}</span>
+          <span>{isRestaurant ? 'Today' : 'Status'}</span>
         </div>
         {invSlice.map((product, index) => (
           <div
             key={product.id}
-            role="button"
-            tabIndex={0}
-            className="grid cursor-pointer grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs hover:bg-[#fafaf7]"
-            onClick={() => setSelectedProduct(product)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') setSelectedProduct(product)
-            }}
+            role={isRestaurant ? undefined : 'button'}
+            tabIndex={isRestaurant ? undefined : 0}
+            className={`grid gap-2 border-t border-brand-softline px-4 py-2.5 text-xs ${
+              isRestaurant
+                ? 'grid-cols-[2.5rem_1.6fr_1fr_0.7fr_0.7fr]'
+                : 'tap-row cursor-pointer grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr] hover:bg-[#fafaf7] active:bg-[#f0f1ec]'
+            }`}
+            onClick={isRestaurant ? undefined : () => setSelectedProduct(product)}
+            onKeyDown={
+              isRestaurant
+                ? undefined
+                : (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') setSelectedProduct(product)
+                  }
+            }
           >
             <span className="tabular-nums text-brand-subtle">{pageIndex * PAGE_SIZE + index + 1}</span>
             <strong className="truncate text-brand-ink">{product.name}</strong>
-            <span className="truncate text-brand-subtle">{product.sku}</span>
-            <span>{qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}</span>
-            <span className={product.stock <= Number(product.lowStockAt ?? 5) ? 'text-brand-danger' : 'text-brand-success'}>
-              {product.stock <= Number(product.lowStockAt ?? 5) ? 'Low' : 'OK'}
+            <span className="truncate text-brand-subtle">
+              {isRestaurant ? product.category : product.sku}
             </span>
+            {isRestaurant ? (
+              <>
+                <span className="tabular-nums">{money(product.price)}</span>
+                <span className={product.availableToday !== false ? 'text-brand-success' : 'text-brand-muted'}>
+                  {product.availableToday !== false ? 'On' : 'Off'}
+                </span>
+              </>
+            ) : (
+              <>
+                <span>{qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}</span>
+                <span className={product.stock <= Number(product.lowStockAt ?? 5) ? 'text-brand-danger' : 'text-brand-success'}>
+                  {product.stock <= Number(product.lowStockAt ?? 5) ? 'Low' : 'OK'}
+                </span>
+              </>
+            )}
           </div>
         ))}
         {data.products.length === 0 && (
-          <div className="px-4 py-6 text-xs text-brand-subtle">No inventory rows yet.</div>
+          <div className="px-4 py-6 text-xs text-brand-subtle">
+            {isRestaurant
+              ? 'No menu items yet. Add or import potahe from Data.'
+              : 'No inventory rows yet.'}
+          </div>
         )}
         {data.products.length > 0 && (
           <Pager
             page={pageIndex + 1}
             pageCount={invPages}
             total={data.products.length}
-            label="SKUs"
+            label={isRestaurant ? 'items' : 'SKUs'}
             onPrev={() => setInvPage((p) => Math.max(0, p - 1))}
             onNext={() => setInvPage((p) => Math.min(invPages - 1, p + 1))}
           />
@@ -425,7 +677,7 @@ function ManagerBranchDashboard() {
         />
       )}
 
-      {selectedProduct && (
+      {selectedProduct && !isRestaurant && (
         <div className="fixed inset-0 z-[5] bg-[#20242666]" onClick={() => setSelectedProduct(null)}>
           <aside
             className="absolute top-0 right-0 h-full w-[min(520px,92vw)] overflow-auto bg-white p-7 shadow-[-8px_0_24px_#20242622]"
@@ -442,7 +694,7 @@ function ManagerBranchDashboard() {
             <h2 className="m-0 mb-1 text-lg capitalize">{selectedProduct.name}</h2>
             <p className="m-0 text-xs text-brand-muted">
               {selectedProduct.sku}
-              {selectedProduct.barcode ? ` · ${selectedProduct.barcode}` : ''} ·{' '}
+              {selectedProduct.barcode ? ` - ${selectedProduct.barcode}` : ''} -{' '}
               {selectedProduct.category || '—'}
             </p>
 
@@ -499,7 +751,7 @@ function ManagerBranchDashboard() {
                       <span>{movement.date}</span>
                       <span className="tabular-nums">
                         {isPrice
-                          ? `${money(movement.oldPrice)} → ${money(movement.newPrice)}`
+                          ? `${money(movement.oldPrice)} \u2192 ${money(movement.newPrice)}`
                           : movement.quantityChange > 0
                             ? `+${qty(movement.quantityChange, unit)}`
                             : movement.quantityChange < 0

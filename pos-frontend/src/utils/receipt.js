@@ -121,7 +121,15 @@ export function receiptToHtml(receipt) {
     <div class="center muted">${escapeHtml(receipt.footer.thankYou)}</div>
     <div class="center muted">${escapeHtml(receipt.footer.note)}</div>
   </div>
-  <script>window.onload = function () { window.print(); };</script>
+  <script>
+    window.onload = function () {
+      window.focus();
+      window.print();
+    };
+    window.onafterprint = function () {
+      window.close();
+    };
+  </script>
 </body>
 </html>`
 }
@@ -143,11 +151,30 @@ function formatReceiptDate(value) {
 /** Open a print-ready receipt window (works without a thermal printer). */
 export function printReceiptBrowser(receipt) {
   const html = receiptToHtml(receipt)
-  const win = window.open('', '_blank', 'noopener,noreferrer,width=360,height=720')
+  // Do not use noopener here — it returns null / blocks document.write and leaves about:blank.
+  const win = window.open('', '_blank', 'width=360,height=720')
   if (!win) {
     throw new Error('Pop-up blocked — allow pop-ups to print receipts.')
+  }
+  try {
+    win.opener = null
+  } catch {
+    /* ignore */
   }
   win.document.open()
   win.document.write(html)
   win.document.close()
+  // Close the print window after the dialog finishes (or after a short delay).
+  const closeSoon = () => {
+    try {
+      win.close()
+    } catch {
+      /* ignore */
+    }
+  }
+  if (typeof win.addEventListener === 'function') {
+    win.addEventListener('afterprint', closeSoon)
+  }
+  // Fallback if afterprint never fires (some browsers)
+  setTimeout(closeSoon, 60000)
 }

@@ -1,12 +1,14 @@
 import { useEffect, useRef } from 'react'
-import { heartbeatBranch, hasSupabase, reportBranchDevices } from '../lib/api'
-import { getAllDeviceStatuses } from '../devices'
+import { fetchBranchDeviceSettings, heartbeatBranch, hasSupabase, reportBranchDevices } from '../lib/api'
+import { getAllDeviceStatuses, normalizeDeviceSettings } from '../devices'
 import { isOnline } from '../offline'
+import { useAuthStore } from '../stores/posStore'
 
 const HEARTBEAT_MS = 45_000
 
 /**
  * Cashiers report branch network presence + device stub status while the app is open.
+ * Also refreshes manager device on/off flags so tills pick up changes without re-login.
  * Managers do not heartbeat (avoids marking a shop online from HQ).
  */
 export function useBranchHeartbeat(user) {
@@ -21,7 +23,17 @@ export function useBranchHeartbeat(user) {
       if (cancelled || !isOnline()) return
       await heartbeatBranch({ branchId: user.branchId, staffId: user.id })
       try {
-        const devices = await getAllDeviceStatuses()
+        const remoteSettings = await fetchBranchDeviceSettings(user.branchId)
+        const settings = normalizeDeviceSettings(remoteSettings ?? user.deviceSettings)
+        if (remoteSettings != null && !cancelled) {
+          const current = useAuthStore.getState().user
+          if (current?.branchId === user.branchId) {
+            useAuthStore.setState({
+              user: { ...current, deviceSettings: settings },
+            })
+          }
+        }
+        const devices = await getAllDeviceStatuses(settings)
         if (!cancelled) await reportBranchDevices(user.branchId, devices)
       } catch {
         /* stubs only */

@@ -1,5 +1,6 @@
 import { allowDemoMode, supabase } from './supabase'
 import { localDateKey, today } from '../utils/format'
+import { normalizeMenuKind } from '../utils/ulam'
 
 export const hasSupabase = Boolean(supabase)
 export { allowDemoMode }
@@ -7,19 +8,67 @@ export { allowDemoMode }
 const mapPricing = (mode) => (mode === 'per_kg' || mode === 'kg' ? 'kg' : 'pc')
 const toDbPricing = (mode) => (mode === 'kg' ? 'per_kg' : 'per_unit')
 
+function isMissingColumnError(error, column) {
+  const msg = String(error?.message || error || '')
+  return msg.includes(column) && (msg.includes('schema cache') || msg.includes('does not exist') || msg.includes('Could not find'))
+}
+
+async function writeProductRow(mode, payload, { id } = {}) {
+  const attempt = async (row) => {
+    if (mode === 'insert') {
+      return supabase.from('products').insert(row).select('*, categories(name)').single()
+    }
+    return supabase.from('products').update(row).eq('id', id).select('*, categories(name)').single()
+  }
+
+  let { data, error } = await attempt(payload)
+  if (error && (isMissingColumnError(error, 'budget_price') || isMissingColumnError(error, 'menu_kind') || isMissingColumnError(error, 'product_no'))) {
+    const fallback = { ...payload }
+    delete fallback.budget_price
+    delete fallback.menu_kind
+    delete fallback.product_no
+    ;({ data, error } = await attempt(fallback))
+  }
+  if (error && isMissingColumnError(error, 'available_today')) {
+    const fallback = { ...payload }
+    delete fallback.budget_price
+    delete fallback.menu_kind
+    delete fallback.product_no
+    delete fallback.available_today
+    ;({ data, error } = await attempt(fallback))
+  }
+  if (error) throw error
+  return data
+}
+
+export function formatProductCode(productNo) {
+  if (productNo == null || productNo === '') return ''
+  const n = Number(productNo)
+  if (!Number.isFinite(n) || n <= 0) return String(productNo)
+  return String(Math.trunc(n)).padStart(4, '0')
+}
+
 export function mapProduct(row, stock = 0, meta = {}) {
+  const category = row.categories?.name || row.category || 'Groceries'
+  const menuKind = normalizeMenuKind(row.menu_kind, category)
   return {
     id: row.id,
+    productNo: row.product_no != null ? Number(row.product_no) : null,
+    productCode: formatProductCode(row.product_no),
     branchId: row.branch_id || meta.branchId || null,
     name: row.name,
     sku: row.sku,
     barcode: row.barcode || '',
-    category: row.categories?.name || row.category || 'Groceries',
+    category,
     categoryId: row.category_id,
+    menuKind,
     pricingMode: mapPricing(row.pricing_mode),
     price: Number(row.price),
+    regularPrice: Number(row.price),
+    budgetPrice: row.budget_price != null ? Number(row.budget_price) : null,
     stock: Number(stock),
     lowStockAt: Number(row.low_stock_threshold ?? 5),
+    availableToday: row.available_today !== false,
     createdAt: localDateKey(row.created_at) || meta.createdAt || today(),
     updatedAt: meta.updatedAt ? localDateKey(meta.updatedAt) : localDateKey(row.created_at) || today(),
     lastMovementAt: meta.lastMovementAt || null,
@@ -64,6 +113,8 @@ export function mapTransaction(row) {
     tendered: row.amount_tendered != null ? Number(row.amount_tendered) : null,
     change: row.change_given != null ? Number(row.change_given) : null,
     clientId: row.client_id || null,
+    orderType: row.order_type || 'dine_in',
+    ulamCombo: row.ulam_combo || null,
   }
 }
 
@@ -94,12 +145,24 @@ export function mapMovement(row) {
 export async function fetchSessionStaff() {
   const { data: auth } = await supabase.auth.getUser()
   if (!auth?.user) return null
-  const { data, error } = await supabase
+  const selectWithDevices =
+    'id, full_name, role, branch_id, is_active, branches(id, name, address, is_active, day_open_hour, branch_type, device_settings)'
+  const selectBase =
+    'id, full_name, role, branch_id, is_active, branches(id, name, address, is_active, day_open_hour, branch_type)'
+  let { data, error } = await supabase
     .from('staff')
-    .select('id, full_name, role, branch_id, is_active, branches(id, name, address, is_active, day_open_hour)')
+    .select(selectWithDevices)
     .eq('auth_user_id', auth.user.id)
     .eq('is_active', true)
     .maybeSingle()
+  if (error && /device_settings|schema cache|column/i.test(String(error.message || ''))) {
+    ;({ data, error } = await supabase
+      .from('staff')
+      .select(selectBase)
+      .eq('auth_user_id', auth.user.id)
+      .eq('is_active', true)
+      .maybeSingle())
+  }
   if (error) throw error
   if (!data) return null
   return {
@@ -111,7 +174,9 @@ export async function fetchSessionStaff() {
     branchId: data.branch_id,
     branchName: data.branches?.name || 'Branch',
     branchAddress: data.branches?.address || '',
+    branchType: data.branches?.branch_type === 'restaurant' ? 'restaurant' : 'retail',
     dayOpenHour: Number(data.branches?.day_open_hour ?? 7),
+    deviceSettings: data.branches?.device_settings || null,
   }
 }
 
@@ -203,44 +268,58 @@ export async function bootstrapBranchData(branchId) {
   }
 }
 
-export async function createProduct({ branchId, staffId, values }) {
+export async function createProduct({ branchId, staffId, values, branchType = 'retail' }) {
+  const isRestaurant = branchType === 'restaurant'
   const { data: cat } = await supabase.from('categories').select('id').eq('name', values.category).maybeSingle()
   let categoryId = cat?.id
   if (!categoryId) {
     const { data: created } = await supabase.from('categories').insert({ name: values.category }).select('id').single()
     categoryId = created?.id
   }
-  const { data: product, error } = await supabase
-    .from('products')
-    .insert({
-      branch_id: branchId,
-      name: values.name,
-      sku: values.sku,
-      barcode: values.barcode,
-      category_id: categoryId || null,
-      pricing_mode: toDbPricing(values.pricingMode),
-      price: values.price,
-      low_stock_threshold: values.lowStockAt || 5,
-    })
-    .select('*, categories(name)')
-    .single()
-  if (error) throw error
-  await supabase.from('branch_inventory').upsert({
+  const product = await writeProductRow('insert', {
     branch_id: branchId,
-    product_id: product.id,
-    quantity_on_hand: values.stock,
+    name: values.name,
+    sku: values.sku,
+    barcode: values.barcode || null,
+    category_id: categoryId || null,
+    pricing_mode: toDbPricing(values.pricingMode || 'pc'),
+    price: values.price,
+    ...(isRestaurant
+      ? {
+          budget_price:
+            values.budgetPrice != null && values.budgetPrice !== ''
+              ? Number(values.budgetPrice)
+              : null,
+          menu_kind: normalizeMenuKind(values.menuKind, values.category),
+          available_today: values.availableToday !== false,
+        }
+      : {}),
+    low_stock_threshold: values.lowStockAt || 5,
   })
-  await supabase.rpc('record_stock_movement', {
-    p_branch_id: branchId,
-    p_product_id: product.id,
-    p_staff_id: staffId,
-    p_movement_type: 'restock',
-    p_quantity_in: values.stock,
-    p_quantity_out: 0,
-    p_reference: 'initial',
-    p_detail: 'New product',
+
+  if (!isRestaurant) {
+    await supabase.from('branch_inventory').upsert({
+      branch_id: branchId,
+      product_id: product.id,
+      quantity_on_hand: values.stock ?? 0,
+    })
+    await supabase.rpc('record_stock_movement', {
+      p_branch_id: branchId,
+      p_product_id: product.id,
+      p_staff_id: staffId,
+      p_movement_type: 'restock',
+      p_quantity_in: values.stock ?? 0,
+      p_quantity_out: 0,
+      p_reference: 'initial',
+      p_detail: 'New product',
+    })
+  }
+
+  return mapProduct(product, isRestaurant ? 0 : values.stock, {
+    branchId,
+    updatedAt: today(),
+    lastMovementAt: isRestaurant ? null : today(),
   })
-  return mapProduct(product, values.stock, { branchId, updatedAt: today(), lastMovementAt: today() })
 }
 
 export async function updateProductRow(id, values, { branchId, staffId, previousPrice } = {}) {
@@ -256,21 +335,24 @@ export async function updateProductRow(id, values, { branchId, staffId, previous
     oldPrice = current?.price != null ? Number(current.price) : null
   }
 
-  const { data, error } = await supabase
-    .from('products')
-    .update({
+  const data = await writeProductRow(
+    'update',
+    {
       name: values.name,
       sku: values.sku,
       barcode: values.barcode,
       category_id: categoryId,
       pricing_mode: toDbPricing(values.pricingMode),
       price: values.price,
+      budget_price:
+        values.budgetPrice != null && values.budgetPrice !== ''
+          ? Number(values.budgetPrice)
+          : null,
+      menu_kind: normalizeMenuKind(values.menuKind, values.category),
       low_stock_threshold: values.lowStockAt || 5,
-    })
-    .eq('id', id)
-    .select('*, categories(name)')
-    .single()
-  if (error) throw error
+    },
+    { id },
+  )
 
   if (
     branchId &&
@@ -288,6 +370,18 @@ export async function updateProductRow(id, values, { branchId, staffId, previous
     })
   }
 
+  return data
+}
+
+/** Toggle whether a restaurant menu item is offered today. */
+export async function setMenuAvailableToday(productId, availableToday) {
+  const { data, error } = await supabase
+    .from('products')
+    .update({ available_today: Boolean(availableToday) })
+    .eq('id', productId)
+    .select('*, categories(name)')
+    .single()
+  if (error) throw error
   return data
 }
 
@@ -373,17 +467,40 @@ export async function adjustStock({ branchId, productId, staffId, action, amount
   return mapMovement({ ...data, products: { name: productName } })
 }
 
-export async function completeSale({ branchId, staffId, items, total, tendered, clientId = null }) {
-  const { error: tillError } = await supabase.rpc('assert_till_open', { p_branch_id: branchId })
+export async function completeSale({
+  branchId,
+  staffId,
+  items,
+  total,
+  tendered,
+  clientId = null,
+  orderType = 'dine_in',
+  ulamCombo = null,
+  branchType = null,
+}) {
+  // Run till check + OR allocate (+ branch type if unknown) together
+  const tillPromise = supabase.rpc('assert_till_open', { p_branch_id: branchId })
+  const orPromise = supabase.rpc('allocate_or_number', { p_branch_id: branchId })
+  const branchPromise =
+    branchType != null
+      ? Promise.resolve({ data: { branch_type: branchType } })
+      : supabase.from('branches').select('branch_type').eq('id', branchId).maybeSingle()
+
+  const [{ error: tillError }, orRes, branchRes] = await Promise.all([
+    tillPromise,
+    orPromise,
+    branchPromise,
+  ])
   if (tillError) throw tillError
 
-  // Prefer server-allocated sequential OR; fall back if migration not applied yet
+  const isRestaurant =
+    branchType === 'restaurant' || branchRes?.data?.branch_type === 'restaurant'
+
   let orNumber = null
-  const { data: allocated, error: orError } = await supabase.rpc('allocate_or_number', {
-    p_branch_id: branchId,
-  })
-  if (!orError) orNumber = allocated
-  else if (!String(orError.message || '').includes('Could not find the function')) throw orError
+  if (!orRes.error) orNumber = orRes.data
+  else if (!String(orRes.error.message || '').includes('Could not find the function')) {
+    throw orRes.error
+  }
 
   const insertRow = {
     branch_id: branchId,
@@ -395,53 +512,94 @@ export async function completeSale({ branchId, staffId, items, total, tendered, 
   }
   if (orNumber) insertRow.or_number = orNumber
   if (clientId) insertRow.client_id = clientId
+  if (isRestaurant) {
+    insertRow.order_type = orderType === 'takeout' ? 'takeout' : 'dine_in'
+    if (ulamCombo) insertRow.ulam_combo = ulamCombo
+  }
 
-  const { data: txn, error } = await supabase
+  let { data: txn, error } = await supabase
     .from('transactions')
     .insert(insertRow)
     .select('*')
     .single()
+  if (
+    error &&
+    (isMissingColumnError(error, 'order_type') || isMissingColumnError(error, 'ulam_combo'))
+  ) {
+    const fallback = { ...insertRow }
+    delete fallback.order_type
+    delete fallback.ulam_combo
+    ;({ data: txn, error } = await supabase.from('transactions').insert(fallback).select('*').single())
+  }
   if (error) throw error
 
-  const lines = items.map((item) => ({
-    transaction_id: txn.id,
-    product_id: item.id,
-    quantity: item.pricingMode === 'kg' ? item.weight : item.quantity,
-    unit_price: item.price,
-    line_total: item.price * (item.pricingMode === 'kg' ? item.weight : item.quantity),
-  }))
-  const { error: itemsError } = await supabase.from('transaction_items').insert(lines)
+  const lines = items.map((item) => {
+    const unit = Number(item.unitPrice ?? item.price)
+    const quantity = item.pricingMode === 'kg' ? item.weight : item.quantity
+    const row = {
+      transaction_id: txn.id,
+      product_id: item.id,
+      quantity,
+      unit_price: unit,
+      line_total: unit * quantity,
+    }
+    if (isRestaurant) {
+      row.price_tier = item.priceTier === 'budget' ? 'budget' : 'regular'
+    }
+    return row
+  })
+  let { error: itemsError } = await supabase.from('transaction_items').insert(lines)
+  if (itemsError && isMissingColumnError(itemsError, 'price_tier')) {
+    ;({ error: itemsError } = await supabase
+      .from('transaction_items')
+      .insert(lines.map(({ price_tier, ...rest }) => rest)))
+  }
   if (itemsError) throw itemsError
 
-  for (const item of items) {
-    const sold = item.pricingMode === 'kg' ? item.weight : item.quantity
-    const { error: moveError } = await supabase.rpc('record_stock_movement', {
-      p_branch_id: branchId,
-      p_product_id: item.id,
-      p_staff_id: staffId,
-      p_movement_type: 'sale',
-      p_quantity_in: 0,
-      p_quantity_out: sold,
-      p_reference: txn.id,
-      p_detail: item.name,
-    })
-    if (moveError) throw moveError
+  // Restaurant / carinderia: no inventory deduction — menu sales only
+  if (!isRestaurant) {
+    await Promise.all(
+      items.map((item) => {
+        const sold = item.pricingMode === 'kg' ? item.weight : item.quantity
+        return supabase
+          .rpc('record_stock_movement', {
+            p_branch_id: branchId,
+            p_product_id: item.id,
+            p_staff_id: staffId,
+            p_movement_type: 'sale',
+            p_quantity_in: 0,
+            p_quantity_out: sold,
+            p_reference: txn.id,
+            p_detail: item.name,
+          })
+          .then(({ error: moveError }) => {
+            if (moveError) throw moveError
+          })
+      }),
+    )
   }
 
-  await supabase.from('sale_events').insert({
-    branch_id: branchId,
-    transaction_id: txn.id,
-    staff_id: staffId,
-    event_type: 'sale',
-    or_number: txn.or_number,
-    amount: total,
-    payload: { client_id: clientId },
-  }).then(({ error: eventError }) => {
-    if (eventError) console.warn('sale_events insert skipped:', eventError.message)
-  })
+  // Non-blocking audit trail
+  void supabase
+    .from('sale_events')
+    .insert({
+      branch_id: branchId,
+      transaction_id: txn.id,
+      staff_id: staffId,
+      event_type: 'sale',
+      or_number: txn.or_number,
+      amount: total,
+      payload: {
+        client_id: clientId,
+        order_type: insertRow.order_type || null,
+        ulam_combo: ulamCombo,
+      },
+    })
+    .then(({ error: eventError }) => {
+      if (eventError) console.warn('sale_events insert skipped:', eventError.message)
+    })
 
-  const staffNames = await staffNameById([staffId])
-  return mapTransaction(withCashierName({ ...txn, transaction_items: lines }, staffNames))
+  return mapTransaction(withCashierName({ ...txn, transaction_items: lines }, { [staffId]: null }))
 }
 
 export async function fetchTransactionDetail(id) {
@@ -602,6 +760,22 @@ const DEVICE_LABELS = {
   cash_drawer: 'Cash Drawer',
 }
 
+export async function fetchBranchDeviceSettings(branchId) {
+  if (!supabase || !branchId) return null
+  const { data, error } = await supabase
+    .from('branches')
+    .select('device_settings')
+    .eq('id', branchId)
+    .maybeSingle()
+  if (error) {
+    if (!/device_settings|schema cache|column/i.test(String(error.message || ''))) {
+      console.warn('fetchBranchDeviceSettings', error.message)
+    }
+    return null
+  }
+  return data?.device_settings ?? null
+}
+
 export async function reportBranchDevices(branchId, devices) {
   if (!supabase || !branchId || !devices?.length) return
   const rows = devices.map((device) => {
@@ -678,34 +852,86 @@ export async function saveBranch(payload) {
     name: payload.name,
     address: payload.address,
     is_active: payload.is_active,
-    business_name: payload.business_name ?? payload.businessName ?? null,
-    tin: payload.tin ?? null,
-    bir_permit_no: payload.bir_permit_no ?? payload.birPermitNo ?? null,
-    machine_identification_no:
-      payload.machine_identification_no ?? payload.machineId ?? null,
-    serial_number: payload.serial_number ?? payload.serialNumber ?? null,
-    or_prefix: payload.or_prefix ?? payload.orPrefix ?? undefined,
+  }
+  if (payload.branch_type != null) {
+    fields.branch_type = payload.branch_type === 'restaurant' ? 'restaurant' : 'retail'
+  }
+  // Optional fiscal / settings fields — only write when provided (Branch settings)
+  if ('business_name' in payload || 'businessName' in payload) {
+    fields.business_name = payload.business_name ?? payload.businessName ?? null
+  }
+  if ('tin' in payload) fields.tin = payload.tin ?? null
+  if ('bir_permit_no' in payload || 'birPermitNo' in payload) {
+    fields.bir_permit_no = payload.bir_permit_no ?? payload.birPermitNo ?? null
+  }
+  if ('machine_identification_no' in payload || 'machineId' in payload) {
+    fields.machine_identification_no =
+      payload.machine_identification_no ?? payload.machineId ?? null
+  }
+  if ('serial_number' in payload || 'serialNumber' in payload) {
+    fields.serial_number = payload.serial_number ?? payload.serialNumber ?? null
+  }
+  if ('or_prefix' in payload || 'orPrefix' in payload) {
+    fields.or_prefix = payload.or_prefix ?? payload.orPrefix
   }
   if (payload.day_open_hour != null) {
     fields.day_open_hour = Math.min(23, Math.max(0, Number(payload.day_open_hour)))
   }
-  // Drop undefined so we don't wipe columns when older forms omit them
+  if ('device_settings' in payload || 'deviceSettings' in payload) {
+    const raw = payload.device_settings ?? payload.deviceSettings
+    fields.device_settings = {
+      barcode_scanner: raw?.barcode_scanner === true,
+      receipt_printer: raw?.receipt_printer === true,
+      cash_drawer: raw?.cash_drawer === true,
+    }
+  }
   Object.keys(fields).forEach((key) => {
     if (fields[key] === undefined) delete fields[key]
   })
   if (payload.id) {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('branches')
       .update(fields)
       .eq('id', payload.id)
       .select('*')
       .single()
-    if (error) throw error
+    if (
+      error &&
+      fields.device_settings &&
+      /device_settings|schema cache|column|Could not find/i.test(String(error.message || ''))
+    ) {
+      // Do NOT soft-succeed — toggle must actually persist
+      const missing = new Error(
+        'Device settings DB column missing — run migrate_device_settings.sql in Supabase.',
+      )
+      missing.code = 'DEV01'
+      missing.supportCode = 'DEV01'
+      throw missing
+    }
+    if (error) {
+      const wrapped = new Error(error.message || 'Could not save device on/off setting.')
+      wrapped.code = fields.device_settings ? 'DEV02' : 'GEN01'
+      wrapped.supportCode = wrapped.code
+      throw wrapped
+    }
+    if (fields.device_settings && data && data.device_settings == null) {
+      const missing = new Error(
+        'Device settings DB column missing — run migrate_device_settings.sql in Supabase.',
+      )
+      missing.code = 'DEV01'
+      missing.supportCode = 'DEV01'
+      throw missing
+    }
     return data
   }
   const { data, error } = await supabase
     .from('branches')
-    .insert({ ...fields, is_active: payload.is_active ?? true, or_prefix: fields.or_prefix || 'OR' })
+    .insert({
+      ...fields,
+      is_active: payload.is_active ?? true,
+      branch_type: fields.branch_type || 'retail',
+      or_prefix: fields.or_prefix || 'OR',
+    })
     .select('*')
     .single()
   if (error) throw error
@@ -769,57 +995,148 @@ export async function updateStaffRow(id, changes) {
   return data
 }
 
-export async function branchSummary(branchId) {
-  const start = `${today()}T00:00:00`
+export async function branchSummary(branchId, { days = 1 } = {}) {
+  const start = new Date()
+  start.setDate(start.getDate() - (Math.max(1, days) - 1))
+  const startKey = start.toISOString().slice(0, 10)
+
+  const { data: branch } = await supabase
+    .from('branches')
+    .select('branch_type')
+    .eq('id', branchId)
+    .maybeSingle()
+  const isRestaurant = branch?.branch_type === 'restaurant'
+
   const { data: txs } = await supabase
     .from('transactions')
     .select('total_amount, status')
     .eq('branch_id', branchId)
-    .gte('created_at', start)
+    .gte('created_at', `${startKey}T00:00:00`)
   const paid = (txs || []).filter((t) => t.status === 'completed')
-  const { data: inv } = await supabase
-    .from('branch_inventory')
-    .select('quantity_on_hand, product_id, products(low_stock_threshold)')
-    .eq('branch_id', branchId)
-  const low = (inv || []).filter(
-    (row) => Number(row.quantity_on_hand) <= Number(row.products?.low_stock_threshold ?? 5),
-  ).length
+
+  let lowStock = 0
+  let menuOn = 0
+  let menuOff = 0
+  if (isRestaurant) {
+    const { data: products } = await supabase
+      .from('products')
+      .select('available_today, is_active')
+      .eq('branch_id', branchId)
+      .eq('is_active', true)
+    ;(products || []).forEach((p) => {
+      if (p.available_today !== false) menuOn += 1
+      else menuOff += 1
+    })
+  } else {
+    const { data: inv } = await supabase
+      .from('branch_inventory')
+      .select('quantity_on_hand, product_id, products(low_stock_threshold)')
+      .eq('branch_id', branchId)
+    lowStock = (inv || []).filter(
+      (row) => Number(row.quantity_on_hand) <= Number(row.products?.low_stock_threshold ?? 5),
+    ).length
+  }
+
   return {
     revenue: paid.reduce((sum, t) => sum + Number(t.total_amount), 0),
     orders: paid.length,
-    lowStock: low,
+    lowStock,
+    menuOn,
+    menuOff,
+    branchType: isRestaurant ? 'restaurant' : 'retail',
   }
 }
 
-export async function fetchNetworkDashboard(days = 7) {
+/** period: 'day' | 'week' | 'month' | 'year' */
+export async function fetchNetworkDashboard(periodOrDays = 'week') {
+  const period =
+    typeof periodOrDays === 'number'
+      ? periodOrDays <= 1
+        ? 'day'
+        : periodOrDays <= 7
+          ? 'week'
+          : periodOrDays <= 31
+            ? 'month'
+            : 'year'
+      : periodOrDays
+  const days = period === 'day' ? 1 : period === 'week' ? 7 : period === 'month' ? 30 : 365
   const start = new Date()
+  start.setHours(0, 0, 0, 0)
   start.setDate(start.getDate() - (days - 1))
-  const startKey = start.toISOString().slice(0, 10)
+  const startIso = start.toISOString()
   const { data: txs, error } = await supabase
     .from('transactions')
     .select('total_amount, status, created_at, branch_id, branches(name)')
     .eq('status', 'completed')
-    .gte('created_at', `${startKey}T00:00:00`)
+    .gte('created_at', startIso)
   if (error) throw error
-  const byDate = {}
-  const byBranch = {}
-  for (let i = 0; i < days; i += 1) {
-    const d = new Date(start)
-    d.setDate(start.getDate() + i)
-    byDate[d.toISOString().slice(0, 10)] = 0
+
+  const localKey = (value) => {
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) return String(value).slice(0, 10)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
   }
+
+  const byBucket = {}
+  const byBranch = {}
+  if (period === 'year') {
+    for (let i = 11; i >= 0; i -= 1) {
+      const d = new Date()
+      d.setDate(1)
+      d.setMonth(d.getMonth() - i)
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      byBucket[key] = 0
+    }
+  } else if (period === 'day') {
+    const now = new Date()
+    for (let hour = 0; hour <= now.getHours(); hour += 1) {
+      byBucket[String(hour).padStart(2, '0')] = 0
+    }
+  } else {
+    for (let i = 0; i < days; i += 1) {
+      const d = new Date(start)
+      d.setDate(start.getDate() + i)
+      byBucket[localKey(d)] = 0
+    }
+  }
+
+  const todayKey = localKey(new Date())
   ;(txs || []).forEach((row) => {
-    const key = row.created_at.slice(0, 10)
-    if (byDate[key] != null) byDate[key] += Number(row.total_amount)
+    const when = new Date(row.created_at)
+    const dayKey = localKey(when)
+    let bucketKey = dayKey
+    if (period === 'year') bucketKey = dayKey.slice(0, 7)
+    else if (period === 'day') {
+      if (dayKey !== todayKey) return
+      bucketKey = String(when.getHours()).padStart(2, '0')
+    }
+    if (byBucket[bucketKey] != null) byBucket[bucketKey] += Number(row.total_amount)
     const name = row.branches?.name || 'Branch'
     byBranch[name] = (byBranch[name] || 0) + Number(row.total_amount)
   })
+
   return {
-    linePoints: Object.entries(byDate).map(([label, total]) => ({
-      label,
-      short: new Date(`${label}T00:00:00`).toLocaleDateString([], { month: 'short', day: 'numeric' }),
-      total,
-    })),
+    period,
+    days,
+    linePoints: Object.entries(byBucket).map(([label, total]) => {
+      if (period === 'day') {
+        const hour = Number(label)
+        const suffix = hour < 12 ? 'AM' : 'PM'
+        const display = hour % 12 === 0 ? 12 : hour % 12
+        return { label: `${label}:00`, short: `${display} ${suffix}`, total }
+      }
+      return {
+        label,
+        short:
+          period === 'year'
+            ? new Date(`${label}-01T00:00:00`).toLocaleDateString([], { month: 'short', year: '2-digit' })
+            : new Date(`${label}T00:00:00`).toLocaleDateString([], { month: 'short', day: 'numeric' }),
+        total,
+      }
+    }),
     branchBars: Object.entries(byBranch).map(([category, value]) => ({ category, value })),
   }
 }
@@ -828,7 +1145,7 @@ export async function fetchReportSalesDetail({ start, end, branchId, includeVoid
   let query = supabase
     .from('transaction_items')
     .select(
-      '*, products(name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount)',
+      '*, products(id, product_no, name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo)',
     )
     .gte('transactions.created_at', `${start}T00:00:00`)
     .lte('transactions.created_at', `${end}T23:59:59`)
@@ -934,7 +1251,7 @@ export async function fetchDailyReading({ date, branchId }) {
 export async function fetchFiscalBackup({ start, end, branchId }) {
   let txnQuery = supabase
     .from('transactions')
-    .select('*, transaction_items(*, products(name, sku))')
+    .select('*, transaction_items(*, products(id, product_no, name, sku))')
     .gte('created_at', `${start}T00:00:00`)
     .lte('created_at', `${end}T23:59:59`)
     .order('created_at', { ascending: true })
@@ -1042,7 +1359,9 @@ export async function commitInventoryImport({
   filename,
   fileHash,
   preview,
+  onProgress,
 }) {
+  const restaurant = Boolean(preview?.restaurant)
   const { data: batch, error: batchError } = await supabase
     .from('import_batches')
     .insert({
@@ -1061,50 +1380,52 @@ export async function commitInventoryImport({
   if (batchError) throw batchError
 
   const itemRows = []
+  const total = preview.lines.length || 1
 
-  for (const line of preview.lines) {
+  for (let index = 0; index < preview.lines.length; index += 1) {
+    const line = preview.lines[index]
     const values = line.values
     const categoryId = await ensureCategoryId(values.category)
     let productId = line.existing?.id
+    const barcode =
+      values.barcode ||
+      (restaurant ? `MENU-${values.sku}`.replace(/\W+/g, '').slice(0, 32) : values.barcode)
 
-    if (line.action === 'create') {
-      const { data: product, error } = await supabase
-        .from('products')
-        .insert({
-          branch_id: branchId,
-          name: values.name,
-          sku: values.sku,
-          barcode: values.barcode,
-          category_id: categoryId,
-          pricing_mode: toDbPricing(values.pricingMode),
-          price: values.price,
-          low_stock_threshold: values.lowStockAt || 5,
-        })
-        .select('id')
-        .single()
-      if (error) throw error
-      productId = product.id
-      await supabase.from('branch_inventory').upsert({
-        branch_id: branchId,
-        product_id: productId,
-        quantity_on_hand: 0,
-      })
-    } else {
-      await supabase
-        .from('products')
-        .update({
-          name: values.name,
-          sku: values.sku,
-          barcode: values.barcode,
-          category_id: categoryId,
-          pricing_mode: toDbPricing(values.pricingMode),
-          price: values.price,
-          low_stock_threshold: values.lowStockAt || 5,
-        })
-        .eq('id', productId)
+    const productPayload = {
+      name: values.name,
+      sku: values.sku,
+      barcode: barcode || null,
+      category_id: categoryId,
+      pricing_mode: toDbPricing(restaurant ? 'pc' : values.pricingMode),
+      price: values.price,
+      low_stock_threshold: values.lowStockAt || 5,
+      available_today: values.availableToday !== false,
+      ...(restaurant
+        ? {
+            budget_price: values.budgetPrice,
+            menu_kind: normalizeMenuKind(values.menuKind, values.category),
+          }
+        : {}),
     }
 
-    if (line.quantityAdded > 0) {
+    if (line.action === 'create') {
+      const product = await writeProductRow('insert', {
+        branch_id: branchId,
+        ...productPayload,
+      })
+      productId = product.id
+      if (!restaurant) {
+        await supabase.from('branch_inventory').upsert({
+          branch_id: branchId,
+          product_id: productId,
+          quantity_on_hand: 0,
+        })
+      }
+    } else {
+      await writeProductRow('update', productPayload, { id: productId })
+    }
+
+    if (!restaurant && line.quantityAdded > 0) {
       const { error: moveError } = await supabase.rpc('record_stock_movement', {
         p_branch_id: branchId,
         p_product_id: productId,
@@ -1122,10 +1443,15 @@ export async function commitInventoryImport({
       batch_id: batch.id,
       product_id: productId,
       action: line.action,
-      quantity_added: line.quantityAdded,
+      quantity_added: restaurant ? 0 : line.quantityAdded,
       name: values.name,
       sku: values.sku,
-      barcode: values.barcode,
+      barcode: barcode || '',
+    })
+    onProgress?.({
+      current: index + 1,
+      total,
+      label: values.name,
     })
   }
 

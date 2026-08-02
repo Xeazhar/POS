@@ -1,6 +1,15 @@
 export const money = (value) =>
   `₱${Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
+/** Time-of-day greeting with optional first name: "Good morning, Ana" */
+export function greetingFor(user) {
+  const hour = new Date().getHours()
+  const part = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
+  const full = String(user?.name || user?.full_name || '').trim()
+  const first = full.split(/\s+/)[0]
+  return first ? `${part}, ${first}` : part
+}
+
 export const qty = (value, unit) => {
   const amount = Number(value || 0).toFixed(2)
   return unit ? `${amount} ${unit}` : amount

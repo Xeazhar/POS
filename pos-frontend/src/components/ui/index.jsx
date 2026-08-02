@@ -3,7 +3,7 @@ import { FiX } from 'react-icons/fi'
 export function PrimaryButton({ className = '', compact = false, children, ...props }) {
   return (
     <button
-      className={`inline-flex items-center justify-between gap-2 rounded-[5px] border-0 bg-brand-gold font-bold text-brand-dark disabled:cursor-not-allowed disabled:opacity-35 ${
+      className={`inline-flex items-center justify-between gap-2 rounded-[5px] border-0 bg-brand-gold font-bold text-brand-dark hover:brightness-105 active:brightness-97 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:brightness-100 ${
         compact ? 'h-10 w-auto justify-center px-4 text-xs' : 'w-full px-4 py-[13px]'
       } ${className}`}
       {...props}
@@ -16,7 +16,7 @@ export function PrimaryButton({ className = '', compact = false, children, ...pr
 export function SecondaryButton({ className = '', compact = false, children, ...props }) {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-[#d8dbd5] bg-[#f4f5f1] font-bold text-[#4d534f] ${
+      className={`inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-[#d8dbd5] bg-[#f4f5f1] font-bold text-[#4d534f] hover:bg-[#eaebe6] hover:border-[#cfd3cc] active:bg-[#e4e6e0] disabled:cursor-not-allowed disabled:opacity-35 ${
         compact ? 'h-10 w-auto px-4 text-xs' : 'px-3.5 py-[11px]'
       } ${className}`}
       {...props}
@@ -108,7 +108,7 @@ export function Modal({ wide = false, layer = false, className = '', onClose, ch
           <button
             type="button"
             aria-label="Close"
-            className="absolute top-[17px] right-[17px] border-0 bg-transparent text-lg text-[#6e7470]"
+            className="absolute top-[17px] right-[17px] border-0 bg-transparent text-lg text-[#6e7470] transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90"
             onClick={onClose}
           >
             <FiX />
@@ -122,6 +122,98 @@ export function Modal({ wide = false, layer = false, className = '', onClose, ch
 
 export function ModalActions({ children }) {
   return <div className="mt-5 flex items-center justify-end gap-2">{children}</div>
+}
+
+/** Shows a support code so staff can text/call you with the exact failure. */
+export function ErrorBanner({ error, className = '', onDismiss }) {
+  if (!error) return null
+  const text = typeof error === 'string' ? error : error.message || String(error)
+  const codeMatch = text.match(/\bCode\s+([A-Z]{2,5}\d{2})\b/i) || text.match(/\b([A-Z]{2,5}\d{2})\b/)
+  const code = codeMatch?.[1] || null
+  return (
+    <div
+      className={`mb-3 rounded-md bg-brand-danger-bg px-3 py-2.5 text-xs text-brand-danger ${className}`}
+      role="alert"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="m-0 font-medium">{text}</p>
+          {code && (
+            <p className="m-0 mt-1 text-[11px] text-brand-danger/90">
+              Support code <strong className="tracking-wide">{code}</strong> — text or call support with this code.
+            </p>
+          )}
+        </div>
+        {onDismiss && (
+          <button
+            type="button"
+            className="shrink-0 border-0 bg-transparent text-[11px] font-bold text-brand-danger underline"
+            onClick={onDismiss}
+          >
+            Dismiss
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Minimal centered status / progress overlay */
+export function StatusOverlay({
+  title,
+  message,
+  progress = null,
+  done = false,
+  onClose,
+  closeLabel = 'Done',
+}) {
+  const pct =
+    progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.current / progress.total) * 100))
+      : null
+
+  return (
+    <div className="fixed inset-0 z-[8] grid place-items-center bg-[#202426aa] p-4">
+      <div className="w-[min(340px,100%)] rounded-[10px] bg-white px-6 py-7 text-center shadow-sm">
+        {!done && (
+          <div
+            className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-[#e4e6e0] border-t-brand-dark"
+            aria-hidden
+          />
+        )}
+        {done && (
+          <div className="mx-auto mb-4 grid h-8 w-8 place-items-center rounded-full bg-[#eef6ea] text-sm font-bold text-brand-success">
+            ✓
+          </div>
+        )}
+        <h2 className="m-0 text-base text-brand-ink">{title}</h2>
+        {message && <p className="mt-2 mb-0 text-xs text-brand-muted">{message}</p>}
+        {pct != null && !done && (
+          <div className="mt-4">
+            <div className="h-1.5 overflow-hidden rounded-full bg-[#eceee9]">
+              <div
+                className="h-full rounded-full bg-brand-dark transition-[width] duration-200"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <p className="mt-2 mb-0 text-[11px] tabular-nums text-brand-subtle">
+              {progress.current} / {progress.total}
+              {progress.label ? ` · ${progress.label}` : ''}
+            </p>
+          </div>
+        )}
+        {done && onClose && (
+          <button
+            type="button"
+            className="mt-5 h-10 w-full rounded-[5px] border-0 bg-brand-dark text-xs font-bold text-white"
+            onClick={onClose}
+          >
+            {closeLabel}
+          </button>
+        )}
+      </div>
+    </div>
+  )
 }
 
 /** Table footer pagination — quiet text controls that match table actions. */
@@ -160,5 +252,35 @@ export function StockBadge({ tone, children }) {
     >
       {children}
     </span>
+  )
+}
+
+/** Clear on/off control — looks like a switch, not a text pill. */
+export function ToggleSwitch({
+  checked = false,
+  disabled = false,
+  busy = false,
+  onChange,
+  label = 'Toggle',
+  className = '',
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled || busy}
+      onClick={() => onChange?.(!checked)}
+      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-0 p-0.5 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-55 ${
+        checked ? 'bg-[#2f6b3c]' : 'bg-[#c5cac4]'
+      } ${className}`}
+    >
+      <span
+        className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-[0_1px_2px_#20242633] transition-transform duration-150 ${
+          checked ? 'translate-x-5' : 'translate-x-0'
+        } ${busy ? 'opacity-70' : ''}`}
+      />
+    </button>
   )
 }

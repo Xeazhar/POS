@@ -84,6 +84,55 @@ button {
   cursor: pointer;
 }
 
+/* Desktop: light hover + press on shared controls */
+button:not(:disabled),
+a[href],
+[role='button'] {
+  transition:
+    transform 120ms ease,
+    filter 120ms ease,
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    opacity 120ms ease,
+    color 120ms ease;
+}
+
+button:not(:disabled):active,
+a[href]:active,
+[role='button']:active {
+  transform: scale(0.995);
+  filter: brightness(0.97);
+}
+
+/* Phone / tablet: clearer tap response (no reliable hover) */
+@media (hover: none) and (pointer: coarse) {
+  button:not(:disabled),
+  a[href],
+  [role='button'],
+  .tap-target {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+
+  button:not(:disabled):active,
+  a[href]:active,
+  [role='button']:active,
+  .tap-target:active {
+    transform: scale(0.985);
+    filter: brightness(0.96);
+  }
+
+  /* Soft row / card flash when tapped */
+  .tap-row:active {
+    background-color: #f0f1ec !important;
+  }
+
+  .tap-row-dark:active {
+    background-color: #3a403f !important;
+  }
+}
+
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button {
   -webkit-appearance: none;

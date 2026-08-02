@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Eyebrow, Field, PrimaryButton } from '../components/ui'
+import { Eyebrow, ErrorBanner, Field, PrimaryButton } from '../components/ui'
 import { allowDemoMode, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
+import { formatSupportError } from '../utils/errors'
 
 function Login() {
   const configured = hasSupabase || allowDemoMode
@@ -30,12 +31,16 @@ function Login() {
             </p>
             <p className="mt-4 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">
               Required: <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_PUBLISHABLE_KEY</code>
+              <br />
+              Support code <strong>AUTH05</strong>
             </p>
           </>
         ) : (
           <>
             <p className="text-[13px] text-brand-muted">
-              {hasSupabase ? 'Sign in with your CalePOS account.' : 'Demo mode — any email/PIN works offline.'}
+              {hasSupabase
+                ? 'Sign in with your CalePOS account. After day end, a fresh login is required.'
+                : 'Demo mode — any email/PIN works offline.'}
             </p>
             <form
               className="mt-[30px]"
@@ -47,7 +52,11 @@ function Login() {
                     const data = await loadBranch(user.branchId)
                     if (data) hydrate(data)
                   }
-                  navigate('/')
+                  if (user?.branchType === 'restaurant' && user?.role === 'cashier') {
+                    navigate('/pos?menu=1')
+                  } else {
+                    navigate('/')
+                  }
                 } catch {
                   /* error in store */
                 }
@@ -70,7 +79,7 @@ function Login() {
                 type="password"
                 required
               />
-              {error && <p className="mt-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>}
+              {error && <ErrorBanner className="mt-3 mb-0" error={formatSupportError(error, 'AUTH01')} />}
               <PrimaryButton className="mt-[25px]" type="submit" disabled={booting}>
                 {booting ? 'Signing in…' : 'Enter CalePOS'} <span>→</span>
               </PrimaryButton>

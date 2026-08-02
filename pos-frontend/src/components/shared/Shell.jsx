@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { FiLogOut } from 'react-icons/fi'
-import { managerLinks, staffLinks } from '../../constants/nav'
+import { managerLinks, staffLinksFor } from '../../constants/nav'
 import { useAuthStore } from '../../stores/posStore'
 import { useSyncStore } from '../../stores/syncStore'
 import Clock from './Clock'
@@ -65,7 +65,7 @@ function Shell({ children }) {
   const lastError = useSyncStore((state) => state.lastError)
   const navigate = useNavigate()
   const isManager = user?.role === 'manager' || user?.role === 'admin'
-  const links = isManager ? managerLinks : staffLinks
+  const links = isManager ? managerLinks : staffLinksFor(user)
   const sync = syncCopy({ online, pending, status, lastError })
 
   return (
@@ -96,7 +96,7 @@ function Shell({ children }) {
             <small className="mt-[3px] block text-[10px] text-brand-soft capitalize">{user?.role || 'staff'}</small>
           </div>
           <button
-            className="ml-1 border-0 bg-transparent text-lg text-inherit"
+            className="ml-1 border-0 bg-transparent text-lg text-inherit transition-[transform,opacity] duration-100 hover:opacity-80 active:scale-90 active:opacity-70"
             title="Sign out"
             onClick={async () => {
               await logout()
@@ -122,8 +122,10 @@ function Shell({ children }) {
                 to={path}
                 end={path === '/'}
                 className={({ isActive }) =>
-                  `mb-2 grid justify-items-center gap-2 rounded-lg px-1 py-4 text-[10px] no-underline ${
-                    isActive ? 'bg-brand-gold text-brand-dark' : 'text-[#9da4a1]'
+                  `mb-2 grid justify-items-center gap-2 rounded-lg px-1 py-4 text-[10px] no-underline transition-[background-color,color,transform] duration-100 ${
+                    isActive
+                      ? 'bg-brand-gold text-brand-dark'
+                      : 'text-[#9da4a1] hover:bg-[#343938] hover:text-[#d5dbd7] active:scale-[0.96] active:bg-[#3a403f]'
                   }`
                 }
               >

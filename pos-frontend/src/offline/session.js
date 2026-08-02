@@ -1,6 +1,7 @@
 import db from './db'
 
 const SESSION_KEY = 'sessionStaff'
+const REQUIRE_FRESH_LOGIN_KEY = 'requireFreshLogin'
 
 export async function saveLocalSession(user) {
   if (!user) {
@@ -17,4 +18,18 @@ export async function loadLocalSession() {
 
 export async function clearLocalSession() {
   await db.meta.delete(SESSION_KEY)
+}
+
+/** After day-end close: block auto-restore until password login. */
+export async function markRequireFreshLogin() {
+  await db.meta.put({ key: REQUIRE_FRESH_LOGIN_KEY, value: true })
+}
+
+export async function clearRequireFreshLogin() {
+  await db.meta.delete(REQUIRE_FRESH_LOGIN_KEY)
+}
+
+export async function needsFreshLogin() {
+  const row = await db.meta.get(REQUIRE_FRESH_LOGIN_KEY)
+  return Boolean(row?.value)
 }

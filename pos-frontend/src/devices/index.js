@@ -1,6 +1,7 @@
 /**
  * Hardware device service contracts.
  * Receipt printing falls back to browser print until a thermal printer is wired.
+ * Manager enable/disable is stored on branches.device_settings.
  */
 
 import { printReceiptBrowser } from '../utils/receipt'
@@ -14,7 +15,57 @@ import { printReceiptBrowser } from '../utils/receipt'
  * @property {DeviceConnectionState} state
  * @property {string} [detail]
  * @property {string | null} [lastSeenAt]
+ * @property {boolean} [enabled]
  */
+
+export const BRANCH_DEVICES = [
+  {
+    key: 'barcode_scanner',
+    id: 'barcode-scanner',
+    label: 'Barcode Scanner',
+    hint: 'Scan into POS search (USB wedge / HID)',
+  },
+  {
+    key: 'receipt_printer',
+    id: 'receipt-printer',
+    label: 'Receipt Printer',
+    hint: 'Print receipts after sale (thermal or browser)',
+  },
+  {
+    key: 'cash_drawer',
+    id: 'cash-drawer',
+    label: 'Cash Drawer',
+    hint: 'Open drawer with cash sales',
+  },
+]
+
+export const DEFAULT_DEVICE_SETTINGS = {
+  barcode_scanner: false,
+  receipt_printer: false,
+  cash_drawer: false,
+}
+
+export function normalizeDeviceSettings(raw) {
+  const next = { ...DEFAULT_DEVICE_SETTINGS }
+  if (!raw || typeof raw !== 'object') return next
+  for (const key of Object.keys(DEFAULT_DEVICE_SETTINGS)) {
+    if (key in raw) next[key] = raw[key] === true
+  }
+  return next
+}
+
+export function isDeviceEnabled(settings, keyOrId) {
+  const normalized = normalizeDeviceSettings(settings)
+  const key =
+    keyOrId === 'barcode-scanner' || keyOrId === 'barcode_scanner'
+      ? 'barcode_scanner'
+      : keyOrId === 'receipt-printer' || keyOrId === 'receipt_printer'
+        ? 'receipt_printer'
+        : keyOrId === 'cash-drawer' || keyOrId === 'cash_drawer'
+          ? 'cash_drawer'
+          : keyOrId
+  return normalized[key] === true
+}
 
 function stubStatus(id, label, detail = 'Not Connected') {
   return {
@@ -41,13 +92,12 @@ export const barcodeScanner = {
 
 export const receiptPrinter = {
   async getStatus() {
-    return {
-      id: 'receipt-printer',
-      label: 'Receipt Printer',
-      state: /** @type {DeviceConnectionState} */ ('connected'),
-      detail: 'Browser print ready (thermal hardware pending)',
-      lastSeenAt: new Date().toISOString(),
-    }
+    // Browser print works, but no physical thermal printer is wired yet.
+    return stubStatus(
+      'receipt-printer',
+      'Receipt Printer',
+      'Browser print only — thermal printer not connected',
+    )
   },
   async connect() {},
   async disconnect() {},
@@ -84,10 +134,26 @@ export const deviceServices = {
   cashDrawer,
 }
 
-export async function getAllDeviceStatuses() {
-  return Promise.all([
+export async function getAllDeviceStatuses(settings = null) {
+  const enabled = normalizeDeviceSettings(settings)
+  const rows = await Promise.all([
     barcodeScanner.getStatus(),
     receiptPrinter.getStatus(),
     cashDrawer.getStatus(),
   ])
+  return rows.map((row) => {
+    const key =
+      row.id === 'barcode-scanner'
+        ? 'barcode_scanner'
+        : row.id === 'receipt-printer'
+          ? 'receipt_printer'
+          : 'cash_drawer'
+    const on = enabled[key] === true
+    return {
+      ...row,
+      enabled: on,
+      state: on ? row.state : 'disconnected',
+      detail: on ? row.detail : 'Disabled by manager',
+    }
+  })
 }

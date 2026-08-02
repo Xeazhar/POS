@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Eyebrow,
   Field,
@@ -19,6 +20,8 @@ function DayEnd() {
   const dayEnds = useInventoryStore((state) => state.dayEnds)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const closeDay = useInventoryStore((state) => state.closeDay)
+  const lockAfterDayEnd = useAuthStore((state) => state.lockAfterDayEnd)
+  const navigate = useNavigate()
   const date = businessDate(new Date(), dayOpenHour)
   const recorded = transactions
     .filter((item) => item.status === 'Paid' && item.date === date)
@@ -45,6 +48,9 @@ function DayEnd() {
         closedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       })
       setConfirming(false)
+      // Security: day close ends the shift — next open requires password login
+      await lockAfterDayEnd()
+      navigate('/login', { replace: true })
     } catch (err) {
       setError(err.message || 'Could not close day')
       setConfirming(false)
@@ -150,7 +156,9 @@ function DayEnd() {
         <Modal wide onClose={() => setConfirming(false)}>
           <Eyebrow>CONFIRM DAY END</Eyebrow>
           <h2 className="mb-3 text-[22px]">Close {date}?</h2>
-          <p className="mb-2 text-xs text-brand-muted">This locks POS sales until a manager reopens the till.</p>
+          <p className="mb-2 text-xs text-brand-muted">
+            This locks POS sales and signs you out. The next open requires a fresh password login.
+          </p>
           <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px]">
             <span>Recorded</span>
             <strong className="text-right">{money(recorded)}</strong>

@@ -1,0 +1,23 @@
+name,sku,category,menuKind,price,budgetPrice,availableToday
+Adobong Manok,ULAM-ADOB-CHK,Meat,meat,70,55,true
+Adobong Baboy,ULAM-ADOB-PRK,Meat,meat,75,60,true
+Beef Caldereta,ULAM-CALD,Meat,meat,90,70,true
+Menudo,ULAM-MENU,Meat,meat,75,60,true
+Pork Sisig,ULAM-SISIG,Meat,meat,80,65,true
+Giniling,ULAM-GINIL,Meat,meat,70,55,true
+Pinakbet,ULAM-PINAK,Veggie,veggie,60,45,true
+Chopsuey,ULAM-CHOP,Veggie,veggie,65,50,true
+Ginisang Sayote,ULAM-SAYOTE,Veggie,veggie,50,40,true
+Tortang Talong,ULAM-TALONG,Veggie,veggie,55,45,true
+Pork Sinigang,ULAM-SINI-PRK,Meat,meat,80,65,true
+Fish Sinigang,ULAM-SINI-FISH,Meat,meat,75,60,true
+Tinola,ULAM-TINOLA,Meat,meat,70,55,true
+Cabagan Special,PAN-CAB,Pancit,pancit,95,,true
+Pancit Canton,PAN-CANT,Pancit,pancit,80,,true
+Plain Rice,RICE-1,Rice,rice,15,,true
+Extra Rice,RICE-X,Rice,rice,15,,true
+Softdrinks,DRK-SODA,Drink,drink,25,,true
+Iced Tea,DRK-TEA,Drink,drink,25,,true
+Bottled Water,DRK-WATER,Drink,drink,20,,true
+Egg,XTRA-EGG,Extra,extra,15,,true
+Tokwa,XTRA-TOKWA,Extra,extra,20,,false

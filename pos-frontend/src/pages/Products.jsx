@@ -14,7 +14,7 @@ import {
   StockBadge,
   TableCard,
 } from '../components/ui'
-import { useInventoryStore, useProductStore } from '../stores/posStore'
+import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { money, qty, today, formatDate, stockTone } from '../utils/format'
 import {
   decimalOnly,
@@ -32,14 +32,19 @@ const emptyForm = {
   sku: '',
   barcode: '',
   category: 'Groceries',
+  menuKind: 'meat',
   pricingMode: 'pc',
   price: '',
+  budgetPrice: '',
   stock: '',
 }
 
 function Products() {
+  const user = useAuthStore((state) => state.user)
+  const isRestaurant = user?.branchType === 'restaurant'
   const products = useProductStore((state) => state.products)
   const updateProduct = useProductStore((state) => state.updateProduct)
+  const toggleAvailableToday = useProductStore((state) => state.toggleAvailableToday)
   const movements = useInventoryStore((state) => state.movements)
   const addMovement = useInventoryStore((state) => state.addMovement)
   const [query, setQuery] = useState('')
@@ -73,16 +78,18 @@ function Products() {
       sku: product.sku,
       barcode: product.barcode,
       category: product.category,
+      menuKind: product.menuKind || 'extra',
       pricingMode: product.pricingMode,
       price: String(product.price),
-      stock: String(product.stock),
+      budgetPrice: product.budgetPrice != null ? String(product.budgetPrice) : '',
+      stock: String(product.stock ?? ''),
     })
   }
 
   const setField = (key, value) => {
     let next = value
     if (key === 'barcode') next = digitsOnly(value)
-    else if (key === 'price' || key === 'stock') next = decimalOnly(value)
+    else if (key === 'price' || key === 'stock' || key === 'budgetPrice') next = decimalOnly(value)
     else if (key === 'name' || key === 'sku') next = value.replace(/[<>]/g, '')
     setForm((prev) => ({ ...prev, [key]: next }))
     setError('')
@@ -92,10 +99,20 @@ function Products() {
     const name = sanitizeText(form.name)
     const sku = sanitizeText(form.sku)
     const barcode = digitsOnly(form.barcode)
-    if (!name || !sku || !barcode) return 'Name, SKU, and barcode are required.'
-    if (!/^\d+$/.test(barcode)) return 'Barcode must contain numbers only.'
+    if (!name || !sku) return 'Name and SKU are required.'
+    if (!isRestaurant && !barcode) return 'Name, SKU, and barcode are required.'
+    if (barcode && !/^\d+$/.test(barcode)) return 'Barcode must contain numbers only.'
     if (form.price === '' || Number(form.price) < 0) return 'Enter a valid price.'
-    if (form.stock === '' || Number.isNaN(Number(form.stock))) return 'Enter a valid stock amount.'
+    if (
+      isRestaurant &&
+      form.budgetPrice !== '' &&
+      (Number.isNaN(Number(form.budgetPrice)) || Number(form.budgetPrice) < 0)
+    ) {
+      return 'Enter a valid budget price (or leave blank).'
+    }
+    if (!isRestaurant && (form.stock === '' || Number.isNaN(Number(form.stock)))) {
+      return 'Enter a valid stock amount.'
+    }
     const duplicate = findProductDuplicate(products, { name, sku, barcode }, selected)
     if (duplicate) return `Duplicate ${duplicateField(duplicate, { name, sku, barcode })} already exists.`
     return null
@@ -108,8 +125,11 @@ function Products() {
       sku: sanitizeText(form.sku),
       barcode: digitsOnly(form.barcode),
       category: form.category,
+      menuKind: isRestaurant ? form.menuKind : undefined,
       pricingMode: form.pricingMode,
       price: Number(form.price),
+      budgetPrice:
+        isRestaurant && form.budgetPrice !== '' ? Number(form.budgetPrice) : null,
       stock: Number(form.stock),
       lowStockAt: previous?.lowStockAt ?? 5,
     }
@@ -208,8 +228,13 @@ function Products() {
 
   return (
     <div>
-      <PageHeader eyebrow="STOCK CONTROL" title="Inventory">
-        <span className="text-xs text-[#797e7b]">{products.length} SKUs</span>
+      <PageHeader
+        eyebrow={isRestaurant ? 'CARINDERIA MENU' : 'STOCK CONTROL'}
+        title={isRestaurant ? 'Menu / potahe' : 'Inventory'}
+      >
+        <span className="text-xs text-[#797e7b]">
+          {products.length} {isRestaurant ? 'items' : 'SKUs'}
+        </span>
       </PageHeader>
       <div className="mb-[18px]">
         <SearchBox
@@ -220,15 +245,31 @@ function Products() {
           onChange={(event) => setQuery(event.target.value.replace(/[<>]/g, ''))}
         />
       </div>
+      {error && isRestaurant && (
+        <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
+      )}
       <TableCard>
-        <div className="grid grid-cols-[2.5rem_1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] gap-3 border-0 bg-[#f7f7f4] px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[2rem_1.4fr_0.8fr_0.7fr]">
+        <div className={`grid gap-3 border-0 bg-[#f7f7f4] px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase ${
+          isRestaurant
+            ? 'grid-cols-[2.5rem_1.5fr_1fr_0.7fr_0.8fr] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr]'
+            : 'grid-cols-[2.5rem_1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr_0.7fr]'
+        }`}>
           <span>#</span>
-          <span>Product</span>
-          <span className="max-[700px]:hidden">Type</span>
-          <span className="text-right tabular-nums">On hand</span>
-          <span className="text-center">Status</span>
-          <span className="text-right max-[700px]:hidden">Updated</span>
-          <span className="text-right max-[700px]:hidden">Last move</span>
+          <span>{isRestaurant ? 'Potahe' : 'Product'}</span>
+          <span className="max-[700px]:hidden">{isRestaurant ? 'Plate' : 'Type'}</span>
+          {isRestaurant ? (
+            <>
+              <span className="text-center">Today</span>
+              <span className="text-right">Price</span>
+            </>
+          ) : (
+            <>
+              <span className="text-right tabular-nums">On hand</span>
+              <span className="text-center">Status</span>
+              <span className="text-right max-[700px]:hidden">Updated</span>
+              <span className="text-right max-[700px]:hidden">Last move</span>
+            </>
+          )}
         </div>
         {pageRows.map((product, index) => {
           const tone = stockTone(product)
@@ -236,28 +277,63 @@ function Products() {
           return (
             <div
               key={product.id}
-              role="button"
-              tabIndex={0}
-              className="grid cursor-pointer grid-cols-[2.5rem_1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] items-center gap-3 border-t border-brand-softline px-5 py-[17px] text-xs text-brand-slate hover:bg-[#fafaf7] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr_0.7fr]"
-              onClick={() => open(product)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') open(product)
-              }}
+              role={isRestaurant ? undefined : 'button'}
+              tabIndex={isRestaurant ? undefined : 0}
+              className={`grid items-center gap-3 border-t border-brand-softline px-5 py-[17px] text-xs text-brand-slate ${
+                isRestaurant
+                  ? 'grid-cols-[2.5rem_1.5fr_1fr_0.7fr_0.8fr] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr]'
+                  : 'tap-row cursor-pointer grid-cols-[2.5rem_1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] hover:bg-[#fafaf7] active:bg-[#f0f1ec] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr_0.7fr]'
+              }`}
+              onClick={isRestaurant ? undefined : () => open(product)}
+              onKeyDown={
+                isRestaurant
+                  ? undefined
+                  : (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') open(product)
+                    }
+              }
             >
               <span className="tabular-nums text-brand-subtle">{pageIndex * PAGE_SIZE + index + 1}</span>
               <div>
                 <strong className="block text-brand-ink">{product.name}</strong>
                 <small className="text-[10px] text-brand-subtle">{product.sku}</small>
               </div>
-              <span className="max-[700px]:hidden">{product.pricingMode === 'kg' ? 'Meat' : 'Retail'}</span>
-              <span className="text-right tabular-nums">
-                {qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}
-              </span>
-              <span className="justify-self-center">
-                <StockBadge tone={tone}>{label}</StockBadge>
-              </span>
-              <span className="text-right max-[700px]:hidden">{formatDate(product.updatedAt)}</span>
-              <span className="text-right max-[700px]:hidden">{formatDate(product.lastMovementAt)}</span>
+              <span className="max-[700px]:hidden">{isRestaurant ? product.category : product.pricingMode === 'kg' ? 'Meat' : 'Retail'}</span>
+              {isRestaurant ? (
+                <>
+                  <span className="justify-self-center">
+                    <button
+                      type="button"
+                      className={`rounded-full px-2 py-1 text-[10px] font-bold ${
+                        product.availableToday !== false
+                          ? 'bg-brand-success-bg text-brand-success-text'
+                          : 'bg-[#eceee9] text-brand-subtle'
+                      }`}
+                      onClick={async () => {
+                        try {
+                          await toggleAvailableToday(product.id)
+                        } catch (err) {
+                          setError(err.message)
+                        }
+                      }}
+                    >
+                      {product.availableToday !== false ? 'Serving' : 'Off'}
+                    </button>
+                  </span>
+                  <span className="text-right tabular-nums font-bold text-brand-ink">{money(product.price)}</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-right tabular-nums">
+                    {qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}
+                  </span>
+                  <span className="justify-self-center">
+                    <StockBadge tone={tone}>{label}</StockBadge>
+                  </span>
+                  <span className="text-right max-[700px]:hidden">{formatDate(product.updatedAt)}</span>
+                  <span className="text-right max-[700px]:hidden">{formatDate(product.lastMovementAt)}</span>
+                </>
+              )}
             </div>
           )
         })}
@@ -275,7 +351,7 @@ function Products() {
         )}
       </TableCard>
 
-      {selected && (
+      {selected && !isRestaurant && (
         <div className="fixed inset-0 z-[5] bg-[#20242666]" onClick={close}>
           <aside
             className="absolute top-0 right-0 h-full w-[min(560px,92vw)] overflow-auto bg-white p-7 shadow-[-8px_0_24px_#20242622]"
@@ -384,32 +460,90 @@ function Products() {
                   onChange={(e) => setField('barcode', e.target.value)}
                 />
                 <SelectField label="Category" value={form.category} onChange={(e) => setField('category', e.target.value)}>
-                  <option>Groceries</option>
-                  <option>Bakery</option>
-                  <option>Meat</option>
+                  {isRestaurant ? (
+                    <>
+                      <option>Meat</option>
+                      <option>Veggie</option>
+                      <option>Pancit</option>
+                      <option>Drink</option>
+                      <option>Rice</option>
+                      <option>Extra</option>
+                    </>
+                  ) : (
+                    <>
+                      <option>Groceries</option>
+                      <option>Bakery</option>
+                      <option>Meat</option>
+                    </>
+                  )}
                 </SelectField>
-                <SelectField
-                  label="Pricing mode"
-                  value={form.pricingMode}
-                  onChange={(e) => setField('pricingMode', e.target.value)}
-                >
-                  <option value="pc">Price per pc</option>
-                  <option value="kg">Price per kg</option>
-                </SelectField>
+                {isRestaurant && (
+                  <SelectField
+                    label="Menu kind"
+                    value={form.menuKind}
+                    onChange={(e) => {
+                      const kind = e.target.value
+                      setForm((prev) => ({
+                        ...prev,
+                        menuKind: kind,
+                        category:
+                          kind === 'meat'
+                            ? 'Meat'
+                            : kind === 'veggie'
+                              ? 'Veggie'
+                              : kind === 'pancit'
+                                ? 'Pancit'
+                                : kind === 'drink'
+                                  ? 'Drink'
+                                  : kind === 'rice'
+                                    ? 'Rice'
+                                    : 'Extra',
+                      }))
+                    }}
+                  >
+                    <option value="meat">Meat ulam</option>
+                    <option value="veggie">Veggie ulam</option>
+                    <option value="pancit">Pancit</option>
+                    <option value="drink">Drinks</option>
+                    <option value="rice">Rice</option>
+                    <option value="extra">Extra</option>
+                  </SelectField>
+                )}
+                {!isRestaurant && (
+                  <SelectField
+                    label="Pricing mode"
+                    value={form.pricingMode}
+                    onChange={(e) => setField('pricingMode', e.target.value)}
+                  >
+                    <option value="pc">Price per pc</option>
+                    <option value="kg">Price per kg</option>
+                  </SelectField>
+                )}
                 <Field
-                  label="Price"
+                  label={isRestaurant ? 'Regular price' : 'Price'}
                   required
                   inputMode="decimal"
                   value={form.price}
                   onChange={(e) => setField('price', e.target.value)}
                 />
-                <Field
-                  label="Current stock"
-                  required
-                  inputMode="decimal"
-                  value={form.stock}
-                  onChange={(e) => setField('stock', e.target.value)}
-                />
+                {isRestaurant && (form.menuKind === 'meat' || form.menuKind === 'veggie') && (
+                  <Field
+                    label="Budget price"
+                    inputMode="decimal"
+                    value={form.budgetPrice}
+                    onChange={(e) => setField('budgetPrice', e.target.value)}
+                    placeholder="Optional"
+                  />
+                )}
+                {!isRestaurant && (
+                  <Field
+                    label="Current stock"
+                    required
+                    inputMode="decimal"
+                    value={form.stock}
+                    onChange={(e) => setField('stock', e.target.value)}
+                  />
+                )}
                 <div className="mt-3 flex justify-end gap-2">
                   <SecondaryButton compact type="button" onClick={() => setEditing(false)}>
                     Cancel
@@ -430,7 +564,12 @@ function Products() {
                   <span>Category</span>
                   <strong className="text-brand-ink">{form.category}</strong>
                   <span>Price</span>
-                  <strong className="text-brand-ink">{money(form.price)}</strong>
+                  <strong className="text-brand-ink">
+                    {money(form.price)}
+                    {isRestaurant && form.budgetPrice !== ''
+                      ? ` · budget ${money(form.budgetPrice)}`
+                      : ''}
+                  </strong>
                   <span>On hand</span>
                   <strong className="text-brand-ink">{qty(form.stock, unit)}</strong>
                   <span>Added</span>

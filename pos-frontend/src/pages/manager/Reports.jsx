@@ -9,6 +9,7 @@ import {
   fetchInventoryReport,
   fetchReportSalesDetail,
   fetchSaleEvents,
+  formatProductCode,
   hasSupabase,
 } from '../../lib/api'
 import { money, today } from '../../utils/format'
@@ -16,7 +17,7 @@ import { money, today } from '../../utils/format'
 const REPORTS = [
   { id: 'inventory', title: 'Inventory Report', blurb: 'Current stock levels and thresholds' },
   { id: 'sales-invoice', title: 'Sales Per Invoice Report', blurb: 'OR-numbered transaction totals' },
-  { id: 'price-listing', title: 'Price Listing', blurb: 'Current product catalog with prices' },
+  { id: 'price-listing', title: 'Price Listing / Catalog', blurb: 'Product catalog with IDs (0001…) for Power BI' },
   { id: 'pos-sales-detail', title: 'POS Sales Detail Report', blurb: 'Line-item sales with filters' },
   { id: 'order-status', title: 'Order Status Listing', blurb: 'Paid vs voided orders' },
   { id: 'void-log', title: 'Void / Refund Log', blurb: 'Append-only void and refund events' },
@@ -90,11 +91,17 @@ function ManagerReports() {
         const data = await fetchInventoryReport(filters.branchId || null)
         setRows(
           data.map((row) => ({
+            product_code: formatProductCode(row.products?.product_no),
+            product_id: row.products?.id,
+            branch_id: row.products?.branch_id || filters.branchId || '',
             branch: row.branches?.name,
             product: row.products?.name,
             sku: row.products?.sku,
+            barcode: row.products?.barcode || '',
             category: row.products?.categories?.name,
             price: Number(row.products?.price || 0),
+            budget_price: row.products?.budget_price != null ? Number(row.products.budget_price) : '',
+            menu_kind: row.products?.menu_kind || '',
             on_hand: Number(row.quantity_on_hand),
             low_at: Number(row.products?.low_stock_threshold || 0),
             status: Number(row.quantity_on_hand) <= Number(row.products?.low_stock_threshold || 0) ? 'Low' : 'OK',
@@ -113,12 +120,16 @@ function ManagerReports() {
           events
             .filter((e) => e.event_type === 'void' || e.event_type === 'refund')
             .map((e) => ({
+              event_id: e.id,
+              transaction_id: e.transaction_id || '',
               when: e.created_at,
               type: e.event_type,
               or_number: e.or_number,
               amount: Number(e.amount || 0),
               reason: e.reason,
+              staff_id: e.staff_id || '',
               staff: e.staff?.full_name,
+              branch_id: e.branch_id || '',
               branch: e.branches?.name,
             })),
         )
@@ -181,14 +192,22 @@ function ManagerReports() {
       if (selected === 'pos-sales-detail') {
         setRows(
           detail.map((row) => ({
+            transaction_id: row.transactions?.id,
+            product_code: formatProductCode(row.products?.product_no),
+            product_id: row.products?.id || row.product_id,
+            branch_id: row.transactions?.branch_id,
             date: row.transactions?.created_at?.slice(0, 10),
             or_number: row.transactions?.or_number || row.transactions?.id,
             cashier: row.transactions?.staff?.full_name,
             product: row.products?.name,
+            sku: row.products?.sku || '',
             category: row.products?.categories?.name,
             qty: Number(row.quantity),
             unit_price: Number(row.unit_price),
             line_total: Number(row.line_total),
+            price_tier: row.price_tier || '',
+            order_type: row.transactions?.order_type || '',
+            ulam_combo: row.transactions?.ulam_combo || '',
             payment: 'Cash',
           })),
         )
@@ -200,10 +219,14 @@ function ManagerReports() {
           const id = row.transactions?.id
           if (!byTxn[id]) {
             byTxn[id] = {
+              transaction_id: id,
+              branch_id: row.transactions?.branch_id,
               or_number: row.transactions?.or_number || id,
               date: row.transactions?.created_at?.slice(0, 10),
               cashier: row.transactions?.staff?.full_name,
               status: row.transactions?.status,
+              order_type: row.transactions?.order_type || '',
+              ulam_combo: row.transactions?.ulam_combo || '',
               void_reason: row.transactions?.void_reason || '',
               total: 0,
               lines: 0,
@@ -219,13 +242,22 @@ function ManagerReports() {
         const byStaff = {}
         detail.forEach((row) => {
           if (row.transactions?.status === 'voided') return
+          const staffId = row.transactions?.staff_id || 'unknown'
           const name = row.transactions?.staff?.full_name || 'Unknown'
-          if (!byStaff[name]) byStaff[name] = { cashier: name, invoices: new Set(), sales: 0 }
-          byStaff[name].invoices.add(row.transactions?.or_number || row.transactions?.id)
-          byStaff[name].sales += Number(row.line_total)
+          if (!byStaff[staffId]) {
+            byStaff[staffId] = {
+              staff_id: staffId === 'unknown' ? '' : staffId,
+              cashier: name,
+              invoices: new Set(),
+              sales: 0,
+            }
+          }
+          byStaff[staffId].invoices.add(row.transactions?.or_number || row.transactions?.id)
+          byStaff[staffId].sales += Number(row.line_total)
         })
         setRows(
           Object.values(byStaff).map((row) => ({
+            staff_id: row.staff_id,
             cashier: row.cashier,
             invoices: row.invoices.size,
             sales: row.sales,

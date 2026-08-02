@@ -5,7 +5,9 @@ create table if not exists branches (
   name text not null,
   address text,
   is_active boolean not null default true,
+  branch_type text not null default 'retail' check (branch_type in ('retail', 'restaurant')),
   day_open_hour integer not null default 7 check (day_open_hour >= 0 and day_open_hour <= 23),
+  device_settings jsonb not null default '{"barcode_scanner":false,"receipt_printer":false,"cash_drawer":false}'::jsonb,
   created_at timestamptz not null default now()
 );
 
@@ -40,17 +42,24 @@ create table if not exists categories (
 );
 
 create table if not exists products (
+  -- id = stable UUID for sales lines / Power BI joins (never reuse)
+  -- product_no = per-branch sequential code shown as 0001, 0002, …
+  -- sku = human business key used for CSV import matching
   id uuid primary key default gen_random_uuid(),
   branch_id uuid not null references branches(id) on delete cascade,
   category_id uuid references categories(id) on delete set null,
   name text not null,
   sku text not null,
   barcode text,
+  product_no integer,
   pricing_mode text not null check (pricing_mode in ('per_unit', 'per_kg')),
   price numeric(10,2) not null check (price >= 0),
+  budget_price numeric(10,2) check (budget_price is null or budget_price >= 0),
+  menu_kind text check (menu_kind is null or menu_kind in ('meat', 'veggie', 'pancit', 'drink', 'rice', 'extra')),
   low_stock_threshold numeric(10,2) not null default 10,
   medium_stock_threshold numeric(10,2) not null default 30,
   is_active boolean not null default true,
+  available_today boolean not null default true,
   created_at timestamptz not null default now(),
   unique (branch_id, sku),
   unique (branch_id, barcode)
@@ -58,6 +67,7 @@ create table if not exists products (
 create index if not exists idx_products_branch on products(branch_id);
 create index if not exists idx_products_sku on products(branch_id, sku);
 create index if not exists idx_products_barcode on products(branch_id, barcode);
+create unique index if not exists idx_products_branch_product_no on products(branch_id, product_no);
 
 create table if not exists branch_inventory (
   id uuid primary key default gen_random_uuid(),
@@ -95,6 +105,8 @@ create table if not exists transactions (
   void_reason text,
   or_number text,
   client_id text,
+  order_type text check (order_type is null or order_type in ('dine_in', 'takeout')),
+  ulam_combo text,
   voided_at timestamptz,
   voided_by uuid references staff(id) on delete set null,
   created_at timestamptz not null default now()
@@ -106,7 +118,8 @@ create table if not exists transaction_items (
   product_id uuid not null references products(id) on delete restrict,
   quantity numeric(10,2) not null check (quantity > 0),
   unit_price numeric(10,2) not null,
-  line_total numeric(10,2) not null
+  line_total numeric(10,2) not null,
+  price_tier text check (price_tier is null or price_tier in ('regular', 'budget'))
 );
 
 create table if not exists day_ends (
@@ -188,24 +201,32 @@ $$;
 drop policy if exists "staff reads own branch" on branches;
 drop policy if exists "managers read all branches" on branches;
 drop policy if exists "managers write branches" on branches;
+drop policy if exists "read branches" on branches;
 create policy "read branches" on branches for select to authenticated
   using (id = public.current_staff_branch() or public.is_manager());
+drop policy if exists "managers write branches" on branches;
 create policy "managers write branches" on branches for all to authenticated
   using (public.is_manager()) with check (public.is_manager());
 
 drop policy if exists "staff reads own profile" on staff;
 drop policy if exists "managers manage staff" on staff;
+drop policy if exists "read staff" on staff;
 create policy "read staff" on staff for select to authenticated
   using (auth_user_id = auth.uid() or public.is_manager());
+drop policy if exists "managers manage staff" on staff;
 create policy "managers manage staff" on staff for all to authenticated
   using (public.is_manager()) with check (public.is_manager());
 
+drop policy if exists "read roles" on roles;
 create policy "read roles" on roles for select to authenticated using (true);
+drop policy if exists "managers write roles" on roles;
 create policy "managers write roles" on roles for all to authenticated
   using (public.is_manager()) with check (public.is_manager());
 
 drop policy if exists "staff reads categories" on categories;
+drop policy if exists "read categories" on categories;
 create policy "read categories" on categories for select to authenticated using (true);
+drop policy if exists "managers write categories" on categories;
 create policy "managers write categories" on categories for all to authenticated
   using (public.is_manager()) with check (public.is_manager());
 
@@ -224,6 +245,8 @@ create policy "write products" on products for all to authenticated
 
 drop policy if exists "staff sees own branch inventory" on branch_inventory;
 drop policy if exists "managers adjust own branch inventory" on branch_inventory;
+drop policy if exists "read inventory" on branch_inventory;
+drop policy if exists "write inventory" on branch_inventory;
 create policy "read inventory" on branch_inventory for select to authenticated
   using (branch_id = public.current_staff_branch() or public.is_manager());
 create policy "write inventory" on branch_inventory for all to authenticated
@@ -232,6 +255,8 @@ create policy "write inventory" on branch_inventory for all to authenticated
 
 drop policy if exists "staff sees own branch movements" on stock_movements;
 drop policy if exists "staff creates own branch movements" on stock_movements;
+drop policy if exists "read movements" on stock_movements;
+drop policy if exists "write movements" on stock_movements;
 create policy "read movements" on stock_movements for select to authenticated
   using (branch_id = public.current_staff_branch() or public.is_manager());
 create policy "write movements" on stock_movements for insert to authenticated
@@ -240,6 +265,9 @@ create policy "write movements" on stock_movements for insert to authenticated
 drop policy if exists "staff sees own branch transactions" on transactions;
 drop policy if exists "staff creates own branch transactions" on transactions;
 drop policy if exists "managers void own branch transactions" on transactions;
+drop policy if exists "read transactions" on transactions;
+drop policy if exists "write transactions" on transactions;
+drop policy if exists "update transactions" on transactions;
 create policy "read transactions" on transactions for select to authenticated
   using (branch_id = public.current_staff_branch() or public.is_manager());
 create policy "write transactions" on transactions for insert to authenticated
@@ -250,6 +278,8 @@ create policy "update transactions" on transactions for update to authenticated
 
 drop policy if exists "staff sees transaction items" on transaction_items;
 drop policy if exists "staff creates transaction items" on transaction_items;
+drop policy if exists "read txn items" on transaction_items;
+drop policy if exists "write txn items" on transaction_items;
 create policy "read txn items" on transaction_items for select to authenticated
   using (exists (
     select 1 from transactions t
@@ -261,6 +291,9 @@ create policy "write txn items" on transaction_items for insert to authenticated
     where t.id = transaction_id and (t.branch_id = public.current_staff_branch() or public.is_manager())
   ));
 
+drop policy if exists "read day ends" on day_ends;
+drop policy if exists "write day ends" on day_ends;
+drop policy if exists "update day ends" on day_ends;
 create policy "read day ends" on day_ends for select to authenticated
   using (branch_id = public.current_staff_branch() or public.is_manager());
 create policy "write day ends" on day_ends for insert to authenticated

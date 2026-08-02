@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Field, PageHeader, PrimaryButton, SecondaryButton, TableCard } from '../../components/ui'
+import { Field, PageHeader, PrimaryButton, SecondaryButton, SelectField, TableCard } from '../../components/ui'
 import { branchSummary, fetchBranches, hasSupabase, saveBranch } from '../../lib/api'
 import { money } from '../../utils/format'
 
@@ -8,12 +8,7 @@ const empty = {
   name: '',
   address: '',
   is_active: true,
-  business_name: '',
-  tin: '',
-  bir_permit_no: '',
-  machine_identification_no: '',
-  serial_number: '',
-  or_prefix: 'OR',
+  branch_type: 'retail',
 }
 
 function ManagerBranches() {
@@ -68,6 +63,11 @@ function ManagerBranches() {
                 <div className="min-w-0">
                   <h2 className="m-0 text-lg">{branch.name}</h2>
                   <p className="mt-1 text-xs text-brand-muted">{branch.address || 'No address'}</p>
+                  {branch.branch_type === 'restaurant' && (
+                    <p className="mt-1 text-[10px] font-bold tracking-wide text-brand-warn uppercase">
+                      Restaurant / carinderia
+                    </p>
+                  )}
                 </div>
                 <span
                   className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${
@@ -109,11 +109,17 @@ function ManagerBranches() {
       {form && (
         <div className="fixed inset-0 z-[5] grid place-items-center bg-[#202426aa]">
           <form
-            className="w-[min(480px,calc(100%-32px))] rounded-[10px] bg-white p-6"
+            className="w-[min(420px,calc(100%-32px))] rounded-[10px] bg-white p-6"
             onSubmit={async (event) => {
               event.preventDefault()
               try {
-                await saveBranch(form)
+                await saveBranch({
+                  id: form.id,
+                  name: form.name,
+                  address: form.address,
+                  is_active: form.is_active,
+                  branch_type: form.branch_type || 'retail',
+                })
                 setForm(null)
                 await reload()
               } catch (err) {
@@ -123,14 +129,25 @@ function ManagerBranches() {
           >
             <h2 className="mb-4 text-lg">{form.id ? 'Edit branch' : 'Add branch'}</h2>
             <div className="grid gap-3">
-              <Field label="Branch name" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-              <Field label="Business name (receipt)" value={form.business_name || ''} onChange={(e) => setForm({ ...form, business_name: e.target.value })} />
-              <Field label="Address" value={form.address || ''} onChange={(e) => setForm({ ...form, address: e.target.value })} />
-              <Field label="TIN" value={form.tin || ''} onChange={(e) => setForm({ ...form, tin: e.target.value })} placeholder="000-000-000-000" />
-              <Field label="BIR permit no." value={form.bir_permit_no || ''} onChange={(e) => setForm({ ...form, bir_permit_no: e.target.value })} />
-              <Field label="Machine ID (MIN)" value={form.machine_identification_no || ''} onChange={(e) => setForm({ ...form, machine_identification_no: e.target.value })} />
-              <Field label="Serial number" value={form.serial_number || ''} onChange={(e) => setForm({ ...form, serial_number: e.target.value })} />
-              <Field label="OR prefix" value={form.or_prefix || 'OR'} onChange={(e) => setForm({ ...form, or_prefix: e.target.value })} />
+              <Field
+                label="Branch name"
+                required
+                value={form.name || ''}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+              />
+              <Field
+                label="Address"
+                value={form.address || ''}
+                onChange={(e) => setForm({ ...form, address: e.target.value })}
+              />
+              <SelectField
+                label="Branch type"
+                value={form.branch_type || 'retail'}
+                onChange={(e) => setForm({ ...form, branch_type: e.target.value })}
+              >
+                <option value="retail">Retail / grocery</option>
+                <option value="restaurant">Restaurant / carinderia</option>
+              </SelectField>
               <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
                 <input
                   type="checkbox"

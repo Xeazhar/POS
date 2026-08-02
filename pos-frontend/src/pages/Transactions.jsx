@@ -3,9 +3,10 @@ import { FiSearch } from 'react-icons/fi'
 import TransactionDetailModal from '../components/transactions/TransactionDetailModal'
 import { Eyebrow, Modal, PageHeader, SearchBox, SecondaryButton, TableCard } from '../components/ui'
 import { fetchBranches, fetchTransactionDetail, hasSupabase } from '../lib/api'
-import { receiptPrinter } from '../devices'
+import { isDeviceEnabled, receiptPrinter } from '../devices'
 import { getLocalTransactionDetail } from '../offline'
 import { useAuthStore, useInventoryStore } from '../stores/posStore'
+import { formatSupportError } from '../utils/errors'
 import { money, today } from '../utils/format'
 import { buildReceipt } from '../utils/receipt'
 import { detailFromLocalTxn, isUuid } from '../utils/transactionDetail'
@@ -179,7 +180,7 @@ function Transactions() {
             key={item.id}
             role="button"
             tabIndex={0}
-            className="grid cursor-pointer grid-cols-[1.2fr_1.4fr_1.3fr_0.6fr_0.9fr_0.8fr_0.6fr] items-center gap-3 border-t border-brand-softline px-5 py-[17px] text-xs text-brand-slate hover:bg-[#fafaf7] max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr]"
+            className="tap-row grid cursor-pointer grid-cols-[1.2fr_1.4fr_1.3fr_0.6fr_0.9fr_0.8fr_0.6fr] items-center gap-3 border-t border-brand-softline px-5 py-[17px] text-xs text-brand-slate hover:bg-[#fafaf7] active:bg-[#f0f1ec] max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr]"
             onClick={() => openDetail(item)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') openDetail(item)
@@ -226,6 +227,10 @@ function Transactions() {
           onClose={() => setDetail(null)}
           onPrint={async (row) => {
             try {
+              if (!isDeviceEnabled(user?.deviceSettings, 'receipt_printer')) {
+                setError(formatSupportError({ code: 'DEV03', message: 'Receipt printer is disabled for this branch. Ask a manager to turn it On.' }, 'DEV03'))
+                return
+              }
               let branch = { name: user?.branchName, business_name: user?.branchName }
               if (hasSupabase && user?.branchId) {
                 const branches = await fetchBranches().catch(() => [])
@@ -234,7 +239,7 @@ function Transactions() {
               const receipt = buildReceipt({ branch, user, transaction: row, lines: row.lines || [] })
               await receiptPrinter.printReceipt(receipt)
             } catch (err) {
-              setError(err.message)
+              setError(formatSupportError(err, 'DEV04'))
             }
           }}
           onVoid={(row) => {

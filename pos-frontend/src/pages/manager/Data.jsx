@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { FiSearch, FiUpload } from 'react-icons/fi'
+import { FiPlus, FiSearch, FiUpload } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import {
+  ErrorBanner,
   Field,
   Modal,
   ModalActions,
@@ -11,6 +12,7 @@ import {
   SearchBox,
   SecondaryButton,
   SelectField,
+  StatusOverlay,
   TableCard,
 } from '../../components/ui'
 import {
@@ -28,10 +30,31 @@ import {
 import { useAuthStore, useProductStore } from '../../stores/posStore'
 import { buildImportPreview, sha256Hex } from '../../utils/inventoryImport'
 import { money, qty } from '../../utils/format'
-import { decimalOnly } from '../../utils/validate'
+import { formatSupportError } from '../../utils/errors'
+import { categoryForMenuKind, hasBudgetTier, MENU_KINDS } from '../../utils/ulam'
+import {
+  decimalOnly,
+  digitsOnly,
+  duplicateField,
+  findProductDuplicate,
+  sanitizeText,
+} from '../../utils/validate'
 
 const OFFLINE_KEY = 'cale-import-batches-v1'
 const PAGE_SIZE = 10
+
+const emptyAddForm = () => ({
+  name: '',
+  sku: '',
+  barcode: '',
+  category: 'Groceries',
+  menuKind: 'meat',
+  pricingMode: 'pc',
+  price: '',
+  budgetPrice: '',
+  stock: '',
+  availableToday: true,
+})
 
 function loadOfflineBatches() {
   try {
@@ -63,6 +86,14 @@ function ManagerData() {
   const [confirmRevert, setConfirmRevert] = useState(null)
   const [priceEdit, setPriceEdit] = useState(null)
   const [priceValue, setPriceValue] = useState('')
+  const [importProgress, setImportProgress] = useState(null)
+  const [importDone, setImportDone] = useState(false)
+  const [showAdd, setShowAdd] = useState(false)
+  const [addForm, setAddForm] = useState(emptyAddForm)
+  const [addError, setAddError] = useState('')
+
+  const selectedBranch = branches.find((b) => b.id === branchId)
+  const isRestaurant = selectedBranch?.branch_type === 'restaurant'
 
   const refreshCatalog = async (id = branchId) => {
     if (!id) {
@@ -110,6 +141,99 @@ function ManagerData() {
     setPage(0)
   }, [query])
 
+  const openAdd = () => {
+    setAddError('')
+    setAddForm({
+      ...emptyAddForm(),
+      category: isRestaurant ? 'Meat' : 'Groceries',
+      menuKind: 'meat',
+      availableToday: true,
+    })
+    setShowAdd(true)
+  }
+
+  const setAddField = (key, value) => {
+    let next = value
+    if (key === 'barcode') next = digitsOnly(value)
+    else if (key === 'price' || key === 'stock' || key === 'budgetPrice') next = decimalOnly(value)
+    else if (key === 'name' || key === 'sku') next = value.replace(/[<>]/g, '')
+    setAddForm((prev) => ({ ...prev, [key]: next }))
+    setAddError('')
+  }
+
+  const saveNewItem = async () => {
+    if (!branchId || !user) {
+      setAddError('Select a branch first.')
+      return
+    }
+    const name = sanitizeText(addForm.name)
+    const sku = sanitizeText(addForm.sku)
+    const barcode = digitsOnly(addForm.barcode)
+    if (!name || !sku) {
+      setAddError('Name and SKU are required.')
+      return
+    }
+    if (!isRestaurant && !barcode) {
+      setAddError('Name, SKU, and barcode are required.')
+      return
+    }
+    if (addForm.price === '' || Number(addForm.price) < 0) {
+      setAddError('Enter a valid price.')
+      return
+    }
+    if (
+      isRestaurant &&
+      addForm.budgetPrice !== '' &&
+      (Number.isNaN(Number(addForm.budgetPrice)) || Number(addForm.budgetPrice) < 0)
+    ) {
+      setAddError('Enter a valid budget price (or leave blank).')
+      return
+    }
+    if (!isRestaurant && (addForm.stock === '' || Number.isNaN(Number(addForm.stock)))) {
+      setAddError('Enter a valid stock amount.')
+      return
+    }
+    const duplicate = findProductDuplicate(products, { name, sku, barcode })
+    if (duplicate) {
+      setAddError(`Duplicate ${duplicateField(duplicate, { name, sku, barcode })} already exists.`)
+      return
+    }
+
+    const menuKind = isRestaurant ? addForm.menuKind : undefined
+    const values = {
+      branchId,
+      _restaurant: isRestaurant,
+      branchType: isRestaurant ? 'restaurant' : 'retail',
+      name,
+      sku,
+      barcode: barcode || null,
+      category: isRestaurant ? categoryForMenuKind(menuKind, addForm.category) : addForm.category,
+      menuKind,
+      pricingMode: isRestaurant ? 'pc' : addForm.pricingMode,
+      price: Number(addForm.price),
+      budgetPrice:
+        isRestaurant && hasBudgetTier(menuKind) && addForm.budgetPrice !== ''
+          ? Number(addForm.budgetPrice)
+          : null,
+      stock: isRestaurant ? 0 : Number(addForm.stock),
+      lowStockAt: 5,
+      availableToday: isRestaurant ? addForm.availableToday !== false : true,
+    }
+
+    setBusy(true)
+    setAddError('')
+    try {
+      await useProductStore.getState().addProduct(values)
+      await refreshCatalog(branchId)
+      setShowAdd(false)
+      setAddForm(emptyAddForm())
+    } catch (err) {
+      setAddError(formatSupportError(err, 'DATA02'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const clearPreview = () => {
     setPreview(null)
     setDuplicate(null)
@@ -154,10 +278,11 @@ function ManagerData() {
       }
 
       setPreview({
-        ...buildImportPreview(rawRows, catalog),
+        ...buildImportPreview(rawRows, catalog, { restaurant: isRestaurant }),
         filename: file.name,
         fileHash,
         branchId,
+        restaurant: isRestaurant,
       })
     } catch (err) {
       setError(err.message || 'Could not read file')
@@ -175,6 +300,8 @@ function ManagerData() {
     }
     setBusy(true)
     setError('')
+    setImportDone(false)
+    setImportProgress({ current: 0, total: preview.lines.length || 1, label: 'Starting…' })
     try {
       if (hasSupabase) {
         await commitInventoryImport({
@@ -183,9 +310,23 @@ function ManagerData() {
           filename: preview.filename,
           fileHash: preview.fileHash,
           preview,
+          onProgress: setImportProgress,
         })
       } else {
-        await useProductStore.getState().importInventoryRows(preview.lines.map((line) => line.values))
+        const lines = preview.lines
+        for (let i = 0; i < lines.length; i += 1) {
+          await useProductStore.getState().importInventoryRows([
+            {
+              ...lines[i].values,
+              _restaurant: Boolean(preview.restaurant),
+            },
+          ])
+          setImportProgress({
+            current: i + 1,
+            total: lines.length,
+            label: lines[i].values.name,
+          })
+        }
         const batch = {
           id: crypto.randomUUID(),
           branch_id: preview.branchId,
@@ -212,8 +353,11 @@ function ManagerData() {
       }
       clearPreview()
       await Promise.all([refreshHistory(branchId), refreshCatalog(branchId)])
+      setImportDone(true)
     } catch (err) {
-      setError(err.message || 'Import failed')
+      setError(formatSupportError(err, 'DATA01'))
+      setImportProgress(null)
+      setImportDone(false)
     } finally {
       setBusy(false)
     }
@@ -297,7 +441,7 @@ function ManagerData() {
       }
       setPriceEdit(null)
     } catch (err) {
-      setError(err.message || 'Price update failed')
+      setError(formatSupportError(err, 'DATA03'))
     } finally {
       setBusy(false)
     }
@@ -305,7 +449,7 @@ function ManagerData() {
 
   const canCommit = preview && (!duplicate || acknowledgeDuplicate) && preview.lines.length > 0
   const filtered = products.filter((product) =>
-    [product.name, product.sku, product.barcode].some((value) =>
+    [product.productCode, product.id, product.name, product.sku, product.barcode].some((value) =>
       String(value || '').toLowerCase().includes(query.toLowerCase()),
     ),
   )
@@ -315,14 +459,32 @@ function ManagerData() {
 
   return (
     <div>
-      <PageHeader eyebrow="MANAGER" title="Inventory data" />
+      {(importProgress || importDone) && (
+        <StatusOverlay
+          title={importDone ? 'Import complete' : 'Importing…'}
+          message={
+            importDone
+              ? 'Catalog updated.'
+              : importProgress?.label || 'Please wait'
+          }
+          progress={importDone ? null : importProgress}
+          done={importDone}
+          onClose={() => {
+            setImportProgress(null)
+            setImportDone(false)
+          }}
+          closeLabel="Close"
+        />
+      )}
+      <PageHeader eyebrow="MANAGER" title={isRestaurant ? 'Menu data' : 'Inventory data'} />
       <p className="mb-4 max-w-3xl text-xs text-brand-muted">
-        Browse and update branch pricing, or import CSV/XLSX. Import columns: name, sku, barcode, category,
-        pricingMode (kg or pc), price, stock.
+        {isRestaurant
+          ? 'Add one potahe at a time, or import CSV/XLSX. Required for import: name, sku, category, price. Optional: menuKind, budgetPrice, barcode, availableToday.'
+          : 'Add one product, browse pricing, or import CSV/XLSX. Required for import: name, sku, barcode, price, stock. Optional: category, pricingMode (kg or pc), lowStockAt.'}
       </p>
 
       <TableCard className="mb-4 max-h-none p-5">
-        <div className="grid grid-cols-[1fr_auto] items-end gap-3 max-[700px]:grid-cols-1">
+        <div className="grid grid-cols-[1fr_auto_auto] items-end gap-3 max-[700px]:grid-cols-1">
           <SelectField
             label="Branch"
             value={branchId}
@@ -335,24 +497,29 @@ function ManagerData() {
               <option key={branch.id} value={branch.id}>{branch.name}</option>
             ))}
           </SelectField>
+          <PrimaryButton compact type="button" disabled={busy || !branchId} onClick={openAdd}>
+            <FiPlus /> Add item
+          </PrimaryButton>
           <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-[5px] border border-brand-border bg-white px-4 text-xs font-bold text-[#4d534f]">
-            <FiUpload /> Choose file
+            <FiUpload /> Import file
             <input className="hidden" type="file" accept=".csv,.xlsx,.xls" disabled={busy || !branchId} onChange={onFile} />
           </label>
         </div>
-        {error && <p className="mt-3 text-xs text-brand-danger">{error}</p>}
+        {error && <ErrorBanner className="mt-3 mb-0" error={formatSupportError(error)} onDismiss={() => setError('')} />}
       </TableCard>
 
       <TableCard className="mb-4 max-h-none">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-brand-softline px-5 py-3">
-          <div>
+        <div className="flex flex-col gap-3 border-b border-brand-softline px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
             <h2 className="m-0 text-base">Branch catalog</h2>
-            <p className="m-0 mt-1 text-[11px] text-brand-subtle">{products.length} products · edit price from the table</p>
+            <p className="m-0 mt-1 text-[11px] text-brand-subtle">
+              {products.length} products · IDs like 0001, 0002 · export from Reports → Price Listing
+            </p>
           </div>
           <SearchBox
-            className="w-full max-w-[280px]"
+            className="w-full sm:w-[260px] sm:shrink-0"
             icon={<FiSearch />}
-            placeholder="Search catalog"
+            placeholder="Search ID, name, SKU"
             value={query}
             onChange={(e) => setQuery(e.target.value.replace(/[<>]/g, ''))}
           />
@@ -361,7 +528,7 @@ function ManagerData() {
           <table className="min-w-full text-left text-xs">
             <thead className="bg-[#f7f7f4] text-[9px] tracking-[1px] text-[#989e99] uppercase">
               <tr>
-                <th className="px-5 py-3 w-10">#</th>
+                <th className="px-5 py-3">ID</th>
                 <th className="px-5 py-3">Product</th>
                 <th className="px-5 py-3">SKU</th>
                 <th className="px-5 py-3 max-[700px]:hidden">Category</th>
@@ -372,9 +539,11 @@ function ManagerData() {
               </tr>
             </thead>
             <tbody>
-              {pageRows.map((product, index) => (
+              {pageRows.map((product) => (
                 <tr key={product.id} className="border-t border-brand-softline">
-                  <td className="px-5 py-3 tabular-nums text-brand-subtle">{pageIndex * PAGE_SIZE + index + 1}</td>
+                  <td className="px-5 py-3 tabular-nums font-bold text-brand-ink">
+                    {product.productCode || '—'}
+                  </td>
                   <td className="px-5 py-3">
                     <strong className="block text-brand-ink">{product.name}</strong>
                     <small className="text-[10px] text-brand-subtle">{product.barcode}</small>
@@ -400,7 +569,9 @@ function ManagerData() {
             </tbody>
           </table>
           {filtered.length === 0 && (
-            <div className="px-5 py-6 text-xs text-brand-subtle">No products for this branch yet. Import a file to start.</div>
+            <div className="px-5 py-6 text-xs text-brand-subtle">
+              No products for this branch yet. Add an item or import a file.
+            </div>
           )}
         </div>
         {filtered.length > 0 && (
@@ -483,8 +654,8 @@ function ManagerData() {
         </TableCard>
       )}
 
-      <TableCard className="max-h-none">
-        <div className="border-b border-brand-softline px-5 py-3">
+      <TableCard className="mb-4 max-h-none">
+        <div className="border-b border-brand-softline px-5 py-4">
           <h2 className="m-0 text-base">Import history</h2>
         </div>
         {history.length === 0 ? (
@@ -567,6 +738,207 @@ function ManagerData() {
           <ModalActions>
             <SecondaryButton compact type="button" onClick={() => setDetailBatch(null)}>Close</SecondaryButton>
           </ModalActions>
+        </Modal>
+      )}
+
+      {isRestaurant ? (
+        <TableCard className="mb-4 max-h-none p-5">
+          <h2 className="m-0 text-base">Ulam / potahe import guide</h2>
+          <ol className="mt-3 mb-0 list-decimal space-y-2 pl-4 text-xs leading-relaxed text-brand-muted">
+            <li>Select the restaurant branch above.</li>
+            <li>
+              Import with <code>sku</code>. The system assigns product IDs <strong>0001</strong>,{' '}
+              <strong>0002</strong>, … (easy to track) plus an internal UUID for Power BI joins.
+            </li>
+            <li>
+              Columns: <code>name</code>, <code>sku</code>, <code>category</code>, <code>price</code>
+              (optional <code>menuKind</code>, <code>budgetPrice</code>, <code>barcode</code>,{' '}
+              <code>availableToday</code>).
+            </li>
+            <li>
+              Categories: <strong>Meat</strong>, <strong>Veggie</strong>, <strong>Pancit</strong>,{' '}
+              <strong>Drink</strong>, <strong>Rice</strong>, <strong>Extra</strong>.
+            </li>
+            <li>
+              Sample:{' '}
+              <a className="font-bold text-brand-ink" href="/samples/potahe-menu-import.csv" download>
+                potahe-menu-import.csv
+              </a>
+              . Export catalog from <strong>Reports → Price Listing / Catalog</strong>.
+            </li>
+          </ol>
+          <pre className="mt-4 overflow-auto rounded-md bg-[#f7f7f4] p-3 text-[11px] leading-relaxed text-brand-ink">
+{`name,sku,category,menuKind,price,budgetPrice,availableToday
+Adobo,ULAM-ADOB,Meat,meat,70,55,true
+Pinakbet,ULAM-PINAK,Veggie,veggie,60,45,true
+Cabagan Special,PAN-CAB,Pancit,pancit,90,,true
+Plain Rice,RICE-1,Rice,rice,15,,true
+Softdrinks,DRK-SODA,Drink,drink,25,,true`}
+          </pre>
+        </TableCard>
+      ) : (
+        <TableCard className="mb-4 max-h-none p-5">
+          <h2 className="m-0 text-base">Inventory import guide</h2>
+          <ol className="mt-3 mb-0 list-decimal space-y-2 pl-4 text-xs leading-relaxed text-brand-muted">
+            <li>Select the retail branch above.</li>
+            <li>
+              Import with <code>sku</code> + <code>barcode</code>. Product IDs are assigned as{' '}
+              <strong>0001</strong>, <strong>0002</strong>, … per branch.
+            </li>
+            <li>
+              Columns: <code>name</code>, <code>sku</code>, <code>barcode</code>, <code>price</code>,{' '}
+              <code>stock</code> (optional <code>category</code>, <code>pricingMode</code>,{' '}
+              <code>lowStockAt</code>).
+            </li>
+            <li>
+              <code>pricingMode</code>: <strong>pc</strong> or <strong>kg</strong>. Re-importing the same SKU{' '}
+              <strong>adds</strong> stock (restock).
+            </li>
+            <li>
+              Sample:{' '}
+              <a className="font-bold text-brand-ink" href="/samples/inventory-import.csv" download>
+                inventory-import.csv
+              </a>
+              . Export catalog from <strong>Reports → Price Listing / Catalog</strong>.
+            </li>
+          </ol>
+          <pre className="mt-4 overflow-auto rounded-md bg-[#f7f7f4] p-3 text-[11px] leading-relaxed text-brand-ink">
+{`name,sku,barcode,category,pricingMode,price,stock,lowStockAt
+White Sugar 1kg,GRO-SUG-1,4801000000011,Groceries,pc,65,24,5
+Pork Belly,MEA-BELLY,4801000000028,Meat,kg,320,12.5,3
+Pandesa,BAK-PAN,4801000000035,Bakery,pc,8,80,20`}
+          </pre>
+        </TableCard>
+      )}
+
+      {showAdd && (
+        <Modal wide onClose={() => !busy && setShowAdd(false)}>
+          <h2 className="m-0 pr-8 text-lg">
+            {isRestaurant ? 'Add potahe / menu item' : 'Add product'}
+          </h2>
+          <p className="mt-1 text-xs text-brand-muted">
+            {selectedBranch?.name || 'Selected branch'}
+          </p>
+          {addError && (
+            <p className="mt-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">
+              {addError}
+            </p>
+          )}
+          <form
+            className="mt-4 grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault()
+              saveNewItem()
+            }}
+          >
+            <Field
+              label={isRestaurant ? 'Potahe name' : 'Product name'}
+              required
+              value={addForm.name}
+              onChange={(e) => setAddField('name', e.target.value)}
+            />
+            <Field
+              label="SKU / item code"
+              required
+              value={addForm.sku}
+              onChange={(e) => setAddField('sku', e.target.value)}
+            />
+            <Field
+              label="Barcode"
+              required={!isRestaurant}
+              inputMode="numeric"
+              value={addForm.barcode}
+              onChange={(e) => setAddField('barcode', e.target.value)}
+              placeholder={isRestaurant ? 'Optional' : undefined}
+            />
+            {isRestaurant ? (
+              <SelectField
+                label="Menu kind"
+                value={addForm.menuKind}
+                onChange={(e) => {
+                  const kind = e.target.value
+                  setAddForm((prev) => ({
+                    ...prev,
+                    menuKind: kind,
+                    category: categoryForMenuKind(kind),
+                    budgetPrice: hasBudgetTier(kind) ? prev.budgetPrice : '',
+                  }))
+                  setAddError('')
+                }}
+              >
+                {MENU_KINDS.map((kind) => (
+                  <option key={kind.id} value={kind.id}>
+                    {kind.label}
+                  </option>
+                ))}
+              </SelectField>
+            ) : (
+              <>
+                <SelectField
+                  label="Category"
+                  value={addForm.category}
+                  onChange={(e) => setAddField('category', e.target.value)}
+                >
+                  <option>Groceries</option>
+                  <option>Bakery</option>
+                  <option>Meat</option>
+                </SelectField>
+                <SelectField
+                  label="Pricing mode"
+                  value={addForm.pricingMode}
+                  onChange={(e) => setAddField('pricingMode', e.target.value)}
+                >
+                  <option value="pc">Price per pc</option>
+                  <option value="kg">Price per kg</option>
+                </SelectField>
+              </>
+            )}
+            <Field
+              label={isRestaurant ? 'Regular price' : 'Price'}
+              required
+              inputMode="decimal"
+              value={addForm.price}
+              onChange={(e) => setAddField('price', e.target.value)}
+            />
+            {isRestaurant && hasBudgetTier(addForm.menuKind) && (
+              <Field
+                label="Budget price"
+                inputMode="decimal"
+                value={addForm.budgetPrice}
+                onChange={(e) => setAddField('budgetPrice', e.target.value)}
+                placeholder="Optional"
+              />
+            )}
+            {!isRestaurant && (
+              <Field
+                label="Starting stock"
+                required
+                inputMode="decimal"
+                value={addForm.stock}
+                onChange={(e) => setAddField('stock', e.target.value)}
+              />
+            )}
+            {isRestaurant && (
+              <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
+                <input
+                  type="checkbox"
+                  checked={addForm.availableToday !== false}
+                  onChange={(e) =>
+                    setAddForm((prev) => ({ ...prev, availableToday: e.target.checked }))
+                  }
+                />
+                Serving today
+              </label>
+            )}
+            <ModalActions>
+              <SecondaryButton compact type="button" disabled={busy} onClick={() => setShowAdd(false)}>
+                Cancel
+              </SecondaryButton>
+              <PrimaryButton compact type="submit" disabled={busy}>
+                {busy ? 'Saving…' : 'Add item'}
+              </PrimaryButton>
+            </ModalActions>
+          </form>
         </Modal>
       )}
 

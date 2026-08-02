@@ -11,8 +11,10 @@ import {
   syncBranch,
   upsertLocalSale,
 } from '../offline'
-import { clearLocalSession, loadLocalSession, saveLocalSession } from '../offline/session'
+import { clearLocalSession, clearRequireFreshLogin, loadLocalSession, markRequireFreshLogin, needsFreshLogin, saveLocalSession } from '../offline/session'
+import { appError, formatSupportError } from '../utils/errors'
 import { isTillClosed, today } from '../utils/format'
+import { detectUlamCombo, effectiveUnitPrice, hasBudgetTier, lineTotal, normalizeMenuKind } from '../utils/ulam'
 import { useSyncStore } from './syncStore'
 
 const seedProducts = [
@@ -41,9 +43,7 @@ export const useAuthStore = create(persist((set, get) => ({
     try {
       if (!api.hasSupabase) {
         if (!api.allowDemoMode) {
-          throw new Error(
-            'CalePOS is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY before publishing.',
-          )
+          throw appError('AUTH05')
         }
         const user = {
           id: 'local-staff',
@@ -51,24 +51,38 @@ export const useAuthStore = create(persist((set, get) => ({
           role: 'admin',
           branchId: 'demo-main-branch',
           branchName: 'Bayombong Branch #001',
+          branchType: 'retail',
           dayOpenHour: 7,
+          deviceSettings: {
+            barcode_scanner: false,
+            receipt_printer: false,
+            cash_drawer: false,
+          },
         }
         set({ user, booting: false })
+        useCartStore.getState().clear()
+        await clearRequireFreshLogin()
         await saveLocalSession(user)
         return user
       }
       if (!isOnline()) {
+        if (await needsFreshLogin()) {
+          throw appError('AUTH04')
+        }
         const cached = await loadLocalSession()
         if (cached) {
+          useCartStore.getState().clear()
           set({ user: cached, booting: false })
           setSyncBranchId(cached.branchId)
           return cached
         }
-        throw new Error('You are offline and no saved session was found. Connect once to sign in.')
+        throw appError('AUTH03')
       }
       const user = await api.signIn(email, password)
-      if (!user) throw new Error('No staff profile linked to this account.')
+      if (!user) throw appError('AUTH02')
+      useCartStore.getState().clear()
       set({ user, booting: false })
+      await clearRequireFreshLogin()
       await saveLocalSession(user)
       setSyncBranchId(user.branchId)
       api.logAuditEvent({
@@ -76,11 +90,11 @@ export const useAuthStore = create(persist((set, get) => ({
         staffId: user.id,
         eventType: 'login',
         detail: `Signed in as ${user.name}`,
-        meta: { role: user.role },
+        meta: { role: user.role, branchType: user.branchType },
       })
       return user
     } catch (error) {
-      set({ error: error.message || 'Login failed', booting: false, user: null })
+      set({ error: formatSupportError(error, 'AUTH01'), booting: false, user: null })
       throw error
     }
   },
@@ -88,6 +102,12 @@ export const useAuthStore = create(persist((set, get) => ({
     if (!api.hasSupabase) return get().user
     set({ booting: true })
     try {
+      if (await needsFreshLogin()) {
+        if (isOnline()) await api.signOut().catch(() => {})
+        await clearLocalSession()
+        set({ user: null, booting: false })
+        return null
+      }
       let user = null
       if (isOnline()) {
         user = await api.fetchSessionStaff()
@@ -101,14 +121,37 @@ export const useAuthStore = create(persist((set, get) => ({
       if (user?.branchId) setSyncBranchId(user.branchId)
       return user
     } catch {
+      if (await needsFreshLogin()) {
+        set({ user: null, booting: false })
+        return null
+      }
       const cached = await loadLocalSession()
       set({ user: cached, booting: false })
       if (cached?.branchId) setSyncBranchId(cached.branchId)
       return cached
     }
   },
+  /** Secure lockout after day-end — clears session so next open needs password. */
+  lockAfterDayEnd: async () => {
+    const user = get().user
+    useCartStore.getState().clear()
+    if (api.hasSupabase && user) {
+      api.logAuditEvent({
+        branchId: user.branchId,
+        staffId: user.id,
+        eventType: 'day_end_lock',
+        detail: 'Day closed — session locked until next login',
+      })
+    }
+    await markRequireFreshLogin()
+    if (api.hasSupabase && isOnline()) await api.signOut().catch(() => {})
+    await clearLocalSession()
+    setSyncBranchId(null)
+    set({ user: null })
+  },
   logout: async () => {
     const user = get().user
+    useCartStore.getState().clear()
     if (api.hasSupabase && user) {
       api.logAuditEvent({
         branchId: user.branchId,
@@ -126,10 +169,30 @@ export const useAuthStore = create(persist((set, get) => ({
 
 export const useCartStore = create(persist((set, get) => ({
   items: [],
-  addItem: (product, quantity = 1) => set((state) => {
+  orderType: 'dine_in',
+  addItem: (product, quantity = 1, opts = {}) => set((state) => {
+    const menuKind = normalizeMenuKind(product.menuKind, product.category)
+    const regularPrice = Number(product.regularPrice ?? product.price ?? 0)
+    const budgetPrice = product.budgetPrice != null ? Number(product.budgetPrice) : null
+    const priceTier =
+      opts.priceTier === 'budget' && hasBudgetTier(menuKind) && budgetPrice != null
+        ? 'budget'
+        : 'regular'
+    const unit = effectiveUnitPrice({
+      menuKind,
+      regularPrice,
+      budgetPrice,
+      priceTier,
+      price: regularPrice,
+    })
+
     if (product.pricingMode !== 'kg') {
-      const matching = state.items.filter((item) => item.id === product.id)
-      const otherItems = state.items.filter((item) => item.id !== product.id)
+      const matching = state.items.filter(
+        (item) => item.id === product.id && (item.priceTier || 'regular') === priceTier,
+      )
+      const otherItems = state.items.filter(
+        (item) => !(item.id === product.id && (item.priceTier || 'regular') === priceTier),
+      )
       const currentQuantity = matching.reduce((sum, item) => sum + Number(item.quantity || 0), 0)
       return {
         items: [
@@ -137,8 +200,13 @@ export const useCartStore = create(persist((set, get) => ({
           {
             id: product.id,
             name: product.name,
-            price: product.price,
-            pricingMode: product.pricingMode,
+            sku: product.sku,
+            price: unit,
+            regularPrice,
+            budgetPrice,
+            priceTier,
+            menuKind,
+            pricingMode: product.pricingMode || 'pc',
             quantity: currentQuantity + quantity,
           },
         ],
@@ -150,7 +218,12 @@ export const useCartStore = create(persist((set, get) => ({
         {
           id: product.id,
           name: product.name,
-          price: product.price,
+          sku: product.sku,
+          price: unit,
+          regularPrice,
+          budgetPrice,
+          priceTier,
+          menuKind,
           pricingMode: product.pricingMode,
           quantity: 1,
           weight: quantity,
@@ -158,15 +231,57 @@ export const useCartStore = create(persist((set, get) => ({
       ],
     }
   }),
+  setPriceTier: (index, tier) => set((state) => ({
+    items: state.items.map((item, i) => {
+      if (i !== index) return item
+      if (!hasBudgetTier(item.menuKind) || item.budgetPrice == null) return item
+      const priceTier = tier === 'budget' ? 'budget' : 'regular'
+      return {
+        ...item,
+        priceTier,
+        price: effectiveUnitPrice({ ...item, priceTier }),
+      }
+    }),
+  })),
+  setOrderType: (orderType) => set({ orderType: orderType === 'takeout' ? 'takeout' : 'dine_in' }),
   removeItem: (index) => set((state) => ({ items: state.items.filter((_, i) => i !== index) })),
-  clear: () => set({ items: [] }),
-  total: () => get().items.reduce((sum, item) => sum + item.price * (item.pricingMode === 'kg' ? item.weight : item.quantity), 0),
-}), { name: 'cale-pos-cart-v4' }))
+  clear: () => set({ items: [], orderType: 'dine_in' }),
+  total: () => get().items.reduce((sum, item) => sum + lineTotal(item), 0),
+  ulamCombo: () => detectUlamCombo(get().items),
+}), { name: 'cale-pos-cart-v5' }))
 
 export const useProductStore = create((set, get) => ({
   products: offlineDemo ? seedProducts : [],
   loading: false,
   setProducts: (products) => set({ products }),
+  setAvailableToday: (productId, availableToday) =>
+    set((state) => ({
+      products: state.products.map((p) =>
+        p.id === productId ? { ...p, availableToday: Boolean(availableToday) } : p,
+      ),
+    })),
+  toggleAvailableToday: async (productId) => {
+    const product = get().products.find((p) => p.id === productId)
+    if (!product) return
+    const next = !product.availableToday
+    set((state) => ({
+      products: state.products.map((p) =>
+        p.id === productId ? { ...p, availableToday: next } : p,
+      ),
+    }))
+    if (api.hasSupabase) {
+      try {
+        await api.setMenuAvailableToday(productId, next)
+      } catch (err) {
+        set((state) => ({
+          products: state.products.map((p) =>
+            p.id === productId ? { ...p, availableToday: product.availableToday } : p,
+          ),
+        }))
+        throw err
+      }
+    }
+  },
   loadBranch: async (branchId) => {
     if (!api.hasSupabase || !branchId) return
     set({ loading: true })
@@ -184,45 +299,73 @@ export const useProductStore = create((set, get) => ({
   },
   addProduct: async (values) => {
     const user = useAuthStore.getState().user
-    if (api.hasSupabase && user?.branchId) {
+    const branchId = values.branchId || user?.branchId
+    const branchType =
+      values._restaurant || values.branchType === 'restaurant' || user?.branchType === 'restaurant'
+        ? 'restaurant'
+        : 'retail'
+    const sameBranch = branchId && user?.branchId && branchId === user.branchId
+    if (api.hasSupabase && branchId && user?.id) {
       if (isOnline()) {
         const product = await api.createProduct({
-          branchId: user.branchId,
+          branchId,
           staffId: user.id,
           values,
+          branchType,
         })
-        set((state) => ({ products: [...state.products, product] }))
-        await syncBranch(user.branchId)
-        return product.id
+        if (values.availableToday === false && product?.id) {
+          await api.setMenuAvailableToday(product.id, false).catch(() => {})
+        }
+        if (sameBranch) {
+          set((state) => ({ products: [...state.products, product] }))
+          void syncBranch(branchId)
+        }
+        return product
       }
       const id = newClientId('prod')
       const product = {
         ...values,
         id,
-        branchId: user.branchId,
+        branchId,
         createdAt: today(),
         updatedAt: today(),
-        lastMovementAt: today(),
+        lastMovementAt: branchType === 'restaurant' ? null : today(),
+        availableToday: values.availableToday !== false,
       }
-      set((state) => ({ products: [...state.products, product] }))
-      await enqueue(QUEUE_TYPES.CREATE_PRODUCT, {
-        branchId: user.branchId,
-        staffId: user.id,
-        values,
-        localId: id,
-      }, { branchId: user.branchId })
-      useSyncStore.getState().refresh(user.branchId)
-      return id
+      if (sameBranch) set((state) => ({ products: [...state.products, product] }))
+      await enqueue(
+        QUEUE_TYPES.CREATE_PRODUCT,
+        {
+          branchId,
+          staffId: user.id,
+          values,
+          branchType,
+          localId: id,
+        },
+        { branchId },
+      )
+      useSyncStore.getState().refresh(branchId)
+      return product
     }
     const id = `${values.name.toLowerCase().replaceAll(' ', '-')}-${Date.now()}`
-    set((state) => ({ products: [...state.products, { ...values, id }] }))
-    return id
+    const product = { ...values, id, branchId }
+    if (sameBranch || !user?.branchId) set((state) => ({ products: [...state.products, product] }))
+    return product
   },
   updateProduct: async (id, changes) => {
     const user = useAuthStore.getState().user
     const previous = get().products.find((item) => item.id === id)
     if (api.hasSupabase && user?.branchId) {
-      const mapped = { ...previous, ...changes }
+      const mapped = {
+        ...previous,
+        ...changes,
+        regularPrice: changes.price != null ? Number(changes.price) : previous?.regularPrice ?? previous?.price,
+        budgetPrice:
+          changes.budgetPrice !== undefined
+            ? changes.budgetPrice
+            : previous?.budgetPrice,
+        menuKind: changes.menuKind || previous?.menuKind,
+      }
       const priceChanged =
         previous && changes.price != null && Number(changes.price) !== Number(previous.price)
 
@@ -309,6 +452,8 @@ export const useProductStore = create((set, get) => ({
   replaceProducts: (products) => set({ products }),
   importInventoryRows: async (rows) => {
     const user = useAuthStore.getState().user
+    const restaurant = user?.branchType === 'restaurant'
+    // Prefer selected branch type from import rows context when manager imports for restaurant
     const current = get().products
     const seen = new Set()
     let created = 0
@@ -319,11 +464,12 @@ export const useProductStore = create((set, get) => ({
       const name = String(raw.name || '').trim()
       const sku = String(raw.sku || '').trim()
       const barcode = String(raw.barcode || '').replace(/\D/g, '')
-      if (!name || !sku || !barcode) {
+      const isRestaurantRow = restaurant || raw._restaurant === true
+      if (!name || !sku || (!isRestaurantRow && !barcode)) {
         skipped += 1
         continue
       }
-      const key = `${sku.toLowerCase()}|${barcode}`
+      const key = barcode ? `${sku.toLowerCase()}|${barcode}` : sku.toLowerCase()
       if (seen.has(key)) {
         skipped += 1
         continue
@@ -333,29 +479,52 @@ export const useProductStore = create((set, get) => ({
       const values = {
         name,
         sku,
-        barcode,
-        category: raw.category || 'Groceries',
-        pricingMode: raw.pricingMode === 'kg' || raw.pricingMode === 'per_kg' ? 'kg' : 'pc',
+        barcode: barcode || `MENU-${sku}`.replace(/\W+/g, '').slice(0, 32),
+        category: raw.category || (isRestaurantRow ? 'Meat' : 'Groceries'),
+        menuKind: isRestaurantRow
+          ? (raw.menuKind || raw.menu_kind || undefined)
+          : undefined,
+        pricingMode: isRestaurantRow
+          ? 'pc'
+          : raw.pricingMode === 'kg' || raw.pricingMode === 'per_kg'
+            ? 'kg'
+            : 'pc',
         price: Number(raw.price || 0),
-        stock: Number(raw.stock || 0),
+        budgetPrice:
+          isRestaurantRow && raw.budgetPrice != null && raw.budgetPrice !== ''
+            ? Number(raw.budgetPrice)
+            : isRestaurantRow && raw.budget_price != null && raw.budget_price !== ''
+              ? Number(raw.budget_price)
+              : null,
+        stock: isRestaurantRow ? 0 : Number(raw.stock || 0),
         lowStockAt: Number(raw.lowStockAt || 5),
+        availableToday: raw.availableToday !== false,
       }
 
       const existing = current.find(
         (item) =>
-          item.sku.toLowerCase() === sku.toLowerCase() || String(item.barcode) === barcode,
+          item.sku.toLowerCase() === sku.toLowerCase() ||
+          (barcode && String(item.barcode) === barcode),
       )
 
       if (existing) {
-        const nextStock = Number((Number(existing.stock) + values.stock).toFixed(2))
+        const nextStock = isRestaurantRow
+          ? Number(existing.stock || 0)
+          : Number((Number(existing.stock) + values.stock).toFixed(2))
         await get().updateProduct(existing.id, {
           ...existing,
           name: values.name,
           price: values.price,
+          budgetPrice: values.budgetPrice,
+          menuKind: values.menuKind,
           category: values.category,
           pricingMode: values.pricingMode,
           stock: nextStock,
+          availableToday: values.availableToday,
         })
+        if (api.hasSupabase && isRestaurantRow) {
+          await api.setMenuAvailableToday(existing.id, values.availableToday).catch(() => {})
+        }
         updated += 1
       } else {
         await get().addProduct(values)
@@ -387,38 +556,44 @@ export const useInventoryStore = create((set, get) => ({
     const user = useAuthStore.getState().user
     const items = payload.itemsList || []
     if (isTillClosed(get().dayEnds, get().dayOpenHour)) {
-      throw new Error('Till is closed for this business day. Ask a manager to reopen.')
+      throw appError('TILL01')
     }
 
     // Local-first: apply sale to IndexedDB + memory, then queue / sync
     const productStore = useProductStore.getState()
+    const isRestaurant = user?.branchType === 'restaurant'
     const saleMoves = []
     let nextProducts = productStore.products
     const bizDate = today(get().dayOpenHour)
     const localId = payload.id || newClientId('txn')
 
-    for (const item of items) {
-      const product = nextProducts.find((row) => row.id === item.id)
-      if (!product) continue
-      const sold = item.pricingMode === 'kg' ? item.weight : item.quantity
-      const stock = Number((Number(product.stock) - sold).toFixed(2))
-      nextProducts = nextProducts.map((row) =>
-        row.id === item.id ? { ...row, stock, lastMovementAt: bizDate } : row,
-      )
-      saleMoves.push({
-        id: newClientId('move'),
-        date: bizDate,
-        createdAt: new Date().toISOString(),
-        productId: item.id,
-        product: item.name,
-        type: 'Sale',
-        quantityChange: -sold,
-        resultingStock: stock,
-        branchId: user?.branchId,
-        syncStatus: 'pending',
-      })
+    if (!isRestaurant) {
+      for (const item of items) {
+        const product = nextProducts.find((row) => row.id === item.id)
+        if (!product) continue
+        const sold = item.pricingMode === 'kg' ? item.weight : item.quantity
+        const stock = Number((Number(product.stock) - sold).toFixed(2))
+        nextProducts = nextProducts.map((row) =>
+          row.id === item.id ? { ...row, stock, lastMovementAt: bizDate } : row,
+        )
+        saleMoves.push({
+          id: newClientId('move'),
+          date: bizDate,
+          createdAt: new Date().toISOString(),
+          productId: item.id,
+          product: item.name,
+          type: 'Sale',
+          quantityChange: -sold,
+          resultingStock: stock,
+          branchId: user?.branchId,
+          syncStatus: 'pending',
+        })
+      }
+      productStore.setProducts(nextProducts)
     }
 
+    const orderType = payload.orderType === 'takeout' ? 'takeout' : 'dine_in'
+    const ulamCombo = payload.ulamCombo || null
     const localTxn = {
       ...payload,
       id: localId,
@@ -428,9 +603,10 @@ export const useInventoryStore = create((set, get) => ({
       syncStatus: 'pending',
       createdAt: new Date().toISOString(),
       cashier: user?.name || payload.cashier || 'Staff',
+      orderType,
+      ulamCombo,
     }
 
-    productStore.setProducts(nextProducts)
     set((state) => ({
       transactions: [localTxn, ...state.transactions],
       movements: [...saleMoves, ...state.movements],
@@ -440,33 +616,46 @@ export const useInventoryStore = create((set, get) => ({
       await upsertLocalSale({
         transaction: localTxn,
         movements: saleMoves,
-        products: nextProducts.filter((p) => items.some((i) => i.id === p.id)),
+        products: isRestaurant
+          ? []
+          : nextProducts.filter((p) => items.some((i) => i.id === p.id)),
       })
       await enqueue(
         QUEUE_TYPES.COMPLETE_SALE,
         {
           branchId: user.branchId,
           staffId: user.id,
-          items,
+          branchType: user.branchType || 'retail',
+          items: items.map((item) => ({
+            ...item,
+            unitPrice: item.unitPrice ?? item.price,
+            priceTier: item.priceTier || 'regular',
+          })),
           total: payload.total,
           tendered: payload.tendered,
+          orderType,
+          ulamCombo,
           localTransactionId: localId,
           clientId: localId,
         },
         { branchId: user.branchId, clientId: localId },
       )
       useSyncStore.getState().refresh(user.branchId)
+      // Don't block the cashier on full sync — push/pull in the background.
       if (isOnline()) {
-        const data = await syncBranch(user.branchId)
-        if (data) {
-          set({
-            transactions: data.transactions,
-            movements: data.movements,
-            dayEnds: data.dayEnds,
-            dayOpenHour: Number(data.dayOpenHour ?? 7),
+        void syncBranch(user.branchId)
+          .then((data) => {
+            if (!data) return
+            set({
+              transactions: data.transactions,
+              movements: data.movements,
+              dayEnds: data.dayEnds,
+              dayOpenHour: Number(data.dayOpenHour ?? 7),
+            })
+            useProductStore.getState().setProducts(data.products)
+            useSyncStore.getState().refresh(user.branchId)
           })
-          useProductStore.getState().setProducts(data.products)
-        }
+          .catch(() => {})
       }
       return localTxn
     }
