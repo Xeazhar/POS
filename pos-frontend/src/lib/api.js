@@ -1,4 +1,5 @@
 import { allowDemoMode, supabase } from './supabase'
+import { mapDayReport } from '../utils/dayEndReport'
 import { localDateKey, today } from '../utils/format'
 import { normalizeMenuKind } from '../utils/ulam'
 
@@ -7,6 +8,28 @@ export { allowDemoMode }
 
 const mapPricing = (mode) => (mode === 'per_kg' || mode === 'kg' ? 'kg' : 'pc')
 const toDbPricing = (mode) => (mode === 'kg' ? 'per_kg' : 'per_unit')
+
+export function mapDayEndRow(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    date: row.business_date,
+    recordedCash: Number(row.recorded_cash),
+    cashOnHand: Number(row.cash_on_hand),
+    variance: Number(row.variance),
+    note: row.note || '',
+    status: row.status || 'closed',
+    cashier: row.staff?.full_name || '',
+    closedAt: row.closed_at
+      ? new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : '',
+    reopenedAt: row.reopened_at
+      ? new Date(row.reopened_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : null,
+    dayReport: mapDayReport(row.day_report),
+    branchId: row.branch_id || null,
+  }
+}
 
 function isMissingColumnError(error, column) {
   const msg = String(error?.message || error || '')
@@ -249,20 +272,7 @@ export async function bootstrapBranchData(branchId) {
     ),
     transactions: (txRes.data || []).map((row) => mapTransaction(withCashierName(row, staffNames))),
     movements: (moveRes.data || []).map(mapMovement),
-    dayEnds: (dayRes.data || []).map((row) => ({
-      id: row.id,
-      date: row.business_date,
-      recordedCash: Number(row.recorded_cash),
-      cashOnHand: Number(row.cash_on_hand),
-      variance: Number(row.variance),
-      note: row.note || '',
-      status: row.status || 'closed',
-      cashier: row.staff?.full_name || '',
-      closedAt: new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      reopenedAt: row.reopened_at
-        ? new Date(row.reopened_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : null,
-    })),
+    dayEnds: (dayRes.data || []).map((row) => mapDayEndRow(row)),
     categories: catsRes.data || [],
     dayOpenHour: Number(branchRes.data?.day_open_hour ?? 7),
   }
@@ -683,23 +693,31 @@ export async function closeDayEnd({ branchId, staffId, entry }) {
     reopened_at: null,
     reopened_by: null,
   }
-
-  if (entry.id) {
-    const { data, error } = await supabase
-      .from('day_ends')
-      .update(payload)
-      .eq('id', entry.id)
-      .select('*, staff!staff_id(full_name)')
-      .single()
-    if (error) throw error
-    return data
+  if (entry.dayReport != null) {
+    payload.day_report = entry.dayReport
   }
 
-  const { data, error } = await supabase
-    .from('day_ends')
-    .insert(payload)
-    .select('*, staff!staff_id(full_name)')
-    .single()
+  const run = async (body) => {
+    if (entry.id) {
+      return supabase
+        .from('day_ends')
+        .update(body)
+        .eq('id', entry.id)
+        .select('*, staff!staff_id(full_name)')
+        .single()
+    }
+    return supabase.from('day_ends').insert(body).select('*, staff!staff_id(full_name)').single()
+  }
+
+  let { data, error } = await run(payload)
+  if (error && payload.day_report && isMissingColumnError(error, 'day_report')) {
+    const fallback = { ...payload }
+    delete fallback.day_report
+    ;({ data, error } = await run(fallback))
+    if (!error) {
+      console.warn('day_report column missing — run migrate_day_end_report.sql')
+    }
+  }
   if (error) throw error
   return data
 }

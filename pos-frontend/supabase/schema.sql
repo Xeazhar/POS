@@ -131,6 +131,7 @@ create table if not exists day_ends (
   cash_on_hand numeric(10,2) not null default 0,
   variance numeric(10,2) not null default 0,
   note text,
+  day_report jsonb,
   status text not null default 'closed' check (status in ('closed', 'reopened')),
   closed_at timestamptz not null default now(),
   reopened_at timestamptz,

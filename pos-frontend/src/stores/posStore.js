@@ -756,6 +756,7 @@ export const useInventoryStore = create((set, get) => ({
       cashier: user?.name || entry.cashier,
       reopenedAt: null,
       branchId: user?.branchId,
+      dayReport: entry.dayReport || null,
       syncStatus: api.hasSupabase ? 'pending' : 'local',
     }
     set((state) => ({
@@ -769,20 +770,9 @@ export const useInventoryStore = create((set, get) => ({
           staffId: user.id,
           entry: { ...entry, id: existing?.id },
         })
-        const remote = {
-          id: row.id,
-          date: row.business_date,
-          recordedCash: Number(row.recorded_cash),
-          cashOnHand: Number(row.cash_on_hand),
-          variance: Number(row.variance),
-          note: row.note || '',
-          status: row.status || 'closed',
-          cashier: row.staff?.full_name || user?.name || entry.cashier,
-          closedAt: new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          reopenedAt: null,
-          branchId: user.branchId,
-          syncStatus: 'synced',
-        }
+        const remote = api.mapDayEndRow(row)
+        remote.syncStatus = 'synced'
+        remote.branchId = user.branchId
         set((state) => ({
           dayEnds: [remote, ...state.dayEnds.filter((item) => item.id !== remote.id && item.date !== remote.date)],
         }))
@@ -817,20 +807,7 @@ export const useInventoryStore = create((set, get) => ({
     if (api.hasSupabase && user) {
       if (isOnline()) {
         const row = await api.reopenDayEnd({ id, staffId: user.id })
-        const mapped = {
-          id: row.id,
-          date: row.business_date,
-          recordedCash: Number(row.recorded_cash),
-          cashOnHand: Number(row.cash_on_hand),
-          variance: Number(row.variance),
-          note: row.note || '',
-          status: 'reopened',
-          cashier: row.staff?.full_name || '',
-          closedAt: new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          reopenedAt: row.reopened_at
-            ? new Date(row.reopened_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            : null,
-        }
+        const mapped = api.mapDayEndRow(row)
         set((state) => ({
           dayEnds: state.dayEnds.map((item) => (item.id === id ? mapped : item)),
         }))

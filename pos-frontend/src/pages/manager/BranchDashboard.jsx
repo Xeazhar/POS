@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { FiX } from 'react-icons/fi'
 import { Link, useParams } from 'react-router-dom'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
+import { DayEndReportPanels, RestockAlertBanner } from '../../components/dayend/DayEndReportPanels'
 import {
   ErrorBanner,
   Eyebrow,
@@ -24,6 +25,7 @@ import {
 } from '../../lib/api'
 import { BRANCH_DEVICES, normalizeDeviceSettings } from '../../devices'
 import { useAuthStore } from '../../stores/posStore'
+import { previousDayRestockReport } from '../../utils/dayEndReport'
 import { formatSupportError } from '../../utils/errors'
 import { businessDate, formatOpenHourLabel, greetingFor, money, qty } from '../../utils/format'
 import { isUuid } from '../../utils/transactionDetail'
@@ -301,6 +303,9 @@ function ManagerBranchDashboard() {
   const invPages = Math.max(1, Math.ceil(data.products.length / PAGE_SIZE))
   const pageIndex = Math.min(invPage, invPages - 1)
   const invSlice = data.products.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
+  const restockEntry = !isRestaurant
+    ? previousDayRestockReport(data.dayEnds || [], todayKey)
+    : null
 
   return (
     <div>
@@ -319,6 +324,20 @@ function ManagerBranchDashboard() {
       </PageHeader>
       {error && (
         <ErrorBanner error={error} onDismiss={() => setError('')} />
+      )}
+
+      {restockEntry && (
+        <>
+          <RestockAlertBanner entry={restockEntry} />
+          <DayEndReportPanels
+            report={restockEntry.dayReport}
+            title={`Sold · ${restockEntry.date}`}
+            showRestock
+            compact
+            alert
+            fromDate={restockEntry.date}
+          />
+        </>
       )}
 
       <TableCard className="mb-4 max-h-none">
@@ -480,27 +499,38 @@ function ManagerBranchDashboard() {
               </PrimaryButton>
             </div>
           )}
-          <div className="grid grid-cols-[0.85fr_0.65fr_0.65fr_0.65fr_0.7fr_1fr_auto] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[900px]:grid-cols-[1fr_0.8fr_0.8fr]">
+          <div className="grid grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem]">
             <span>Date</span>
-            <span>Expected</span>
-            <span>Counted</span>
-            <span>Variance</span>
+            <span className="text-right max-[900px]:hidden">Expected</span>
+            <span className="text-right max-[900px]:hidden">Counted</span>
+            <span className="text-right">Variance</span>
             <span className="max-[900px]:hidden">Status</span>
             <span className="max-[900px]:hidden">Note</span>
-            <span />
+            <span className="text-right"> </span>
           </div>
           {(data.dayEnds || []).slice(0, 8).map((entry) => (
-            <div key={entry.id} className="grid grid-cols-[0.85fr_0.65fr_0.65fr_0.65fr_0.7fr_1fr_auto] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[1fr_0.8fr_0.8fr]">
-              <div>
-                <strong className="block text-brand-ink">{entry.date}</strong>
-                <small className="text-[10px] text-brand-subtle">
+            <div
+              key={entry.id}
+              className="grid grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem]"
+            >
+              <div className="min-w-0">
+                <strong className="block truncate text-brand-ink">{entry.date}</strong>
+                <small className="block truncate text-[10px] text-brand-subtle">
                   {entry.closedAt || '—'}
-                  {entry.cashier ? ` - ${entry.cashier}` : ''}
+                  {entry.cashier ? ` · ${entry.cashier}` : ''}
+                </small>
+                <small className="mt-0.5 hidden text-[10px] text-brand-subtle max-[900px]:block">
+                  Exp {money(entry.recordedCash)} · Cnt {money(entry.cashOnHand)}
+                  {entry.status ? ` · ${entry.status}` : ''}
                 </small>
               </div>
-              <span>{money(entry.recordedCash)}</span>
-              <span>{money(entry.cashOnHand)}</span>
-              <span className={Number(entry.variance) === 0 ? 'text-brand-success' : 'text-brand-danger'}>
+              <span className="text-right tabular-nums max-[900px]:hidden">{money(entry.recordedCash)}</span>
+              <span className="text-right tabular-nums max-[900px]:hidden">{money(entry.cashOnHand)}</span>
+              <span
+                className={`text-right tabular-nums font-bold ${
+                  Number(entry.variance) === 0 ? 'text-brand-success' : 'text-brand-danger'
+                }`}
+              >
                 {money(entry.variance)}
               </span>
               <span className="capitalize max-[900px]:hidden">{entry.status || 'closed'}</span>
@@ -508,15 +538,17 @@ function ManagerBranchDashboard() {
                 {entry.note || '—'}
               </span>
               <span className="text-right">
-                {entry.status === 'closed' && (
+                {entry.status === 'closed' ? (
                   <button
                     type="button"
-                    className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline disabled:opacity-40"
+                    className="border-0 bg-transparent text-[11px] font-bold whitespace-nowrap text-brand-ink underline disabled:opacity-40"
                     disabled={reopening === entry.id}
                     onClick={() => handleReopen(entry)}
                   >
-                    Reopen
+                    {reopening === entry.id ? '…' : 'Reopen'}
                   </button>
+                ) : (
+                  <span className="text-brand-subtle">—</span>
                 )}
               </span>
             </div>

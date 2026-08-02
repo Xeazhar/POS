@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { DayEndReportPanels } from '../components/dayend/DayEndReportPanels'
 import {
   Eyebrow,
   Field,
@@ -10,13 +11,18 @@ import {
   SecondaryButton,
   TableCard,
 } from '../components/ui'
-import { useAuthStore, useInventoryStore } from '../stores/posStore'
+import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
+import { buildDayEndReport } from '../utils/dayEndReport'
+import { formatSupportError } from '../utils/errors'
 import { businessDate, dayEndForBusinessDate, formatOpenHourLabel, money } from '../utils/format'
 import { decimalOnly } from '../utils/validate'
 
 function DayEnd() {
   const user = useAuthStore((state) => state.user)
+  const isRestaurant = user?.branchType === 'restaurant'
+  const products = useProductStore((state) => state.products)
   const transactions = useInventoryStore((state) => state.transactions)
+  const movements = useInventoryStore((state) => state.movements)
   const dayEnds = useInventoryStore((state) => state.dayEnds)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const closeDay = useInventoryStore((state) => state.closeDay)
@@ -34,9 +40,29 @@ function DayEnd() {
   const [error, setError] = useState('')
   const variance = Number(cashOnHand || 0) - recorded
 
+  const liveReport = useMemo(
+    () =>
+      buildDayEndReport({
+        date,
+        transactions,
+        movements,
+        products,
+        isRestaurant,
+      }),
+    [date, transactions, movements, products, isRestaurant],
+  )
+  const report = isClosed && existing?.dayReport ? existing.dayReport : liveReport
+
   const submit = async () => {
     setError('')
     try {
+      const dayReport = buildDayEndReport({
+        date,
+        transactions,
+        movements,
+        products,
+        isRestaurant,
+      })
       await closeDay({
         id: existing?.id,
         date,
@@ -46,13 +72,13 @@ function DayEnd() {
         note,
         cashier: user?.name || 'Staff',
         closedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        dayReport,
       })
       setConfirming(false)
-      // Security: day close ends the shift — next open requires password login
       await lockAfterDayEnd()
       navigate('/login', { replace: true })
     } catch (err) {
-      setError(err.message || 'Could not close day')
+      setError(formatSupportError(err, 'TILL02'))
       setConfirming(false)
     }
   }
@@ -64,6 +90,13 @@ function DayEnd() {
           Business day {date} · opens {formatOpenHourLabel(dayOpenHour)}
         </span>
       </PageHeader>
+
+      <DayEndReportPanels
+        report={report}
+        title={isClosed ? 'Closed day report' : 'Today\'s sales report'}
+        showRestock={!isRestaurant}
+      />
+
       <TableCard className="mb-3.5 grid max-h-none gap-4 p-5">
         <div className="grid grid-cols-3 gap-3.5 max-[900px]:grid-cols-1">
           <div>
@@ -105,6 +138,9 @@ function DayEnd() {
           <p className="text-[13px] text-brand-muted">
             Day closed at {existing.closedAt} by {existing.cashier || 'staff'}. POS sales are locked until a
             manager reopens, or until {formatOpenHourLabel(dayOpenHour)} starts the next business day.
+            {!isRestaurant && report?.restock?.length
+              ? ` Restock list (${report.restock.length}) will show on the next open.`
+              : ''}
           </p>
         ) : (
           <div>
@@ -131,7 +167,7 @@ function DayEnd() {
           <span className="text-right">Variance</span>
           <span className="max-[700px]:hidden">Status</span>
           <span className="max-[700px]:hidden">Cashier</span>
-          <span className="max-[700px]:hidden">Note</span>
+          <span className="max-[700px]:hidden">Restock</span>
         </div>
         {dayEnds.map((item) => (
           <div
@@ -142,6 +178,7 @@ function DayEnd() {
               <strong className="block text-brand-ink">{item.date}</strong>
               <small className="mt-0.5 hidden text-[10px] text-brand-subtle max-[700px]:block">
                 Rec {money(item.recordedCash)} · {item.status || 'closed'}
+                {item.dayReport?.restock?.length ? ` · restock ${item.dayReport.restock.length}` : ''}
               </small>
             </div>
             <span className="max-[700px]:hidden">{money(item.recordedCash)}</span>
@@ -151,8 +188,12 @@ function DayEnd() {
             </strong>
             <span className="capitalize max-[700px]:hidden">{item.status || 'closed'}</span>
             <span className="max-[700px]:hidden">{item.cashier || '—'}</span>
-            <span className="truncate max-[700px]:hidden" title={item.note || ''}>
-              {item.note || '—'}
+            <span className="max-[700px]:hidden">
+              {item.dayReport?.restock?.length
+                ? `${item.dayReport.restock.length} items`
+                : item.dayReport?.sold?.length
+                  ? 'OK'
+                  : '—'}
             </span>
           </div>
         ))}
@@ -160,9 +201,10 @@ function DayEnd() {
       {confirming && (
         <Modal wide onClose={() => setConfirming(false)}>
           <Eyebrow>CONFIRM DAY END</Eyebrow>
-          <h2 className="mb-3 text-[22px]">Close {date}?</h2>
+          <h2 className="mb-3 text-[22px] max-[700px]:text-lg">Close {date}?</h2>
           <p className="mb-2 text-xs text-brand-muted">
-            This locks POS sales and signs you out. The next open requires a fresh password login.
+            This locks POS sales and signs you out. The sales report
+            {!isRestaurant ? ' and restock list' : ''} will be saved for the next open.
           </p>
           <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px]">
             <span>Recorded</span>
@@ -173,6 +215,14 @@ function DayEnd() {
             <strong className={`text-right ${variance < 0 ? 'text-brand-danger' : 'text-brand-success'}`}>
               {money(variance)}
             </strong>
+            <span>Sold lines</span>
+            <strong className="text-right">{liveReport.sold.length}</strong>
+            {!isRestaurant && (
+              <>
+                <span>Restock flags</span>
+                <strong className="text-right text-brand-danger">{liveReport.restock.length}</strong>
+              </>
+            )}
           </div>
           <ModalActions>
             <SecondaryButton compact type="button" onClick={() => setConfirming(false)}>

@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import RevenueChart from '../components/dashboard/RevenueChart'
 import SalesMixBar from '../components/dashboard/SalesMixBar'
+import { DayEndReportPanels, RestockAlertBanner } from '../components/dayend/DayEndReportPanels'
 import { PageHeader, PrimaryButton, TableCard } from '../components/ui'
 import { hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
-import { greetingFor, money, qty, stockTone } from '../utils/format'
+import { previousDayRestockReport } from '../utils/dayEndReport'
+import { businessDate, greetingFor, money, qty, stockTone } from '../utils/format'
 
 function startOfDay(date) {
   const next = new Date(date)
@@ -182,7 +184,10 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const storeProducts = useProductStore((state) => state.products)
   const storeTransactions = useInventoryStore((state) => state.transactions)
   const storeMovements = useInventoryStore((state) => state.movements)
+  const dayEnds = useInventoryStore((state) => state.dayEnds)
+  const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const [period, setPeriod] = useState('Today')
+  const [restockDismissed, setRestockDismissed] = useState('')
   const loadBranch = useProductStore((state) => state.loadBranch)
   const hydrate = useInventoryStore((state) => state.hydrate)
 
@@ -227,6 +232,9 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   )
 
   const greeting = greetingFor(user)
+  const todayKey = businessDate(new Date(), dayOpenHour)
+  const restockEntry = !isRestaurant ? previousDayRestockReport(dayEnds, todayKey) : null
+  const showRestockAlert = restockEntry && restockDismissed !== restockEntry.date
 
   return (
     <div className="overflow-auto pt-2.5 pb-[18px]">
@@ -251,6 +259,23 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
           </div>
         </div>
       </PageHeader>
+
+      {showRestockAlert && (
+        <RestockAlertBanner
+          entry={restockEntry}
+          onDismiss={() => setRestockDismissed(restockEntry.date)}
+        />
+      )}
+      {showRestockAlert && (
+        <DayEndReportPanels
+          report={restockEntry.dayReport}
+          title={`Sold · ${restockEntry.date}`}
+          showRestock
+          compact
+          alert
+          fromDate={restockEntry.date}
+        />
+      )}
 
       {isRestaurant && menuOn.length === 0 && products.length > 0 && (
         <div className="mb-3.5 flex flex-wrap items-center justify-between gap-3 rounded-[9px] border border-[#e8d4a8] bg-[#fff8ea] px-4 py-3 max-[700px]:px-3">
