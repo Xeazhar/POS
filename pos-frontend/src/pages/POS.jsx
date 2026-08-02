@@ -87,16 +87,16 @@ function POS() {
       >
         {isRestaurant && (
           manageMenu ? (
-            <PrimaryButton compact type="button" onClick={finishMenuSetup}>
+            <PrimaryButton compact type="button" className="max-[700px]:w-full" onClick={finishMenuSetup}>
               {menuOnCount === 0 ? 'Skip for now' : 'Start selling'} <span aria-hidden>{'\u2192'}</span>
             </PrimaryButton>
           ) : (
             <button
               type="button"
-              className="rounded-[5px] border border-brand-border bg-white px-3 py-2 text-xs font-bold text-[#606662]"
+              className="rounded-[5px] border border-brand-border bg-white px-3 py-2 text-xs font-bold text-[#606662] max-[700px]:w-full max-[700px]:px-2.5 max-[700px]:text-[11px]"
               onClick={() => setManageMenu(true)}
             >
-              Edit today's potahe
+              Edit potahe
             </button>
           )
         )}
@@ -282,8 +282,8 @@ function POS() {
           </div>
           {isRestaurant && manageMenu && (
             <div className="mt-4 flex justify-end border-t border-brand-softline pt-3">
-              <PrimaryButton compact type="button" onClick={finishMenuSetup}>
-                {menuOnCount === 0 ? 'Skip for now' : `Start selling (${menuOnCount} on)`}{' '}
+              <PrimaryButton compact type="button" className="max-[700px]:w-full" onClick={finishMenuSetup}>
+                {menuOnCount === 0 ? 'Skip for now' : `Sell (${menuOnCount} on)`}{' '}
                 <span aria-hidden>{'\u2192'}</span>
               </PrimaryButton>
             </div>

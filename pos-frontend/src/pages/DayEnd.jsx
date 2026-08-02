@@ -124,29 +124,34 @@ function DayEnd() {
         <div className="flex items-center justify-between px-5 pt-4 pb-3">
           <h2 className="m-0 text-lg capitalize">Previous day ends</h2>
         </div>
-        <div className="grid grid-cols-[1fr_0.9fr_0.9fr_0.9fr_0.8fr_1fr_1.2fr] gap-3 bg-[#f7f7f4] px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[900px]:grid-cols-[1fr_0.9fr_0.9fr]">
+        <div className="grid grid-cols-[1fr_0.9fr_0.9fr_0.9fr_0.8fr_1fr_1.2fr] gap-3 bg-[#f7f7f4] px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[minmax(0,1.2fr)_0.9fr_0.9fr] max-[700px]:px-3">
           <span>Date</span>
-          <span>Recorded</span>
+          <span className="max-[700px]:hidden">Recorded</span>
           <span>On hand</span>
-          <span>Variance</span>
-          <span className="max-[900px]:hidden">Status</span>
-          <span className="max-[900px]:hidden">Cashier</span>
-          <span className="max-[900px]:hidden">Note</span>
+          <span className="text-right">Variance</span>
+          <span className="max-[700px]:hidden">Status</span>
+          <span className="max-[700px]:hidden">Cashier</span>
+          <span className="max-[700px]:hidden">Note</span>
         </div>
         {dayEnds.map((item) => (
           <div
             key={item.id}
-            className="grid grid-cols-[1fr_0.9fr_0.9fr_0.9fr_0.8fr_1fr_1.2fr] items-center gap-3 border-t border-brand-softline px-5 py-[17px] text-xs text-brand-slate max-[900px]:grid-cols-[1fr_0.9fr_0.9fr]"
+            className="grid grid-cols-[1fr_0.9fr_0.9fr_0.9fr_0.8fr_1fr_1.2fr] items-center gap-3 border-t border-brand-softline px-5 py-[17px] text-xs text-brand-slate max-[700px]:grid-cols-[minmax(0,1.2fr)_0.9fr_0.9fr] max-[700px]:px-3"
           >
-            <strong className="text-brand-ink">{item.date}</strong>
-            <span>{money(item.recordedCash)}</span>
+            <div className="min-w-0">
+              <strong className="block text-brand-ink">{item.date}</strong>
+              <small className="mt-0.5 hidden text-[10px] text-brand-subtle max-[700px]:block">
+                Rec {money(item.recordedCash)} · {item.status || 'closed'}
+              </small>
+            </div>
+            <span className="max-[700px]:hidden">{money(item.recordedCash)}</span>
             <span>{money(item.cashOnHand)}</span>
-            <strong className={item.variance < 0 ? 'text-brand-danger' : 'text-brand-ink'}>
+            <strong className={`text-right ${item.variance < 0 ? 'text-brand-danger' : 'text-brand-ink'}`}>
               {money(item.variance)}
             </strong>
-            <span className="capitalize max-[900px]:hidden">{item.status || 'closed'}</span>
-            <span className="max-[900px]:hidden">{item.cashier || '—'}</span>
-            <span className="truncate max-[900px]:hidden" title={item.note || ''}>
+            <span className="capitalize max-[700px]:hidden">{item.status || 'closed'}</span>
+            <span className="max-[700px]:hidden">{item.cashier || '—'}</span>
+            <span className="truncate max-[700px]:hidden" title={item.note || ''}>
               {item.note || '—'}
             </span>
           </div>
@@ -174,7 +179,7 @@ function DayEnd() {
               Cancel
             </SecondaryButton>
             <PrimaryButton compact type="button" onClick={submit}>
-              Confirm close
+              Close day
             </PrimaryButton>
           </ModalActions>
         </Modal>

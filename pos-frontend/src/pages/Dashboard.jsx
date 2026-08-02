@@ -231,16 +231,16 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   return (
     <div className="overflow-auto pt-2.5 pb-[18px]">
       <PageHeader className="mb-2.5" eyebrow="OVERVIEW" title={greeting}>
-        <div className="flex flex-col items-end gap-2">
+        <div className="flex flex-col items-end gap-2 max-[700px]:items-stretch">
           {(branchName || scopedBranchId) && (
             <span className="text-xs text-brand-subtle">{branchName || 'Branch dashboard'}</span>
           )}
-          <div className="flex gap-[5px] rounded-md bg-brand-tab p-1">
+          <div className="flex gap-0.5 rounded-md bg-brand-tab p-0.5 max-[700px]:w-full max-[700px]:justify-stretch">
             {['Today', 'Week', 'Month'].map((item) => (
               <button
                 key={item}
                 type="button"
-                className={`rounded border-0 px-3 py-2 text-[11px] ${
+                className={`rounded border-0 px-3 py-2 text-[11px] max-[700px]:flex-1 max-[700px]:px-1.5 max-[700px]:py-1.5 max-[700px]:text-[10px] ${
                   period === item ? 'bg-brand-dark text-white' : 'bg-transparent text-[#737975]'
                 }`}
                 onClick={() => setPeriod(item)}
@@ -253,22 +253,22 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
       </PageHeader>
 
       {isRestaurant && menuOn.length === 0 && products.length > 0 && (
-        <div className="mb-3.5 flex flex-wrap items-center justify-between gap-3 rounded-[9px] border border-[#e8d4a8] bg-[#fff8ea] px-4 py-3">
-          <div>
+        <div className="mb-3.5 flex flex-wrap items-center justify-between gap-3 rounded-[9px] border border-[#e8d4a8] bg-[#fff8ea] px-4 py-3 max-[700px]:px-3">
+          <div className="min-w-0">
             <strong className="block text-sm text-[#6a5520]">Set today&apos;s potahe first</strong>
             <p className="m-0 mt-1 text-xs text-[#6a5520]">
               Mark which ulam / dishes you are serving before taking orders.
             </p>
           </div>
-          <Link to="/pos?menu=1">
+          <Link to="/pos?menu=1" className="shrink-0">
             <PrimaryButton compact type="button">
-              Choose today&apos;s menu
+              Set menu
             </PrimaryButton>
           </Link>
         </div>
       )}
 
-      <div className="mb-3.5 grid grid-cols-3 gap-3.5 max-[700px]:gap-1.5">
+      <div className="mb-3.5 grid grid-cols-3 gap-3.5 max-[700px]:grid-cols-1 max-[700px]:gap-2">
         {(isRestaurant
           ? [
               [`Revenue · ${period}`, money(revenue), `${filtered.length} paid orders`],
@@ -281,12 +281,18 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
               [`Reseko loss · ${period}`, money(shrink), 'Recorded shrinkage'],
             ]
         ).map(([label, value, note]) => (
-          <div key={label} className="rounded-[9px] bg-brand-dark p-[14px] text-white max-[700px]:p-2">
-            <span className="block text-[11px] text-[#abb1ad] max-[700px]:text-[9px]">{label}</span>
-            <strong className="my-3 block text-[28px] text-brand-gold max-[700px]:my-1 max-[700px]:text-[19px]">
+          <div
+            key={label}
+            className="rounded-[9px] bg-brand-dark p-[14px] text-white max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:gap-3 max-[700px]:p-3.5"
+          >
+            <div className="min-w-0">
+              <span className="block text-[11px] text-[#abb1ad] max-[700px]:text-[10px]">{label}</span>
+              <small className="mt-1 hidden text-[10px] text-[#abb1ad] max-[700px]:block">{note}</small>
+            </div>
+            <strong className="my-3 block text-[28px] text-brand-gold max-[700px]:my-0 max-[700px]:shrink-0 max-[700px]:text-[22px]">
               {value}
             </strong>
-            <small className="block text-[11px] text-[#abb1ad] max-[700px]:text-[9px]">{note}</small>
+            <small className="block text-[11px] text-[#abb1ad] max-[700px]:hidden">{note}</small>
           </div>
         ))}
       </div>

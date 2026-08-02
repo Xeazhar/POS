@@ -94,12 +94,12 @@ function ManagerOverview() {
   return (
     <div>
       <PageHeader eyebrow="ALL BRANCHES" title={greetingFor(user)}>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5 max-[700px]:w-full">
           {PERIODS.map((item) => (
             <button
               key={item.id}
               type="button"
-              className={`rounded-[5px] border px-3 py-2 text-xs font-bold ${
+              className={`rounded-[5px] border px-3 py-2 text-xs font-bold max-[700px]:flex-1 max-[700px]:px-1.5 max-[700px]:py-1.5 max-[700px]:text-[10px] ${
                 period === item.id
                   ? 'border-brand-dark bg-brand-dark text-white'
                   : 'border-brand-border bg-white text-[#606662]'

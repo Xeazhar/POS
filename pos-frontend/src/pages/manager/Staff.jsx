@@ -54,30 +54,48 @@ function ManagerStaff() {
       </PageHeader>
       {error && <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>}
       <TableCard>
-        <div className="grid grid-cols-[1.4fr_1.3fr_0.8fr_0.7fr_0.7fr] gap-3 bg-[#f7f7f4] px-5 py-3 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
+        <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)_0.8fr_0.7fr_0.7fr] gap-3 bg-[#f7f7f4] px-5 py-3 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[minmax(0,1fr)_auto] max-[700px]:px-3">
           <span>Name</span>
-          <span>Branch</span>
-          <span>Role</span>
-          <span>Status</span>
-          <span>Action</span>
+          <span className="max-[700px]:hidden">Branch</span>
+          <span className="max-[700px]:hidden">Role</span>
+          <span className="max-[700px]:hidden">Status</span>
+          <span className="text-right max-[700px]:text-left">Action</span>
         </div>
         {staff.map((person) => (
-          <div key={person.id} className="grid grid-cols-[1.4fr_1.3fr_0.8fr_0.7fr_0.7fr] items-center gap-3 border-t border-brand-softline px-5 py-3 text-xs">
-            <strong>{person.full_name}</strong>
-            <span>{person.branches?.name || '—'}</span>
-            <span>{person.roles?.label || person.role}</span>
-            <span className={person.is_active ? 'text-brand-success' : 'text-brand-danger'}>
+          <div
+            key={person.id}
+            className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)_0.8fr_0.7fr_0.7fr] items-center gap-3 border-t border-brand-softline px-5 py-3 text-xs max-[700px]:grid-cols-[minmax(0,1fr)_auto] max-[700px]:items-start max-[700px]:px-3"
+          >
+            <div className="min-w-0">
+              <strong className="block truncate text-brand-ink">{person.full_name}</strong>
+              <small className="mt-0.5 hidden text-[10px] leading-snug text-brand-subtle max-[700px]:block">
+                {person.branches?.name || '—'}
+                {' · '}
+                {person.roles?.label || person.role}
+                {' · '}
+                <span className={person.is_active ? 'text-brand-success' : 'text-brand-danger'}>
+                  {person.is_active ? 'Active' : 'Inactive'}
+                </span>
+              </small>
+            </div>
+            <span className="truncate max-[700px]:hidden">{person.branches?.name || '—'}</span>
+            <span className="max-[700px]:hidden">{person.roles?.label || person.role}</span>
+            <span className={`max-[700px]:hidden ${person.is_active ? 'text-brand-success' : 'text-brand-danger'}`}>
               {person.is_active ? 'Active' : 'Inactive'}
             </span>
-            <button type="button" className="border-0 bg-transparent text-left text-brand-danger-soft" onClick={() => setForm({
-              id: person.id,
-              full_name: person.full_name,
-              role: person.role,
-              branch_id: person.branch_id,
-              is_active: person.is_active,
-              email: '',
-              password: '',
-            })}>
+            <button
+              type="button"
+              className="justify-self-end border-0 bg-transparent text-right text-xs font-bold text-brand-danger-soft max-[700px]:pt-0.5"
+              onClick={() => setForm({
+                id: person.id,
+                full_name: person.full_name,
+                role: person.role,
+                branch_id: person.branch_id,
+                is_active: person.is_active,
+                email: '',
+                password: '',
+              })}
+            >
               Edit
             </button>
           </div>

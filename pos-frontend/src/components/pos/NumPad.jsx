@@ -86,12 +86,12 @@ function NumPad({
   return (
     <div className={`select-none ${className}`}>
       {quickAmounts?.length > 0 && (
-        <div className="mb-3 flex flex-wrap gap-2">
+        <div className="mb-3 grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
           {quickAmounts.map((item) => (
             <PadButton
               key={item.label}
               label={item.label}
-              className={`!h-11 px-3 text-sm ${quickClass}`}
+              className={`!h-11 px-2 text-sm max-[700px]:!h-10 max-[700px]:text-xs sm:px-3 ${quickClass}`}
               onPress={() => onQuickAmount?.(item)}
             />
           ))}

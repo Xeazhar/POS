@@ -3,8 +3,10 @@ import { FiX } from 'react-icons/fi'
 export function PrimaryButton({ className = '', compact = false, children, ...props }) {
   return (
     <button
-      className={`inline-flex items-center justify-between gap-2 rounded-[5px] border-0 bg-brand-gold font-bold text-brand-dark hover:brightness-105 active:brightness-97 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:brightness-100 ${
-        compact ? 'h-10 w-auto justify-center px-4 text-xs' : 'w-full px-4 py-[13px]'
+      className={`inline-flex items-center justify-center gap-2 rounded-[5px] border-0 bg-brand-gold font-bold text-brand-dark hover:brightness-105 active:brightness-97 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:brightness-100 ${
+        compact
+          ? 'h-10 w-auto min-w-0 px-3 text-xs whitespace-nowrap max-[700px]:h-9 max-[700px]:px-2.5 max-[700px]:text-[11px]'
+          : 'w-full px-4 py-[13px] max-[700px]:px-3 max-[700px]:py-3 max-[700px]:text-sm'
       } ${className}`}
       {...props}
     >
@@ -17,7 +19,9 @@ export function SecondaryButton({ className = '', compact = false, children, ...
   return (
     <button
       className={`inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-[#d8dbd5] bg-[#f4f5f1] font-bold text-[#4d534f] hover:bg-[#eaebe6] hover:border-[#cfd3cc] active:bg-[#e4e6e0] disabled:cursor-not-allowed disabled:opacity-35 ${
-        compact ? 'h-10 w-auto px-4 text-xs' : 'px-3.5 py-[11px]'
+        compact
+          ? 'h-10 w-auto min-w-0 px-3 text-xs whitespace-nowrap max-[700px]:h-9 max-[700px]:px-2.5 max-[700px]:text-[11px]'
+          : 'px-3.5 py-[11px] max-[700px]:px-3 max-[700px]:text-sm'
       } ${className}`}
       {...props}
     >
@@ -62,12 +66,12 @@ export function Eyebrow({ children, className = '' }) {
 
 export function PageHeader({ eyebrow, title, children, className = '' }) {
   return (
-    <div className={`mb-3.5 flex items-end justify-between gap-3 max-[700px]:flex-col max-[700px]:items-start ${className}`}>
+    <div className={`mb-3.5 flex items-end justify-between gap-3 max-[700px]:flex-col max-[700px]:items-stretch ${className}`}>
       <div className="min-w-0">
         <Eyebrow>{eyebrow}</Eyebrow>
-        <h1 className="m-0 text-[30px] tracking-[-1px] max-[700px]:text-[24px]">{title}</h1>
+        <h1 className="m-0 text-[30px] tracking-[-1px] max-[700px]:text-[22px]">{title}</h1>
       </div>
-      {children}
+      {children ? <div className="min-w-0 shrink-0 max-[700px]:w-full">{children}</div> : null}
     </div>
   )
 }
@@ -121,7 +125,11 @@ export function Modal({ wide = false, layer = false, className = '', onClose, ch
 }
 
 export function ModalActions({ children }) {
-  return <div className="mt-5 flex items-center justify-end gap-2">{children}</div>
+  return (
+    <div className="mt-5 flex flex-wrap items-center justify-end gap-2 max-[700px]:[&>button]:min-w-0 max-[700px]:[&>button]:flex-1">
+      {children}
+    </div>
+  )
 }
 
 /** Shows a support code so staff can text/call you with the exact failure. */

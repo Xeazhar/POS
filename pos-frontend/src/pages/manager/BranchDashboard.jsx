@@ -372,7 +372,7 @@ function ManagerBranchDashboard() {
         </div>
       </TableCard>
 
-      <div className="mb-4 grid grid-cols-4 gap-3 max-[900px]:grid-cols-2">
+      <div className="mb-4 grid grid-cols-4 gap-3 max-[900px]:grid-cols-2 max-[700px]:grid-cols-1">
         {(isRestaurant
           ? [
               ['Sales today', money(revenue)],
@@ -387,9 +387,12 @@ function ManagerBranchDashboard() {
               ['Reseko loss', money(shrink)],
             ]
         ).map(([label, value]) => (
-          <div key={label} className="rounded-[9px] bg-brand-dark p-4 text-white">
+          <div
+            key={label}
+            className="rounded-[9px] bg-brand-dark p-4 text-white max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:p-3.5"
+          >
             <span className="block text-[11px] text-[#abb1ad]">{label}</span>
-            <strong className="mt-2 block text-xl text-brand-gold">{value}</strong>
+            <strong className="mt-2 block text-xl text-brand-gold max-[700px]:mt-0">{value}</strong>
           </div>
         ))}
       </div>

@@ -290,8 +290,16 @@ function Cart({ tillClosed = false }) {
                   allowDecimal
                   quickAmounts={quickCash}
                   onQuickAmount={(item) => {
-                    const next = Number(item.value)
-                    setTendered(Number.isFinite(next) ? String(Math.round(next * 100) / 100) : '')
+                    const add = Number(item.value)
+                    if (!Number.isFinite(add)) return
+                    // Exact always sets the amount; bill shortcuts add on each press
+                    if (item.label === 'Exact') {
+                      setTendered(String(Math.round(add * 100) / 100))
+                      return
+                    }
+                    const current = Number(tendered || 0)
+                    const next = (Number.isFinite(current) ? current : 0) + add
+                    setTendered(String(Math.round(next * 100) / 100))
                   }}
                 />
               )}
@@ -313,10 +321,12 @@ function Cart({ tillClosed = false }) {
             <strong>{money(Math.max(0, Number(tendered || 0) - subtotal))}</strong>
           </div>
           <PrimaryButton
+            className="justify-between"
             disabled={tillClosed || !items.length || Number(tendered) < subtotal || paying}
             onClick={() => setConfirming(true)}
           >
-            Pay cash <span>→</span>
+            <span>Pay cash</span>
+            <span aria-hidden>→</span>
           </PrimaryButton>
         </div>
       </section>
