@@ -43,7 +43,7 @@ function PadButton({ label, className = '', onPress }) {
   return (
     <button
       type="button"
-      className={`relative h-14 rounded-[8px] text-[22px] font-bold touch-manipulation transition-[transform,filter,background-color] duration-75 ease-out ${
+      className={`relative h-14 rounded-[8px] text-[22px] font-bold touch-manipulation transition-[transform,filter,background-color] duration-75 ease-out max-[700px]:h-11 max-[700px]:text-lg [@media(max-height:780px)]:h-10 [@media(max-height:780px)]:text-base ${
         pressed ? 'scale-[0.98] brightness-110' : 'scale-100'
       } ${className}`}
       onPointerDown={(event) => {
@@ -100,7 +100,13 @@ function NumPad({
       <div className="grid grid-cols-3 gap-2">
         {KEYS.map((key) => {
           if (key === '.' && !allowDecimal) {
-            return <div key="blank" className="h-14 rounded-[8px] opacity-0" aria-hidden />
+            return (
+              <div
+                key="blank"
+                className="h-14 rounded-[8px] opacity-0 max-[700px]:h-11 [@media(max-height:780px)]:h-10"
+                aria-hidden
+              />
+            )
           }
           const label = key === 'back' ? '⌫' : key
           const isSpecial = key === 'back' || key === '.'
@@ -116,7 +122,7 @@ function NumPad({
       </div>
       <PadButton
         label="Clear"
-        className={`mt-2 !h-12 w-full text-sm ${specialClass}`}
+        className={`mt-2 !h-12 w-full text-sm max-[700px]:!h-10 [@media(max-height:780px)]:!h-9 ${specialClass}`}
         onPress={() => press('clear')}
       />
     </div>

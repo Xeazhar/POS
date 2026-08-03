@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { FiBluetooth, FiHardDrive, FiPrinter } from 'react-icons/fi'
-import { Eyebrow, PageHeader, TableCard } from '../components/ui'
-import { getAllDeviceStatuses, isDeviceEnabled, normalizeDeviceSettings } from '../devices'
+import { Eyebrow, PageHeader, PrimaryButton, TableCard } from '../components/ui'
+import { cashDrawer, getAllDeviceStatuses, isDeviceEnabled, normalizeDeviceSettings } from '../devices'
 import { hasSupabase, reportBranchDevices } from '../lib/api'
 import { useAuthStore } from '../stores/posStore'
+import { formatSupportError } from '../utils/errors'
 
 const ICONS = {
   'barcode-scanner': FiHardDrive,
@@ -16,6 +17,8 @@ function Devices() {
   const settings = normalizeDeviceSettings(user?.deviceSettings)
   const [devices, setDevices] = useState([])
   const [error, setError] = useState('')
+  const [drawerMsg, setDrawerMsg] = useState('')
+  const [drawerBusy, setDrawerBusy] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -43,12 +46,44 @@ function Devices() {
         </span>
       </PageHeader>
       {error && <p className="mb-3 text-xs text-brand-danger">{error}</p>}
+      {drawerMsg && <p className="mb-3 text-xs text-brand-muted">{drawerMsg}</p>}
       <TableCard className="max-h-none">
-        <div className="border-b border-brand-softline px-5 py-4">
-          <Eyebrow>PERIPHERALS</Eyebrow>
-          <p className="m-0 mt-1 text-xs text-brand-muted">
-            Connection status for this till. If a device is Off, ask a manager to enable it when hardware is ready.
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-brand-softline px-5 py-4">
+          <div>
+            <Eyebrow>PERIPHERALS</Eyebrow>
+            <p className="m-0 mt-1 text-xs text-brand-muted">
+              Connection status for this till. If a device is Off, ask a manager to enable it when hardware is ready.
+            </p>
+          </div>
+          <PrimaryButton
+            compact
+            type="button"
+            disabled={drawerBusy || !isDeviceEnabled(settings, 'cash_drawer')}
+            onClick={async () => {
+              setDrawerBusy(true)
+              setDrawerMsg('')
+              try {
+                await cashDrawer.openDrawer()
+                setDrawerMsg('Drawer open signal sent.')
+              } catch (err) {
+                setDrawerMsg(
+                  formatSupportError(
+                    {
+                      message:
+                        err.message ||
+                        'Cash drawer kick not wired yet — open the drawer manually for now.',
+                      code: 'DEV05',
+                    },
+                    'DEV05',
+                  ),
+                )
+              } finally {
+                setDrawerBusy(false)
+              }
+            }}
+          >
+            {drawerBusy ? 'Opening…' : 'Open drawer'}
+          </PrimaryButton>
         </div>
         <div className="grid gap-0">
           {devices.map((device) => {
@@ -71,7 +106,11 @@ function Devices() {
                   <div>
                     <strong className="block text-sm text-brand-ink">{device.label}</strong>
                     <small className="text-[11px] text-brand-subtle">
-                      {!enabled ? 'Disabled by manager' : device.detail || device.state}
+                      {!enabled
+                        ? 'Disabled by manager'
+                        : connected
+                          ? 'Enabled by manager · Connected'
+                          : 'Enabled by manager · Not connected'}
                     </small>
                   </div>
                 </div>

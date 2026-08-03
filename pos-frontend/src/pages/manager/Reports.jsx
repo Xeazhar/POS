@@ -90,22 +90,39 @@ function ManagerReports() {
       if (selected === 'inventory' || selected === 'price-listing') {
         const data = await fetchInventoryReport(filters.branchId || null)
         setRows(
-          data.map((row) => ({
-            product_code: formatProductCode(row.products?.product_no),
-            product_id: row.products?.id,
-            branch_id: row.products?.branch_id || filters.branchId || '',
-            branch: row.branches?.name,
-            product: row.products?.name,
-            sku: row.products?.sku,
-            barcode: row.products?.barcode || '',
-            category: row.products?.categories?.name,
-            price: Number(row.products?.price || 0),
-            budget_price: row.products?.budget_price != null ? Number(row.products.budget_price) : '',
-            menu_kind: row.products?.menu_kind || '',
-            on_hand: Number(row.quantity_on_hand),
-            low_at: Number(row.products?.low_stock_threshold || 0),
-            status: Number(row.quantity_on_hand) <= Number(row.products?.low_stock_threshold || 0) ? 'Low' : 'OK',
-          })),
+          data.map((row) => {
+            const qtyOnHand = Number(row.quantity_on_hand || 0)
+            const unitCost = Number(row.products?.unit_cost || 0)
+            const unitPrice = Number(row.products?.price || 0)
+            const discountEligible = row.products?.discount_eligible === true
+            const totalCost = Number((unitCost * qtyOnHand).toFixed(2))
+            const totalPrice = Number((unitPrice * qtyOnHand).toFixed(2))
+            return {
+              product_code: formatProductCode(row.products?.product_no),
+              product_id: row.products?.id,
+              branch_id: row.products?.branch_id || filters.branchId || '',
+              branch: row.branches?.name,
+              barcode: row.products?.barcode || '',
+              description: row.products?.name,
+              product: row.products?.name,
+              sku: row.products?.sku,
+              uom: row.products?.pricing_mode === 'per_kg' || row.products?.pricing_mode === 'kg' ? 'kg' : 'pc',
+              category: row.products?.categories?.name,
+              quantity: qtyOnHand,
+              on_hand: qtyOnHand,
+              unit_cost: unitCost,
+              unit_price: unitPrice,
+              price: unitPrice,
+              discount: discountEligible ? 'PWD/Senior eligible' : '',
+              total_cost: totalCost,
+              total_price: totalPrice,
+              profit: Number((totalPrice - totalCost).toFixed(2)),
+              budget_price: row.products?.budget_price != null ? Number(row.products.budget_price) : '',
+              menu_kind: row.products?.menu_kind || '',
+              low_at: Number(row.products?.low_stock_threshold || 0),
+              status: qtyOnHand <= Number(row.products?.low_stock_threshold || 0) ? 'Low' : 'OK',
+            }
+          }),
         )
         return
       }
@@ -208,7 +225,8 @@ function ManagerReports() {
             price_tier: row.price_tier || '',
             order_type: row.transactions?.order_type || '',
             ulam_combo: row.transactions?.ulam_combo || '',
-            payment: 'Cash',
+            payment: row.transactions?.payment_method || 'cash',
+            payment_reference: row.transactions?.payment_reference || '',
           })),
         )
         return

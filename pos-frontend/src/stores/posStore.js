@@ -12,7 +12,7 @@ import {
   upsertLocalSale,
 } from '../offline'
 import { clearLocalSession, clearRequireFreshLogin, loadLocalSession, markRequireFreshLogin, needsFreshLogin, saveLocalSession } from '../offline/session'
-import { appError, formatSupportError } from '../utils/errors'
+import { appError } from '../utils/errors'
 import { isTillClosed, today } from '../utils/format'
 import { detectUlamCombo, effectiveUnitPrice, hasBudgetTier, lineTotal, normalizeMenuKind } from '../utils/ulam'
 import { useSyncStore } from './syncStore'
@@ -38,7 +38,8 @@ export const useAuthStore = create(persist((set, get) => ({
   user: null,
   booting: false,
   error: '',
-  login: async (email, password) => {
+  pendingClockIn: false,
+  login: async (emailOrCode, passwordOrPin, { mode = 'email' } = {}) => {
     set({ error: '', booting: true })
     try {
       if (!api.hasSupabase) {
@@ -47,8 +48,8 @@ export const useAuthStore = create(persist((set, get) => ({
         }
         const user = {
           id: 'local-staff',
-          name: email || 'Demo Cashier',
-          role: 'admin',
+          name: emailOrCode || 'Demo Cashier',
+          role: mode === 'pin' ? 'cashier' : 'admin',
           branchId: 'demo-main-branch',
           branchName: 'Bayombong Branch #001',
           branchType: 'retail',
@@ -58,6 +59,8 @@ export const useAuthStore = create(persist((set, get) => ({
             receipt_printer: false,
             cash_drawer: false,
           },
+          permissions: null,
+          vatRate: 0.12,
         }
         set({ user, booting: false })
         useCartStore.getState().clear()
@@ -78,7 +81,10 @@ export const useAuthStore = create(persist((set, get) => ({
         }
         throw appError('AUTH03')
       }
-      const user = await api.signIn(email, password)
+      const user =
+        mode === 'pin'
+          ? await api.signInWithPin(emailOrCode, passwordOrPin)
+          : await api.signIn(emailOrCode, passwordOrPin)
       if (!user) throw appError('AUTH02')
       useCartStore.getState().clear()
       set({ user, booting: false })
@@ -90,11 +96,11 @@ export const useAuthStore = create(persist((set, get) => ({
         staffId: user.id,
         eventType: 'login',
         detail: `Signed in as ${user.name}`,
-        meta: { role: user.role, branchType: user.branchType },
+        meta: { role: user.role, branchType: user.branchType, mode },
       })
       return user
     } catch (error) {
-      set({ error: formatSupportError(error, 'AUTH01'), booting: false, user: null })
+      set({ error: error?.message || String(error), booting: false, user: null })
       throw error
     }
   },
@@ -147,7 +153,7 @@ export const useAuthStore = create(persist((set, get) => ({
     if (api.hasSupabase && isOnline()) await api.signOut().catch(() => {})
     await clearLocalSession()
     setSyncBranchId(null)
-    set({ user: null })
+    set({ user: null, pendingClockIn: false })
   },
   logout: async () => {
     const user = get().user
@@ -163,7 +169,7 @@ export const useAuthStore = create(persist((set, get) => ({
     if (api.hasSupabase && isOnline()) await api.signOut()
     await clearLocalSession()
     setSyncBranchId(null)
-    set({ user: null })
+    set({ user: null, pendingClockIn: false })
   },
 }), { name: 'cale-pos-auth-v4', partialize: (state) => ({ user: api.hasSupabase ? null : state.user }) }))
 
@@ -244,11 +250,28 @@ export const useCartStore = create(persist((set, get) => ({
     }),
   })),
   setOrderType: (orderType) => set({ orderType: orderType === 'takeout' ? 'takeout' : 'dine_in' }),
+  adjustQuantity: (index, delta) => set((state) => {
+    const item = state.items[index]
+    if (!item) return state
+    // kg lines: adjust weight by 0.1 kg steps
+    if (item.pricingMode === 'kg') {
+      const nextWeight = Number((Number(item.weight || 0) + Number(delta) * 0.1).toFixed(3))
+      if (nextWeight <= 0) return state // removal handled separately (needs supervisor)
+      return {
+        items: state.items.map((row, i) => (i === index ? { ...row, weight: nextWeight } : row)),
+      }
+    }
+    const nextQty = Number(item.quantity || 0) + Number(delta)
+    if (nextQty <= 0) return state
+    return {
+      items: state.items.map((row, i) => (i === index ? { ...row, quantity: nextQty } : row)),
+    }
+  }),
   removeItem: (index) => set((state) => ({ items: state.items.filter((_, i) => i !== index) })),
   clear: () => set({ items: [], orderType: 'dine_in' }),
   total: () => get().items.reduce((sum, item) => sum + lineTotal(item), 0),
   ulamCombo: () => detectUlamCombo(get().items),
-}), { name: 'cale-pos-cart-v5' }))
+}), { name: 'cale-pos-cart-v7' }))
 
 export const useProductStore = create((set, get) => ({
   products: offlineDemo ? seedProducts : [],
@@ -594,6 +617,8 @@ export const useInventoryStore = create((set, get) => ({
 
     const orderType = payload.orderType === 'takeout' ? 'takeout' : 'dine_in'
     const ulamCombo = payload.ulamCombo || null
+    const paymentMethod = payload.paymentMethod || 'cash'
+    const paymentReference = payload.paymentReference || null
     const localTxn = {
       ...payload,
       id: localId,
@@ -605,6 +630,13 @@ export const useInventoryStore = create((set, get) => ({
       cashier: user?.name || payload.cashier || 'Staff',
       orderType,
       ulamCombo,
+      paymentMethod,
+      paymentReference,
+      vatAmount: payload.vatAmount || 0,
+      vatableSales: payload.vatableSales || 0,
+      discountAmount: payload.discountAmount || 0,
+      discountType: payload.discountType || null,
+      discountIdNote: payload.discountIdNote || null,
     }
 
     set((state) => ({
@@ -635,6 +667,13 @@ export const useInventoryStore = create((set, get) => ({
           tendered: payload.tendered,
           orderType,
           ulamCombo,
+          paymentMethod,
+          paymentReference,
+          vatAmount: payload.vatAmount || 0,
+          vatableSales: payload.vatableSales || 0,
+          discountAmount: payload.discountAmount || 0,
+          discountType: payload.discountType || null,
+          discountIdNote: payload.discountIdNote || null,
           localTransactionId: localId,
           clientId: localId,
         },
@@ -662,7 +701,7 @@ export const useInventoryStore = create((set, get) => ({
 
     return localTxn
   },
-  voidTransaction: async (id, reason) => {
+  voidTransaction: async (id, reason, approvedBy = null) => {
     const user = useAuthStore.getState().user
     set((state) => ({
       transactions: state.transactions.map((transaction) =>
@@ -672,19 +711,72 @@ export const useInventoryStore = create((set, get) => ({
               status: 'Voided',
               voidReason: reason,
               voidedAt: new Date().toISOString(),
+              voidApprovedBy: approvedBy || user?.id || null,
             }
           : transaction,
       ),
     }))
     if (api.hasSupabase && user?.branchId) {
       if (isOnline() && !String(id).startsWith('txn_') && !String(id).startsWith('op_')) {
-        await api.voidSale(id, reason, user.id)
+        await api.voidSale(id, reason, user.id, approvedBy)
       } else {
-        await enqueue(QUEUE_TYPES.VOID_SALE, { id, reason, staffId: user.id }, { branchId: user.branchId })
+        await enqueue(
+          QUEUE_TYPES.VOID_SALE,
+          { id, reason, staffId: user.id, approvedBy },
+          { branchId: user.branchId },
+        )
       }
       useSyncStore.getState().refresh(user.branchId)
       if (isOnline()) await syncBranch(user.branchId)
     }
+  },
+  refundTransactionItems: async (id, { reason, items, approvedBy = null }) => {
+    const user = useAuthStore.getState().user
+    if (!api.hasSupabase || !user?.branchId) {
+      throw new Error('Connect Supabase to process refunds.')
+    }
+    if (!isOnline()) throw new Error('Refunds require an online connection.')
+    const result = await api.refundSaleItems({
+      transactionId: id,
+      staffId: user.id,
+      reason,
+      items,
+      approvedBy,
+    })
+    if (result?.fully_voided) {
+      set((state) => ({
+        transactions: state.transactions.map((transaction) =>
+          transaction.id === id
+            ? {
+                ...transaction,
+                status: 'Voided',
+                voidReason: reason || 'Fully refunded',
+                voidedAt: new Date().toISOString(),
+                voidApprovedBy: approvedBy || user.id,
+                refundedAmount: Number(transaction.total || 0),
+                netTotal: 0,
+              }
+            : transaction,
+        ),
+      }))
+    } else if (result?.refunded_amount != null) {
+      const added = Number(result.refunded_amount || 0)
+      set((state) => ({
+        transactions: state.transactions.map((transaction) => {
+          if (transaction.id !== id) return transaction
+          const refundedAmount = Number((Number(transaction.refundedAmount || 0) + added).toFixed(2))
+          const total = Number(transaction.total || 0)
+          return {
+            ...transaction,
+            refundedAmount,
+            netTotal: Math.max(0, Number((total - refundedAmount).toFixed(2))),
+          }
+        }),
+      }))
+    }
+    useSyncStore.getState().refresh(user.branchId)
+    if (isOnline()) await syncBranch(user.branchId)
+    return result
   },
   addMovement: async (movement) => {
     const user = useAuthStore.getState().user

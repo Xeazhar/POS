@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { DayEndReportPanels } from '../components/dayend/DayEndReportPanels'
 import {
@@ -11,6 +11,7 @@ import {
   SecondaryButton,
   TableCard,
 } from '../components/ui'
+import { addPettyCash, fetchPettyCash, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { buildDayEndReport } from '../utils/dayEndReport'
 import { formatSupportError } from '../utils/errors'
@@ -31,14 +32,66 @@ function DayEnd() {
   const date = businessDate(new Date(), dayOpenHour)
   const recorded = transactions
     .filter((item) => item.status === 'Paid' && item.date === date)
-    .reduce((sum, item) => sum + item.total, 0)
+    .reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
+  const cashSales = transactions
+    .filter(
+      (item) =>
+        item.status === 'Paid' && item.date === date && (item.paymentMethod || 'cash') === 'cash',
+    )
+    .reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
   const existing = dayEndForBusinessDate(dayEnds, date)
   const isClosed = existing?.status === 'closed'
   const [cashOnHand, setCashOnHand] = useState(existing ? String(existing.cashOnHand) : '')
   const [note, setNote] = useState(existing?.note || '')
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState('')
-  const variance = Number(cashOnHand || 0) - recorded
+  const [petty, setPetty] = useState([])
+  const [pettyAmount, setPettyAmount] = useState('')
+  const [pettyReason, setPettyReason] = useState('')
+  const [pickupAmount, setPickupAmount] = useState('')
+  const [pickupNote, setPickupNote] = useState('')
+  const [changeFundAmount, setChangeFundAmount] = useState('')
+  const [changeFundNote, setChangeFundNote] = useState('')
+
+  const entryKind = (reason = '') => {
+    const r = String(reason || '')
+    if (r.startsWith('[CHANGE FUND]')) return 'change_fund'
+    if (r.startsWith('[PICKUP]')) return 'pickup'
+    return 'paid_out'
+  }
+
+  const changeFundTotal = petty
+    .filter((row) => entryKind(row.reason) === 'change_fund')
+    .reduce((sum, row) => sum + Number(row.amount || 0), 0)
+  const pickupTotal = petty
+    .filter((row) => entryKind(row.reason) === 'pickup')
+    .reduce((sum, row) => sum + Number(row.amount || 0), 0)
+  const paidOutTotal = petty
+    .filter((row) => entryKind(row.reason) === 'paid_out')
+    .reduce((sum, row) => sum + Number(row.amount || 0), 0)
+  const pettyTotal = paidOutTotal
+  const expectedCash = Number(
+    (changeFundTotal + cashSales - paidOutTotal - pickupTotal).toFixed(2),
+  )
+  const variance = Number(cashOnHand || 0) - expectedCash
+
+  useEffect(() => {
+    let active = true
+    if (!hasSupabase || !user?.branchId) {
+      setPetty([])
+      return undefined
+    }
+    fetchPettyCash(user.branchId, date)
+      .then((rows) => {
+        if (active) setPetty(rows || [])
+      })
+      .catch(() => {
+        if (active) setPetty([])
+      })
+    return () => {
+      active = false
+    }
+  }, [user?.branchId, date])
 
   const liveReport = useMemo(
     () =>
@@ -69,10 +122,10 @@ function DayEnd() {
         recordedCash: recorded,
         cashOnHand: Number(cashOnHand || 0),
         variance,
-        note,
+        note: [note, pettyTotal ? `Petty cash ${pettyTotal}` : ''].filter(Boolean).join(' · '),
         cashier: user?.name || 'Staff',
         closedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        dayReport,
+        dayReport: { ...dayReport, pettyCashTotal: pettyTotal, expectedCash },
       })
       setConfirming(false)
       await lockAfterDayEnd()
@@ -100,9 +153,12 @@ function DayEnd() {
       <TableCard className="mb-3.5 grid max-h-none gap-4 p-5">
         <div className="grid grid-cols-3 gap-3.5 max-[900px]:grid-cols-1">
           <div>
-            <span className="block text-[11px] text-brand-subtle">Recorded cash (POS)</span>
+            <span className="block text-[11px] text-brand-subtle">All sales (POS)</span>
             <strong className="my-2 block text-[22px] text-brand-gold">{money(recorded)}</strong>
-            <small className="block text-[11px] text-brand-subtle">Paid sales for this business day</small>
+            <small className="block text-[11px] text-brand-subtle">
+              Cash sales {money(cashSales)} · Float {money(changeFundTotal)} · Pickups{' '}
+              {money(pickupTotal)} · Paid-out {money(paidOutTotal)} · Expected {money(expectedCash)}
+            </small>
           </div>
           <Field
             label="Cash on hand"
@@ -113,7 +169,7 @@ function DayEnd() {
             disabled={isClosed}
           />
           <div>
-            <span className="block text-[11px] text-brand-subtle">Variance</span>
+            <span className="block text-[11px] text-brand-subtle">Variance vs expected</span>
             <strong
               className={`my-2 block text-[22px] ${
                 variance === 0 ? 'text-brand-gold' : variance < 0 ? 'text-brand-danger' : 'text-brand-success'
@@ -122,7 +178,7 @@ function DayEnd() {
               {money(variance)}
             </strong>
             <small className="block text-[11px] text-brand-subtle">
-              {variance === 0 ? 'Balanced' : variance < 0 ? 'Short' : 'Over'}
+              {variance === 0 ? 'Balanced' : variance < 0 ? 'Short' : 'Over'} (after petty cash)
             </small>
           </div>
         </div>
@@ -156,6 +212,192 @@ function DayEnd() {
           </div>
         )}
       </TableCard>
+
+      <TableCard className="mb-3.5 max-h-none p-5">
+        <h2 className="m-0 mb-1 text-base">Accountability</h2>
+        <p className="m-0 mb-3 text-xs text-brand-muted">
+          Change fund (opening float), cash pickups, and paid-outs for this business day.
+        </p>
+        {!isClosed && (
+          <div className="mb-4 grid gap-3 max-[900px]:grid-cols-1 md:grid-cols-2">
+            <div className="rounded-md border border-brand-softline p-3">
+              <strong className="block text-xs text-brand-ink">Change fund</strong>
+              <p className="m-0 mb-2 text-[11px] text-brand-subtle">Starting cash float in the drawer</p>
+              <div className="grid grid-cols-[1fr_1fr_auto] gap-2 max-[700px]:grid-cols-1">
+                <Field
+                  label="Amount"
+                  value={changeFundAmount}
+                  onChange={(e) => setChangeFundAmount(decimalOnly(e.target.value))}
+                  inputMode="decimal"
+                />
+                <Field
+                  label="Note"
+                  value={changeFundNote}
+                  onChange={(e) => setChangeFundNote(e.target.value.replace(/[<>]/g, ''))}
+                />
+                <div className="flex items-end">
+                  <PrimaryButton
+                    compact
+                    type="button"
+                    disabled={!changeFundAmount || Number(changeFundAmount) <= 0}
+                    onClick={async () => {
+                      const reason = `[CHANGE FUND] ${changeFundNote || 'Opening float'}`.trim()
+                      try {
+                        if (hasSupabase && user?.branchId) {
+                          const row = await addPettyCash({
+                            branchId: user.branchId,
+                            staffId: user.id,
+                            amount: Number(changeFundAmount),
+                            reason,
+                            businessDate: date,
+                          })
+                          setPetty((prev) => [row, ...prev])
+                        } else {
+                          setPetty((prev) => [
+                            { id: `local-${Date.now()}`, amount: Number(changeFundAmount), reason },
+                            ...prev,
+                          ])
+                        }
+                        setChangeFundAmount('')
+                        setChangeFundNote('')
+                      } catch (err) {
+                        setError(formatSupportError(err, 'PETTY01'))
+                      }
+                    }}
+                  >
+                    Record
+                  </PrimaryButton>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-md border border-brand-softline p-3">
+              <strong className="block text-xs text-brand-ink">Cash pickup</strong>
+              <p className="m-0 mb-2 text-[11px] text-brand-subtle">Move cash out of drawer for safekeeping</p>
+              <div className="grid grid-cols-[1fr_1fr_auto] gap-2 max-[700px]:grid-cols-1">
+                <Field
+                  label="Amount"
+                  value={pickupAmount}
+                  onChange={(e) => setPickupAmount(decimalOnly(e.target.value))}
+                  inputMode="decimal"
+                />
+                <Field
+                  label="Note"
+                  value={pickupNote}
+                  onChange={(e) => setPickupNote(e.target.value.replace(/[<>]/g, ''))}
+                />
+                <div className="flex items-end">
+                  <PrimaryButton
+                    compact
+                    type="button"
+                    disabled={!pickupAmount || Number(pickupAmount) <= 0}
+                    onClick={async () => {
+                      const reason = `[PICKUP] ${pickupNote || 'Safe drop'}`.trim()
+                      try {
+                        if (hasSupabase && user?.branchId) {
+                          const row = await addPettyCash({
+                            branchId: user.branchId,
+                            staffId: user.id,
+                            amount: Number(pickupAmount),
+                            reason,
+                            businessDate: date,
+                          })
+                          setPetty((prev) => [row, ...prev])
+                        } else {
+                          setPetty((prev) => [
+                            { id: `local-${Date.now()}`, amount: Number(pickupAmount), reason },
+                            ...prev,
+                          ])
+                        }
+                        setPickupAmount('')
+                        setPickupNote('')
+                      } catch (err) {
+                        setError(formatSupportError(err, 'PETTY01'))
+                      }
+                    }}
+                  >
+                    Record
+                  </PrimaryButton>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        <p className="mb-3 text-xs text-brand-muted">
+          Float {money(changeFundTotal)} · Pickups {money(pickupTotal)} · Paid-out {money(paidOutTotal)}
+        </p>
+      </TableCard>
+
+      <TableCard className="mb-3.5 max-h-none p-5">
+        <h2 className="m-0 mb-3 text-base">Paid-out (petty cash)</h2>
+        {!isClosed && (
+          <div className="mb-3 grid grid-cols-[1fr_1.4fr_auto] gap-2 max-[700px]:grid-cols-1">
+            <Field
+              label="Amount"
+              value={pettyAmount}
+              onChange={(e) => setPettyAmount(decimalOnly(e.target.value))}
+              inputMode="decimal"
+            />
+            <Field
+              label="Reason"
+              value={pettyReason}
+              onChange={(e) => setPettyReason(e.target.value.replace(/[<>]/g, ''))}
+            />
+            <div className="flex items-end">
+              <PrimaryButton
+                compact
+                type="button"
+                disabled={!pettyAmount || Number(pettyAmount) <= 0}
+                onClick={async () => {
+                  try {
+                    if (hasSupabase && user?.branchId) {
+                      const row = await addPettyCash({
+                        branchId: user.branchId,
+                        staffId: user.id,
+                        amount: Number(pettyAmount),
+                        reason: pettyReason,
+                        businessDate: date,
+                      })
+                      setPetty((prev) => [row, ...prev])
+                    } else {
+                      setPetty((prev) => [
+                        {
+                          id: `local-${Date.now()}`,
+                          amount: Number(pettyAmount),
+                          reason: pettyReason,
+                        },
+                        ...prev,
+                      ])
+                    }
+                    setPettyAmount('')
+                    setPettyReason('')
+                  } catch (err) {
+                    setError(formatSupportError(err, 'PETTY01'))
+                  }
+                }}
+              >
+                Add
+              </PrimaryButton>
+            </div>
+          </div>
+        )}
+        <p className="mb-2 text-xs text-brand-muted">Today&apos;s paid-out total: {money(pettyTotal)}</p>
+        {petty.filter((row) => entryKind(row.reason) === 'paid_out').length === 0 ? (
+          <p className="text-xs text-brand-subtle">No paid-out entries yet.</p>
+        ) : (
+          petty
+            .filter((row) => entryKind(row.reason) === 'paid_out')
+            .map((row) => (
+            <div
+              key={row.id}
+              className="flex justify-between border-t border-brand-softline py-2 text-xs first:border-t-0"
+            >
+              <span>{row.reason || '—'}</span>
+              <strong>{money(row.amount)}</strong>
+            </div>
+          ))
+        )}
+      </TableCard>
+
       <TableCard>
         <div className="flex items-center justify-between px-5 pt-4 pb-3">
           <h2 className="m-0 text-lg capitalize">Previous day ends</h2>
@@ -209,6 +451,10 @@ function DayEnd() {
           <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px]">
             <span>Recorded</span>
             <strong className="text-right">{money(recorded)}</strong>
+            <span>Petty cash</span>
+            <strong className="text-right">{money(pettyTotal)}</strong>
+            <span>Expected drawer</span>
+            <strong className="text-right">{money(expectedCash)}</strong>
             <span>Cash on hand</span>
             <strong className="text-right">{money(Number(cashOnHand || 0))}</strong>
             <span>Variance</span>

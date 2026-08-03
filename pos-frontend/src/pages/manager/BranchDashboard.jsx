@@ -18,6 +18,7 @@ import {
   bootstrapBranchData,
   fetchBranchTelemetry,
   fetchBranches,
+  fetchRefundSummary,
   fetchTransactionDetail,
   hasSupabase,
   reopenDayEnd,
@@ -44,6 +45,7 @@ function ManagerBranchDashboard() {
   const [reopening, setReopening] = useState(null)
   const [telemetry, setTelemetry] = useState({ devices: [] })
   const [detail, setDetail] = useState(null)
+  const [refundSummary, setRefundSummary] = useState(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState(null)
   const [deviceBusy, setDeviceBusy] = useState(null)
@@ -104,7 +106,8 @@ function ManagerBranchDashboard() {
   const isRestaurant = branch?.branch_type === 'restaurant'
   const todayKey = businessDate(new Date(), openHour)
   const todayTx = data.transactions.filter((item) => item.status === 'Paid' && item.date === todayKey)
-  const revenue = todayTx.reduce((sum, item) => sum + item.total, 0)
+  const revenue = todayTx.reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
+  const refundedToday = todayTx.reduce((sum, item) => sum + Number(item.refundedAmount || 0), 0)
   const low = data.products.filter((product) => product.stock <= product.lowStockAt)
   const menuOn = data.products.filter((p) => p.availableToday !== false)
   const menuOff = data.products.filter((p) => p.availableToday === false)
@@ -172,12 +175,18 @@ function ManagerBranchDashboard() {
     setError('')
     setLoadingDetail(true)
     setDetail(null)
+    setRefundSummary(null)
     try {
       if (!hasSupabase || !isUuid(item.id)) {
         setError('Transaction details are only available after the sale has synced.')
         return
       }
-      setDetail(await fetchTransactionDetail(item.id))
+      const [row, summary] = await Promise.all([
+        fetchTransactionDetail(item.id),
+        fetchRefundSummary(item.id).catch(() => null),
+      ])
+      setDetail(row)
+      setRefundSummary(summary)
     } catch (err) {
       setError(err.message || 'Could not load transaction')
     } finally {
@@ -340,78 +349,28 @@ function ManagerBranchDashboard() {
         </>
       )}
 
-      <TableCard className="mb-4 max-h-none">
-        <div className="px-4 py-3">
-          <h2 className="m-0 text-base">Devices</h2>
-          <p className="m-0 mt-0.5 text-[11px] text-brand-subtle">
-            Switches start Off when nothing is connected. Turn On when hardware is ready.
-          </p>
-        </div>
-        <div className="grid grid-cols-3 gap-0 border-t border-brand-softline max-[700px]:grid-cols-1">
-          {BRANCH_DEVICES.map((device) => {
-            const telemetryRow = (telemetry.devices || []).find((row) => row.key === device.key)
-            const enabled = deviceSettings[device.key] === true
-            const connected = enabled && telemetryRow?.state === 'connected'
-            return (
-              <div
-                key={device.key}
-                className="border-t border-brand-softline px-4 py-3 max-[700px]:border-t min-[701px]:border-t-0 min-[701px]:border-l min-[701px]:first:border-l-0"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <strong className="block text-xs text-brand-ink">{device.label}</strong>
-                    <span className="mt-0.5 block text-[10px] text-brand-subtle">{device.hint}</span>
-                    <span
-                      className={`mt-1 inline-block text-[11px] font-bold ${
-                        !enabled
-                          ? 'text-brand-muted'
-                          : connected
-                            ? 'text-[#2f6b3c]'
-                            : 'text-brand-muted'
-                      }`}
-                    >
-                      {!enabled
-                        ? 'Disabled'
-                        : connected
-                          ? 'Connected'
-                          : telemetryRow?.detail || 'Not Connected'}
-                    </span>
-                  </div>
-                  <ToggleSwitch
-                    checked={enabled}
-                    disabled={Boolean(deviceBusy)}
-                    busy={deviceBusy === device.key}
-                    onChange={(on) => toggleDevice(device.key, on)}
-                    label={device.label}
-                  />
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </TableCard>
-
       <div className="mb-4 grid grid-cols-4 gap-3 max-[900px]:grid-cols-2 max-[700px]:grid-cols-1">
         {(isRestaurant
           ? [
-              ['Sales today', money(revenue)],
-              ['Orders today', todayTx.length],
-              ['Potahe on menu', menuOn.length],
-              ['Off today', menuOff.length],
+              ['Sales today', money(revenue), refundedToday > 0 ? `−${money(refundedToday)} refunded` : ''],
+              ['Orders today', todayTx.length, ''],
+              ['Potahe on menu', menuOn.length, ''],
+              ['Off today', menuOff.length, ''],
             ]
           : [
-              ['Revenue today', money(revenue)],
-              ['Orders today', todayTx.length],
-              ['Low stock', low.length],
-              ['Reseko loss', money(shrink)],
+              ['Revenue today', money(revenue), refundedToday > 0 ? `−${money(refundedToday)} refunded` : ''],
+              ['Orders today', todayTx.length, ''],
+              ['Low stock', low.length, ''],
+              ['Reseko loss', money(shrink), ''],
             ]
-        ).map(([label, value]) => (
+        ).map(([label, value, hint]) => (
           <div
             key={label}
             className="rounded-[9px] bg-brand-dark p-4 text-white max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:p-3.5"
           >
-            <span className="block text-[11px] text-[#abb1ad]">{label}</span>
-            <strong className="mt-2 block text-xl text-brand-gold max-[700px]:mt-0">{value}</strong>
+            <span className="block text-[10px] tracking-wide text-white/60 uppercase">{label}</span>
+            <strong className="mt-1 block text-xl tabular-nums max-[700px]:mt-0 max-[700px]:text-lg">{value}</strong>
+            {hint ? <span className="mt-0.5 block text-[10px] text-[#f0c9a0]">{hint}</span> : null}
           </div>
         ))}
       </div>
@@ -477,8 +436,29 @@ function ManagerBranchDashboard() {
               <span className="text-[11px] text-brand-slate">{item.time || item.date || '—'}</span>
               <strong className="truncate text-brand-ink">{item.id.slice(0, 8)}</strong>
               <span className="truncate max-[900px]:hidden">{item.cashier}</span>
-              <span>{money(item.total)}</span>
-              <span className={item.status === 'Voided' ? 'text-brand-danger' : 'text-brand-success'}>{item.status}</span>
+              <span>
+                {money(item.netTotal ?? item.total)}
+                {Number(item.refundedAmount || 0) > 0 && item.status !== 'Voided' && (
+                  <span className="mt-0.5 block text-[10px] text-brand-danger">
+                    −{money(item.refundedAmount)}
+                  </span>
+                )}
+              </span>
+              <span
+                className={
+                  item.status === 'Voided'
+                    ? 'text-brand-danger'
+                    : Number(item.refundedAmount || 0) > 0
+                      ? 'text-[#8a6a3b]'
+                      : 'text-brand-success'
+                }
+              >
+                {item.status === 'Voided'
+                  ? 'Voided'
+                  : Number(item.refundedAmount || 0) > 0
+                    ? 'Partial'
+                    : item.status}
+              </span>
             </div>
           ))}
           {data.transactions.length === 0 && (
@@ -704,11 +684,66 @@ function ManagerBranchDashboard() {
         </div>
       )}
 
+      <TableCard className="mb-4 max-h-none">
+        <div className="px-4 py-3">
+          <h2 className="m-0 text-base">Branch devices</h2>
+          <p className="m-0 mt-0.5 text-[11px] text-brand-subtle">
+            Switches start Off when nothing is connected. Turn On when hardware is ready.
+          </p>
+        </div>
+        <div className="grid grid-cols-3 gap-0 border-t border-brand-softline max-[700px]:grid-cols-1">
+          {BRANCH_DEVICES.map((device) => {
+            const telemetryRow = (telemetry.devices || []).find((row) => row.key === device.key)
+            const enabled = deviceSettings[device.key] === true
+            const connected = enabled && telemetryRow?.state === 'connected'
+            return (
+              <div
+                key={device.key}
+                className="border-t border-brand-softline px-4 py-3 max-[700px]:border-t min-[701px]:border-t-0 min-[701px]:border-l min-[701px]:first:border-l-0"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <strong className="block text-xs text-brand-ink">{device.label}</strong>
+                    <span className="mt-0.5 block text-[10px] text-brand-subtle">{device.hint}</span>
+                    <span
+                      className={`mt-1 inline-block text-[11px] font-bold ${
+                        !enabled
+                          ? 'text-brand-muted'
+                          : connected
+                            ? 'text-[#2f6b3c]'
+                            : 'text-brand-muted'
+                      }`}
+                    >
+                      {!enabled
+                        ? 'Disabled by manager'
+                        : connected
+                          ? 'Enabled by manager · Connected'
+                          : 'Enabled by manager · Not connected'}
+                    </span>
+                  </div>
+                  <ToggleSwitch
+                    checked={enabled}
+                    disabled={Boolean(deviceBusy)}
+                    busy={deviceBusy === device.key}
+                    onChange={(on) => toggleDevice(device.key, on)}
+                    label={device.label}
+                  />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </TableCard>
+
       {(detail || loadingDetail) && (
         <TransactionDetailModal
           detail={detail}
           loading={loadingDetail}
-          onClose={() => setDetail(null)}
+          refundSummary={refundSummary}
+          onClose={() => {
+            setDetail(null)
+            setRefundSummary(null)
+          }}
         />
       )}
 

@@ -100,7 +100,7 @@ async function pushOne(item) {
       return
     }
     case QUEUE_TYPES.VOID_SALE: {
-      await api.voidSale(payload.id, payload.reason, payload.staffId || null)
+      await api.voidSale(payload.id, payload.reason, payload.staffId || null, payload.approvedBy || null)
       return
     }
     case QUEUE_TYPES.ADJUST_STOCK: {

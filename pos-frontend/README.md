@@ -5,7 +5,8 @@ React + Vite application for **CalePOS**.
 **Author:** Jazper Bustria  
 **License:** Proprietary — see [`../LICENSE`](../LICENSE). All rights reserved.
 
-For setup, deploy, and security guidance, use the root [`README.md`](../README.md).
+For setup, deploy, and security guidance, use the root [`README.md`](../README.md).  
+For “where is the code for X?”, see [`docs/CODEMAP.md`](./docs/CODEMAP.md).
 
 ```bash
 npm install

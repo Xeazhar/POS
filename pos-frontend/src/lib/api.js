@@ -1,6 +1,7 @@
 import { allowDemoMode, supabase } from './supabase'
 import { mapDayReport } from '../utils/dayEndReport'
 import { localDateKey, today } from '../utils/format'
+import { pinAuthEmail } from '../utils/roles'
 import { normalizeMenuKind } from '../utils/ulam'
 
 export const hasSupabase = Boolean(supabase)
@@ -60,6 +61,12 @@ async function writeProductRow(mode, payload, { id } = {}) {
     delete fallback.available_today
     ;({ data, error } = await attempt(fallback))
   }
+  if (error && (isMissingColumnError(error, 'unit_cost') || isMissingColumnError(error, 'discount_eligible'))) {
+    const fallback = { ...payload }
+    delete fallback.unit_cost
+    delete fallback.discount_eligible
+    ;({ data, error } = await attempt(fallback))
+  }
   if (error) throw error
   return data
 }
@@ -87,11 +94,13 @@ export function mapProduct(row, stock = 0, meta = {}) {
     menuKind,
     pricingMode: mapPricing(row.pricing_mode),
     price: Number(row.price),
+    unitCost: Number(row.unit_cost ?? 0),
     regularPrice: Number(row.price),
     budgetPrice: row.budget_price != null ? Number(row.budget_price) : null,
     stock: Number(stock),
     lowStockAt: Number(row.low_stock_threshold ?? 5),
     availableToday: row.available_today !== false,
+    discountEligible: row.discount_eligible === true,
     createdAt: localDateKey(row.created_at) || meta.createdAt || today(),
     updatedAt: meta.updatedAt ? localDateKey(meta.updatedAt) : localDateKey(row.created_at) || today(),
     lastMovementAt: meta.lastMovementAt || null,
@@ -117,6 +126,8 @@ function withCashierName(row, names) {
 export function mapTransaction(row) {
   const created = new Date(row.created_at)
   const createdAt = Number.isNaN(created.getTime()) ? row.created_at || null : created.toISOString()
+  const total = Number(row.total_amount || 0)
+  const refundedAmount = Number(row.refunded_amount || 0)
   return {
     id: row.id,
     orNumber: row.or_number || null,
@@ -124,7 +135,9 @@ export function mapTransaction(row) {
       ? '—'
       : created.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
     cashier: row.staff?.full_name || 'Staff',
-    total: Number(row.total_amount),
+    total,
+    refundedAmount,
+    netTotal: Math.max(0, Number((total - refundedAmount).toFixed(2))),
     status: row.status === 'voided' ? 'Voided' : 'Paid',
     items: row.transaction_items?.length || row.item_count || 0,
     date: localDateKey(row.created_at),
@@ -138,6 +151,14 @@ export function mapTransaction(row) {
     clientId: row.client_id || null,
     orderType: row.order_type || 'dine_in',
     ulamCombo: row.ulam_combo || null,
+    paymentMethod: row.payment_method || 'cash',
+    paymentReference: row.payment_reference || null,
+    vatAmount: row.vat_amount != null ? Number(row.vat_amount) : 0,
+    vatableSales: row.vatable_sales != null ? Number(row.vatable_sales) : 0,
+    discountAmount: row.discount_amount != null ? Number(row.discount_amount) : 0,
+    discountType: row.discount_type || null,
+    discountIdNote: row.discount_id_note || null,
+    voidApprovedBy: row.void_approved_by || null,
   }
 }
 
@@ -168,17 +189,17 @@ export function mapMovement(row) {
 export async function fetchSessionStaff() {
   const { data: auth } = await supabase.auth.getUser()
   if (!auth?.user) return null
-  const selectWithDevices =
-    'id, full_name, role, branch_id, is_active, branches(id, name, address, is_active, day_open_hour, branch_type, device_settings)'
+  const selectFull =
+    'id, full_name, role, branch_id, is_active, login_code, permissions, branches(id, name, address, is_active, day_open_hour, branch_type, device_settings, vat_rate)'
   const selectBase =
     'id, full_name, role, branch_id, is_active, branches(id, name, address, is_active, day_open_hour, branch_type)'
   let { data, error } = await supabase
     .from('staff')
-    .select(selectWithDevices)
+    .select(selectFull)
     .eq('auth_user_id', auth.user.id)
     .eq('is_active', true)
     .maybeSingle()
-  if (error && /device_settings|schema cache|column/i.test(String(error.message || ''))) {
+  if (error && /login_code|permissions|vat_rate|device_settings|schema cache|column/i.test(String(error.message || ''))) {
     ;({ data, error } = await supabase
       .from('staff')
       .select(selectBase)
@@ -200,6 +221,9 @@ export async function fetchSessionStaff() {
     branchType: data.branches?.branch_type === 'restaurant' ? 'restaurant' : 'retail',
     dayOpenHour: Number(data.branches?.day_open_hour ?? 7),
     deviceSettings: data.branches?.device_settings || null,
+    vatRate: Number(data.branches?.vat_rate ?? 0.12),
+    loginCode: data.login_code || null,
+    permissions: Array.isArray(data.permissions) ? data.permissions : null,
   }
 }
 
@@ -207,6 +231,31 @@ export async function signIn(email, password) {
   const { error } = await supabase.auth.signInWithPassword({ email, password })
   if (error) throw error
   return fetchSessionStaff()
+}
+
+/** Cashier/supervisor PIN login via staff code + PIN. */
+export async function signInWithPin(loginCode, pin) {
+  const code = String(loginCode || '').replace(/\D/g, '')
+  const pinVal = String(pin || '').replace(/\D/g, '')
+  const { data, error } = await supabase.rpc('resolve_pin_login', {
+    p_login_code: code,
+    p_pin: pinVal,
+  })
+  if (error) throw error
+  const row = Array.isArray(data) ? data[0] : data
+  if (!row?.auth_email) throw new Error('Invalid staff code or PIN')
+  const authPassword = row.auth_password || pinVal
+  return signIn(row.auth_email, authPassword)
+}
+
+export async function verifySupervisorPin(branchId, loginCode, pin) {
+  const { data, error } = await supabase.rpc('verify_supervisor_pin', {
+    p_branch_id: branchId,
+    p_login_code: String(loginCode || '').replace(/\D/g, ''),
+    p_pin: String(pin || '').replace(/\D/g, ''),
+  })
+  if (error) throw error
+  return data
 }
 
 export async function signOut() {
@@ -305,6 +354,8 @@ export async function createProduct({ branchId, staffId, values, branchType = 'r
         }
       : {}),
     low_stock_threshold: values.lowStockAt || 5,
+    unit_cost: values.unitCost != null && values.unitCost !== '' ? Number(values.unitCost) : 0,
+    discount_eligible: values.discountEligible === true,
   })
 
   if (!isRestaurant) {
@@ -440,6 +491,23 @@ export async function recordPriceChange({ branchId, productId, staffId, oldPrice
   return mapMovement({ ...data, products: { name: detail } })
 }
 
+export async function fetchPriceHistory(productId, branchId) {
+  let query = supabase
+    .from('stock_movements')
+    .select('*')
+    .eq('product_id', productId)
+    .eq('movement_type', 'price_change')
+    .order('created_at', { ascending: false })
+    .limit(50)
+  if (branchId) query = query.eq('branch_id', branchId)
+  const { data, error } = await query
+  if (error) {
+    if (/movement_type|schema cache/i.test(String(error.message || ''))) return []
+    throw error
+  }
+  return (data || []).map((row) => mapMovement(row))
+}
+
 export async function setInventoryStock({ branchId, productId, staffId, stock, previousStock, productName }) {
   const delta = Number((stock - previousStock).toFixed(2))
   if (delta === 0) return null
@@ -487,6 +555,13 @@ export async function completeSale({
   orderType = 'dine_in',
   ulamCombo = null,
   branchType = null,
+  paymentMethod = 'cash',
+  paymentReference = null,
+  vatAmount = 0,
+  vatableSales = 0,
+  discountAmount = 0,
+  discountType = null,
+  discountIdNote = null,
 }) {
   // Run till check + OR allocate (+ branch type if unknown) together
   const tillPromise = supabase.rpc('assert_till_open', { p_branch_id: branchId })
@@ -519,6 +594,13 @@ export async function completeSale({
     amount_tendered: tendered,
     change_given: Math.max(0, tendered - total),
     status: 'completed',
+    payment_method: ['cash', 'card', 'ewallet'].includes(paymentMethod) ? paymentMethod : 'cash',
+    payment_reference: paymentMethod === 'ewallet' ? String(paymentReference || '').trim() || null : null,
+    vat_amount: Number(vatAmount || 0),
+    vatable_sales: Number(vatableSales || 0),
+    discount_amount: Number(discountAmount || 0),
+    discount_type: discountType || null,
+    discount_id_note: discountIdNote || null,
   }
   if (orNumber) insertRow.or_number = orNumber
   if (clientId) insertRow.client_id = clientId
@@ -534,11 +616,22 @@ export async function completeSale({
     .single()
   if (
     error &&
-    (isMissingColumnError(error, 'order_type') || isMissingColumnError(error, 'ulam_combo'))
+    (isMissingColumnError(error, 'order_type') ||
+      isMissingColumnError(error, 'ulam_combo') ||
+      isMissingColumnError(error, 'payment_method') ||
+      isMissingColumnError(error, 'vat_amount') ||
+      isMissingColumnError(error, 'discount_amount'))
   ) {
     const fallback = { ...insertRow }
     delete fallback.order_type
     delete fallback.ulam_combo
+    delete fallback.payment_method
+    delete fallback.payment_reference
+    delete fallback.vat_amount
+    delete fallback.vatable_sales
+    delete fallback.discount_amount
+    delete fallback.discount_type
+    delete fallback.discount_id_note
     ;({ data: txn, error } = await supabase.from('transactions').insert(fallback).select('*').single())
   }
   if (error) throw error
@@ -637,14 +730,25 @@ export async function fetchTransactionDetail(id) {
   }
 }
 
-export async function voidSale(id, reason, staffId = null) {
+export async function voidSale(id, reason, staffId = null, approvedBy = null) {
   if (staffId) {
     const { data, error } = await supabase.rpc('void_sale_secure', {
       p_transaction_id: id,
       p_staff_id: staffId,
       p_reason: reason,
     })
-    if (!error) return data
+    if (!error) {
+      if (approvedBy) {
+        await supabase
+          .from('transactions')
+          .update({ void_approved_by: approvedBy })
+          .eq('id', id)
+          .then(({ error: e }) => {
+            if (e && !isMissingColumnError(e, 'void_approved_by')) console.warn(e.message)
+          })
+      }
+      return data
+    }
     if (!String(error.message || '').includes('Could not find the function')) throw error
   }
 
@@ -654,15 +758,19 @@ export async function voidSale(id, reason, staffId = null) {
     .eq('id', id)
     .maybeSingle()
 
-  const { error } = await supabase
-    .from('transactions')
-    .update({
-      status: 'voided',
-      void_reason: reason,
-      voided_at: new Date().toISOString(),
-      voided_by: staffId,
-    })
-    .eq('id', id)
+  const updatePayload = {
+    status: 'voided',
+    void_reason: reason,
+    voided_at: new Date().toISOString(),
+    voided_by: staffId,
+  }
+  if (approvedBy) updatePayload.void_approved_by = approvedBy
+
+  let { error } = await supabase.from('transactions').update(updatePayload).eq('id', id)
+  if (error && isMissingColumnError(error, 'void_approved_by')) {
+    delete updatePayload.void_approved_by
+    ;({ error } = await supabase.from('transactions').update(updatePayload).eq('id', id))
+  }
   if (error) throw error
 
   if (existing?.branch_id) {
@@ -674,9 +782,68 @@ export async function voidSale(id, reason, staffId = null) {
       or_number: existing.or_number,
       reason,
       amount: existing.total_amount,
-      payload: {},
+      payload: { approved_by: approvedBy },
     })
   }
+}
+
+/** Partial or multi-item refund. items: [{ item_id, quantity }] */
+export async function refundSaleItems({
+  transactionId,
+  staffId,
+  reason,
+  items = [],
+  approvedBy = null,
+}) {
+  const { data, error } = await supabase.rpc('refund_sale_items', {
+    p_transaction_id: transactionId,
+    p_staff_id: staffId,
+    p_reason: reason || 'Item refund',
+    p_items: items,
+    p_approved_by: approvedBy,
+  })
+  if (error) throw error
+  return data
+}
+
+export async function fetchRefundSummary(transactionId) {
+  const empty = { qtyByItem: {}, amountByItem: {}, totalAmount: 0, lines: [] }
+  const { data, error } = await supabase
+    .from('sale_refund_lines')
+    .select(
+      'id, transaction_item_id, product_id, quantity, amount, reason, created_at, staff_id, approved_by, products(name, sku)',
+    )
+    .eq('transaction_id', transactionId)
+    .order('created_at', { ascending: false })
+  if (error) {
+    if (/sale_refund_lines|schema cache/i.test(String(error.message || ''))) return empty
+    throw error
+  }
+  const qtyByItem = {}
+  const amountByItem = {}
+  let totalAmount = 0
+  const lines = (data || []).map((row) => ({
+    ...row,
+    productName: row.products?.name || null,
+  }))
+  lines.forEach((row) => {
+    const id = row.transaction_item_id
+    qtyByItem[id] = Number((qtyByItem[id] || 0) + Number(row.quantity || 0))
+    amountByItem[id] = Number((amountByItem[id] || 0) + Number(row.amount || 0))
+    totalAmount += Number(row.amount || 0)
+  })
+  return {
+    qtyByItem,
+    amountByItem,
+    totalAmount: Number(totalAmount.toFixed(2)),
+    lines,
+  }
+}
+
+/** @deprecated prefer fetchRefundSummary */
+export async function fetchRefundedQuantities(transactionId) {
+  const summary = await fetchRefundSummary(transactionId)
+  return summary.qtyByItem
 }
 
 export async function closeDayEnd({ branchId, staffId, entry }) {
@@ -732,9 +899,21 @@ export async function reopenDayEnd({ id, staffId }) {
 }
 
 export async function fetchBranches() {
-  const { data, error } = await supabase.from('branches').select('*').order('name')
-  if (error) throw error
+  const { data, error } = await supabase.from('branches').select('*').order('sort_order').order('name')
+  if (error) {
+    const fallback = await supabase.from('branches').select('*').order('name')
+    if (fallback.error) throw error
+    return fallback.data || []
+  }
   return data || []
+}
+
+export async function reorderBranches(orderedIds = []) {
+  await Promise.all(
+    orderedIds.map((id, index) =>
+      supabase.from('branches').update({ sort_order: index + 1 }).eq('id', id),
+    ),
+  )
 }
 
 /** Seconds without heartbeat before a branch is considered offline. */
@@ -895,6 +1074,12 @@ export async function saveBranch(payload) {
   if (payload.day_open_hour != null) {
     fields.day_open_hour = Math.min(23, Math.max(0, Number(payload.day_open_hour)))
   }
+  if (payload.vat_rate != null || payload.vatRate != null) {
+    fields.vat_rate = Number(payload.vat_rate ?? payload.vatRate)
+  }
+  if (payload.sort_order != null || payload.sortOrder != null) {
+    fields.sort_order = Number(payload.sort_order ?? payload.sortOrder)
+  }
   if ('device_settings' in payload || 'deviceSettings' in payload) {
     const raw = payload.device_settings ?? payload.deviceSettings
     fields.device_settings = {
@@ -913,6 +1098,12 @@ export async function saveBranch(payload) {
       .eq('id', payload.id)
       .select('*')
       .single()
+    if (error && (isMissingColumnError(error, 'vat_rate') || isMissingColumnError(error, 'sort_order'))) {
+      const fallback = { ...fields }
+      delete fallback.vat_rate
+      delete fallback.sort_order
+      ;({ data, error } = await supabase.from('branches').update(fallback).eq('id', payload.id).select('*').single())
+    }
     if (
       error &&
       fields.device_settings &&
@@ -965,52 +1156,237 @@ export async function fetchAllStaff() {
   return data || []
 }
 
-export async function createStaffAccount({ email, password, fullName, role, branchId }) {
+export async function createStaffAccount({
+  email,
+  password,
+  fullName,
+  role,
+  branchId,
+  loginCode = null,
+  loginPin = null,
+  permissions = null,
+}) {
   const { data: sessionData } = await supabase.auth.getSession()
   const managerSession = sessionData.session
+  const pinRole = role === 'cashier' || role === 'supervisor'
+  const authEmail = pinRole && loginCode ? pinAuthEmail(loginCode, branchId) : email
+  const authSecret = pinRole
+    ? `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, '')
+    : null
+  const authPassword = pinRole ? authSecret : password
+
   const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
+    email: authEmail,
+    password: authPassword,
     options: { data: { full_name: fullName, role, branch_id: branchId } },
   })
   if (error) throw error
   if (data.user) {
-    // Trigger may already create the staff row — update it; insert only if missing
+    const staffPayload = {
+      branch_id: branchId,
+      full_name: fullName,
+      role,
+      is_active: true,
+      login_code: pinRole ? String(loginCode || '').replace(/\D/g, '') : null,
+      login_pin: pinRole ? String(loginPin || '') : null,
+      auth_secret: pinRole ? authSecret : null,
+      permissions: permissions || null,
+    }
     const { data: existing } = await supabase
       .from('staff')
       .select('id')
       .eq('auth_user_id', data.user.id)
       .maybeSingle()
     if (existing?.id) {
-      const { error: updateError } = await supabase
-        .from('staff')
-        .update({
+      let { error: updateError } = await supabase.from('staff').update(staffPayload).eq('id', existing.id)
+      if (updateError && (isMissingColumnError(updateError, 'login_code') || isMissingColumnError(updateError, 'permissions') || isMissingColumnError(updateError, 'auth_secret'))) {
+        const fallback = { branch_id: branchId, full_name: fullName, role, is_active: true }
+        ;({ error: updateError } = await supabase.from('staff').update(fallback).eq('id', existing.id))
+      }
+      if (updateError) {
+        const uniqueErr = staffCodeUniqueError(updateError)
+        if (uniqueErr) throw uniqueErr
+        throw updateError
+      }
+    } else {
+      let { error: insertError } = await supabase.from('staff').insert({
+        auth_user_id: data.user.id,
+        ...staffPayload,
+      })
+      if (insertError && (isMissingColumnError(insertError, 'login_code') || isMissingColumnError(insertError, 'permissions') || isMissingColumnError(insertError, 'auth_secret'))) {
+        ;({ error: insertError } = await supabase.from('staff').insert({
+          auth_user_id: data.user.id,
           branch_id: branchId,
           full_name: fullName,
           role,
           is_active: true,
-        })
-        .eq('id', existing.id)
-      if (updateError) throw updateError
-    } else {
-      const { error: insertError } = await supabase.from('staff').insert({
-        auth_user_id: data.user.id,
-        branch_id: branchId,
-        full_name: fullName,
-        role,
-        is_active: true,
-      })
-      if (insertError && insertError.code !== '23505') throw insertError
+        }))
+      }
+      if (insertError) {
+        const uniqueErr = staffCodeUniqueError(insertError)
+        if (uniqueErr) throw uniqueErr
+        if (insertError.code !== '23505') throw insertError
+      }
     }
   }
   if (managerSession) await supabase.auth.setSession(managerSession)
   return data.user
 }
 
+function staffCodeUniqueError(error) {
+  if (!error) return null
+  if (error.code === '23505' && /login_code|staff_login_code/i.test(String(error.message || error.details || ''))) {
+    return new Error('That staff code is already in use. Choose a different unique code.')
+  }
+  if (error.code === '23505' && /staff_branch_login_code|login_code/i.test(String(error.message || error.details || ''))) {
+    return new Error('That staff code is already in use. Choose a different unique code.')
+  }
+  return null
+}
+
 export async function updateStaffRow(id, changes) {
-  const { data, error } = await supabase.from('staff').update(changes).eq('id', id).select('*, branches(name)').single()
+  const payload = { ...changes }
+  if ('loginCode' in payload) {
+    payload.login_code = payload.loginCode
+    delete payload.loginCode
+  }
+  if ('loginPin' in payload) {
+    payload.login_pin = payload.loginPin
+    delete payload.loginPin
+  }
+  let { data, error } = await supabase.from('staff').update(payload).eq('id', id).select('*, branches(name)').single()
+  if (error && (isMissingColumnError(error, 'login_code') || isMissingColumnError(error, 'login_pin') || isMissingColumnError(error, 'permissions'))) {
+    const fallback = { ...payload }
+    delete fallback.login_code
+    delete fallback.login_pin
+    delete fallback.permissions
+    ;({ data, error } = await supabase.from('staff').update(fallback).eq('id', id).select('*, branches(name)').single())
+  }
+  const uniqueErr = staffCodeUniqueError(error)
+  if (uniqueErr) throw uniqueErr
   if (error) throw error
   return data
+}
+
+export async function revealStaffPin(staffId) {
+  const { data, error } = await supabase
+    .from('staff')
+    .select('id, full_name, login_code, login_pin, role')
+    .eq('id', staffId)
+    .maybeSingle()
+  if (error) throw error
+  if (!data) throw new Error('Staff not found')
+  await logAuditEvent({
+    branchId: null,
+    staffId: null,
+    eventType: 'pin_viewed',
+    detail: `PIN viewed for ${data.full_name}`,
+    meta: { targetStaffId: staffId },
+  }).catch(() => {})
+  return { loginCode: data.login_code, loginPin: data.login_pin, name: data.full_name, role: data.role }
+}
+
+export async function clockIn({ branchId, staffId }) {
+  const { data, error } = await supabase
+    .from('staff_shifts')
+    .insert({ branch_id: branchId, staff_id: staffId, clock_in: new Date().toISOString() })
+    .select('*')
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function clockOut(shiftId) {
+  const { data, error } = await supabase
+    .from('staff_shifts')
+    .update({ clock_out: new Date().toISOString() })
+    .eq('id', shiftId)
+    .select('*')
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function fetchOpenShift(staffId) {
+  const { data, error } = await supabase
+    .from('staff_shifts')
+    .select('*')
+    .eq('staff_id', staffId)
+    .is('clock_out', null)
+    .order('clock_in', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) {
+    if (isMissingColumnError(error, 'staff_shifts') || /staff_shifts|schema cache/i.test(String(error.message || ''))) {
+      return null
+    }
+    throw error
+  }
+  return data
+}
+
+/** Shift log for supervisors (one branch) or managers (all / filtered). */
+export async function fetchStaffShifts({ branchId = null, start = null, end = null, limit = 300 } = {}) {
+  let query = supabase
+    .from('staff_shifts')
+    .select(
+      'id, branch_id, staff_id, clock_in, clock_out, created_at, staff:staff_id(id, full_name, role), branches:branch_id(id, name)',
+    )
+    .order('clock_in', { ascending: false })
+    .limit(limit)
+
+  if (branchId) query = query.eq('branch_id', branchId)
+  if (start) query = query.gte('clock_in', `${start}T00:00:00`)
+  if (end) query = query.lte('clock_in', `${end}T23:59:59.999`)
+
+  const { data, error } = await query
+  if (error) {
+    if (isMissingColumnError(error, 'staff_shifts') || /staff_shifts|schema cache/i.test(String(error.message || ''))) {
+      return []
+    }
+    throw error
+  }
+  return (data || []).map((row) => ({
+    id: row.id,
+    branchId: row.branch_id,
+    branchName: row.branches?.name || '—',
+    staffId: row.staff_id,
+    staffName: row.staff?.full_name || 'Staff',
+    staffRole: row.staff?.role || '',
+    clockIn: row.clock_in,
+    clockOut: row.clock_out,
+    open: !row.clock_out,
+  }))
+}
+
+export async function addPettyCash({ branchId, staffId, amount, reason, businessDate }) {
+  const { data, error } = await supabase
+    .from('petty_cash')
+    .insert({
+      branch_id: branchId,
+      staff_id: staffId,
+      amount: Number(amount),
+      reason: reason || '',
+      business_date: businessDate,
+    })
+    .select('*')
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function fetchPettyCash(branchId, businessDate) {
+  const { data, error } = await supabase
+    .from('petty_cash')
+    .select('*')
+    .eq('branch_id', branchId)
+    .eq('business_date', businessDate)
+    .order('created_at', { ascending: false })
+  if (error) {
+    if (/petty_cash|schema cache/i.test(String(error.message || ''))) return []
+    throw error
+  }
+  return data || []
 }
 
 export async function branchSummary(branchId, { days = 1 } = {}) {
@@ -1163,14 +1539,35 @@ export async function fetchReportSalesDetail({ start, end, branchId, includeVoid
   let query = supabase
     .from('transaction_items')
     .select(
-      '*, products(id, product_no, name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo)',
+      '*, products(id, product_no, name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo, payment_method, payment_reference)',
     )
     .gte('transactions.created_at', `${start}T00:00:00`)
     .lte('transactions.created_at', `${end}T23:59:59`)
   if (!includeVoided) query = query.eq('transactions.status', 'completed')
   if (branchId) query = query.eq('transactions.branch_id', branchId)
   const { data, error } = await query
-  if (error) throw error
+  if (error) {
+    // Soft-fail older schemas without payment columns
+    if (/payment_method|payment_reference|schema cache/i.test(String(error.message || ''))) {
+      const fallback = await supabase
+        .from('transaction_items')
+        .select(
+          '*, products(id, product_no, name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo)',
+        )
+        .gte('transactions.created_at', `${start}T00:00:00`)
+        .lte('transactions.created_at', `${end}T23:59:59`)
+      const fb = !includeVoided ? fallback.eq('transactions.status', 'completed') : fallback
+      const scoped = branchId ? fb.eq('transactions.branch_id', branchId) : fb
+      const { data: rows2, error: err2 } = await scoped
+      if (err2) throw err2
+      const staffNames2 = await staffNameById((rows2 || []).map((row) => row.transactions?.staff_id))
+      return (rows2 || []).map((row) => ({
+        ...row,
+        transactions: withCashierName(row.transactions, staffNames2),
+      }))
+    }
+    throw error
+  }
   const rows = data || []
   const staffNames = await staffNameById(rows.map((row) => row.transactions?.staff_id))
   return rows.map((row) => ({

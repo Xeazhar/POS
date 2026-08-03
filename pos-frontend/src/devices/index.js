@@ -149,11 +149,12 @@ export async function getAllDeviceStatuses(settings = null) {
           ? 'receipt_printer'
           : 'cash_drawer'
     const on = enabled[key] === true
+    const hardwareDetail = row.detail && row.detail !== 'Disabled by manager' ? row.detail : 'Not Connected'
     return {
       ...row,
       enabled: on,
       state: on ? row.state : 'disconnected',
-      detail: on ? row.detail : 'Disabled by manager',
+      detail: on ? hardwareDetail : 'Disabled by manager',
     }
   })
 }

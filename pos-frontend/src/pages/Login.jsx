@@ -4,9 +4,15 @@ import { Eyebrow, ErrorBanner, Field, PrimaryButton } from '../components/ui'
 import { allowDemoMode, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { formatSupportError } from '../utils/errors'
+import { isManagerRole } from '../utils/roles'
+import { staffHomePath } from '../constants/nav'
+import * as api from '../lib/api'
 
 function Login() {
   const configured = hasSupabase || allowDemoMode
+  const [mode, setMode] = useState('pin') // pin | email
+  const [loginCode, setLoginCode] = useState('')
+  const [pin, setPin] = useState('')
   const [email, setEmail] = useState(hasSupabase ? '' : allowDemoMode ? 'demo@calepos.local' : '')
   const [password, setPassword] = useState(hasSupabase ? '' : allowDemoMode ? 'demo' : '')
   const login = useAuthStore((state) => state.login)
@@ -15,6 +21,27 @@ function Login() {
   const hydrate = useInventoryStore((state) => state.hydrate)
   const loadBranch = useProductStore((state) => state.loadBranch)
   const navigate = useNavigate()
+
+  async function afterLogin(user) {
+    if (hasSupabase && user?.branchId) {
+      const data = await loadBranch(user.branchId)
+      if (data) hydrate(data)
+    }
+    let needsClock = false
+    if (!isManagerRole(user?.role) && hasSupabase && user?.branchId) {
+      try {
+        const open = await api.fetchOpenShift(user.id)
+        needsClock = !open
+      } catch {
+        /* clock-in optional if migration missing */
+      }
+    }
+    // Always navigate into the app (avoids blank shell when Login unmounts)
+    navigate(staffHomePath(user))
+    if (needsClock) {
+      useAuthStore.setState({ pendingClockIn: true })
+    }
+  }
 
   return (
     <main className="grid min-h-screen place-items-center bg-brand-dark">
@@ -39,54 +66,97 @@ function Login() {
           <>
             <p className="text-[13px] text-brand-muted">
               {hasSupabase
-                ? 'Sign in with your CalePOS account. After day end, a fresh login is required.'
-                : 'Demo mode — any email/PIN works offline.'}
+                ? mode === 'pin'
+                  ? 'Enter your staff code and PIN to continue.'
+                  : 'Sign in with your account email.'
+                : 'Demo mode — any code/PIN or email works offline.'}
             </p>
             <form
-              className="mt-[30px]"
+              className="mt-[22px]"
               onSubmit={async (event) => {
                 event.preventDefault()
                 try {
-                  const user = await login(email, password)
-                  if (hasSupabase && user?.branchId) {
-                    const data = await loadBranch(user.branchId)
-                    if (data) hydrate(data)
-                  }
-                  if (user?.branchType === 'restaurant' && user?.role === 'cashier') {
-                    navigate('/pos?menu=1')
-                  } else {
-                    navigate('/')
-                  }
+                  const user =
+                    mode === 'pin'
+                      ? await login(loginCode, pin, { mode: 'pin' })
+                      : await login(email, password, { mode: 'email' })
+                  await afterLogin(user)
                 } catch {
                   /* error in store */
                 }
               }}
             >
-              <Field
-                label={hasSupabase ? 'Email' : 'Staff name / email'}
-                className="mt-[15px]"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                autoFocus
-                type={hasSupabase ? 'email' : 'text'}
-                required
-              />
-              <Field
-                label="Password / PIN"
-                className="mt-[15px]"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                type="password"
-                required
-              />
+              {mode === 'pin' ? (
+                <>
+                  <Field
+                    label="Staff code"
+                    className="mt-[15px]"
+                    value={loginCode}
+                    onChange={(event) => setLoginCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                    inputMode="numeric"
+                    autoFocus
+                    required
+                    placeholder="4–6 digit code"
+                  />
+                  <Field
+                    label="PIN"
+                    className="mt-[15px]"
+                    value={pin}
+                    onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                    type="password"
+                    inputMode="numeric"
+                    required
+                    placeholder="4–6 digit PIN"
+                  />
+                </>
+              ) : (
+                <>
+                  <Field
+                    label={hasSupabase ? 'Email' : 'Staff name / email'}
+                    className="mt-[15px]"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    autoFocus
+                    type={hasSupabase ? 'email' : 'text'}
+                    required
+                  />
+                  <Field
+                    label="Password"
+                    className="mt-[15px]"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    type="password"
+                    required
+                  />
+                </>
+              )}
               {error && <ErrorBanner className="mt-3 mb-0" error={formatSupportError(error, 'AUTH01')} />}
               <PrimaryButton className="mt-[25px]" type="submit" disabled={booting}>
                 {booting ? 'Signing in…' : 'Enter CalePOS'} <span>→</span>
               </PrimaryButton>
             </form>
-            <small className="mt-[25px] block text-center text-[10px] text-[#969b97]">
-              {hasSupabase ? 'Connected to Supabase' : 'Offline demo store'}
-            </small>
+            <div className="mt-[22px] flex items-center justify-between gap-3">
+              <small className="text-[10px] text-[#969b97]">
+                {hasSupabase ? 'Connected to Supabase' : 'Offline demo store'}
+              </small>
+              {mode === 'pin' ? (
+                <button
+                  type="button"
+                  className="border-0 bg-transparent p-0 text-[10px] text-[#b0b5b1] underline-offset-2 hover:text-[#7a807c] hover:underline"
+                  onClick={() => setMode('email')}
+                >
+                  Manager login
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="border-0 bg-transparent p-0 text-[10px] text-[#b0b5b1] underline-offset-2 hover:text-[#7a807c] hover:underline"
+                  onClick={() => setMode('pin')}
+                >
+                  Use staff PIN
+                </button>
+              )}
+            </div>
           </>
         )}
       </div>

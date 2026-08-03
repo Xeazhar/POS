@@ -370,14 +370,34 @@ grant execute on function public.current_business_date(integer) to authenticated
 grant execute on function public.assert_till_open(uuid) to authenticated;
 grant execute on function public.reopen_day_end(uuid, uuid) to authenticated;
 
-create policy "managers read import batches" on import_batches for select to authenticated
-  using (public.is_manager());
-create policy "managers write import batches" on import_batches for all to authenticated
-  using (public.is_manager()) with check (public.is_manager());
-create policy "managers read import items" on import_batch_items for select to authenticated
-  using (public.is_manager());
-create policy "managers write import items" on import_batch_items for all to authenticated
-  using (public.is_manager()) with check (public.is_manager());
+create policy "branch read import batches" on import_batches for select to authenticated
+  using (branch_id = public.current_staff_branch() or public.is_manager());
+create policy "branch write import batches" on import_batches for all to authenticated
+  using (branch_id = public.current_staff_branch() or public.is_manager())
+  with check (branch_id = public.current_staff_branch() or public.is_manager());
+create policy "branch read import items" on import_batch_items for select to authenticated
+  using (
+    exists (
+      select 1 from import_batches b
+      where b.id = batch_id
+        and (b.branch_id = public.current_staff_branch() or public.is_manager())
+    )
+  );
+create policy "branch write import items" on import_batch_items for all to authenticated
+  using (
+    exists (
+      select 1 from import_batches b
+      where b.id = batch_id
+        and (b.branch_id = public.current_staff_branch() or public.is_manager())
+    )
+  )
+  with check (
+    exists (
+      select 1 from import_batches b
+      where b.id = batch_id
+        and (b.branch_id = public.current_staff_branch() or public.is_manager())
+    )
+  );
 
 create or replace function public.record_stock_movement(
   p_branch_id uuid, p_product_id uuid, p_staff_id uuid, p_movement_type text,

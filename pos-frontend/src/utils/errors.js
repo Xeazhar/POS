@@ -18,7 +18,7 @@ export const ERROR_CATALOG = {
 
   SALE01: 'Sale failed — payment was not recorded.',
   SALE02: 'Sale queued offline — will sync when online.',
-  SALE03: 'Could not void sale.',
+  SALE03: 'Refund failed.',
 
   INV01: 'Product save failed.',
   INV02: 'Stock adjustment failed.',

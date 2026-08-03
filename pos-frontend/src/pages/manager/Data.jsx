@@ -26,10 +26,11 @@ import {
   mapProduct,
   revertInventoryImport,
   updateProductPrice,
+  fetchPriceHistory,
 } from '../../lib/api'
 import { useAuthStore, useProductStore } from '../../stores/posStore'
 import { buildImportPreview, sha256Hex } from '../../utils/inventoryImport'
-import { money, qty } from '../../utils/format'
+import { money, qty, stockTone } from '../../utils/format'
 import { formatSupportError } from '../../utils/errors'
 import { categoryForMenuKind, hasBudgetTier, MENU_KINDS } from '../../utils/ulam'
 import {
@@ -39,6 +40,7 @@ import {
   findProductDuplicate,
   sanitizeText,
 } from '../../utils/validate'
+import { isManagerRole } from '../../utils/roles'
 
 const OFFLINE_KEY = 'cale-import-batches-v1'
 const PAGE_SIZE = 10
@@ -54,6 +56,8 @@ const emptyAddForm = () => ({
   budgetPrice: '',
   stock: '',
   availableToday: true,
+  discountEligible: false,
+  unitCost: '',
 })
 
 function loadOfflineBatches() {
@@ -70,6 +74,7 @@ function saveOfflineBatches(batches) {
 
 function ManagerData() {
   const user = useAuthStore((state) => state.user)
+  const managerView = isManagerRole(user?.role)
   const [branches, setBranches] = useState([])
   const [branchId, setBranchId] = useState('')
   const [error, setError] = useState('')
@@ -77,6 +82,9 @@ function ManagerData() {
   const [history, setHistory] = useState([])
   const [products, setProducts] = useState([])
   const [query, setQuery] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('All')
+  const [stockFilter, setStockFilter] = useState('all')
+  const [modeFilter, setModeFilter] = useState('all')
   const [page, setPage] = useState(0)
   const [preview, setPreview] = useState(null)
   const [duplicate, setDuplicate] = useState(null)
@@ -86,6 +94,8 @@ function ManagerData() {
   const [confirmRevert, setConfirmRevert] = useState(null)
   const [priceEdit, setPriceEdit] = useState(null)
   const [priceValue, setPriceValue] = useState('')
+  const [priceHistory, setPriceHistory] = useState(null)
+  const [priceHistoryRows, setPriceHistoryRows] = useState([])
   const [importProgress, setImportProgress] = useState(null)
   const [importDone, setImportDone] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
@@ -93,7 +103,9 @@ function ManagerData() {
   const [addError, setAddError] = useState('')
 
   const selectedBranch = branches.find((b) => b.id === branchId)
-  const isRestaurant = selectedBranch?.branch_type === 'restaurant'
+  const isRestaurant =
+    selectedBranch?.branch_type === 'restaurant' ||
+    (!managerView && user?.branchType === 'restaurant')
 
   const refreshCatalog = async (id = branchId) => {
     if (!id) {
@@ -101,11 +113,16 @@ function ManagerData() {
       return
     }
     if (!hasSupabase) {
-      setProducts(useProductStore.getState().products.filter((p) => !p.branchId || p.branchId === id))
+      const local = useProductStore.getState().products.filter((p) => !p.branchId || p.branchId === id)
+      setProducts(local)
       return
     }
     const data = await bootstrapBranchData(id)
     setProducts(data.products)
+    // Keep POS / Inventory in sync when editing the signed-in branch
+    if (id === user?.branchId) {
+      useProductStore.getState().setProducts(data.products)
+    }
   }
 
   const refreshHistory = async (id = branchId) => {
@@ -118,8 +135,20 @@ function ManagerData() {
   }
 
   useEffect(() => {
+    if (!managerView) {
+      const id = user?.branchId || (hasSupabase ? '' : 'demo-main-branch')
+      setBranches([
+        {
+          id,
+          name: user?.branchName || 'My branch',
+          branch_type: user?.branchType || 'retail',
+        },
+      ])
+      setBranchId(id)
+      return
+    }
     if (!hasSupabase) {
-      setBranches([{ id: user?.branchId || 'demo-main-branch', name: user?.branchName || 'Demo branch' }])
+      setBranches([{ id: user?.branchId || 'demo-main-branch', name: user?.branchName || 'Demo branch', branch_type: user?.branchType || 'retail' }])
       setBranchId(user?.branchId || 'demo-main-branch')
       return
     }
@@ -129,7 +158,7 @@ function ManagerData() {
         setBranchId(rows[0]?.id || '')
       })
       .catch((err) => setError(err.message))
-  }, [user])
+  }, [user, managerView])
 
   useEffect(() => {
     if (!branchId && hasSupabase) return
@@ -139,7 +168,25 @@ function ManagerData() {
 
   useEffect(() => {
     setPage(0)
-  }, [query])
+  }, [query, categoryFilter, stockFilter, modeFilter])
+
+  useEffect(() => {
+    let active = true
+    if (!priceHistory?.id || !hasSupabase) {
+      setPriceHistoryRows([])
+      return undefined
+    }
+    fetchPriceHistory(priceHistory.id, branchId || priceHistory.branchId)
+      .then((rows) => {
+        if (active) setPriceHistoryRows(rows)
+      })
+      .catch(() => {
+        if (active) setPriceHistoryRows([])
+      })
+    return () => {
+      active = false
+    }
+  }, [priceHistory, branchId])
 
   const openAdd = () => {
     setAddError('')
@@ -218,6 +265,8 @@ function ManagerData() {
       stock: isRestaurant ? 0 : Number(addForm.stock),
       lowStockAt: 5,
       availableToday: isRestaurant ? addForm.availableToday !== false : true,
+      unitCost: addForm.unitCost !== '' ? Number(addForm.unitCost) : 0,
+      discountEligible: addForm.discountEligible === true,
     }
 
     setBusy(true)
@@ -448,11 +497,28 @@ function ManagerData() {
   }
 
   const canCommit = preview && (!duplicate || acknowledgeDuplicate) && preview.lines.length > 0
-  const filtered = products.filter((product) =>
-    [product.productCode, product.id, product.name, product.sku, product.barcode].some((value) =>
-      String(value || '').toLowerCase().includes(query.toLowerCase()),
-    ),
-  )
+  const categories = [...new Set(products.map((p) => p.category).filter(Boolean))].sort()
+  const filtered = products.filter((product) => {
+    const q = query.toLowerCase()
+    if (q) {
+      const hit = [product.productCode, product.id, product.name, product.sku, product.barcode].some((value) =>
+        String(value || '').toLowerCase().includes(q),
+      )
+      if (!hit) return false
+    }
+    if (categoryFilter !== 'All' && product.category !== categoryFilter) return false
+    if (modeFilter !== 'all' && product.pricingMode !== modeFilter) return false
+    if (!isRestaurant && stockFilter !== 'all') {
+      if (stockFilter === 'out') {
+        if (Number(product.stock) > 0) return false
+      } else if (stockTone(product) !== stockFilter) {
+        return false
+      }
+    }
+    if (isRestaurant && stockFilter === 'off' && product.availableToday !== false) return false
+    if (isRestaurant && stockFilter === 'on' && product.availableToday === false) return false
+    return true
+  })
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const pageIndex = Math.min(page, pageCount - 1)
   const pageRows = filtered.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
@@ -476,7 +542,10 @@ function ManagerData() {
           closeLabel="Close"
         />
       )}
-      <PageHeader eyebrow="MANAGER" title={isRestaurant ? 'Menu data' : 'Inventory data'} />
+      <PageHeader
+        eyebrow={managerView ? 'MANAGER' : 'SUPERVISOR'}
+        title={isRestaurant ? 'Menu data' : 'Products'}
+      />
       <p className="mb-4 max-w-3xl text-xs text-brand-muted">
         {isRestaurant
           ? 'Add one potahe at a time, or import CSV/XLSX. Required for import: name, sku, category, price. Optional: menuKind, budgetPrice, barcode, availableToday.'
@@ -484,45 +553,120 @@ function ManagerData() {
       </p>
 
       <TableCard className="mb-4 max-h-none p-5">
-        <div className="grid grid-cols-[1fr_auto_auto] items-end gap-3 max-[700px]:grid-cols-1">
-          <SelectField
-            label="Branch"
-            value={branchId}
-            onChange={(e) => {
-              setBranchId(e.target.value)
-              clearPreview()
-            }}
-          >
-            {branches.map((branch) => (
-              <option key={branch.id} value={branch.id}>{branch.name}</option>
-            ))}
-          </SelectField>
-          <PrimaryButton compact type="button" disabled={busy || !branchId} onClick={openAdd}>
-            <FiPlus /> Add item
-          </PrimaryButton>
-          <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-[5px] border border-brand-border bg-white px-4 text-xs font-bold text-[#4d534f]">
-            <FiUpload /> Import file
-            <input className="hidden" type="file" accept=".csv,.xlsx,.xls" disabled={busy || !branchId} onChange={onFile} />
-          </label>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          {managerView ? (
+            <SelectField
+              label="Branch"
+              className="w-full min-w-0 sm:max-w-[260px]"
+              value={branchId}
+              onChange={(e) => {
+                setBranchId(e.target.value)
+                clearPreview()
+              }}
+            >
+              {branches.map((branch) => (
+                <option key={branch.id} value={branch.id}>{branch.name}</option>
+              ))}
+            </SelectField>
+          ) : (
+            <p className="m-0 text-xs text-brand-muted sm:pb-1">
+              Branch: <strong className="text-brand-ink">{user?.branchName || 'Assigned branch'}</strong>
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <PrimaryButton
+              compact
+              type="button"
+              className="!h-8 !min-h-0 !gap-1 !px-2.5 !text-[11px]"
+              disabled={busy || !branchId}
+              onClick={openAdd}
+            >
+              <FiPlus className="text-sm" /> Add item
+            </PrimaryButton>
+            <label
+              className={`inline-flex h-8 cursor-pointer items-center gap-1 rounded-[5px] border border-brand-border bg-white px-2.5 text-[11px] font-bold text-[#4d534f] ${
+                busy || !branchId ? 'pointer-events-none opacity-35' : ''
+              }`}
+            >
+              <FiUpload className="text-sm" /> Import
+              <input
+                className="hidden"
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                disabled={busy || !branchId}
+                onChange={onFile}
+              />
+            </label>
+          </div>
         </div>
         {error && <ErrorBanner className="mt-3 mb-0" error={formatSupportError(error)} onDismiss={() => setError('')} />}
       </TableCard>
 
       <TableCard className="mb-4 max-h-none">
-        <div className="flex flex-col gap-3 border-b border-brand-softline px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <h2 className="m-0 text-base">Branch catalog</h2>
-            <p className="m-0 mt-1 text-[11px] text-brand-subtle">
-              {products.length} products · IDs like 0001, 0002 · export from Reports → Price Listing
-            </p>
+        <div className="flex flex-col gap-3 border-b border-brand-softline px-5 py-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h2 className="m-0 text-base">{managerView ? 'Branch catalog' : 'Branch products'}</h2>
+              <p className="m-0 mt-1 text-[11px] text-brand-subtle">
+                {filtered.length} shown · {products.length} total
+                {managerView ? ' · export from Reports → Price Listing' : ''}
+              </p>
+            </div>
+            <SearchBox
+              className="w-full sm:w-[260px] sm:shrink-0"
+              icon={<FiSearch />}
+              placeholder="Search ID, name, SKU, barcode"
+              value={query}
+              onChange={(e) => setQuery(e.target.value.replace(/[<>]/g, ''))}
+            />
           </div>
-          <SearchBox
-            className="w-full sm:w-[260px] sm:shrink-0"
-            icon={<FiSearch />}
-            placeholder="Search ID, name, SKU"
-            value={query}
-            onChange={(e) => setQuery(e.target.value.replace(/[<>]/g, ''))}
-          />
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <SelectField
+              label="Category"
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+            >
+              <option value="All">All categories</option>
+              {categories.map((cat) => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </SelectField>
+            {!isRestaurant && (
+              <SelectField
+                label="Stock"
+                value={stockFilter}
+                onChange={(e) => setStockFilter(e.target.value)}
+              >
+                <option value="all">All stock</option>
+                <option value="low">Low</option>
+                <option value="fair">Fair</option>
+                <option value="good">Good</option>
+                <option value="out">Out of stock</option>
+              </SelectField>
+            )}
+            {isRestaurant && (
+              <SelectField
+                label="Serving"
+                value={stockFilter}
+                onChange={(e) => setStockFilter(e.target.value)}
+              >
+                <option value="all">All items</option>
+                <option value="on">On today</option>
+                <option value="off">Off today</option>
+              </SelectField>
+            )}
+            {!isRestaurant && (
+              <SelectField
+                label="Pricing"
+                value={modeFilter}
+                onChange={(e) => setModeFilter(e.target.value)}
+              >
+                <option value="all">All modes</option>
+                <option value="pc">Per pc</option>
+                <option value="kg">Per kg</option>
+              </SelectField>
+            )}
+          </div>
         </div>
         <div className="overflow-auto">
           <table className="min-w-full text-left text-xs">
@@ -556,13 +700,24 @@ function ManagerData() {
                     {qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}
                   </td>
                   <td className="px-5 py-3 text-right">
-                    <button
-                      type="button"
-                      className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                      onClick={() => openPriceEdit(product)}
-                    >
-                      Edit price
-                    </button>
+                    <div className="flex flex-col items-end gap-1">
+                      <button
+                        type="button"
+                        className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                        onClick={() => openPriceEdit(product)}
+                      >
+                        Edit price
+                      </button>
+                      {isRestaurant && (
+                        <button
+                          type="button"
+                          className="border-0 bg-transparent text-[11px] font-bold text-brand-slate underline"
+                          onClick={() => setPriceHistory(product)}
+                        >
+                          Price history
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -687,7 +842,7 @@ function ManagerData() {
                       <button type="button" className="mr-2 border-0 bg-transparent text-xs font-bold text-brand-ink underline" onClick={() => openDetail(batch)}>
                         View
                       </button>
-                      {batch.status === 'committed' && (
+                      {batch.status === 'committed' && managerView && (
                         <button type="button" className="border-0 bg-transparent text-xs font-bold text-brand-danger underline" onClick={() => setConfirmRevert(batch)}>
                           Revert
                         </button>
@@ -702,7 +857,7 @@ function ManagerData() {
       </TableCard>
 
       {detailBatch && (
-        <Modal wide className="w-[min(720px,calc(100%-32px))]" onClose={() => setDetailBatch(null)}>
+        <Modal wide className="sm:!w-[min(720px,100%)]" onClose={() => setDetailBatch(null)}>
           <h2 className="m-0 pr-8 text-lg">Import · {detailBatch.filename}</h2>
           <p className="mt-1 text-xs text-brand-muted">
             {new Date(detailBatch.created_at).toLocaleString()} · {detailBatch.staff?.full_name || 'Staff'} · hash{' '}
@@ -930,6 +1085,22 @@ Pandesa,BAK-PAN,4801000000035,Bakery,pc,8,80,20`}
                 Serving today
               </label>
             )}
+            <Field
+              label="Unit cost (optional)"
+              inputMode="decimal"
+              value={addForm.unitCost}
+              onChange={(e) => setAddField('unitCost', e.target.value)}
+            />
+            <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
+              <input
+                type="checkbox"
+                checked={addForm.discountEligible === true}
+                onChange={(e) =>
+                  setAddForm((prev) => ({ ...prev, discountEligible: e.target.checked }))
+                }
+              />
+              PWD / Senior discount eligible
+            </label>
             <ModalActions>
               <SecondaryButton compact type="button" disabled={busy} onClick={() => setShowAdd(false)}>
                 Cancel
@@ -960,6 +1131,41 @@ Pandesa,BAK-PAN,4801000000035,Bakery,pc,8,80,20`}
           <ModalActions>
             <SecondaryButton compact type="button" onClick={() => setPriceEdit(null)}>Cancel</SecondaryButton>
             <PrimaryButton compact type="button" disabled={busy} onClick={savePrice}>Save price</PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {priceHistory && (
+        <Modal wide onClose={() => { setPriceHistory(null); setPriceHistoryRows([]) }}>
+          <h2 className="m-0 pr-8 text-lg">Price history</h2>
+          <p className="mt-1 mb-3 text-xs text-brand-muted">
+            {priceHistory.name} · {priceHistory.sku}
+          </p>
+          <div className="max-h-[280px] overflow-auto rounded-md border border-brand-softline">
+            <div className="grid grid-cols-[1fr_1fr_1fr] gap-2 bg-[#f7f7f4] px-3 py-2 text-[9px] font-bold tracking-wide text-[#989e99] uppercase">
+              <span>Date</span>
+              <span className="text-right">Old</span>
+              <span className="text-right">New</span>
+            </div>
+            {priceHistoryRows.length === 0 ? (
+              <div className="px-3 py-4 text-xs text-brand-subtle">No price changes recorded yet.</div>
+            ) : (
+              priceHistoryRows.map((row) => (
+                <div
+                  key={row.id}
+                  className="grid grid-cols-[1fr_1fr_1fr] gap-2 border-t border-brand-softline px-3 py-2 text-xs"
+                >
+                  <span>{row.date}</span>
+                  <span className="text-right tabular-nums">{money(row.oldPrice)}</span>
+                  <strong className="text-right tabular-nums">{money(row.newPrice)}</strong>
+                </div>
+              ))
+            )}
+          </div>
+          <ModalActions>
+            <PrimaryButton compact type="button" onClick={() => { setPriceHistory(null); setPriceHistoryRows([]) }}>
+              Close
+            </PrimaryButton>
           </ModalActions>
         </Modal>
       )}

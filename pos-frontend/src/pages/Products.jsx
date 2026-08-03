@@ -48,6 +48,8 @@ function Products() {
   const movements = useInventoryStore((state) => state.movements)
   const addMovement = useInventoryStore((state) => state.addMovement)
   const [query, setQuery] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('All')
+  const [stockFilter, setStockFilter] = useState('all')
   const [page, setPage] = useState(0)
   const [selected, setSelected] = useState(null)
   const [form, setForm] = useState(emptyForm)
@@ -58,7 +60,7 @@ function Products() {
 
   useEffect(() => {
     setPage(0)
-  }, [query])
+  }, [query, categoryFilter, stockFilter])
 
   const close = () => {
     setSelected(null)
@@ -217,11 +219,27 @@ function Products() {
 
   const unit = form.pricingMode === 'kg' ? 'kg' : 'pc'
   const productMovements = movements.filter((movement) => movement.productId === selected)
-  const list = products.filter((product) =>
-    [product.name, product.sku, product.barcode].some((value) =>
-      value.toLowerCase().includes(query.toLowerCase()),
-    ),
-  )
+  const categories = [...new Set(products.map((p) => p.category).filter(Boolean))].sort()
+  const list = products.filter((product) => {
+    const q = query.toLowerCase()
+    if (q) {
+      const hit = [product.name, product.sku, product.barcode].some((value) =>
+        String(value || '').toLowerCase().includes(q),
+      )
+      if (!hit) return false
+    }
+    if (categoryFilter !== 'All' && product.category !== categoryFilter) return false
+    if (!isRestaurant && stockFilter !== 'all') {
+      if (stockFilter === 'out') {
+        if (Number(product.stock) > 0) return false
+      } else if (stockTone(product) !== stockFilter) {
+        return false
+      }
+    }
+    if (isRestaurant && stockFilter === 'off' && product.availableToday !== false) return false
+    if (isRestaurant && stockFilter === 'on' && product.availableToday === false) return false
+    return true
+  })
   const pageCount = Math.max(1, Math.ceil(list.length / PAGE_SIZE))
   const pageIndex = Math.min(page, pageCount - 1)
   const pageRows = list.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
@@ -236,7 +254,7 @@ function Products() {
           {products.length} {isRestaurant ? 'items' : 'SKUs'}
         </span>
       </PageHeader>
-      <div className="mb-[18px]">
+      <div className="mb-[18px] flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
         <SearchBox
           className="w-full max-w-[330px]"
           icon={<FiSearch />}
@@ -244,6 +262,42 @@ function Products() {
           value={query}
           onChange={(event) => setQuery(event.target.value.replace(/[<>]/g, ''))}
         />
+        <SelectField
+          label="Category"
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value)}
+          className="w-full max-w-[180px]"
+        >
+          <option value="All">All categories</option>
+          {categories.map((cat) => (
+            <option key={cat} value={cat}>{cat}</option>
+          ))}
+        </SelectField>
+        {isRestaurant ? (
+          <SelectField
+            label="Serving"
+            value={stockFilter}
+            onChange={(e) => setStockFilter(e.target.value)}
+            className="w-full max-w-[160px]"
+          >
+            <option value="all">All items</option>
+            <option value="on">On today</option>
+            <option value="off">Off today</option>
+          </SelectField>
+        ) : (
+          <SelectField
+            label="Stock"
+            value={stockFilter}
+            onChange={(e) => setStockFilter(e.target.value)}
+            className="w-full max-w-[160px]"
+          >
+            <option value="all">All stock</option>
+            <option value="low">Low</option>
+            <option value="fair">Fair</option>
+            <option value="good">Good</option>
+            <option value="out">Out of stock</option>
+          </SelectField>
+        )}
       </div>
       {error && isRestaurant && (
         <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>

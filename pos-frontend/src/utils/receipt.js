@@ -42,7 +42,20 @@ export function buildReceipt({ branch = {}, transaction = {}, lines = [], user =
       total: Number(transaction.total ?? 0),
       tendered: transaction.tendered != null ? Number(transaction.tendered) : null,
       change: transaction.change != null ? Number(transaction.change) : null,
-      payment: 'Cash',
+      payment: (() => {
+        const m = transaction.paymentMethod || transaction.payment_method || 'cash'
+        if (m === 'card') return 'Card'
+        if (m === 'ewallet') {
+          const ref = transaction.paymentReference || transaction.payment_reference
+          return ref ? `E-wallet (${ref})` : 'E-wallet'
+        }
+        return 'Cash'
+      })(),
+      vatAmount: Number(transaction.vatAmount ?? transaction.vat_amount ?? 0),
+      vatableSales: Number(transaction.vatableSales ?? transaction.vatable_sales ?? 0),
+      discountAmount: Number(transaction.discountAmount ?? transaction.discount_amount ?? 0),
+      discountType: transaction.discountType || transaction.discount_type || null,
+      discountIdNote: transaction.discountIdNote || transaction.discount_id_note || null,
     },
     footer: {
       note: 'This document is computer-generated. Keep for your records.',
@@ -112,10 +125,14 @@ export function receiptToHtml(receipt) {
     </table>
     <div class="rule"></div>
     <table class="totals">
+      ${t.discountAmount > 0 ? `<tr><td>Discount${t.discountType ? ` (${escapeHtml(t.discountType)})` : ''}</td><td class="num">-${money(t.discountAmount)}</td></tr>` : ''}
+      ${t.vatableSales > 0 ? `<tr><td>VATable Sales</td><td class="num">${money(t.vatableSales)}</td></tr>` : ''}
+      ${t.vatAmount > 0 ? `<tr><td>VAT</td><td class="num">${money(t.vatAmount)}</td></tr>` : ''}
       <tr><td>TOTAL</td><td class="num"><strong>${money(t.total)}</strong></td></tr>
-      ${t.tendered != null ? `<tr><td>Cash</td><td class="num">${money(t.tendered)}</td></tr>` : ''}
-      ${t.change != null ? `<tr><td>Change</td><td class="num">${money(t.change)}</td></tr>` : ''}
+      ${t.tendered != null && (transactionPaymentIsCash(t.payment)) ? `<tr><td>Cash</td><td class="num">${money(t.tendered)}</td></tr>` : ''}
+      ${t.change != null && transactionPaymentIsCash(t.payment) ? `<tr><td>Change</td><td class="num">${money(t.change)}</td></tr>` : ''}
       <tr><td>Payment</td><td class="num">${escapeHtml(t.payment)}</td></tr>
+      ${t.discountIdNote ? `<tr><td>ID</td><td class="num">${escapeHtml(t.discountIdNote)}</td></tr>` : ''}
     </table>
     <div class="rule"></div>
     <div class="center muted">${escapeHtml(receipt.footer.thankYou)}</div>
@@ -140,6 +157,11 @@ function escapeHtml(value) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+}
+
+function transactionPaymentIsCash(payment) {
+  const p = String(payment || 'Cash').toLowerCase()
+  return p === 'cash' || p.startsWith('cash')
 }
 
 function formatReceiptDate(value) {

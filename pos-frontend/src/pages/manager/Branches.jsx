@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Field, PageHeader, PrimaryButton, SecondaryButton, SelectField, TableCard } from '../../components/ui'
-import { branchSummary, fetchBranches, hasSupabase, saveBranch } from '../../lib/api'
+import { branchSummary, fetchBranches, hasSupabase, reorderBranches, saveBranch } from '../../lib/api'
 import { money } from '../../utils/format'
 
 const empty = {
@@ -9,6 +9,7 @@ const empty = {
   address: '',
   is_active: true,
   branch_type: 'retail',
+  vat_rate: 0.12,
 }
 
 function ManagerBranches() {
@@ -16,10 +17,19 @@ function ManagerBranches() {
   const [summaries, setSummaries] = useState({})
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
+  const [dragId, setDragId] = useState(null)
 
   const reload = async () => {
     if (!hasSupabase) {
-      setBranches([{ id: 'demo-main-branch', name: 'Bayombong Branch #001', address: 'Bayombong', is_active: true }])
+      setBranches([
+        {
+          id: 'demo-main-branch',
+          name: 'Bayombong Branch #001',
+          address: 'Bayombong',
+          is_active: true,
+          vat_rate: 0.12,
+        },
+      ])
       setSummaries({ 'demo-main-branch': { revenue: 0, orders: 0, lowStock: 0 } })
       return
     }
@@ -46,6 +56,30 @@ function ManagerBranches() {
     }
   }, [])
 
+  const onDropReorder = async (targetId) => {
+    if (!dragId || dragId === targetId) {
+      setDragId(null)
+      return
+    }
+    const from = branches.findIndex((b) => b.id === dragId)
+    const to = branches.findIndex((b) => b.id === targetId)
+    if (from < 0 || to < 0) {
+      setDragId(null)
+      return
+    }
+    const next = [...branches]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    setBranches(next)
+    setDragId(null)
+    try {
+      if (hasSupabase) await reorderBranches(next.map((b) => b.id))
+    } catch (err) {
+      setError(err.message)
+      await reload()
+    }
+  }
+
   return (
     <div>
       <PageHeader eyebrow="MANAGER" title="Branches">
@@ -53,14 +87,23 @@ function ManagerBranches() {
           Add branch
         </PrimaryButton>
       </PageHeader>
+      <p className="mb-3 text-[11px] text-brand-subtle">Drag cards to set display order.</p>
       {error && <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>}
       <div className="grid grid-cols-3 gap-3.5 max-[1050px]:grid-cols-2 max-[700px]:grid-cols-1">
         {branches.map((branch) => {
           const summary = summaries[branch.id] || { revenue: 0, orders: 0, lowStock: 0 }
           return (
-            <TableCard key={branch.id} className="max-h-none p-5">
+            <TableCard
+              key={branch.id}
+              className={`max-h-none p-5 ${dragId === branch.id ? 'opacity-60 ring-2 ring-brand-gold' : ''}`}
+              draggable
+              onDragStart={() => setDragId(branch.id)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => onDropReorder(branch.id)}
+            >
               <div className="mb-3 flex items-start justify-between gap-2">
                 <div className="min-w-0">
+                  <p className="m-0 mb-1 text-[10px] text-brand-subtle">⋮⋮ Drag to reorder</p>
                   <h2 className="m-0 text-lg">{branch.name}</h2>
                   <p className="mt-1 text-xs text-brand-muted">{branch.address || 'No address'}</p>
                   {branch.branch_type === 'restaurant' && (
@@ -119,6 +162,7 @@ function ManagerBranches() {
                   address: form.address,
                   is_active: form.is_active,
                   branch_type: form.branch_type || 'retail',
+                  vat_rate: form.vat_rate != null ? Number(form.vat_rate) : 0.12,
                 })
                 setForm(null)
                 await reload()
@@ -148,6 +192,12 @@ function ManagerBranches() {
                 <option value="retail">Retail / grocery</option>
                 <option value="restaurant">Restaurant / carinderia</option>
               </SelectField>
+              <Field
+                label="VAT rate (e.g. 0.12)"
+                value={form.vat_rate ?? 0.12}
+                onChange={(e) => setForm({ ...form, vat_rate: e.target.value })}
+                inputMode="decimal"
+              />
               <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
                 <input
                   type="checkbox"

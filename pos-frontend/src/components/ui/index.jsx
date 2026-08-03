@@ -90,10 +90,11 @@ export function SearchBox({ icon, className = '', ...props }) {
   )
 }
 
-export function TableCard({ className = '', children }) {
+export function TableCard({ className = '', children, ...rest }) {
   return (
     <section
       className={`max-h-[calc(100vh-165px)] overflow-auto rounded-[10px] border border-brand-line bg-white ${className}`}
+      {...rest}
     >
       {children}
     </section>
@@ -102,31 +103,39 @@ export function TableCard({ className = '', children }) {
 
 export function Modal({ wide = false, layer = false, className = '', onClose, children }) {
   return (
-    <div className={`fixed inset-0 grid place-items-center bg-[#202426aa] ${layer ? 'z-[6]' : 'z-[4]'}`}>
+    <div
+      className={`fixed inset-0 flex items-center justify-center bg-[#202426aa] p-3 max-[700px]:items-end max-[700px]:p-0 max-[700px]:pt-8 ${
+        layer ? 'z-[6]' : 'z-[4]'
+      }`}
+    >
       <div
-        className={`relative rounded-[10px] bg-white ${
-          wide ? 'w-[min(460px,calc(100%-32px))] p-6' : 'w-[min(420px,calc(100%-32px))] p-[30px]'
+        className={`relative flex max-h-full w-full flex-col overflow-hidden rounded-[10px] bg-white max-[700px]:max-h-[min(100%,calc(100dvh-2rem))] max-[700px]:rounded-b-none max-[700px]:rounded-t-[12px] ${
+          wide ? 'sm:w-[min(460px,100%)]' : 'sm:w-[min(420px,100%)]'
         } ${className}`}
       >
         {onClose && (
           <button
             type="button"
             aria-label="Close"
-            className="absolute top-[17px] right-[17px] border-0 bg-transparent text-lg text-[#6e7470] transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90"
+            className="absolute top-3 right-3 z-[1] border-0 bg-transparent text-lg text-[#6e7470] transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90"
             onClick={onClose}
           >
             <FiX />
           </button>
         )}
-        {children}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5 max-[700px]:p-4">
+          {children}
+        </div>
       </div>
     </div>
   )
 }
 
-export function ModalActions({ children }) {
+export function ModalActions({ children, className = '' }) {
   return (
-    <div className="mt-5 flex flex-wrap items-center justify-end gap-2 max-[700px]:[&>button]:min-w-0 max-[700px]:[&>button]:flex-1">
+    <div
+      className={`sticky bottom-0 -mx-5 -mb-1 mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-brand-softline bg-white px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-[700px]:-mx-4 max-[700px]:px-4 max-[700px]:[&>button]:min-w-0 max-[700px]:[&>button]:flex-1 ${className}`}
+    >
       {children}
     </div>
   )
@@ -138,6 +147,7 @@ export function ErrorBanner({ error, className = '', onDismiss }) {
   const text = typeof error === 'string' ? error : error.message || String(error)
   const codeMatch = text.match(/\bCode\s+([A-Z]{2,5}\d{2})\b/i) || text.match(/\b([A-Z]{2,5}\d{2})\b/)
   const code = codeMatch?.[1] || null
+  const alreadyLabeled = /\bCode\s+[A-Z]{2,5}\d{2}\b/i.test(text)
   return (
     <div
       className={`mb-3 rounded-md bg-brand-danger-bg px-3 py-2.5 text-xs text-brand-danger ${className}`}
@@ -146,7 +156,7 @@ export function ErrorBanner({ error, className = '', onDismiss }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="m-0 font-medium">{text}</p>
-          {code && (
+          {code && !alreadyLabeled && (
             <p className="m-0 mt-1 text-[11px] text-brand-danger/90">
               Support code <strong className="tracking-wide">{code}</strong> — text or call support with this code.
             </p>
@@ -174,6 +184,7 @@ export function StatusOverlay({
   done = false,
   onClose,
   closeLabel = 'Done',
+  actions = null,
 }) {
   const pct =
     progress && progress.total > 0
@@ -210,10 +221,15 @@ export function StatusOverlay({
             </p>
           </div>
         )}
+        {done && actions && <div className="mt-5 flex flex-col gap-2">{actions}</div>}
         {done && onClose && (
           <button
             type="button"
-            className="mt-5 h-10 w-full rounded-[5px] border-0 bg-brand-dark text-xs font-bold text-white"
+            className={
+              actions
+                ? 'mt-2 h-10 w-full rounded-[5px] border border-brand-line bg-white text-xs font-bold text-brand-ink'
+                : 'mt-5 h-10 w-full rounded-[5px] border-0 bg-brand-dark text-xs font-bold text-white'
+            }
             onClick={onClose}
           >
             {closeLabel}

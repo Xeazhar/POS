@@ -41,7 +41,12 @@ export function buildDayEndReport({
 }) {
   const paid = (transactions || []).filter((txn) => txn.status === 'Paid' && txn.date === date)
   const orderCount = paid.length
-  const revenue = Number(paid.reduce((sum, txn) => sum + Number(txn.total || 0), 0).toFixed(2))
+  const revenue = Number(
+    paid.reduce((sum, txn) => sum + Number(txn.netTotal ?? txn.total ?? 0), 0).toFixed(2),
+  )
+  const refunded = Number(
+    paid.reduce((sum, txn) => sum + Number(txn.refundedAmount || 0), 0).toFixed(2),
+  )
 
   const soldMap = new Map()
   const productById = Object.fromEntries((products || []).map((p) => [p.id, p]))
@@ -131,6 +136,7 @@ export function buildDayEndReport({
     businessDate: date,
     orderCount,
     revenue,
+    refunded,
     sold,
     restock,
     generatedAt: new Date().toISOString(),
