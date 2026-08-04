@@ -9,8 +9,10 @@ import {
   updatePromoEventDetails,
   fetchPromoEventsForBranch,
   deletePromoEvent,
+  fetchBranches,
 } from '../../lib/api'
-import { useAuthStore, useProductStore } from '../../stores/posStore'
+import { useAuthStore } from '../../stores/posStore'
+import { isManagerRole } from '../../utils/roles'
 import {
   Eyebrow,
   Field,
@@ -25,9 +27,10 @@ import {
 import { FiPlus } from 'react-icons/fi'
 
 /**
- * Manager Promos (MVP)
- * - Create one active promo event per branch
- * - Add multiple promo rules under that event
+ * Manager / Supervisor Promos
+ * - Promos are always scoped to one branch (never all branches)
+ * - Managers pick the branch first, then manage that branch's promos
+ * - Supervisors only see / manage the promo for their assigned branch
  *
  * Promo rules:
  *  - item_pct: applies % off to a selected product (all units)
@@ -39,9 +42,11 @@ import { FiPlus } from 'react-icons/fi'
  */
 export default function ManagerPromos() {
   const user = useAuthStore((s) => s.user)
-  const branchId = user?.branchId
-  const setProducts = useProductStore((s) => s.setProducts)
-  const products = useProductStore((s) => s.products)
+  const managerView = isManagerRole(user?.role)
+
+  const [branches, setBranches] = useState([])
+  const [branchId, setBranchId] = useState('')
+  const [products, setProducts] = useState([])
 
   const [active, setActive] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -57,6 +62,13 @@ export default function ManagerPromos() {
   const [productB, setProductB] = useState(null)
   const [bundleSelected, setBundleSelected] = useState([])
 
+  const [history, setHistory] = useState([])
+  const [editingEventId, setEditingEventId] = useState(null)
+  const [editStartsAt, setEditStartsAt] = useState('')
+  const [editEndsAt, setEditEndsAt] = useState('')
+  const [pendingDelete, setPendingDelete] = useState(null)
+
+  const selectedBranch = branches.find((b) => b.id === branchId)
   const selectedProductsForRule = useMemo(() => {
     if (ruleType === 'item_pct' || ruleType === 'bogo_pct') return [productSingle].filter(Boolean)
     if (ruleType === 'pair_pct') return [productA, productB].filter(Boolean)
@@ -64,19 +76,67 @@ export default function ManagerPromos() {
     return []
   }, [ruleType, productSingle, productA, productB, bundleSelected])
 
+  // Managers: load all branches and require an explicit selection.
+  // Supervisors: lock to their assigned branch only.
   useEffect(() => {
-    if (!hasSupabase || !branchId) return
-    void (async () => {
-      const data = await bootstrapBranchData(branchId)
-      setProducts(data.products)
-    })()
-  }, [branchId, setProducts])
+    if (!managerView) {
+      const id = user?.branchId || (hasSupabase ? '' : 'demo-main-branch')
+      setBranches([
+        {
+          id,
+          name: user?.branchName || 'Assigned branch',
+        },
+      ])
+      setBranchId(id)
+      return
+    }
+    if (!hasSupabase) {
+      setBranches([
+        {
+          id: user?.branchId || 'demo-main-branch',
+          name: user?.branchName || 'Demo branch',
+        },
+      ])
+      setBranchId('')
+      return
+    }
+    fetchBranches()
+      .then((rows) => {
+        setBranches(rows)
+        setBranchId('')
+      })
+      .catch((err) => setError(err.message))
+  }, [user, managerView])
 
   useEffect(() => {
+    setActive(null)
+    setHistory([])
+    setProducts([])
+    setProductSingle(null)
+    setProductA(null)
+    setProductB(null)
+    setBundleSelected([])
+    setEventName('')
+    setStartsAt('')
+    setEndsAt('')
+    setEditingEventId(null)
+    setEditStartsAt('')
+    setEditEndsAt('')
+    setPendingDelete(null)
+
     if (!hasSupabase || !branchId) return
+
     void (async () => {
-      const next = await fetchActivePromoEventWithRules(branchId, { respectDuration: false })
-      setActive(next)
+      try {
+        const data = await bootstrapBranchData(branchId)
+        setProducts(data.products || [])
+        const next = await fetchActivePromoEventWithRules(branchId, { respectDuration: false })
+        setActive(next)
+        const rows = await fetchPromoEventsForBranch(branchId)
+        setHistory(rows)
+      } catch (e) {
+        setError(e?.message || 'Failed to load branch promos.')
+      }
     })()
   }, [branchId])
 
@@ -92,30 +152,31 @@ export default function ManagerPromos() {
     setEndsAt(isoToLocalValue(active?.event?.endsAt))
   }, [active?.event?.startsAt, active?.event?.endsAt])
 
-  const [history, setHistory] = useState([])
-  const [editingEventId, setEditingEventId] = useState(null)
-  const [editStartsAt, setEditStartsAt] = useState('')
-  const [editEndsAt, setEditEndsAt] = useState('')
-  const [pendingDelete, setPendingDelete] = useState(null)
-
   const refreshHistory = async () => {
-    if (!hasSupabase || !branchId) return
+    if (!hasSupabase || !branchId) {
+      setHistory([])
+      return
+    }
     const rows = await fetchPromoEventsForBranch(branchId)
     setHistory(rows)
   }
 
-  useEffect(() => {
-    void refreshHistory()
-  }, [branchId])
-
   const refreshActive = async () => {
+    if (!branchId) {
+      setActive(null)
+      setHistory([])
+      return
+    }
     const next = await fetchActivePromoEventWithRules(branchId, { respectDuration: false })
     setActive(next)
     await refreshHistory()
   }
 
   const onCreateEvent = async () => {
-    if (!branchId) return
+    if (!branchId) {
+      setError('Select a branch before creating a promo.')
+      return
+    }
     if (!eventName.trim()) return
     if (!startsAt || !endsAt) {
       setError('Enter a promo duration (Starts at + Ends at) before creating.')
@@ -266,16 +327,56 @@ export default function ManagerPromos() {
 
   return (
     <div>
-      <PageHeader eyebrow="PROMOS" title="Manage promo events" />
+      <PageHeader eyebrow={managerView ? 'MANAGER' : 'SUPERVISOR'} title="Manage promo events" />
       {error && <div className="mb-3 rounded-md border border-brand-danger bg-white px-3 py-2 text-xs text-brand-danger">{error}</div>}
 
+      <TableCard className="mb-4 max-h-none overflow-visible p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          {managerView ? (
+            <SelectField
+              label="Branch"
+              className="w-full min-w-0 sm:max-w-[280px]"
+              value={branchId}
+              onChange={(e) => setBranchId(e.target.value)}
+            >
+              <option value="">Select a branch…</option>
+              {branches.map((branch) => (
+                <option key={branch.id} value={branch.id}>
+                  {branch.name}
+                </option>
+              ))}
+            </SelectField>
+          ) : (
+            <p className="m-0 text-xs text-brand-muted sm:pb-1">
+              Branch: <strong className="text-brand-ink">{user?.branchName || selectedBranch?.name || 'Assigned branch'}</strong>
+              <span className="mt-1 block text-brand-subtle">You can only view promos for your assigned branch.</span>
+            </p>
+          )}
+          {managerView && branchId && (
+            <p className="m-0 text-xs text-brand-subtle sm:pb-1">
+              Promo applies only to <strong className="text-brand-ink">{selectedBranch?.name || 'this branch'}</strong>
+            </p>
+          )}
+        </div>
+      </TableCard>
+
+      {!branchId ? (
+        <TableCard className="max-h-none overflow-visible p-5">
+          <p className="m-0 text-sm text-brand-muted">
+            {managerView
+              ? 'Select a branch first. Promos are per-branch and never apply to all branches automatically.'
+              : 'No assigned branch found for this account.'}
+          </p>
+        </TableCard>
+      ) : (
+        <>
       <TableCard className="mb-4 max-h-none overflow-visible p-5">
         <div className="grid gap-4 sm:grid-cols-2 sm:items-start">
           <div>
             <Eyebrow>Active promo</Eyebrow>
             <h2 className="m-0 text-lg">{active?.event?.name || 'No active promo event'}</h2>
             <p className="m-0 mt-1 text-xs text-brand-muted">
-              One event can be active at a time, but that event can contain multiple promo rules.
+              One event can be active at a time for this branch, but that event can contain multiple promo rules.
             </p>
           </div>
 
@@ -292,7 +393,7 @@ export default function ManagerPromos() {
               <PrimaryButton
                 compact
                 type="button"
-                disabled={busy || !eventName.trim() || !startsAt || !endsAt}
+                disabled={busy || !branchId || !eventName.trim() || !startsAt || !endsAt}
                 onClick={onCreateEvent}
               >
                 {busy ? 'Saving…' : 'Create'}
@@ -571,6 +672,8 @@ export default function ManagerPromos() {
           </SecondaryButton>
         </div>
       </TableCard>
+        </>
+      )}
 
       {editingEventId && (
         <Modal onClose={onCancelEditEvent}>

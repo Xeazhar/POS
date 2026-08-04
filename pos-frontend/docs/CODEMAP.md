@@ -560,6 +560,8 @@ Product name in UI/docs: **CalePOS**.
 
 ### Manager Promo events (item/pair/bundle/BOGO)
 - **Manager tab UI:** `src/pages/manager/Promos.jsx` (create event + create rules)
+  - Managers must select a branch first; promos never apply to all branches
+  - Supervisors are locked to their assigned branch (UI + RLS)
 - **Active promo fetch in POS:** `src/pages/POS.jsx`
   - `useEffect` calls `fetchActivePromoEventWithRules(branchId)`
   - `Cart` receives `promoRules` + `promoLabel`

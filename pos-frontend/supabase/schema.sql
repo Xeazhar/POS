@@ -346,9 +346,16 @@ drop policy if exists "managers manage promo rule products" on promo_rule_produc
 create policy "branch staff reads promo events" on promo_events for select to authenticated
   using (branch_id = public.current_staff_branch() or public.is_manager());
 
+-- Managers: all branches. Supervisors: own branch only.
 create policy "managers manage promo events" on promo_events for all to authenticated
-  using (public.current_staff_role() in ('manager', 'admin', 'master', 'supervisor'))
-  with check (public.current_staff_role() in ('manager', 'admin', 'master', 'supervisor'));
+  using (
+    public.is_manager()
+    or (public.current_staff_role() = 'supervisor' and branch_id = public.current_staff_branch())
+  )
+  with check (
+    public.is_manager()
+    or (public.current_staff_role() = 'supervisor' and branch_id = public.current_staff_branch())
+  );
 
 create policy "branch staff reads promo rules" on promo_rules for select to authenticated
   using (
@@ -360,8 +367,26 @@ create policy "branch staff reads promo rules" on promo_rules for select to auth
   );
 
 create policy "managers manage promo rules" on promo_rules for all to authenticated
-  using (public.current_staff_role() in ('manager', 'admin', 'master', 'supervisor'))
-  with check (public.current_staff_role() in ('manager', 'admin', 'master', 'supervisor'));
+  using (
+    exists (
+      select 1 from promo_events e
+      where e.id = promo_rules.promo_event_id
+        and (
+          public.is_manager()
+          or (public.current_staff_role() = 'supervisor' and e.branch_id = public.current_staff_branch())
+        )
+    )
+  )
+  with check (
+    exists (
+      select 1 from promo_events e
+      where e.id = promo_rules.promo_event_id
+        and (
+          public.is_manager()
+          or (public.current_staff_role() = 'supervisor' and e.branch_id = public.current_staff_branch())
+        )
+    )
+  );
 
 create policy "branch staff reads promo rule products" on promo_rule_products for select to authenticated
   using (
@@ -374,8 +399,28 @@ create policy "branch staff reads promo rule products" on promo_rule_products fo
   );
 
 create policy "managers manage promo rule products" on promo_rule_products for all to authenticated
-  using (public.current_staff_role() in ('manager', 'admin', 'master', 'supervisor'))
-  with check (public.current_staff_role() in ('manager', 'admin', 'master', 'supervisor'));
+  using (
+    exists (
+      select 1 from promo_rules r
+      join promo_events e on e.id = r.promo_event_id
+      where r.id = promo_rule_products.promo_rule_id
+        and (
+          public.is_manager()
+          or (public.current_staff_role() = 'supervisor' and e.branch_id = public.current_staff_branch())
+        )
+    )
+  )
+  with check (
+    exists (
+      select 1 from promo_rules r
+      join promo_events e on e.id = r.promo_event_id
+      where r.id = promo_rule_products.promo_rule_id
+        and (
+          public.is_manager()
+          or (public.current_staff_role() = 'supervisor' and e.branch_id = public.current_staff_branch())
+        )
+    )
+  );
 
 drop policy if exists "read day ends" on day_ends;
 drop policy if exists "write day ends" on day_ends;
