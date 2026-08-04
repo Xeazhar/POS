@@ -411,6 +411,7 @@ export async function updateProductRow(id, values, { branchId, staffId, previous
           : null,
       menu_kind: normalizeMenuKind(values.menuKind, values.category),
       low_stock_threshold: values.lowStockAt || 5,
+      discount_eligible: values.discountEligible === true,
     },
     { id },
   )
@@ -645,6 +646,8 @@ export async function completeSale({
       quantity,
       unit_price: unit,
       line_total: unit * quantity,
+      discount_eligible: item.discountEligible === true,
+      discount_amount: Number(item.discountAmount ?? 0),
     }
     if (isRestaurant) {
       row.price_tier = item.priceTier === 'budget' ? 'budget' : 'regular'
@@ -709,7 +712,7 @@ export async function fetchTransactionDetail(id) {
   const { data, error } = await supabase
     .from('transactions')
     .select(
-      '*, transaction_items(id, quantity, unit_price, line_total, products(id, name, sku, pricing_mode))',
+      '*, transaction_items(id, quantity, unit_price, line_total, discount_eligible, discount_amount, products(id, name, sku, pricing_mode))',
     )
     .eq('id', id)
     .single()
@@ -726,6 +729,8 @@ export async function fetchTransactionDetail(id) {
       quantity: Number(line.quantity),
       unitPrice: Number(line.unit_price),
       lineTotal: Number(line.line_total),
+      discountEligible: line.discount_eligible === true,
+      discountAmount: Number(line.discount_amount ?? 0),
     })),
   }
 }
@@ -1389,6 +1394,47 @@ export async function fetchPettyCash(branchId, businessDate) {
   return data || []
 }
 
+export async function fetchPettyCashTimeline(branchId, { startDate, endDate } = {}) {
+  let query = supabase
+    .from('petty_cash')
+    .select('*')
+    .eq('branch_id', branchId)
+    .order('created_at', { ascending: false })
+
+  if (startDate) query = query.gte('business_date', startDate)
+  if (endDate) query = query.lte('business_date', endDate)
+
+  const { data, error } = await query
+  if (error) {
+    if (/petty_cash|schema cache/i.test(String(error.message || ''))) return []
+    throw error
+  }
+
+  const rows = data || []
+  const staffNames = await staffNameById(rows.map((row) => row.staff_id))
+  return rows.map((row) => {
+    const reason = String(row.reason || '')
+    const kind =
+      /^\[CHANGE FUND\]/i.test(reason)
+        ? 'change_fund'
+        : /^\[PICKUP\]/i.test(reason)
+          ? 'pickup'
+          : 'paid_out'
+
+    return {
+      id: row.id,
+      branchId: row.branch_id,
+      staffId: row.staff_id,
+      staffName: staffNames[row.staff_id] || 'Staff',
+      amount: Number(row.amount || 0),
+      reason,
+      kind,
+      businessDate: row.business_date,
+      createdAt: row.created_at,
+    }
+  })
+}
+
 export async function branchSummary(branchId, { days = 1 } = {}) {
   const start = new Date()
   start.setDate(start.getDate() - (Math.max(1, days) - 1))
@@ -1662,6 +1708,139 @@ export async function fetchDailyReading({ date, branchId }) {
   }
 }
 
+/**
+ * Source bundle for Terminal / Cashier / Department / PLU reports (one fetch).
+ */
+export async function fetchTerminalReportSource({ date, endDate, branchId, staffId = null }) {
+  if (!supabase) throw new Error('Supabase not connected')
+  const start = date
+  const end = endDate || date
+
+  let branch = null
+  if (branchId) {
+    const { data, error } = await supabase.from('branches').select('*').eq('id', branchId).maybeSingle()
+    if (error) throw error
+    branch = data
+  }
+
+  let txnQuery = supabase
+    .from('transactions')
+    .select(
+      'id, or_number, status, total_amount, refunded_amount, amount_tendered, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, vat_amount, vatable_sales, order_type, void_reason',
+    )
+    .gte('created_at', `${start}T00:00:00`)
+    .lte('created_at', `${end}T23:59:59`)
+    .order('created_at', { ascending: true })
+  if (branchId) txnQuery = txnQuery.eq('branch_id', branchId)
+  if (staffId) txnQuery = txnQuery.eq('staff_id', staffId)
+
+  let { data: transactions, error: txnError } = await txnQuery
+  if (
+    txnError &&
+    /refunded_amount|payment_method|discount_amount|vat_amount|schema cache|column/i.test(
+      String(txnError.message || ''),
+    )
+  ) {
+    let fb = supabase
+      .from('transactions')
+      .select('id, or_number, status, total_amount, created_at, staff_id, branch_id, void_reason')
+      .gte('created_at', `${start}T00:00:00`)
+      .lte('created_at', `${end}T23:59:59`)
+      .order('created_at', { ascending: true })
+    if (branchId) fb = fb.eq('branch_id', branchId)
+    if (staffId) fb = fb.eq('staff_id', staffId)
+    ;({ data: transactions, error: txnError } = await fb)
+  }
+  if (txnError) throw txnError
+
+  const staffNames = await staffNameById((transactions || []).map((r) => r.staff_id))
+  const txns = (transactions || []).map((row) => withCashierName(row, staffNames))
+
+  let lineItems = []
+  try {
+    lineItems = await fetchReportSalesDetail({
+      start,
+      end,
+      branchId: branchId || null,
+      includeVoided: false,
+    })
+    if (staffId) {
+      lineItems = lineItems.filter((row) => row.transactions?.staff_id === staffId)
+    }
+  } catch {
+    lineItems = []
+  }
+
+  let pettyCash = []
+  if (branchId) {
+    try {
+      const { data: pettyRows, error: pettyErr } = await supabase
+        .from('petty_cash')
+        .select('*')
+        .eq('branch_id', branchId)
+        .gte('business_date', start)
+        .lte('business_date', end)
+        .order('created_at', { ascending: false })
+      if (pettyErr) {
+        pettyCash = await fetchPettyCash(branchId, start).catch(() => [])
+      } else {
+        pettyCash = pettyRows || []
+      }
+    } catch {
+      pettyCash = []
+    }
+  }
+
+  let dayEnd = null
+  if (branchId) {
+    const { data } = await supabase
+      .from('day_ends')
+      .select('*')
+      .eq('branch_id', branchId)
+      .eq('business_date', start)
+      .maybeSingle()
+    dayEnd = data
+  }
+
+  // Lifetime completed sales before report start (OLD GRAND TOTAL)
+  let oldGrandTotal = 0
+  let grandQuery = supabase
+    .from('transactions')
+    .select('total_amount, refunded_amount')
+    .eq('status', 'completed')
+    .lt('created_at', `${start}T00:00:00`)
+  if (branchId) grandQuery = grandQuery.eq('branch_id', branchId)
+  const { data: prior, error: priorErr } = await grandQuery
+  if (!priorErr && prior) {
+    oldGrandTotal = prior.reduce(
+      (s, r) => s + Number(r.total_amount || 0) - Number(r.refunded_amount || 0),
+      0,
+    )
+  } else if (priorErr) {
+    let q2 = supabase
+      .from('transactions')
+      .select('total_amount')
+      .eq('status', 'completed')
+      .lt('created_at', `${start}T00:00:00`)
+    if (branchId) q2 = q2.eq('branch_id', branchId)
+    const { data: prior2 } = await q2
+    oldGrandTotal = (prior2 || []).reduce((s, r) => s + Number(r.total_amount || 0), 0)
+  }
+
+  const cashiers = Object.entries(staffNames).map(([id, name]) => ({ id, name }))
+
+  return {
+    branch,
+    transactions: txns,
+    lineItems,
+    pettyCash,
+    dayEnd,
+    oldGrandTotal: Number(oldGrandTotal.toFixed(2)),
+    cashiers,
+    staffNames,
+  }
+}
+
 /** Fiscal backup pack for a date range (JSON download from UI). */
 export async function fetchFiscalBackup({ start, end, branchId }) {
   let txnQuery = supabase
@@ -1883,6 +2062,209 @@ export async function revertInventoryImport(batchId, staffId) {
     p_batch_id: batchId,
     p_staff_id: staffId,
   })
+  if (error) throw error
+  return data
+}
+
+/**
+ * Promo (Manager-hosted discounts)
+ *
+ * Active promo event is selected by:
+ * - promo_events.branch_id = given branchId
+ * - promo_events.is_active = true
+ *
+ * Returns: { event, rules } where rules includes ordered product ids.
+ */
+export async function fetchActivePromoEventWithRules(branchId, { respectDuration = true } = {}) {
+  const { data: event, error: eventError } = await supabase
+    .from('promo_events')
+    .select('id,name,is_active,starts_at,ends_at')
+    .eq('branch_id', branchId)
+    .eq('is_active', true)
+    .maybeSingle()
+
+  if (eventError) throw eventError
+  if (!event) return null
+
+  if (respectDuration) {
+    // Duration check in JS to keep the Supabase query simple.
+    // - if starts_at is null => already started
+    // - if ends_at is null => no end date
+    const now = new Date()
+    const startOk = !event.starts_at || new Date(event.starts_at) <= now
+    const endOk = !event.ends_at || new Date(event.ends_at) >= now
+    if (!startOk || !endOk) return null
+  }
+
+  const { data: rules, error: rulesError } = await supabase
+    .from('promo_rules')
+    .select('id,rule_type,discount_pct,buy_qty,get_qty')
+    .eq('promo_event_id', event.id)
+
+  if (rulesError) throw rulesError
+
+  const ruleIds = (rules || []).map((r) => r.id)
+  const { data: ruleProducts, error: rpError } = ruleIds.length
+    ? await supabase
+        .from('promo_rule_products')
+        .select('promo_rule_id,product_id,product_index,quantity_required, products(name,sku)')
+        .in('promo_rule_id', ruleIds)
+    : { data: [], error: null }
+
+  if (rpError) throw rpError
+
+  const productsByRule = (ruleProducts || []).reduce((acc, row) => {
+    if (!acc[row.promo_rule_id]) acc[row.promo_rule_id] = []
+    acc[row.promo_rule_id].push(row)
+    return acc
+  }, {})
+
+  const normalizedRules = (rules || []).map((r) => {
+    const rows = productsByRule[r.id] || []
+    rows.sort((a, b) => Number(a.product_index) - Number(b.product_index))
+    return {
+      id: r.id,
+      ruleType: r.rule_type,
+      discountPct: Number(r.discount_pct),
+      buyQty: Number(r.buy_qty ?? 1),
+      getQty: Number(r.get_qty ?? 1),
+      products: rows.map((x) => ({
+        productId: x.product_id,
+        quantityRequired: Number(x.quantity_required ?? 1),
+        productName: x.products?.name || null,
+        sku: x.products?.sku || null,
+      })),
+    }
+  })
+
+  return {
+    event: { id: event.id, name: event.name, startsAt: event.starts_at, endsAt: event.ends_at },
+    rules: normalizedRules,
+  }
+}
+
+export async function fetchPromoRulesForEvent(promoEventId) {
+  const { data: rules, error } = await supabase
+    .from('promo_rules')
+    .select('id,rule_type,discount_pct,buy_qty,get_qty')
+    .eq('promo_event_id', promoEventId)
+  if (error) throw error
+  if (!rules?.length) return []
+
+  const ruleIds = rules.map((r) => r.id)
+  const { data: ruleProducts, error: rpError } = await supabase
+    .from('promo_rule_products')
+    .select('promo_rule_id,product_id,product_index,quantity_required, products(name,sku)')
+    .in('promo_rule_id', ruleIds)
+  if (rpError) throw rpError
+
+  const productsByRule = (ruleProducts || []).reduce((acc, row) => {
+    if (!acc[row.promo_rule_id]) acc[row.promo_rule_id] = []
+    acc[row.promo_rule_id].push(row)
+    return acc
+  }, {})
+
+  return rules.map((r) => {
+    const rows = productsByRule[r.id] || []
+    rows.sort((a, b) => Number(a.product_index) - Number(b.product_index))
+    return {
+      id: r.id,
+      ruleType: r.rule_type,
+      discountPct: Number(r.discount_pct),
+      buyQty: Number(r.buy_qty ?? 1),
+      getQty: Number(r.get_qty ?? 1),
+      products: rows.map((x) => ({
+        productId: x.product_id,
+        quantityRequired: Number(x.quantity_required ?? 1),
+        productName: x.products?.name || null,
+        sku: x.products?.sku || null,
+      })),
+    }
+  })
+}
+
+export async function createAndActivatePromoEvent({ branchId, name, startsAt = null, endsAt = null }) {
+  // Deactivate others first (unique index enforces only one active row).
+  await supabase.from('promo_events').update({ is_active: false }).eq('branch_id', branchId)
+
+  const starts_iso = startsAt ? new Date(startsAt).toISOString() : null
+  const ends_iso = endsAt ? new Date(endsAt).toISOString() : null
+
+  const { data, error } = await supabase
+    .from('promo_events')
+    .insert({ branch_id: branchId, name, is_active: true, starts_at: starts_iso, ends_at: ends_iso })
+    .select('id,name')
+    .single()
+
+  if (error) throw error
+  return { id: data.id, name: data.name }
+}
+
+export async function createPromoRule({ promoEventId, ruleType, discountPct, productIds, buyQty = 1, getQty = 1 }) {
+  const { data: rule, error: ruleError } = await supabase
+    .from('promo_rules')
+    .insert({
+      promo_event_id: promoEventId,
+      rule_type: ruleType,
+      discount_pct: discountPct,
+      buy_qty: buyQty,
+      get_qty: getQty,
+    })
+    .select('id')
+    .single()
+
+  if (ruleError) throw ruleError
+
+  const rows = (productIds || []).map((productId, idx) => ({
+    promo_rule_id: rule.id,
+    product_id: productId,
+    product_index: idx,
+    quantity_required: 1,
+  }))
+
+  if (rows.length) {
+    const { error: rpError } = await supabase.from('promo_rule_products').insert(rows)
+    if (rpError) throw rpError
+  }
+
+  return rule
+}
+
+export async function updatePromoEventDetails({ promoEventId, name, startsAt = null, endsAt = null }) {
+  const starts_iso = startsAt ? new Date(startsAt).toISOString() : null
+  const ends_iso = endsAt ? new Date(endsAt).toISOString() : null
+
+  const payload = {
+    ...(typeof name === 'string' ? { name } : {}),
+    starts_at: starts_iso,
+    ends_at: ends_iso,
+    updated_at: new Date().toISOString(),
+  }
+
+  const { data, error } = await supabase.from('promo_events').update(payload).eq('id', promoEventId).select('id,name')
+  if (error) throw error
+  return data
+}
+
+export async function deletePromoRule(promoRuleId) {
+  const { data, error } = await supabase.from('promo_rules').delete().eq('id', promoRuleId).select('id').maybeSingle()
+  if (error) throw error
+  return data
+}
+
+export async function fetchPromoEventsForBranch(branchId) {
+  const { data, error } = await supabase
+    .from('promo_events')
+    .select('id,name,is_active,starts_at,ends_at,created_at')
+    .eq('branch_id', branchId)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return data || []
+}
+
+export async function deletePromoEvent(promoEventId) {
+  const { data, error } = await supabase.from('promo_events').delete().eq('id', promoEventId).select('id').maybeSingle()
   if (error) throw error
   return data
 }

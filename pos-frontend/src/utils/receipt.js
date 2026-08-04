@@ -36,6 +36,8 @@ export function buildReceipt({ branch = {}, transaction = {}, lines = [], user =
         unit: line.pricingMode === 'kg' || line.pricingMode === 'per_kg' ? 'kg' : 'pc',
         unitPrice,
         lineTotal,
+        discountAmount: Number(line.discountAmount ?? 0),
+        netLineTotal: Number(line.netLineTotal ?? lineTotal),
       }
     }),
     totals: {
@@ -72,7 +74,10 @@ export function receiptToHtml(receipt) {
     .map(
       (line) => `
       <tr>
-        <td>${escapeHtml(line.name)}</td>
+        <td>
+          ${escapeHtml(line.name)}
+          ${line.discountAmount > 0 ? `<div class="muted">Discount -${money(line.discountAmount)}</div>` : ''}
+        </td>
         <td class="num">${qty(line.qty, line.unit)}</td>
         <td class="num">${money(line.unitPrice)}</td>
         <td class="num">${money(line.lineTotal)}</td>

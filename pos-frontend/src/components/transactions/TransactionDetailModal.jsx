@@ -60,6 +60,11 @@ function TransactionDetailModal({
                   <div>
                     <strong className="block text-brand-ink">{line.name}</strong>
                     {line.sku && <small className="text-[10px] text-brand-subtle">{line.sku}</small>}
+                    {Number(line.discountAmount || 0) > 0 && (
+                      <small className="block text-[10px] text-brand-danger">
+                        Discounted item −{money(Number(line.discountAmount || 0))}
+                      </small>
+                    )}
                     {refundedQty > 0 && (
                       <small className="block text-[10px] text-brand-danger">
                         Refunded {qty(refundedQty, line.pricingMode === 'kg' ? 'kg' : 'pc')} (−

@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 import { FiMinus, FiPlus, FiTrash2 } from 'react-icons/fi'
 import { useNavigate } from 'react-router-dom'
 import { isDeviceEnabled, receiptPrinter } from '../../devices'
@@ -19,7 +19,14 @@ const PAY_METHODS = [
   { id: 'ewallet', label: 'E-wallet' },
 ]
 
-function Cart({ tillClosed = false }) {
+function Cart({
+  tillClosed = false,
+  headerActions = null,
+  onOverlayChange = null,
+  barcodeMode = false,
+  promoRules = [],
+  promoLabel = null,
+}) {
   const {
     items,
     removeItem,
@@ -54,27 +61,169 @@ function Cart({ tillClosed = false }) {
   const vatRate = Number(user?.vatRate ?? 0.12)
 
   const pricing = useMemo(() => {
-    const eligible = items.filter((item) => item.discountEligible === true)
-    const eligibleTotal = eligible.reduce((sum, item) => sum + lineTotal(item), 0)
-    const discountPct = discountType === 'pwd' || discountType === 'senior' ? 0.2 : 0
-    const discountAmount = Number((eligibleTotal * discountPct).toFixed(2))
+    const isPwdSenior = discountType === 'pwd' || discountType === 'senior'
+    const pwdDiscountPct = isPwdSenior ? 0.2 : 0
+
+    const hasEligibleItems = items.some((item) => item.discountEligible === true)
+    const eligibleTotal = items.reduce((sum, item) => sum + (item.discountEligible === true ? lineTotal(item) : 0), 0)
+
+    const pwdLineDiscounts = items.map((item) =>
+      item.discountEligible === true && pwdDiscountPct > 0 ? Number((lineTotal(item) * pwdDiscountPct).toFixed(2)) : 0,
+    )
+    const pwdDiscountAmount = Number(pwdLineDiscounts.reduce((sum, v) => sum + v, 0).toFixed(2))
+
+    const computePromoDiscounts = () => {
+      if (isPwdSenior) return null
+      if (!promoRules?.length) return null
+
+      const lineDiscounts = items.map(() => 0)
+
+      const lineQtyPc = (item) => (item.pricingMode === 'kg' ? 0 : Number(item.quantity || 0))
+      const lineUnit = (idx) => Number(items[idx]?.price ?? 0)
+
+      const indicesByProductId = {}
+      items.forEach((item, idx) => {
+        if (item.pricingMode === 'kg') return
+        if (!indicesByProductId[item.id]) indicesByProductId[item.id] = []
+        indicesByProductId[item.id].push(idx)
+      })
+
+      const allocateUnitsForProduct = (productId, unitsToDiscount, discountAmountPerUnitFn) => {
+        const indices = indicesByProductId[productId] || []
+        let remaining = unitsToDiscount
+        for (const idx of indices) {
+          if (remaining <= 0) break
+          const q = lineQtyPc(items[idx])
+          if (q <= 0) continue
+          const take = Math.min(q, remaining)
+          lineDiscounts[idx] = Number((lineDiscounts[idx] + discountAmountPerUnitFn(idx, take)).toFixed(2))
+          remaining -= take
+        }
+      }
+
+      for (const rule of promoRules || []) {
+        const pct = Number(rule.discountPct || 0) / 100
+        if (pct <= 0) continue
+
+        const productIds = (rule.products || []).map((p) => p.productId)
+        if (!productIds.length) continue
+
+        if (rule.ruleType === 'item_pct') {
+          const productId = productIds[0]
+          for (const idx of indicesByProductId[productId] || []) {
+            lineDiscounts[idx] = Number((lineDiscounts[idx] + lineTotal(items[idx]) * pct).toFixed(2))
+          }
+          continue
+        }
+
+        if (rule.ruleType === 'pair_pct') {
+          const [a, b] = productIds
+          if (!a || !b) continue
+          const idxsA = indicesByProductId[a] || []
+          const idxsB = indicesByProductId[b] || []
+          const totalA = idxsA.reduce((s, idx) => s + lineQtyPc(items[idx]), 0)
+          const totalB = idxsB.reduce((s, idx) => s + lineQtyPc(items[idx]), 0)
+          const pairs = Math.min(totalA, totalB)
+          if (pairs <= 0) continue
+
+          const perUnit = (idx, take) => lineUnit(idx) * take * pct
+          allocateUnitsForProduct(a, pairs, perUnit)
+          allocateUnitsForProduct(b, pairs, perUnit)
+          continue
+        }
+
+        if (rule.ruleType === 'bundle_pct') {
+          if (productIds.length < 2) continue
+          const ids = productIds
+          const totals = ids.map((pid) => (indicesByProductId[pid] || []).reduce((s, idx) => s + lineQtyPc(items[idx]), 0))
+          const bundles = Math.min(...totals)
+          if (bundles <= 0) continue
+
+          const perUnit = (idx, take) => lineUnit(idx) * take * pct
+          for (const pid of ids) allocateUnitsForProduct(pid, bundles, perUnit)
+          continue
+        }
+
+        if (rule.ruleType === 'bogo_pct') {
+          const productId = productIds[0]
+          if (!productId) continue
+          const idxs = indicesByProductId[productId] || []
+          const total = idxs.reduce((s, idx) => s + lineQtyPc(items[idx]), 0)
+          if (total <= 0) continue
+
+          const buyQty = Number(rule.buyQty ?? 1)
+          const getQty = Number(rule.getQty ?? 1)
+          const group = buyQty + getQty
+          if (group <= 0) continue
+
+          const fullGroups = Math.floor(total / group)
+          const remainder = total % group
+          const freeUnits = fullGroups * getQty + Math.max(0, remainder - buyQty)
+          if (freeUnits <= 0) continue
+
+          const perUnit = (idx, take) => lineUnit(idx) * take * pct
+          allocateUnitsForProduct(productId, freeUnits, perUnit)
+          continue
+        }
+      }
+
+      // Clamp to line totals so multiple rules never exceed the item price.
+      for (let i = 0; i < lineDiscounts.length; i += 1) {
+        const maxDiscount = lineTotal(items[i])
+        lineDiscounts[i] = Math.min(lineDiscounts[i], maxDiscount)
+      }
+
+      const promoDiscountAmount = Number(lineDiscounts.reduce((sum, v) => sum + v, 0).toFixed(2))
+      return promoDiscountAmount > 0 ? { lineDiscounts, promoDiscountAmount } : null
+    }
+
+    const promoDiscount = computePromoDiscounts()
+    const appliedDiscountSource =
+      isPwdSenior ? discountType : promoDiscount ? 'promo' : null
+
+    const appliedLineDiscounts = isPwdSenior ? pwdLineDiscounts : promoDiscount?.lineDiscounts || items.map(() => 0)
+    const discountAmount = isPwdSenior ? pwdDiscountAmount : Number(promoDiscount?.promoDiscountAmount || 0)
+
     const afterDiscount = Math.max(0, Number((rawSubtotal - discountAmount).toFixed(2)))
     const vatableSales = afterDiscount
-    const vatAmount =
-      vatRate > 0
-        ? Number(((vatableSales * vatRate) / (1 + vatRate)).toFixed(2))
-        : 0
+    const vatAmount = vatRate > 0 ? Number(((vatableSales * vatRate) / (1 + vatRate)).toFixed(2)) : 0
+
+    const appliedDiscountLabel =
+      appliedDiscountSource === 'promo' ? promoLabel || 'Promo' : discountType || null
+
     return {
       discountAmount,
-      discountType: discountType || null,
+      discountType: appliedDiscountLabel,
       afterDiscount,
+      eligibleTotal,
+      hasEligibleItems,
+      lineDiscounts: appliedLineDiscounts,
+      appliedDiscountSource,
       vatableSales,
       vatAmount,
       total: afterDiscount,
     }
-  }, [items, rawSubtotal, discountType, vatRate])
+  }, [items, rawSubtotal, discountType, vatRate, promoRules, promoLabel])
+
+  useEffect(() => {
+    if ((discountType === 'pwd' || discountType === 'senior') && !pricing.hasEligibleItems) {
+      // Discount selection must clear when cart contents no longer qualify.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setDiscountType('')
+    }
+  }, [discountType, pricing.hasEligibleItems])
 
   const payTotal = pricing.total
+  const discountedItemBreakdown = useMemo(
+    () =>
+      items
+        .map((item, index) => ({
+          name: item.name,
+          amount: Number(pricing.lineDiscounts[index] || 0),
+        }))
+        .filter((row) => row.amount > 0),
+    [items, pricing.lineDiscounts],
+  )
   const needsCash = paymentMethod === 'cash'
   const canPay =
     !tillClosed &&
@@ -123,6 +272,16 @@ function Cart({ tillClosed = false }) {
     setCheckoutOpen(false)
     setPaying(true)
     try {
+      const cartItems = items.map((item, index) => {
+        const discountAmount = pricing.lineDiscounts[index] || 0
+        return {
+          ...item,
+          // For persistence/reporting, treat any discounted line as discount-eligible for that transaction.
+          discountEligible: discountAmount > 0,
+          discountAmount,
+          netLineTotal: Number((lineTotal(item) - discountAmount).toFixed(2)),
+        }
+      })
       const cash =
         paymentMethod === 'cash' ? Number(tendered) : Number(payTotal)
       const saved = await addTransaction({
@@ -133,7 +292,7 @@ function Cart({ tillClosed = false }) {
         tendered: cash,
         status: 'Paid',
         items: items.length,
-        itemsList: items,
+        itemsList: cartItems,
         date: today(dayOpenHour),
         orderType: isRestaurant ? orderType : undefined,
         ulamCombo: combo?.code || null,
@@ -143,9 +302,9 @@ function Cart({ tillClosed = false }) {
         vatableSales: pricing.vatableSales,
         discountAmount: pricing.discountAmount,
         discountType: pricing.discountType,
-        discountIdNote: pricing.discountType ? String(discountIdNote).trim() : null,
+        discountIdNote:
+          discountType === 'pwd' || discountType === 'senior' ? String(discountIdNote).trim() : null,
       })
-      const cartItems = [...items]
       const change = Math.max(0, cash - payTotal)
       const orLabel = saved?.orNumber || saved?.id || '—'
       const saleOrderType = isRestaurant ? orderType : undefined
@@ -187,7 +346,8 @@ function Cart({ tillClosed = false }) {
           vatableSales: pricing.vatableSales,
           discountAmount: pricing.discountAmount,
           discountType: pricing.discountType,
-          discountIdNote: pricing.discountType ? String(discountIdNote).trim() : null,
+          discountIdNote:
+            discountType === 'pwd' || discountType === 'senior' ? String(discountIdNote).trim() : null,
         },
         lines: cartItems.map((item) => ({
           name: item.name,
@@ -196,6 +356,9 @@ function Cart({ tillClosed = false }) {
           quantity: item.pricingMode === 'kg' ? item.weight : item.quantity,
           unitPrice: item.price,
           lineTotal: lineTotal(item),
+          discountAmount: item.discountAmount || 0,
+          netLineTotal: item.netLineTotal || lineTotal(item),
+          discountEligible: item.discountEligible === true,
           priceTier: item.priceTier,
         })),
       })
@@ -245,13 +408,6 @@ function Cart({ tillClosed = false }) {
     adjustQuantity(index, delta)
   }
 
-  const groups = items.reduce((result, item, index) => {
-    const key = `${item.id}:${item.priceTier || 'regular'}`
-    if (!result[key]) result[key] = []
-    result[key].push({ item, index })
-    return result
-  }, {})
-
   const quickCash = [
     { label: 'Exact', value: payTotal },
     { label: '₱50', value: 50 },
@@ -266,9 +422,6 @@ function Cart({ tillClosed = false }) {
 
   const openCheckout = () => {
     if (!items.length || tillClosed) return
-    if (paymentMethod === 'cash' && (tendered === '' || Number(tendered) < payTotal)) {
-      setTendered(String(Math.round(payTotal * 100) / 100))
-    }
     setCheckoutOpen(true)
   }
 
@@ -283,6 +436,13 @@ function Cart({ tillClosed = false }) {
     const next = (Number.isFinite(current) ? current : 0) + add
     setTendered(String(Math.round(next * 100) / 100))
   }
+
+  useEffect(() => {
+    if (!onOverlayChange) return
+    onOverlayChange(
+      checkoutOpen || paying || Boolean(paidResult) || dayEndNudge || removeIndex != null,
+    )
+  }, [checkoutOpen, paying, paidResult, dayEndNudge, removeIndex, onOverlayChange])
 
   return (
     <>
@@ -309,7 +469,7 @@ function Cart({ tillClosed = false }) {
                 onClick={() => {
                   setPaymentMethod(m.id)
                   if (m.id !== 'cash') setTendered(String(payTotal))
-                  else if (tendered === '') setTendered(String(Math.round(payTotal * 100) / 100))
+                  else setTendered('')
                 }}
               >
                 {m.label}
@@ -343,31 +503,89 @@ function Cart({ tillClosed = false }) {
                   discountType === d.id
                     ? 'border-brand-dark bg-brand-dark text-white'
                     : 'border-brand-border bg-white text-brand-ink'
-                }`}
+                } ${d.id && !pricing.hasEligibleItems ? 'cursor-not-allowed opacity-45' : ''}`}
+                disabled={Boolean(d.id) && !pricing.hasEligibleItems}
                 onClick={() => setDiscountType(d.id)}
               >
                 {d.label}
               </button>
             ))}
           </div>
+          {(discountType === 'pwd' || discountType === 'senior') && !pricing.hasEligibleItems && (
+            <p className="m-0 mb-3 text-[11px] text-brand-subtle">
+              No discount-eligible items in this cart.
+            </p>
+          )}
           {(discountType === 'pwd' || discountType === 'senior') && (
-            <label className="mb-3 block text-xs text-brand-muted">
-              ID note
-              <input
-                className="mt-1 w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
-                value={discountIdNote}
-                onChange={(e) => setDiscountIdNote(e.target.value)}
-                placeholder="ID number"
-              />
-            </label>
+            <>
+              <div className="mb-3 bg-transparent px-0 py-1 text-xs">
+                <div className="flex items-center justify-between text-brand-muted">
+                  <span>Eligible items</span>
+                  <strong className="text-brand-ink">{money(pricing.eligibleTotal)}</strong>
+                </div>
+                <div className="flex items-center justify-between text-brand-muted">
+                  <span>Original total</span>
+                  <strong className="text-brand-ink">{money(rawSubtotal)}</strong>
+                </div>
+                <div className="mt-1 flex items-center justify-between text-brand-muted">
+                  <span>Discount ({discountType === 'pwd' ? 'PWD' : 'Senior'} 20%)</span>
+                  <strong className="text-brand-danger">−{money(pricing.discountAmount)}</strong>
+                </div>
+                {discountedItemBreakdown.length > 0 && (
+                  <div className="mt-2 px-0 py-1">
+                    <div className="mb-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+                      Discounted items
+                    </div>
+                    <div className="space-y-1">
+                      {discountedItemBreakdown.map((row, idx) => (
+                        <div key={`${row.name}-${idx}`} className="flex items-center justify-between gap-3 text-[11px] text-brand-muted">
+                          <span className="truncate">{row.name}</span>
+                          <strong className="shrink-0 text-brand-danger">−{money(row.amount)}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="font-bold text-brand-ink">Amount due</span>
+                  <strong className="text-base text-brand-ink">{money(payTotal)}</strong>
+                </div>
+              </div>
+              <label className="mb-3 block text-xs text-brand-muted">
+                ID note
+                <input
+                  className="mt-1 w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+                  value={discountIdNote}
+                  onChange={(e) => setDiscountIdNote(e.target.value)}
+                  placeholder="ID number"
+                />
+              </label>
+            </>
+          )}
+
+          {pricing.appliedDiscountSource === 'promo' && (
+            <div className="mb-3 bg-transparent px-0 py-1 text-xs">
+              <div className="flex items-center justify-between text-brand-muted">
+                <span>Original total</span>
+                <strong className="text-brand-ink">{money(rawSubtotal)}</strong>
+              </div>
+              <div className="mt-1 flex items-center justify-between text-brand-muted">
+                <span>Discount ({pricing.discountType || 'Promo'})</span>
+                <strong className="text-brand-danger">−{money(pricing.discountAmount)}</strong>
+              </div>
+              <div className="mt-1 flex items-center justify-between">
+                <span className="font-bold text-brand-ink">Amount due</span>
+                <strong className="text-base text-brand-ink">{money(payTotal)}</strong>
+              </div>
+            </div>
           )}
 
           {needsCash && (
-            <div className="mb-3 rounded-md border border-brand-softline bg-[#f7f7f4] p-3">
+            <div className="mb-3 bg-transparent p-0">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-xs text-brand-muted">Cash tendered</span>
                 <strong className="font-mono text-lg tabular-nums text-brand-ink">
-                  {tendered === '' ? '0.00' : tendered}
+                  {tendered === '' ? '₱0.00' : `₱${tendered}`}
                 </strong>
               </div>
               {touchUi ? (
@@ -380,15 +598,18 @@ function Cart({ tillClosed = false }) {
                 />
               ) : (
                 <>
-                  <input
-                    className="mb-2 w-full rounded border border-brand-line bg-white p-2.5 text-right font-mono text-brand-ink outline-none"
-                    value={tendered}
-                    onChange={(event) =>
-                      setTendered(event.target.value.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1'))
-                    }
-                    inputMode="decimal"
-                    placeholder="0.00"
-                  />
+                  <label className="mb-2 flex items-center rounded border border-brand-line bg-white px-2.5">
+                    <span className="shrink-0 font-mono text-brand-subtle">₱</span>
+                    <input
+                      className="w-full bg-transparent py-2.5 text-right font-mono text-brand-ink outline-none"
+                      value={tendered}
+                      onChange={(event) =>
+                        setTendered(event.target.value.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1'))
+                      }
+                      inputMode="decimal"
+                      placeholder="0.00"
+                    />
+                  </label>
                   <div className="grid grid-cols-3 gap-1.5">
                     {quickCash.map((item) => (
                       <button
@@ -477,13 +698,16 @@ function Cart({ tillClosed = false }) {
           }}
         />
       )}
-      <section className="flex h-[calc(100vh-140px)] min-h-0 min-w-0 flex-col rounded-[10px] border border-brand-line bg-brand-panel text-white max-[1050px]:h-auto max-[1050px]:min-h-[520px] max-[800px]:h-auto max-[800px]:min-h-[560px]">
-        <div className="flex shrink-0 items-start justify-between border-b border-brand-cart-line px-5 pt-5 pb-4 max-[700px]:px-3.5">
+      <section className="flex h-[calc(100vh-140px)] min-h-0 min-w-0 flex-col rounded-[10px] border border-brand-line bg-white text-brand-ink max-[1050px]:h-auto max-[1050px]:min-h-[520px] max-[800px]:h-auto max-[800px]:min-h-[560px]">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-brand-cart-line px-5 pt-5 pb-4 max-[700px]:px-3.5">
           <div>
             <Eyebrow className="text-[#a8aeaa]">CURRENT SALE</Eyebrow>
             <h2 className="m-0 text-lg capitalize">Receipt / cart</h2>
           </div>
-          <span className="text-xs text-[#797e7b]">{items.length} items</span>
+          <div className="flex shrink-0 items-center gap-2">
+            {headerActions}
+            <span className="text-xs text-[#797e7b]">{items.length} items</span>
+          </div>
         </div>
         {error && <p className="px-5 pt-2 text-xs text-[#ffb4b4] max-[700px]:px-3.5">{error}</p>}
         {tillClosed && (
@@ -518,124 +742,288 @@ function Cart({ tillClosed = false }) {
             <span className="ml-1 font-normal text-[#a8aeaa]">(info only — priced per item)</span>
           </p>
         )}
-        <div className="min-h-0 flex-1 overflow-auto px-5 py-2 max-[1050px]:min-h-[320px] max-[800px]:min-h-[340px] max-[700px]:px-3.5">
-          {items.length ? (
-            Object.values(groups).flatMap((group) => [
-              <div
-                className="border-b border-brand-cart-row pt-3 pb-[3px] text-[11px] font-bold tracking-[0.5px] text-brand-gold"
-                key={`${group[0].item.id}-${group[0].item.priceTier || 'regular'}-group`}
-              >
-                {group[0].item.name}
-              </div>,
-              ...group.map(({ item, index }) => {
-                const showTier =
-                  isRestaurant && hasBudgetTier(item.menuKind) && item.budgetPrice != null
-                return (
-                  <div
-                    className="grid grid-cols-[1fr_auto_auto] items-center gap-3 border-b border-brand-cart-row py-4"
-                    key={`${item.id}-${item.priceTier || 'regular'}-${index}`}
-                  >
-                    <div>
-                      <strong className="block text-[13px] leading-snug">
-                        {item.pricingMode === 'kg' ? 'Weigh-in' : item.name}
-                      </strong>
-                      <small className="mt-1.5 block text-[11px] text-brand-cart-muted">
-                        {item.pricingMode === 'kg'
-                          ? `${qty(item.weight, 'kg')} Ã— ${money(item.price)}/kg`
-                          : `${money(item.price)}/pc${
-                              showTier && item.priceTier === 'budget' ? ' · budget' : ''
-                            }`}
-                      </small>
-                      <div className="mt-2.5 flex items-center gap-2">
+        {/* Barcode scanner mode:
+            - Left rail: cart line list (with per-line discount eligibility display)
+            - Right rail: sale summary + checkout button */}
+        {barcodeMode ? (
+          <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_300px] max-[980px]:grid-cols-1">
+            {/* Cart lines slot (scrollable) */}
+            <div className="min-h-0 overflow-auto px-5 py-2 max-[1050px]:min-h-[320px] max-[800px]:min-h-[340px] max-[700px]:px-3.5">
+              {items.length ? (
+                <div className="overflow-hidden bg-white">
+                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-[#f7f7f4] px-3 py-2 text-[10px] font-bold tracking-wide text-[#989e99] uppercase">
+                    <span>Item</span>
+                    <span className="text-right">Price</span>
+                    <span className="text-center">Qty</span>
+                    <span className="text-right">Total</span>
+                    <span className="text-right">Action</span>
+                  </div>
+                  {items.map((item, index) => {
+                    const showTier =
+                      isRestaurant && hasBudgetTier(item.menuKind) && item.budgetPrice != null
+                    const qtyLabel =
+                      item.pricingMode === 'kg'
+                        ? qty(item.weight, 'kg')
+                        : `${Number(item.quantity).toFixed(0)} ${Number(item.quantity) > 1 ? 'pcs' : 'pc'}`
+                    return (
+                      <div
+                        className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] items-center gap-2 border-t border-[#f1f1ed] px-3 py-2.5 text-xs bg-white"
+                        key={`${item.id}-${item.priceTier || 'regular'}-${index}`}
+                      >
+                        <div className="min-w-0">
+                          <strong className="block truncate text-brand-ink">{item.name}</strong>
+                          <small className="block text-[10px] text-brand-cart-muted">
+                            {item.pricingMode === 'kg' ? 'Weigh-in item' : 'Piece item'}
+                            {showTier && item.priceTier === 'budget' ? ' · budget' : ''}
+                          </small>
+                          {pricing.lineDiscounts[index] > 0 && (
+                            <small className="mt-0.5 block text-[10px] font-bold text-brand-danger">
+                              {pricing.appliedDiscountSource === 'promo'
+                                ? 'Promo'
+                                : discountType === 'pwd'
+                                  ? 'PWD'
+                                  : 'Senior'}{' '}
+                              discount -{money(pricing.lineDiscounts[index])}
+                            </small>
+                          )}
+                          {(discountType === 'pwd' || discountType === 'senior') && !pricing.lineDiscounts[index] && (
+                            <small className="mt-0.5 block text-[10px] text-brand-subtle">Not discount eligible</small>
+                          )}
+                          {showTier && (
+                            <div className="mt-1 flex gap-1">
+                              {[
+                                { id: 'regular', label: `Reg ${money(item.regularPrice ?? item.price)}` },
+                                { id: 'budget', label: `Bud ${money(item.budgetPrice)}` },
+                              ].map((tier) => (
+                                <button
+                                  key={tier.id}
+                                  type="button"
+                                  className={`rounded border px-1.5 py-0.5 text-[9px] font-bold ${
+                                    (item.priceTier || 'regular') === tier.id
+                                      ? 'border-brand-gold bg-brand-gold/25 text-brand-gold'
+                                      : 'border-brand-cart-border text-[#8a908c]'
+                                  }`}
+                                  onClick={() => setPriceTier(index, tier.id)}
+                                >
+                                  {tier.label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-right tabular-nums text-brand-ink">{money(item.price)}</span>
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            type="button"
+                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-[#aab0ac]"
+                            onClick={() => bumpQty(index, -1)}
+                            aria-label="Decrease quantity"
+                          >
+                            <FiMinus size={12} />
+                          </button>
+                          <span className="min-w-[3.3rem] text-center text-[11px] font-bold tabular-nums text-brand-ink">
+                            {qtyLabel}
+                          </span>
+                          <button
+                            type="button"
+                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-[#aab0ac]"
+                            onClick={() => bumpQty(index, 1)}
+                            aria-label="Increase quantity"
+                          >
+                            <FiPlus size={12} />
+                          </button>
+                        </div>
+                        <b className="text-right tabular-nums text-brand-ink">{money(lineTotal(item))}</b>
                         <button
                           type="button"
-                          className="grid h-8 w-8 place-items-center rounded border border-brand-cart-border text-[#aab0ac]"
-                          onClick={() => bumpQty(index, -1)}
-                          aria-label="Decrease quantity"
+                          className="justify-self-end border-0 bg-transparent p-1 text-brand-cart-muted transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90 active:text-brand-ink"
+                          onClick={() => requestRemove(index)}
+                          title={canRemoveDirect ? 'Remove' : 'Remove (supervisor PIN)'}
                         >
-                          <FiMinus size={13} />
-                        </button>
-                        <span className="min-w-[2.75rem] text-center text-xs font-bold tabular-nums text-white">
-                          {item.pricingMode === 'kg'
-                            ? qty(item.weight, 'kg')
-                            : `${Number(item.quantity).toFixed(0)} pc`}
-                        </span>
-                        <button
-                          type="button"
-                          className="grid h-8 w-8 place-items-center rounded border border-brand-cart-border text-[#aab0ac]"
-                          onClick={() => bumpQty(index, 1)}
-                          aria-label="Increase quantity"
-                        >
-                          <FiPlus size={13} />
+                          <FiTrash2 size={16} />
                         </button>
                       </div>
-                      {showTier && (
-                        <div className="mt-2 flex gap-1">
-                          {[
-                            { id: 'regular', label: `Reg ${money(item.regularPrice ?? item.price)}` },
-                            { id: 'budget', label: `Bud ${money(item.budgetPrice)}` },
-                          ].map((tier) => (
-                            <button
-                              key={tier.id}
-                              type="button"
-                              className={`rounded border px-2 py-1 text-[10px] font-bold ${
-                                (item.priceTier || 'regular') === tier.id
-                                  ? 'border-brand-gold bg-brand-gold/25 text-brand-gold'
-                                  : 'border-brand-cart-border text-[#8a908c]'
-                              }`}
-                              onClick={() => setPriceTier(index, tier.id)}
-                            >
-                              {tier.label}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <b className="text-[13px] tabular-nums">{money(lineTotal(item))}</b>
-                    <button
-                      type="button"
-                      className="border-0 bg-transparent p-1 text-brand-cart-muted transition-[transform,color] duration-100 hover:text-white active:scale-90 active:text-white"
-                      onClick={() => requestRemove(index)}
-                      title={canRemoveDirect ? 'Remove' : 'Remove (supervisor PIN)'}
-                    >
-                      <FiTrash2 size={16} />
-                    </button>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="mt-[140px] px-2 text-center text-sm leading-[1.8] text-[#bbc0bd]">
+                  Your cart is ready.
+                  <br />
+                  <span className="text-xs text-[#7f8782]">Scan or search to begin.</span>
+                </div>
+              )}
+            </div>
+            {/* Sale summary rail (sticky via checkout modal) */}
+            <aside className="flex flex-col gap-3 bg-[#fbfbf9] px-5 py-4 max-[700px]:px-3.5">
+              <div className="bg-white px-3 py-3">
+                <span className="block text-[10px] font-bold tracking-wide text-brand-subtle uppercase">Sale summary</span>
+                <div className="mt-3 flex items-center justify-between text-xs text-brand-muted">
+                  <span>Subtotal</span>
+                  <strong className="text-brand-ink">{money(rawSubtotal)}</strong>
+                </div>
+                {pricing.discountAmount > 0 && (
+                  <div className="mt-2 flex items-center justify-between text-xs text-brand-muted">
+                    <span>Discount</span>
+                    <strong className="text-brand-danger">-{money(pricing.discountAmount)}</strong>
                   </div>
-                )
-              }),
-            ])
-          ) : (
-            <div className="mt-[140px] px-2 text-center text-sm leading-[1.8] text-[#bbc0bd]">
-              Your cart is ready.
-              <br />
-              <span className="text-xs text-[#7f8782]">Select a product to begin.</span>
-            </div>
-          )}
-        </div>
-
-        {/* Slim sticky footer — payment details live in Checkout modal */}
-        <footer className="shrink-0 border-t border-brand-cart-line bg-[#1a1d1b] px-5 py-4 max-[700px]:px-3.5">
-          <div className="mb-3 flex items-end justify-between gap-3">
-            <div>
-              <span className="block text-[11px] text-[#8a908c]">
-                {items.length} item{items.length === 1 ? '' : 's'}
-                {pricing.discountAmount > 0 ? ` · −${money(pricing.discountAmount)} disc.` : ''}
-              </span>
-              <strong className="mt-0.5 block text-xl tabular-nums text-white">{money(payTotal)}</strong>
-            </div>
-            {vatRate > 0 && (
-              <span className="text-[10px] text-[#6e7470]">VAT incl. {money(pricing.vatAmount)}</span>
-            )}
+                )}
+                {vatRate > 0 && (
+                  <div className="mt-2 flex items-center justify-between text-xs text-brand-muted">
+                    <span>VAT incl.</span>
+                    <strong className="text-brand-ink">{money(pricing.vatAmount)}</strong>
+                  </div>
+                )}
+                <div className="mt-3 border-t border-[#f1f1ed] pt-3">
+                  <span className="block text-[11px] text-[#8a908c]">
+                    {items.length} item{items.length === 1 ? '' : 's'}
+                  </span>
+                  <strong className="mt-1 block text-2xl tabular-nums text-brand-ink">{money(payTotal)}</strong>
+                </div>
+              </div>
+              <PrimaryButton
+                className="w-full justify-between"
+                disabled={!items.length || tillClosed || paying}
+                onClick={openCheckout}
+              >
+                <span>Checkout</span>
+                <span aria-hidden>{'\u2192'}</span>
+              </PrimaryButton>
+            </aside>
           </div>
-          <PrimaryButton
-            className="w-full justify-between"
-            disabled={!items.length || tillClosed || paying}
-            onClick={openCheckout}
-          >
-            <span>Checkout</span>
-            <span aria-hidden>{'\u2192'}</span>
-          </PrimaryButton>
-        </footer>
+        ) : (
+          <>
+            <div className="min-h-0 flex-1 overflow-auto px-5 py-2 max-[1050px]:min-h-[320px] max-[800px]:min-h-[340px] max-[700px]:px-3.5">
+              {items.length ? (
+                <div className="overflow-hidden bg-white">
+                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-[#f7f7f4] px-3 py-2 text-[10px] font-bold tracking-wide text-[#989e99] uppercase">
+                    <span>Item</span>
+                    <span className="text-right">Price</span>
+                    <span className="text-center">Qty</span>
+                    <span className="text-right">Total</span>
+                    <span className="text-right">Action</span>
+                  </div>
+                  {items.map((item, index) => {
+                    const showTier =
+                      isRestaurant && hasBudgetTier(item.menuKind) && item.budgetPrice != null
+                    const qtyLabel =
+                      item.pricingMode === 'kg'
+                        ? qty(item.weight, 'kg')
+                        : `${Number(item.quantity).toFixed(0)} ${Number(item.quantity) > 1 ? 'pcs' : 'pc'}`
+                    return (
+                      <div
+                        className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] items-center gap-2 border-t border-[#f1f1ed] px-3 py-2.5 text-xs bg-white"
+                        key={`${item.id}-${item.priceTier || 'regular'}-${index}`}
+                      >
+                        <div className="min-w-0">
+                          <strong className="block truncate text-brand-ink">{item.name}</strong>
+                          <small className="block text-[10px] text-brand-cart-muted">
+                            {item.pricingMode === 'kg' ? 'Weigh-in item' : 'Piece item'}
+                            {showTier && item.priceTier === 'budget' ? ' · budget' : ''}
+                          </small>
+                          {pricing.lineDiscounts[index] > 0 && (
+                            <small className="mt-0.5 block text-[10px] font-bold text-brand-danger">
+                              {pricing.appliedDiscountSource === 'promo'
+                                ? 'Promo'
+                                : discountType === 'pwd'
+                                  ? 'PWD'
+                                  : 'Senior'}{' '}
+                              discount -{money(pricing.lineDiscounts[index])}
+                            </small>
+                          )}
+                          {(discountType === 'pwd' || discountType === 'senior') && !pricing.lineDiscounts[index] && (
+                            <small className="mt-0.5 block text-[10px] text-brand-subtle">Not discount eligible</small>
+                          )}
+                          {showTier && (
+                            <div className="mt-1 flex gap-1">
+                              {[
+                                { id: 'regular', label: `Reg ${money(item.regularPrice ?? item.price)}` },
+                                { id: 'budget', label: `Bud ${money(item.budgetPrice)}` },
+                              ].map((tier) => (
+                                <button
+                                  key={tier.id}
+                                  type="button"
+                                  className={`rounded border px-1.5 py-0.5 text-[9px] font-bold ${
+                                    (item.priceTier || 'regular') === tier.id
+                                      ? 'border-brand-gold bg-brand-gold/25 text-brand-gold'
+                                      : 'border-brand-cart-border text-[#8a908c]'
+                                  }`}
+                                  onClick={() => setPriceTier(index, tier.id)}
+                                >
+                                  {tier.label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-right tabular-nums text-brand-ink">{money(item.price)}</span>
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            type="button"
+                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-[#aab0ac]"
+                            onClick={() => bumpQty(index, -1)}
+                            aria-label="Decrease quantity"
+                          >
+                            <FiMinus size={12} />
+                          </button>
+                          <span className="min-w-[3.3rem] text-center text-[11px] font-bold tabular-nums text-brand-ink">
+                            {qtyLabel}
+                          </span>
+                          <button
+                            type="button"
+                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-[#aab0ac]"
+                            onClick={() => bumpQty(index, 1)}
+                            aria-label="Increase quantity"
+                          >
+                            <FiPlus size={12} />
+                          </button>
+                        </div>
+                        <b className="text-right tabular-nums text-brand-ink">{money(lineTotal(item))}</b>
+                        <button
+                          type="button"
+                          className="justify-self-end border-0 bg-transparent p-1 text-brand-cart-muted transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90 active:text-brand-ink"
+                          onClick={() => requestRemove(index)}
+                          title={canRemoveDirect ? 'Remove' : 'Remove (supervisor PIN)'}
+                        >
+                          <FiTrash2 size={16} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="mt-[140px] px-2 text-center text-sm leading-[1.8] text-[#bbc0bd]">
+                  Your cart is ready.
+                  <br />
+                  <span className="text-xs text-[#7f8782]">Select a product to begin.</span>
+                </div>
+              )}
+            </div>
+
+            <footer className="shrink-0 border-t border-brand-cart-line bg-white px-5 py-4 max-[700px]:px-3.5">
+              <div className="mb-3 flex items-end justify-between gap-3">
+                <div>
+                  <span className="block text-[11px] text-[#8a908c]">
+                    {items.length} item{items.length === 1 ? '' : 's'}
+                    {pricing.discountAmount > 0 ? ` · −${money(pricing.discountAmount)} disc.` : ''}
+                  </span>
+                  <strong className="mt-0.5 block text-xl tabular-nums text-brand-ink">{money(payTotal)}</strong>
+                </div>
+                {vatRate > 0 && (
+                  <span className="text-[10px] text-[#6e7470]">VAT incl. {money(pricing.vatAmount)}</span>
+                )}
+              </div>
+              <PrimaryButton
+                className="w-full justify-between"
+                disabled={!items.length || tillClosed || paying}
+                onClick={openCheckout}
+              >
+                <span>Checkout</span>
+                <span aria-hidden>{'\u2192'}</span>
+              </PrimaryButton>
+            </footer>
+          </>
+        )}
       </section>
     </>
   )

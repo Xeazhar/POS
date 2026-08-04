@@ -68,10 +68,13 @@ function Transactions() {
   const [busy, setBusy] = useState(false)
 
   const canApproveDirect = isSupervisorOrAbove(user?.role)
+  const cashierDay = today(dayOpenHour)
 
   const list = useMemo(() => {
     const q = query.trim().toLowerCase()
     let rows = transactions.filter((item) => {
+      // Cashiers only see current business-day transactions.
+      if (user?.role === 'cashier' && item.date !== cashierDay) return false
       if (q) {
         const hay = `${item.id} ${item.orNumber || ''} ${item.cashier || ''} ${item.time || ''} ${item.paymentMethod || ''} ${item.paymentReference || ''}`.toLowerCase()
         if (!hay.includes(q)) return false
@@ -90,7 +93,7 @@ function Transactions() {
       return txnSortTime(b) - txnSortTime(a)
     })
     return rows
-  }, [transactions, query, statusFilter, payFilter, dateFilter, dateValue, sortBy, dayOpenHour])
+  }, [transactions, query, statusFilter, payFilter, dateFilter, dateValue, sortBy, dayOpenHour, user?.role, cashierDay])
 
   const openDetail = async (item) => {
     setError('')
@@ -392,7 +395,7 @@ function Transactions() {
           onPrint={async (row) => {
             try {
               if (!isDeviceEnabled(user?.deviceSettings, 'receipt_printer')) {
-                setError(
+                window.alert(
                   formatSupportError(
                     {
                       code: 'DEV03',
@@ -411,7 +414,7 @@ function Transactions() {
               const receipt = buildReceipt({ branch, user, transaction: row, lines: row.lines || [] })
               await receiptPrinter.printReceipt(receipt)
             } catch (err) {
-              setError(formatSupportError(err, 'DEV04'))
+              window.alert(formatSupportError(err, 'DEV04'))
             }
           }}
           onRefund={(row) => {

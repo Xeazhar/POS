@@ -15,6 +15,7 @@ import {
   ManagerOverview,
   ManagerReports,
   ManagerStaff,
+  ManagerPromos,
   POS,
   Products,
   Shifts,
@@ -22,7 +23,7 @@ import {
 } from './pages'
 import { useAuthStore, useInventoryStore, useProductStore } from './stores/posStore'
 import { bindSyncStore } from './stores/syncStore'
-import { canAccessModule, isManagerRole } from './utils/roles'
+import { canAccessModule, isManagerRole, isSupervisorOrAbove } from './utils/roles'
 import { staffHomePath } from './constants/nav'
 
 function firstHomePath(user) {
@@ -40,6 +41,12 @@ function RequireModule({ moduleId, children, fallback }) {
 function ManagerOnly({ children }) {
   const user = useAuthStore((state) => state.user)
   if (!isManagerRole(user?.role)) return <Navigate to={firstHomePath(user)} replace />
+  return children
+}
+
+function SupervisorOrAboveOnly({ children }) {
+  const user = useAuthStore((state) => state.user)
+  if (!isSupervisorOrAbove(user?.role)) return <Navigate to={firstHomePath(user)} replace />
   return children
 }
 
@@ -230,6 +237,16 @@ function App() {
                     <ManagerData />
                   </RequireModule>
                 </ManagerOnly>
+              }
+            />
+            <Route
+              path="/manager/promos"
+              element={
+                <SupervisorOrAboveOnly>
+                  <RequireModule moduleId="manager_promos">
+                    <ManagerPromos />
+                  </RequireModule>
+                </SupervisorOrAboveOnly>
               }
             />
             <Route

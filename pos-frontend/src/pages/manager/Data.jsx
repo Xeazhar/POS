@@ -26,6 +26,7 @@ import {
   mapProduct,
   revertInventoryImport,
   updateProductPrice,
+  updateProductRow,
   fetchPriceHistory,
 } from '../../lib/api'
 import { useAuthStore, useProductStore } from '../../stores/posStore'
@@ -94,6 +95,8 @@ function ManagerData() {
   const [confirmRevert, setConfirmRevert] = useState(null)
   const [priceEdit, setPriceEdit] = useState(null)
   const [priceValue, setPriceValue] = useState('')
+  const [discountEdit, setDiscountEdit] = useState(null)
+  const [discountValue, setDiscountValue] = useState(false)
   const [priceHistory, setPriceHistory] = useState(null)
   const [priceHistoryRows, setPriceHistoryRows] = useState([])
   const [importProgress, setImportProgress] = useState(null)
@@ -456,6 +459,11 @@ function ManagerData() {
     setPriceValue(String(product.price))
   }
 
+  const openDiscountEdit = (product) => {
+    setDiscountEdit(product)
+    setDiscountValue(product.discountEligible === true)
+  }
+
   const savePrice = async () => {
     if (!priceEdit) return
     const next = Number(priceValue)
@@ -491,6 +499,62 @@ function ManagerData() {
       setPriceEdit(null)
     } catch (err) {
       setError(formatSupportError(err, 'DATA03'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveDiscountable = async () => {
+    if (!discountEdit) return
+    setBusy(true)
+    setError('')
+    try {
+      if (hasSupabase) {
+        const row = await updateProductRow(
+          discountEdit.id,
+          {
+            name: discountEdit.name,
+            sku: discountEdit.sku,
+            barcode: discountEdit.barcode,
+            category: discountEdit.category,
+            pricingMode: discountEdit.pricingMode,
+            price: discountEdit.price,
+            budgetPrice: discountEdit.budgetPrice,
+            menuKind: discountEdit.menuKind,
+            lowStockAt: discountEdit.lowStockAt || 5,
+            discountEligible: discountValue === true,
+          },
+          {
+            branchId: discountEdit.branchId || branchId,
+            staffId: user?.id,
+            previousPrice: discountEdit.price,
+          },
+        )
+        const mapped = mapProduct(row, discountEdit.stock, {
+          updatedAt: discountEdit.updatedAt,
+          lastMovementAt: discountEdit.lastMovementAt,
+        })
+        setProducts((prev) =>
+          prev.map((item) =>
+            item.id === mapped.id ? { ...item, discountEligible: mapped.discountEligible } : item,
+          ),
+        )
+        await refreshCatalog(branchId)
+      } else {
+        useProductStore.getState().setProducts(
+          useProductStore.getState().products.map((item) =>
+            item.id === discountEdit.id ? { ...item, discountEligible: discountValue === true } : item,
+          ),
+        )
+        setProducts((prev) =>
+          prev.map((item) =>
+            item.id === discountEdit.id ? { ...item, discountEligible: discountValue === true } : item,
+          ),
+        )
+      }
+      setDiscountEdit(null)
+    } catch (err) {
+      setError(formatSupportError(err, 'DATA04'))
     } finally {
       setBusy(false)
     }
@@ -691,6 +755,9 @@ function ManagerData() {
                   <td className="px-5 py-3">
                     <strong className="block text-brand-ink">{product.name}</strong>
                     <small className="text-[10px] text-brand-subtle">{product.barcode}</small>
+                    <div className="text-[10px] text-brand-subtle">
+                      Discountable: {product.discountEligible ? 'Yes' : 'No'}
+                    </div>
                   </td>
                   <td className="px-5 py-3">{product.sku}</td>
                   <td className="px-5 py-3 max-[700px]:hidden">{product.category}</td>
@@ -708,6 +775,15 @@ function ManagerData() {
                       >
                         Edit price
                       </button>
+                      {managerView && (
+                        <button
+                          type="button"
+                          className="border-0 bg-transparent text-[11px] font-bold text-brand-slate underline"
+                          onClick={() => openDiscountEdit(product)}
+                        >
+                          Edit discountable
+                        </button>
+                      )}
                       {isRestaurant && (
                         <button
                           type="button"
@@ -1131,6 +1207,33 @@ Pandesa,BAK-PAN,4801000000035,Bakery,pc,8,80,20`}
           <ModalActions>
             <SecondaryButton compact type="button" onClick={() => setPriceEdit(null)}>Cancel</SecondaryButton>
             <PrimaryButton compact type="button" disabled={busy} onClick={savePrice}>Save price</PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {discountEdit && (
+        <Modal onClose={() => !busy && setDiscountEdit(null)}>
+          <h2 className="m-0 pr-8 text-lg">Edit discountable</h2>
+          <p className="mt-1 text-xs text-brand-muted">
+            {discountEdit.name} · {discountEdit.sku}
+          </p>
+          <div className="mt-4">
+            <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
+              <input
+                type="checkbox"
+                checked={discountValue === true}
+                onChange={(e) => setDiscountValue(e.target.checked)}
+              />
+              PWD / Senior discount eligible
+            </label>
+          </div>
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={busy} onClick={() => setDiscountEdit(null)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton compact type="button" disabled={busy} onClick={saveDiscountable}>
+              {busy ? 'Saving…' : 'Save'}
+            </PrimaryButton>
           </ModalActions>
         </Modal>
       )}

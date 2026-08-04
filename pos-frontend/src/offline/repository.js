@@ -144,9 +144,16 @@ export async function putDayEnds(branchId, dayEnds) {
 }
 
 export async function upsertLocalSale({ transaction, movements, products, lines }) {
+  const discountType = transaction.discountType || transaction.discount_type || null
+  const discountPct = discountType === 'pwd' || discountType === 'senior' ? 0.2 : 0
   const lineRows = (lines || transaction.itemsList || []).map((line, index) => {
     const quantity = line.pricingMode === 'kg' ? Number(line.weight || 0) : Number(line.quantity || 0)
     const unitPrice = Number(line.price || line.unitPrice || 0)
+    const lineTotal = unitPrice * quantity
+    const discountEligible = line.discountEligible === true
+    const passedDiscountAmount = Number(line.discountAmount ?? 0)
+    const computedDiscountAmount = discountPct > 0 && discountEligible ? Number((lineTotal * discountPct).toFixed(2)) : 0
+    const discountAmount = passedDiscountAmount > 0 ? passedDiscountAmount : computedDiscountAmount
     return {
       id: `${transaction.id}-line-${index}`,
       transactionId: transaction.id,
@@ -156,7 +163,9 @@ export async function upsertLocalSale({ transaction, movements, products, lines 
       pricingMode: line.pricingMode === 'kg' ? 'kg' : 'pc',
       quantity,
       unitPrice,
-      lineTotal: unitPrice * quantity,
+      lineTotal,
+      discountEligible,
+      discountAmount,
     }
   })
 

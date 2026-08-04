@@ -20,17 +20,19 @@ export const MODULES = [
   { id: 'manager_branches', label: 'Branches' },
   { id: 'manager_staff', label: 'Staff' },
   { id: 'manager_data', label: 'Data' },
+  { id: 'manager_promos', label: 'Promos' },
   { id: 'manager_reports', label: 'Reports' },
 ]
 
 const DEFAULTS = {
   cashier: ['dashboard', 'pos', 'transactions', 'inventory', 'day_end', 'devices'],
-  supervisor: ['dashboard', 'pos', 'transactions', 'inventory', 'day_end', 'devices', 'shifts'],
+  supervisor: ['dashboard', 'pos', 'transactions', 'inventory', 'day_end', 'devices', 'shifts', 'manager_promos'],
   manager: [
     'manager_overview',
     'manager_branches',
     'manager_staff',
     'manager_data',
+    'manager_promos',
     'manager_reports',
     'shifts',
   ],
@@ -39,6 +41,7 @@ const DEFAULTS = {
     'manager_branches',
     'manager_staff',
     'manager_data',
+    'manager_promos',
     'manager_reports',
     'shifts',
   ],
@@ -54,6 +57,7 @@ const DEFAULTS = {
     'manager_branches',
     'manager_staff',
     'manager_data',
+    'manager_promos',
     'manager_reports',
   ],
 }

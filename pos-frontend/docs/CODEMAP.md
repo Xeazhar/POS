@@ -36,6 +36,188 @@ Browser (Vite + React)
 
 ---
 
+## AI Quick Orientation
+
+If an external AI needs to understand the project fast, start in this order:
+
+1. `src/App.jsx`
+   - route map
+   - role gates
+   - which page mounts for each path
+2. `src/stores/posStore.js`
+   - main client-side business logic
+   - auth, cart, products, inventory/day-end
+3. `src/lib/api.js`
+   - Supabase queries
+   - RPC calls
+   - server-to-UI mapping functions
+4. `src/offline/*`
+   - local-first persistence
+   - queue replay / sync
+5. relevant page file in `src/pages/*`
+   - most feature orchestration happens at page level
+
+When changing behavior, the usual path is:
+
+`page` → `store` → `api.js` → `Supabase schema/migration`
+
+---
+
+## System Shape
+
+### Top-level layers
+
+| Layer | Main files | Why it matters |
+|------|------|------|
+| Routes / shell | `src/App.jsx`, `src/components/shared/Shell.jsx` | decides which UI loads and who can open it |
+| Pages | `src/pages/*`, `src/pages/manager/*` | feature entry points; most UI orchestration lives here |
+| Shared components | `src/components/*` | reusable feature UI (`pos`, `transactions`, `dayend`, `shared`, `ui`) |
+| Stores | `src/stores/posStore.js`, `src/stores/syncStore.js` | main client-side state + business actions |
+| API boundary | `src/lib/api.js`, `src/lib/supabase.js` | all online DB/auth access |
+| Offline layer | `src/offline/*` | IndexedDB, queue, sync replay, connectivity |
+| Utilities | `src/utils/*` | formatting, validation, receipts, reports, imports, menu pricing |
+| SQL | `supabase/schema.sql`, `supabase/*.sql` | actual persistence, RLS, RPC behavior |
+
+### Feature component folders
+
+| Folder | Purpose |
+|------|------|
+| `src/components/pos/` | cart, numpad, weight modal, POS-specific behavior |
+| `src/components/transactions/` | transaction detail / refund display |
+| `src/components/dayend/` | day-end report panels, restock alert UI |
+| `src/components/shared/` | shell, supervisor approval, cross-feature widgets |
+| `src/components/ui/` | primitive UI kit used across the app |
+| `src/components/dashboard/` | dashboard/overview widgets |
+
+---
+
+## Major Routes
+
+| Path | Main file | Notes |
+|------|------|------|
+| `/` | `src/pages/Dashboard.jsx` or `src/pages/manager/Overview.jsx` | home depends on role |
+| `/pos` | `src/pages/POS.jsx` | cashiering, barcode mode, inquiry, promos |
+| `/transactions` | `src/pages/Transactions.jsx` | list + detail modal + refund flow |
+| `/inventory` | `src/pages/Products.jsx` | staff inventory/menu operations |
+| `/data` | `src/pages/manager/Data.jsx` | supervisor branch catalog tools |
+| `/day-end` | `src/pages/DayEnd.jsx` | close day, petty cash, change fund, pickup |
+| `/settings/devices` | `src/pages/Devices.jsx` | staff device awareness |
+| `/shifts` | `src/pages/Shifts.jsx` | staff/supervisor branch shift view |
+| `/manager/branches` | `src/pages/manager/Branches.jsx` | branch list |
+| `/manager/branches/:branchId` | `src/pages/manager/BranchDashboard.jsx` | manager branch operations dashboard |
+| `/manager/staff` | `src/pages/manager/Staff.jsx` | staff management |
+| `/manager/data` | `src/pages/manager/Data.jsx` | manager all-branch catalog tools |
+| `/manager/promos` | `src/pages/manager/Promos.jsx` | promo event/rule management |
+| `/manager/reports` | `src/pages/manager/Reports.jsx` | all report generation/export |
+
+---
+
+## Stores (State Ownership)
+
+### `useAuthStore`
+- File: `src/stores/posStore.js`
+- Owns:
+  - `user`
+  - login/logout/session restore state
+  - fresh-login lock after day end
+- Main responsibilities:
+  - email login
+  - PIN login
+  - offline session restore
+  - logout / clock-out coordination
+
+### `useCartStore`
+- File: `src/stores/posStore.js`
+- Owns:
+  - current cart items
+  - order type
+- Main responsibilities:
+  - add/remove items
+  - qty adjustments
+  - restaurant price tier switching
+  - combo detection
+
+### `useProductStore`
+- File: `src/stores/posStore.js`
+- Owns:
+  - current branch products/menu
+- Main responsibilities:
+  - branch catalog hydration
+  - add/update product
+  - import/update product rows
+  - menu availability toggles
+
+### `useInventoryStore`
+- File: `src/stores/posStore.js`
+- Owns:
+  - transactions
+  - stock movements
+  - day ends
+  - branch `dayOpenHour`
+- Main responsibilities:
+  - complete sale
+  - refund/void
+  - stock movement history
+  - day-end close/reopen state
+
+### `useSyncStore`
+- File: `src/stores/syncStore.js`
+- Owns:
+  - online/sync badge state only
+- Main responsibilities:
+  - reflect queue/sync status in UI
+
+---
+
+## Route Gates and Permissions
+
+Main permission files:
+- `src/App.jsx`
+- `src/constants/nav.js`
+- `src/utils/roles.js`
+
+Important gate components in `App.jsx`:
+- `StaffOnly`
+- `ManagerOnly`
+- `SupervisorOnly`
+- `SupervisorOrAboveOnly`
+- `RequireModule`
+
+Permission behavior:
+- defaults come from `roles.js` → `DEFAULTS`
+- custom `user.permissions` override defaults
+- nav visibility uses the same checks as route access
+- DB still enforces branch access via RLS even if UI allows navigation
+
+---
+
+## Server Boundary and Offline Boundary
+
+### API boundary
+- `src/lib/api.js` is the main server boundary.
+- It contains:
+  - mapping helpers (`mapProduct`, `mapTransaction`, etc.)
+  - auth helpers
+  - Supabase table queries
+  - RPC wrappers
+  - report builders/fetchers
+
+If behavior seems “server-ish”, check `api.js` before editing the UI.
+
+### Offline boundary
+- `src/offline/db.js` → Dexie schema
+- `src/offline/repository.js` → local read/write helpers
+- `src/offline/syncQueue.js` → queue persistence
+- `src/offline/syncEngine.js` → replay queue + refresh branch snapshot
+- `src/offline/connectivity.js` → reconnect/poll sync triggers
+- `src/offline/session.js` → saved session + relogin lock
+
+Offline is a real first-class flow, not just cached reads. Many writes are:
+
+`UI action` → local repository / queue → later sync to Supabase
+
+---
+
 ## Start here (file index)
 
 | What | Where |
@@ -206,8 +388,22 @@ Cart soft nudge after ~8 PM or last 2h before openHour+14h
 | Report panels | `src/components/dayend/DayEndReportPanels.jsx` |
 | Snapshot builder | `src/utils/dayEndReport.js` |
 | Nudge | `Cart.jsx` `shouldNudgeDayEnd` |
-| API | `closeDayEnd`, `reopenDayEnd` |
+| API | `closeDayEnd`, `reopenDayEnd`, `addPettyCash`, `fetchPettyCash`, `fetchPettyCashTimeline` |
 | Dates / open hour | `src/utils/format.js` |
+
+### Cash accountability timeline
+
+`DayEnd.jsx` records three types of drawer/accountability entries into `petty_cash`:
+- `"[CHANGE FUND] ..."` → opening float
+- `"[PICKUP] ..."` → cash pickup / safe drop
+- plain reason text → paid-out / petty cash
+
+Manager tracking lives in:
+- `src/pages/manager/BranchDashboard.jsx`
+  - reads `fetchPettyCashTimeline(branchId, { startDate, endDate })`
+  - renders time, type, amount, cashier/staff, and note/reason
+- `src/lib/api.js`
+  - maps `petty_cash` rows into normalized timeline entries with `kind`, `staffName`, `createdAt`
 
 ---
 
@@ -234,7 +430,7 @@ UI copy: when manager enables a device, show **Enabled by manager · Connected/N
 | Staff | `/manager/staff` | `manager/Staff.jsx` |
 | Shifts | `/manager/shifts` | `Shifts.jsx` (manager mode) |
 | Data / catalog | `/manager/data` | `manager/Data.jsx` |
-| Reports | `/manager/reports` | `manager/Reports.jsx` |
+| Reports | `/manager/reports` | `manager/Reports.jsx` + `utils/terminalReports.js` + `api.fetchTerminalReportSource` |
 
 Period filters (day/week/month/year) live on Overview / BranchDashboard. Restaurant branch UI emphasizes menu / devices / day ops over retail stock language.
 
@@ -326,3 +522,67 @@ Run migrations in the Supabase SQL editor; respect comments about order / depend
 ---
 
 Product name in UI/docs: **CalePOS**.
+
+---
+## Feature → file map (fast “what to edit”)
+
+### Barcode scanner mode (retail, non-restaurant)
+- **Enabled/disabled flag:** `src/pages/POS.jsx` → `barcodeOn` / `barcodeTableMode`
+- **Search/scan UI:** `src/pages/POS.jsx`
+  - `searchPopupOpen` state
+  - `ITEM SEARCH` modal (`barcodeTableMode && searchPopupOpen`)
+  - Results table is driven by `visible` (matches name/SKU/barcode/productCode)
+- **Inquiry toggle:** `src/pages/POS.jsx` → `inquiryMode` + button in the `ITEM SEARCH` modal
+- **Cart layout in barcode mode:** `src/components/pos/Cart.jsx`
+  - `Cart` receives `barcodeMode={barcodeTableMode}`
+  - `barcodeMode ? (...) : (...)` section is the barcode-specific “cart lines (left) + sale summary rail (right)”
+
+### Discountable indicators (where you can see “Discountable: Yes/No”)
+- **Barcode search results table:** `src/pages/POS.jsx` → `ITEM SEARCH` modal table
+- **Manager/supervisor product catalog list:** `src/pages/manager/Data.jsx` → product row in the catalog table (`pageRows.map`)
+- **Product movement history sidebar (staff Inventory / Products):** `src/pages/Products.jsx`
+  - product detail drawer header shows “Discountable”
+- **Product movement history sidebar (manager BranchDashboard):** `src/pages/manager/BranchDashboard.jsx`
+  - `selectedProduct` drawer header shows “Discountable”
+
+### Discount tracking (persistent, per-line)
+- **Eligibility source on products:** `products.discount_eligible` (mapped in `src/lib/api.js` → `discountEligible`)
+- **Line-level persistence (per receipt/report):**
+  - Migration: `supabase/migrate_discountable_transaction_items.sql`
+  - Schema: `supabase/schema.sql` (`transaction_items.discount_eligible`, `transaction_items.discount_amount`)
+- **How the backend is written during sale:**
+  - Queue payload adds per-item `discountEligible` + `discountAmount`: `src/stores/posStore.js` (inside `enqueue(QUEUE_TYPES.COMPLETE_SALE, ...)`)
+  - Supabase insert includes new columns: `src/lib/api.js` → `completeSale()` → `transaction_items.insert(lines)`
+- **How it is read back:**
+  - `src/lib/api.js` → `fetchTransactionDetail()` selects `discount_eligible`/`discount_amount` and maps them to `lines[]`
+- **Receipt display:**
+  - `src/utils/receipt.js` → `receiptToHtml()` shows a per-line “Discount -₱X.XX” note when `line.discountAmount > 0`
+
+### Manager Promo events (item/pair/bundle/BOGO)
+- **Manager tab UI:** `src/pages/manager/Promos.jsx` (create event + create rules)
+- **Active promo fetch in POS:** `src/pages/POS.jsx`
+  - `useEffect` calls `fetchActivePromoEventWithRules(branchId)`
+  - `Cart` receives `promoRules` + `promoLabel`
+- **Promo discount engine:** `src/components/pos/Cart.jsx`
+  - `pricing = useMemo(...)`
+  - applies promo discounts only when PWD/Senior is *not* selected
+
+---
+## Block-level navigation hints (useful for future AI/code-review)
+
+### `src/pages/POS.jsx` blocks
+- **Product matching logic:** `visible = sellable.filter(...)`
+  - In scanner mode: if `barcodeTableMode && !search.trim()` then results are hidden (prevents random table spam).
+- **Barcode search popup:** `barcodeTableMode && searchPopupOpen`
+  - Contains `SearchBox`
+  - On `Enter`, uses exact match on `sku`, `barcode`, or `productCode`, then calls `select()`
+  - Table rows include the “Discountable” label.
+
+### `src/components/pos/Cart.jsx` blocks
+- **Checkout overlay:** `checkoutOpen && <Modal ...>` (payment / tendered / confirm)
+- **Approval overlays:** `paying && <StatusOverlay ...>` + `removeIndex != null && <SupervisorApprove ...>`
+- **Barcode mode layout:**
+  - `barcodeMode ? (...) : (...)`
+  - Inside barcode mode:
+    - **Left rail:** scrollable cart item list + per-line discount notes
+    - **Right rail:** subtotal/discount/VAT/total + `Checkout` button

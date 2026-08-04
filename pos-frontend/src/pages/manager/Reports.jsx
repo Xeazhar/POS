@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import * as XLSX from 'xlsx'
-import { Field, PageHeader, PrimaryButton, SelectField, TableCard } from '../../components/ui'
+import { Field, PageHeader, PrimaryButton, SecondaryButton, SelectField } from '../../components/ui'
 import {
+  fetchAllStaff,
   fetchAuditEvents,
   fetchBranches,
   fetchDailyReading,
@@ -9,24 +10,46 @@ import {
   fetchInventoryReport,
   fetchReportSalesDetail,
   fetchSaleEvents,
+  fetchTerminalReportSource,
   formatProductCode,
   hasSupabase,
+  logAuditEvent,
 } from '../../lib/api'
+import { useAuthStore } from '../../stores/posStore'
 import { money, today } from '../../utils/format'
+import {
+  buildTerminalReportData,
+  downloadText,
+  formatCashierThermal,
+  formatDepartmentThermal,
+  formatPluThermal,
+  formatReportPdfHtml,
+  formatTablePdfHtml,
+  formatTableThermal,
+  formatTerminalThermal,
+  openPrintWindow,
+  printThermalText,
+  reportCounters,
+} from '../../utils/terminalReports'
+
+const TERMINAL_IDS = new Set(['x-read', 'z-read', 'cashier', 'department', 'plu'])
 
 const REPORTS = [
-  { id: 'inventory', title: 'Inventory Report', blurb: 'Current stock levels and thresholds' },
-  { id: 'sales-invoice', title: 'Sales Per Invoice Report', blurb: 'OR-numbered transaction totals' },
-  { id: 'price-listing', title: 'Price Listing / Catalog', blurb: 'Product catalog with IDs (0001…) for Power BI' },
-  { id: 'pos-sales-detail', title: 'POS Sales Detail Report', blurb: 'Line-item sales with filters' },
-  { id: 'order-status', title: 'Order Status Listing', blurb: 'Paid vs voided orders' },
-  { id: 'void-log', title: 'Void / Refund Log', blurb: 'Append-only void and refund events' },
-  { id: 'audit-trail', title: 'User Login & Audit Trail', blurb: 'Sign-in, void, and system events' },
-  { id: 'salesman', title: 'Salesman Listing', blurb: 'Sales performance per staff' },
-  { id: 'z-reading', title: 'Daily Z Reading', blurb: 'End-of-day OR range and totals' },
-  { id: 'x-reading', title: 'Daily X Reading', blurb: 'Mid-day sales snapshot (same day)' },
-  { id: 'bir-summary', title: 'Daily BIR Sales Summary', blurb: 'Gross, voids, net, OR range' },
-  { id: 'fiscal-backup', title: 'Fiscal Data Backup', blurb: 'JSON export of sales, voids, audit, day-ends' },
+  { id: 'x-read', group: 'Terminal', title: 'X-Read' },
+  { id: 'z-read', group: 'Terminal', title: 'Z-Read' },
+  { id: 'cashier', group: 'Terminal', title: 'Cashier Report' },
+  { id: 'department', group: 'Terminal', title: 'Department Report' },
+  { id: 'plu', group: 'Terminal', title: 'PLU Report' },
+  { id: 'inventory', group: 'Catalog', title: 'Inventory' },
+  { id: 'price-listing', group: 'Catalog', title: 'Price Listing' },
+  { id: 'sales-invoice', group: 'Sales', title: 'Sales Per Invoice' },
+  { id: 'pos-sales-detail', group: 'Sales', title: 'POS Sales Detail' },
+  { id: 'order-status', group: 'Sales', title: 'Order Status' },
+  { id: 'salesman', group: 'Sales', title: 'Salesman Listing' },
+  { id: 'void-log', group: 'Audit', title: 'Void / Refund Log' },
+  { id: 'audit-trail', group: 'Audit', title: 'Login & Audit Trail' },
+  { id: 'bir-summary', group: 'Fiscal', title: 'BIR Sales Summary' },
+  { id: 'fiscal-backup', group: 'Fiscal', title: 'Fiscal Data Backup' },
 ]
 
 function exportRows(rows, name) {
@@ -45,121 +68,247 @@ function downloadJson(payload, name) {
   URL.revokeObjectURL(url)
 }
 
+function ensureRows(list, emptyMessage) {
+  if (list && list.length) return list
+  return [{ result: emptyMessage || 'No records for this date range / branch.' }]
+}
+
 function ManagerReports() {
-  const [selected, setSelected] = useState('inventory')
+  const user = useAuthStore((s) => s.user)
+  const [selected, setSelected] = useState('x-read')
   const [branches, setBranches] = useState([])
-  const [filters, setFilters] = useState({ start: today(), end: today(), branchId: '', category: '' })
+  const [allStaff, setAllStaff] = useState([])
+  const [filters, setFilters] = useState({
+    start: today(),
+    end: today(),
+    branchId: '',
+    staffId: '',
+  })
+  const [preview, setPreview] = useState('')
+  const [termData, setTermData] = useState(null)
   const [rows, setRows] = useState([])
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
+
+  const isTerminal = TERMINAL_IDS.has(selected)
+  const cashiers = allStaff.filter((s) => {
+    if (String(s.role || '').toLowerCase() !== 'cashier') return false
+    if (!filters.branchId) return true
+    return s.branch_id === filters.branchId
+  })
 
   useEffect(() => {
     if (!hasSupabase) return
-    fetchBranches().then(setBranches).catch((err) => setError(err.message))
+    fetchBranches()
+      .then((list) => {
+        setBranches(list)
+        if (list[0]?.id) setFilters((f) => ({ ...f, branchId: f.branchId || list[0].id }))
+      })
+      .catch((err) => setError(err.message))
+    fetchAllStaff()
+      .then((staff) => setAllStaff(staff || []))
+      .catch(() => setAllStaff([]))
   }, [])
 
-  const run = async () => {
-    setError('')
+  const clearOut = () => {
+    setPreview('')
+    setTermData(null)
+    setRows([])
     setNote('')
-    try {
-      if (!hasSupabase) {
-        setRows([{ note: 'Connect Supabase and seed data to generate live reports.' }])
-        return
-      }
+    setError('')
+  }
 
-      if (selected === 'fiscal-backup') {
-        const pack = await fetchFiscalBackup({
-          start: filters.start,
-          end: filters.end,
-          branchId: filters.branchId || null,
-        })
-        downloadJson(pack, `calepos-fiscal-backup-${filters.start}-${filters.end}`)
-        setRows([
-          {
-            exported_at: pack.exportedAt,
-            transactions: pack.transactions.length,
-            sale_events: pack.saleEvents.length,
-            audit_events: pack.auditEvents.length,
-            day_ends: pack.dayEnds.length,
-          },
-        ])
-        setNote('Fiscal backup JSON downloaded. Also keep Supabase project backups enabled.')
-        return
-      }
+  const branchName =
+    branches.find((b) => b.id === filters.branchId)?.name || (filters.branchId ? 'Branch' : 'All branches')
 
-      if (selected === 'inventory' || selected === 'price-listing') {
-        const data = await fetchInventoryReport(filters.branchId || null)
-        setRows(
+  const runTerminal = async () => {
+    if (!filters.branchId) {
+      setError('Select a branch.')
+      return
+    }
+    if (!filters.start || !filters.end) {
+      setError('Select start and end dates.')
+      return
+    }
+    if (filters.end < filters.start) {
+      setError('End date must be on or after start date.')
+      return
+    }
+
+    const source = await fetchTerminalReportSource({
+      date: filters.start,
+      endDate: filters.end,
+      branchId: filters.branchId,
+      staffId: selected === 'cashier' && filters.staffId ? filters.staffId : null,
+    })
+
+    const counters = reportCounters(filters.branchId)
+    const printedAt = new Date()
+    let readingMeta = {}
+    let mode = 'x'
+
+    if (selected === 'x-read') {
+      mode = 'x'
+      const { z, x } = counters.bumpX(filters.start)
+      const zLabel = String(z || 1).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+      readingMeta = { label: `${zLabel}/${x}`, z, x }
+      setNote('X-Read snapshot (no reset).')
+    } else if (selected === 'z-read') {
+      mode = 'z'
+      const z = counters.bumpZ()
+      readingMeta = { label: String(z), z }
+      setNote('Z-Read recorded. Close till via Day end.')
+      await logAuditEvent({
+        branchId: filters.branchId,
+        staffId: user?.id,
+        eventType: 'z_read',
+        detail: `Z-Read #${z} for ${filters.start}–${filters.end}`,
+        meta: { start: filters.start, end: filters.end, z },
+      }).catch(() => {})
+    } else {
+      mode = selected === 'cashier' ? 'cashier' : 'x'
+    }
+
+    const staffId = selected === 'cashier' ? filters.staffId || null : null
+    const staffRow = staffId ? cashiers.find((c) => c.id === staffId) : null
+    const staffName = staffId
+      ? staffRow?.full_name || source.staffNames?.[staffId] || 'Cashier'
+      : 'ALL CASHIERS'
+
+    const report = buildTerminalReportData({
+      mode,
+      branch: source.branch || {},
+      operatorName: user?.name || '',
+      date: filters.start,
+      printedAt,
+      transactions: source.transactions,
+      lineItems: source.lineItems,
+      pettyCash: source.pettyCash,
+      dayEnd: source.dayEnd,
+      oldGrandTotal: source.oldGrandTotal,
+      readingMeta,
+      staffId: selected === 'cashier' ? staffId : null,
+      staffName: selected === 'cashier' ? staffName : '',
+      staffCode: staffId ? String(staffRow?.login_code || staffId).slice(0, 8) : '',
+      shiftNo: 1,
+      cashCount: source.dayEnd?.declared_cash ?? source.dayEnd?.cash_counted ?? null,
+    })
+
+    let text = ''
+    if (selected === 'x-read' || selected === 'z-read') text = formatTerminalThermal(report)
+    else if (selected === 'cashier') text = formatCashierThermal(report)
+    else if (selected === 'department') text = formatDepartmentThermal(report)
+    else if (selected === 'plu') text = formatPluThermal(report, { start: filters.start, end: filters.end })
+
+    setTermData({
+      kind: selected === 'z-read' ? 'z' : selected,
+      report,
+      opts: { start: filters.start, end: filters.end },
+    })
+    setPreview(text || 'No activity in range.\n(Report still generated — all values at .00)')
+    setRows([])
+  }
+
+  const runTable = async () => {
+    if (!filters.start || !filters.end) {
+      setError('Select start and end dates.')
+      return
+    }
+    if (filters.end < filters.start) {
+      setError('End date must be on or after start date.')
+      return
+    }
+
+    const branchId = filters.branchId || null
+
+    if (selected === 'fiscal-backup') {
+      const pack = await fetchFiscalBackup({
+        start: filters.start,
+        end: filters.end,
+        branchId,
+      })
+      downloadJson(pack, `calepos-fiscal-backup-${filters.start}-${filters.end}`)
+      setRows(
+        ensureRows(
+          [
+            {
+              exported_at: pack.exportedAt,
+              transactions: pack.transactions.length,
+              sale_events: pack.saleEvents.length,
+              audit_events: pack.auditEvents.length,
+              day_ends: pack.dayEnds.length,
+            },
+          ],
+          'Backup created with 0 records.',
+        ),
+      )
+      setNote('Fiscal backup JSON downloaded.')
+      return
+    }
+
+    if (selected === 'inventory' || selected === 'price-listing') {
+      const data = await fetchInventoryReport(branchId)
+      setRows(
+        ensureRows(
           data.map((row) => {
             const qtyOnHand = Number(row.quantity_on_hand || 0)
             const unitCost = Number(row.products?.unit_cost || 0)
             const unitPrice = Number(row.products?.price || 0)
-            const discountEligible = row.products?.discount_eligible === true
-            const totalCost = Number((unitCost * qtyOnHand).toFixed(2))
-            const totalPrice = Number((unitPrice * qtyOnHand).toFixed(2))
             return {
               product_code: formatProductCode(row.products?.product_no),
-              product_id: row.products?.id,
-              branch_id: row.products?.branch_id || filters.branchId || '',
               branch: row.branches?.name,
               barcode: row.products?.barcode || '',
-              description: row.products?.name,
               product: row.products?.name,
               sku: row.products?.sku,
-              uom: row.products?.pricing_mode === 'per_kg' || row.products?.pricing_mode === 'kg' ? 'kg' : 'pc',
               category: row.products?.categories?.name,
-              quantity: qtyOnHand,
               on_hand: qtyOnHand,
               unit_cost: unitCost,
               unit_price: unitPrice,
-              price: unitPrice,
-              discount: discountEligible ? 'PWD/Senior eligible' : '',
-              total_cost: totalCost,
-              total_price: totalPrice,
-              profit: Number((totalPrice - totalCost).toFixed(2)),
-              budget_price: row.products?.budget_price != null ? Number(row.products.budget_price) : '',
-              menu_kind: row.products?.menu_kind || '',
-              low_at: Number(row.products?.low_stock_threshold || 0),
+              total_cost: Number((unitCost * qtyOnHand).toFixed(2)),
+              total_price: Number((unitPrice * qtyOnHand).toFixed(2)),
               status: qtyOnHand <= Number(row.products?.low_stock_threshold || 0) ? 'Low' : 'OK',
             }
           }),
-        )
-        return
-      }
+          'No products in catalog for this branch.',
+        ),
+      )
+      return
+    }
 
-      if (selected === 'void-log') {
-        const events = await fetchSaleEvents({
-          start: filters.start,
-          end: filters.end,
-          branchId: filters.branchId || null,
-        })
-        setRows(
+    if (selected === 'void-log') {
+      const events = await fetchSaleEvents({
+        start: filters.start,
+        end: filters.end,
+        branchId,
+      })
+      setRows(
+        ensureRows(
           events
             .filter((e) => e.event_type === 'void' || e.event_type === 'refund')
             .map((e) => ({
-              event_id: e.id,
-              transaction_id: e.transaction_id || '',
               when: e.created_at,
               type: e.event_type,
               or_number: e.or_number,
               amount: Number(e.amount || 0),
               reason: e.reason,
-              staff_id: e.staff_id || '',
               staff: e.staff?.full_name,
-              branch_id: e.branch_id || '',
               branch: e.branches?.name,
             })),
-        )
-        return
-      }
+          'No voids or refunds in this range.',
+        ),
+      )
+      return
+    }
 
-      if (selected === 'audit-trail') {
-        const events = await fetchAuditEvents({
-          start: filters.start,
-          end: filters.end,
-          branchId: filters.branchId || null,
-        })
-        setRows(
+    if (selected === 'audit-trail') {
+      const events = await fetchAuditEvents({
+        start: filters.start,
+        end: filters.end,
+        branchId,
+      })
+      setRows(
+        ensureRows(
           events.map((e) => ({
             when: e.created_at,
             event: e.event_type,
@@ -167,52 +316,53 @@ function ManagerReports() {
             staff: e.staff?.full_name,
             branch: e.branches?.name,
           })),
-        )
-        return
-      }
+          'No audit events in this range.',
+        ),
+      )
+      return
+    }
 
-      if (selected === 'z-reading' || selected === 'x-reading' || selected === 'bir-summary') {
-        const reading = await fetchDailyReading({
-          date: filters.end || filters.start || today(),
-          branchId: filters.branchId || null,
+    if (selected === 'bir-summary') {
+      // One summary row per day in range
+      const days = []
+      const cursor = new Date(`${filters.start}T12:00:00`)
+      const end = new Date(`${filters.end}T12:00:00`)
+      while (cursor <= end) {
+        const key = cursor.toISOString().slice(0, 10)
+        days.push(key)
+        cursor.setDate(cursor.getDate() + 1)
+      }
+      const readings = []
+      for (const date of days) {
+        const reading = await fetchDailyReading({ date, branchId })
+        readings.push({
+          date: reading.date,
+          or_from: reading.orFrom || '—',
+          or_to: reading.orTo || '—',
+          sales_count: reading.transactionCount,
+          void_count: reading.voidCount,
+          gross_sales: reading.salesTotal,
+          void_total: reading.voidTotal,
+          net_sales: reading.netSales,
         })
-        setNote(
-          selected === 'x-reading'
-            ? 'X reading = mid-day snapshot (same counters, no reset). Not a BIR-accredited format.'
-            : 'Operational Z/BIR summary from live sales. Formal BIR accreditation is separate.',
-        )
-        setRows([
-          {
-            date: reading.date,
-            or_from: reading.orFrom,
-            or_to: reading.orTo,
-            sales_count: reading.transactionCount,
-            void_count: reading.voidCount,
-            gross_sales: reading.salesTotal,
-            void_total: reading.voidTotal,
-            net_sales: reading.netSales,
-          },
-          ...reading.rows.map((r) => ({
-            or_number: r.or_number,
-            status: r.status,
-            total: r.total,
-            cashier: r.cashier,
-            time: r.time,
-            void_reason: r.void_reason || '',
-          })),
-        ])
-        return
       }
+      setNote('Operational summary from live sales (per day in range).')
+      setRows(ensureRows(readings, 'No sales data in this range.'))
+      return
+    }
 
-      const includeVoided = selected === 'order-status' || selected === 'sales-invoice'
-      const detail = await fetchReportSalesDetail({ ...filters, includeVoided })
-      if (selected === 'pos-sales-detail') {
-        setRows(
+    const includeVoided = selected === 'order-status' || selected === 'sales-invoice'
+    const detail = await fetchReportSalesDetail({
+      start: filters.start,
+      end: filters.end,
+      branchId,
+      includeVoided,
+    })
+
+    if (selected === 'pos-sales-detail') {
+      setRows(
+        ensureRows(
           detail.map((row) => ({
-            transaction_id: row.transactions?.id,
-            product_code: formatProductCode(row.products?.product_no),
-            product_id: row.products?.id || row.product_id,
-            branch_id: row.transactions?.branch_id,
             date: row.transactions?.created_at?.slice(0, 10),
             or_number: row.transactions?.or_number || row.transactions?.id,
             cashier: row.transactions?.staff?.full_name,
@@ -222,172 +372,296 @@ function ManagerReports() {
             qty: Number(row.quantity),
             unit_price: Number(row.unit_price),
             line_total: Number(row.line_total),
-            price_tier: row.price_tier || '',
-            order_type: row.transactions?.order_type || '',
-            ulam_combo: row.transactions?.ulam_combo || '',
             payment: row.transactions?.payment_method || 'cash',
-            payment_reference: row.transactions?.payment_reference || '',
           })),
-        )
-        return
-      }
-      if (selected === 'sales-invoice' || selected === 'order-status') {
-        const byTxn = {}
-        detail.forEach((row) => {
-          const id = row.transactions?.id
-          if (!byTxn[id]) {
-            byTxn[id] = {
-              transaction_id: id,
-              branch_id: row.transactions?.branch_id,
-              or_number: row.transactions?.or_number || id,
-              date: row.transactions?.created_at?.slice(0, 10),
-              cashier: row.transactions?.staff?.full_name,
-              status: row.transactions?.status,
-              order_type: row.transactions?.order_type || '',
-              ulam_combo: row.transactions?.ulam_combo || '',
-              void_reason: row.transactions?.void_reason || '',
-              total: 0,
-              lines: 0,
-            }
+          'No sale lines in this range.',
+        ),
+      )
+      return
+    }
+
+    if (selected === 'sales-invoice' || selected === 'order-status') {
+      const byTxn = {}
+      detail.forEach((row) => {
+        const id = row.transactions?.id
+        if (!byTxn[id]) {
+          byTxn[id] = {
+            or_number: row.transactions?.or_number || id,
+            date: row.transactions?.created_at?.slice(0, 10),
+            cashier: row.transactions?.staff?.full_name,
+            status: row.transactions?.status,
+            void_reason: row.transactions?.void_reason || '',
+            total: 0,
+            lines: 0,
           }
-          byTxn[id].total += Number(row.line_total)
-          byTxn[id].lines += 1
-        })
-        setRows(Object.values(byTxn))
-        return
-      }
-      if (selected === 'salesman') {
-        const byStaff = {}
-        detail.forEach((row) => {
-          if (row.transactions?.status === 'voided') return
-          const staffId = row.transactions?.staff_id || 'unknown'
-          const name = row.transactions?.staff?.full_name || 'Unknown'
-          if (!byStaff[staffId]) {
-            byStaff[staffId] = {
-              staff_id: staffId === 'unknown' ? '' : staffId,
-              cashier: name,
-              invoices: new Set(),
-              sales: 0,
-            }
-          }
-          byStaff[staffId].invoices.add(row.transactions?.or_number || row.transactions?.id)
-          byStaff[staffId].sales += Number(row.line_total)
-        })
-        setRows(
+        }
+        byTxn[id].total += Number(row.line_total)
+        byTxn[id].lines += 1
+      })
+      setRows(
+        ensureRows(
+          Object.values(byTxn),
+          selected === 'order-status' ? 'No orders in this range.' : 'No invoices in this range.',
+        ),
+      )
+      return
+    }
+
+    if (selected === 'salesman') {
+      const byStaff = {}
+      detail.forEach((row) => {
+        if (row.transactions?.status === 'voided') return
+        const sid = row.transactions?.staff_id || 'unknown'
+        const name = row.transactions?.staff?.full_name || 'Unknown'
+        if (!byStaff[sid]) byStaff[sid] = { cashier: name, invoices: new Set(), sales: 0 }
+        byStaff[sid].invoices.add(row.transactions?.or_number || row.transactions?.id)
+        byStaff[sid].sales += Number(row.line_total)
+      })
+      setRows(
+        ensureRows(
           Object.values(byStaff).map((row) => ({
-            staff_id: row.staff_id,
             cashier: row.cashier,
             invoices: row.invoices.size,
             sales: row.sales,
           })),
-        )
+          'No cashier sales in this range.',
+        ),
+      )
+      return
+    }
+
+    setRows([{ result: 'Unknown report type.' }])
+  }
+
+  const run = async () => {
+    clearOut()
+    setBusy(true)
+    try {
+      if (!hasSupabase) {
+        setError('Connect Supabase to generate reports.')
         return
       }
-      setRows([{ note: 'Unknown report type.' }])
+      if (isTerminal) await runTerminal()
+      else await runTable()
+    } catch (err) {
+      setError(err.message || 'Report failed')
+      setRows([{ result: `Error: ${err.message || 'Report failed'}` }])
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onPrintReceipt = () => {
+    try {
+      setError('')
+      if (isTerminal) {
+        if (!preview) {
+          setError('Run the report first.')
+          return
+        }
+        printThermalText(preview)
+        return
+      }
+      if (!rows.length) {
+        setError('Run the report first.')
+        return
+      }
+      const text = formatTableThermal({
+        title: REPORTS.find((r) => r.id === selected)?.title || selected,
+        branchName,
+        start: filters.start,
+        end: filters.end,
+        rows,
+      })
+      printThermalText(text)
     } catch (err) {
       setError(err.message)
     }
   }
 
-  const active = REPORTS.find((item) => item.id === selected)
+  const onPdf = () => {
+    try {
+      if (isTerminal && termData) {
+        const kind =
+          termData.kind === 'cashier'
+            ? 'cashier'
+            : termData.kind === 'department'
+              ? 'department'
+              : termData.kind === 'plu'
+                ? 'plu'
+                : termData.kind === 'z'
+                  ? 'z'
+                  : 'terminal'
+        openPrintWindow(formatReportPdfHtml(kind, termData.report, termData.opts))
+        return
+      }
+      openPrintWindow(
+        formatTablePdfHtml({
+          title: REPORTS.find((r) => r.id === selected)?.title || selected,
+          branchName,
+          start: filters.start,
+          end: filters.end,
+          rows,
+        }),
+      )
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const groups = [...new Set(REPORTS.map((r) => r.group))]
+  const hasOutput = isTerminal ? Boolean(preview) : rows.length > 0
 
   return (
     <div>
-      <PageHeader eyebrow="MANAGER" title="Reports suite" />
-      <div className="grid grid-cols-[260px_minmax(0,1fr)] gap-4 max-[900px]:grid-cols-1">
-        <TableCard className="max-h-none p-3">
-          {REPORTS.map((report) => (
-            <button
-              key={report.id}
-              type="button"
-              className={`mb-1 w-full rounded-md border-0 px-3 py-3 text-left text-xs ${
-                selected === report.id ? 'bg-brand-dark text-white' : 'bg-transparent text-brand-slate'
-              }`}
-              onClick={() => setSelected(report.id)}
+      <PageHeader eyebrow="MANAGER" title="Reports" />
+
+      <div className="mb-3 border border-[#c8ccc4] bg-white p-3">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          <label className="block text-[11px] font-bold text-[#555]">
+            Report
+            <select
+              className="mt-1 block w-full border border-[#bbb] bg-white p-2 text-xs"
+              value={selected}
+              onChange={(e) => {
+                setSelected(e.target.value)
+                clearOut()
+              }}
             >
-              <strong className="block">{report.title}</strong>
-              <span className={`mt-1 block text-[10px] ${selected === report.id ? 'text-brand-soft' : 'text-brand-subtle'}`}>
-                {report.blurb}
-              </span>
-            </button>
-          ))}
-        </TableCard>
-        <div>
-          <TableCard className="mb-3.5 max-h-none p-5">
-            <h2 className="m-0 text-lg">{active?.title}</h2>
-            <p className="mt-1 text-xs text-brand-muted">{active?.blurb}</p>
-            <div className="mt-4 grid grid-cols-4 gap-3 max-[900px]:grid-cols-2">
-              <Field label="Start date" type="date" value={filters.start} onChange={(e) => setFilters({ ...filters, start: e.target.value })} />
-              <Field label="End date" type="date" value={filters.end} onChange={(e) => setFilters({ ...filters, end: e.target.value })} />
-              <SelectField label="Branch" value={filters.branchId} onChange={(e) => setFilters({ ...filters, branchId: e.target.value })}>
-                <option value="">All branches</option>
-                {branches.map((branch) => (
-                  <option key={branch.id} value={branch.id}>{branch.name}</option>
-                ))}
-              </SelectField>
-              <SelectField label="Item category" value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })}>
-                <option value="">All</option>
-                <option>Meat</option>
-                <option>Bakery</option>
-                <option>Groceries</option>
-              </SelectField>
-            </div>
-            <div className="mt-4 flex gap-2">
-              <PrimaryButton compact type="button" onClick={run}>
-                {selected === 'fiscal-backup' ? 'Download backup' : 'Run report'}
-              </PrimaryButton>
-              <PrimaryButton
-                compact
-                type="button"
-                disabled={!rows.length || selected === 'fiscal-backup'}
-                onClick={() => exportRows(rows, selected)}
-              >
-                Export CSV
-              </PrimaryButton>
-            </div>
-            {note && <p className="mt-3 text-xs text-brand-muted">{note}</p>}
-            {error && <p className="mt-3 text-xs text-brand-danger">{error}</p>}
-          </TableCard>
-          <TableCard>
-            {rows.length === 0 ? (
-              <div className="p-5 text-xs text-brand-subtle">Run a report to preview rows.</div>
-            ) : (
-              <div className="overflow-auto">
-                <table className="min-w-full text-left text-xs">
-                  <thead className="bg-[#f7f7f4] text-[9px] tracking-[1px] text-[#989e99] uppercase">
-                    <tr>
-                      {Object.keys(rows[0]).map((key) => (
-                        <th key={key} className="px-4 py-3 font-bold">{key}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row, index) => (
-                      <tr key={index} className="border-t border-brand-softline">
-                        {Object.entries(row).map(([key, value]) => (
-                          <td key={key} className="px-4 py-3">
-                            {typeof value === 'number' &&
-                            (key.includes('price') ||
-                              key === 'sales' ||
-                              key === 'total' ||
-                              key === 'line_total' ||
-                              key.includes('sales') ||
-                              key.includes('void_total') ||
-                              key === 'amount' ||
-                              key === 'gross_sales' ||
-                              key === 'net_sales')
-                              ? money(value)
-                              : String(value ?? '')}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </TableCard>
+              {groups.map((g) => (
+                <optgroup key={g} label={g}>
+                  {REPORTS.filter((r) => r.group === g).map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.title}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+
+          <Field
+            label="From"
+            type="date"
+            value={filters.start}
+            onChange={(e) => setFilters({ ...filters, start: e.target.value })}
+          />
+          <Field
+            label="To"
+            type="date"
+            value={filters.end}
+            onChange={(e) => setFilters({ ...filters, end: e.target.value })}
+          />
+          <SelectField
+            label="Branch"
+            value={filters.branchId}
+            onChange={(e) => setFilters({ ...filters, branchId: e.target.value, staffId: '' })}
+          >
+            {!isTerminal && <option value="">All branches</option>}
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </SelectField>
+          {selected === 'cashier' && (
+            <SelectField
+              label="Cashier"
+              value={filters.staffId}
+              onChange={(e) => setFilters({ ...filters, staffId: e.target.value })}
+            >
+              <option value="">All cashiers</option>
+              {cashiers.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.full_name}
+                </option>
+              ))}
+            </SelectField>
+          )}
         </div>
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <PrimaryButton compact type="button" disabled={busy} onClick={run}>
+            {busy ? '…' : 'Run'}
+          </PrimaryButton>
+          <SecondaryButton compact type="button" disabled={!hasOutput} onClick={onPrintReceipt}>
+            Print receipt
+          </SecondaryButton>
+          <SecondaryButton compact type="button" disabled={!hasOutput} onClick={onPdf}>
+            PDF
+          </SecondaryButton>
+          {isTerminal ? (
+            <SecondaryButton
+              compact
+              type="button"
+              disabled={!preview}
+              onClick={() => downloadText(preview, `${selected}-${filters.start}-${filters.end}.txt`)}
+            >
+              Save .txt
+            </SecondaryButton>
+          ) : (
+            <SecondaryButton
+              compact
+              type="button"
+              disabled={!rows.length || selected === 'fiscal-backup'}
+              onClick={() => exportRows(rows, `${selected}-${filters.start}-${filters.end}`)}
+            >
+              CSV
+            </SecondaryButton>
+          )}
+        </div>
+
+        {note && <p className="mt-2 mb-0 text-xs text-[#666]">{note}</p>}
+        {error && <p className="mt-2 mb-0 text-xs text-brand-danger">{error}</p>}
+      </div>
+
+      <div className="border border-[#c8ccc4] bg-white">
+        {isTerminal ? (
+          !preview ? (
+            <div className="p-3 text-xs text-[#888]">Run to preview receipt layout.</div>
+          ) : (
+            <pre className="m-0 max-h-[70vh] overflow-auto border-0 bg-[#f7f7f4] p-3 font-mono text-[11px] leading-snug whitespace-pre">
+              {preview}
+            </pre>
+          )
+        ) : rows.length === 0 ? (
+          <div className="p-3 text-xs text-[#888]">Run to preview table.</div>
+        ) : (
+          <div className="max-h-[70vh] overflow-auto">
+            <table className="min-w-full border-collapse text-left text-xs">
+              <thead>
+                <tr className="border-b border-[#ccc] bg-[#eee]">
+                  {Object.keys(rows[0]).map((key) => (
+                    <th key={key} className="px-2 py-1.5 font-bold whitespace-nowrap">
+                      {key}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, index) => (
+                  <tr key={index} className="border-b border-[#ddd]">
+                    {Object.entries(row).map(([key, value]) => (
+                      <td key={key} className="px-2 py-1.5 whitespace-nowrap">
+                        {typeof value === 'number' &&
+                        (key.includes('price') ||
+                          key.includes('sales') ||
+                          key.includes('total') ||
+                          key.includes('amount') ||
+                          key.includes('cost') ||
+                          key === 'gross_sales' ||
+                          key === 'net_sales' ||
+                          key === 'void_total')
+                          ? money(value)
+                          : String(value ?? '')}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -1,4 +1,4 @@
-import { FiBarChart2, FiClipboard, FiClock, FiCpu, FiDatabase, FiGrid, FiMoon, FiPackage, FiUsers, FiMapPin, FiFileText, FiCoffee } from 'react-icons/fi'
+import { FiBarChart2, FiClipboard, FiClock, FiCpu, FiDatabase, FiGrid, FiMoon, FiPackage, FiUsers, FiMapPin, FiFileText, FiCoffee, FiTag } from 'react-icons/fi'
 import { canAccessModule, isManagerRole } from '../utils/roles'
 
 export const staffLinks = [
@@ -8,6 +8,7 @@ export const staffLinks = [
   ['/inventory', 'Inventory', FiPackage, 'inventory'],
   ['/data', 'Catalog', FiDatabase, 'inventory'],
   ['/day-end', 'Day end', FiMoon, 'day_end'],
+  ['/manager/promos', 'Promos', FiTag, 'manager_promos'],
   ['/shifts', 'Shifts', FiClock, 'shifts'],
   ['/settings/devices', 'Devices', FiCpu, 'devices'],
 ]
@@ -22,6 +23,7 @@ export function staffLinksFor(user) {
           ['/inventory', 'Menu', FiCoffee, 'inventory'],
           ['/data', 'Catalog', FiDatabase, 'inventory'],
           ['/day-end', 'Day end', FiMoon, 'day_end'],
+          ['/manager/promos', 'Promos', FiTag, 'manager_promos'],
           ['/shifts', 'Shifts', FiClock, 'shifts'],
           ['/settings/devices', 'Devices', FiCpu, 'devices'],
         ]
@@ -52,6 +54,7 @@ export const managerLinks = [
   ['/manager/staff', 'Staff', FiUsers, 'manager_staff'],
   ['/manager/shifts', 'Shifts', FiClock, 'shifts'],
   ['/manager/data', 'Data', FiDatabase, 'manager_data'],
+  ['/manager/promos', 'Promos', FiTag, 'manager_promos'],
   ['/manager/reports', 'Reports', FiFileText, 'manager_reports'],
 ]
 

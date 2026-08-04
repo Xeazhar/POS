@@ -213,6 +213,7 @@ export const useCartStore = create(persist((set, get) => ({
             priceTier,
             menuKind,
             pricingMode: product.pricingMode || 'pc',
+            discountEligible: product.discountEligible === true,
             quantity: currentQuantity + quantity,
           },
         ],
@@ -231,6 +232,7 @@ export const useCartStore = create(persist((set, get) => ({
           priceTier,
           menuKind,
           pricingMode: product.pricingMode,
+          discountEligible: product.discountEligible === true,
           quantity: 1,
           weight: quantity,
         },
@@ -652,6 +654,7 @@ export const useInventoryStore = create((set, get) => ({
           ? []
           : nextProducts.filter((p) => items.some((i) => i.id === p.id)),
       })
+
       await enqueue(
         QUEUE_TYPES.COMPLETE_SALE,
         {
@@ -662,6 +665,8 @@ export const useInventoryStore = create((set, get) => ({
             ...item,
             unitPrice: item.unitPrice ?? item.price,
             priceTier: item.priceTier || 'regular',
+            discountEligible: item.discountEligible === true,
+            discountAmount: Number(item.discountAmount ?? 0),
           })),
           total: payload.total,
           tendered: payload.tendered,

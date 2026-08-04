@@ -56,22 +56,14 @@ body {
 
 * {
   box-sizing: border-box;
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-brand-gold) var(--color-brand-cart-input);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 *::-webkit-scrollbar {
-  width: 7px;
-  height: 7px;
-}
-
-*::-webkit-scrollbar-track {
-  background: var(--color-brand-cart-input);
-}
-
-*::-webkit-scrollbar-thumb {
-  background: var(--color-brand-gold);
-  border-radius: 4px;
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 button,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { FiX } from 'react-icons/fi'
 import { Link, useParams } from 'react-router-dom'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
@@ -18,6 +18,7 @@ import {
   bootstrapBranchData,
   fetchBranchTelemetry,
   fetchBranches,
+  fetchPettyCashTimeline,
   fetchRefundSummary,
   fetchTransactionDetail,
   hasSupabase,
@@ -37,7 +38,7 @@ function ManagerBranchDashboard() {
   const { branchId } = useParams()
   const user = useAuthStore((state) => state.user)
   const [branch, setBranch] = useState(null)
-  const [data, setData] = useState({ products: [], transactions: [], movements: [], dayEnds: [] })
+  const [data, setData] = useState({ products: [], transactions: [], movements: [], dayEnds: [], pettyTimeline: [] })
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
@@ -49,13 +50,11 @@ function ManagerBranchDashboard() {
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState(null)
   const [deviceBusy, setDeviceBusy] = useState(null)
-  const autoOffRef = useRef('')
 
   useEffect(() => {
     let active = true
     setInvPage(0)
     setSelectedProduct(null)
-    autoOffRef.current = ''
     Promise.resolve()
       .then(async () => {
         if (!hasSupabase) {
@@ -69,9 +68,13 @@ function ManagerBranchDashboard() {
         if (!active) return
         setBranch(branches.find((row) => row.id === branchId) || null)
         const payload = await bootstrapBranchData(branchId)
+        const pettyTimeline = await fetchPettyCashTimeline(branchId, {
+          startDate: businessDate(new Date(), Number(payload.dayOpenHour ?? 7)),
+          endDate: businessDate(new Date(), Number(payload.dayOpenHour ?? 7)),
+        }).catch(() => [])
         const tel = await fetchBranchTelemetry([branchId])
         if (active) {
-          setData(payload)
+          setData({ ...payload, pettyTimeline })
           setTelemetry({ devices: tel.devices[branchId] || [] })
         }
       })
@@ -99,7 +102,12 @@ function ManagerBranchDashboard() {
     if (!hasSupabase) return
     const branches = await fetchBranches()
     setBranch(branches.find((row) => row.id === branchId) || null)
-    setData(await bootstrapBranchData(branchId))
+    const payload = await bootstrapBranchData(branchId)
+    const pettyTimeline = await fetchPettyCashTimeline(branchId, {
+      startDate: businessDate(new Date(), Number(payload.dayOpenHour ?? 7)),
+      endDate: businessDate(new Date(), Number(payload.dayOpenHour ?? 7)),
+    }).catch(() => [])
+    setData({ ...payload, pettyTimeline })
   }
 
   const openHour = Number(branch?.day_open_hour ?? 7)
@@ -196,57 +204,6 @@ function ManagerBranchDashboard() {
 
   const deviceSettings = normalizeDeviceSettings(branch?.device_settings)
 
-  // Once per branch visit: if nothing is connected, force all toggles Off.
-  useEffect(() => {
-    if (!branch?.id || deviceBusy) return
-    if (autoOffRef.current === branch.id) return
-    const rows = telemetry.devices || []
-    // Wait for telemetry so we don't auto-off before statuses load
-    if (hasSupabase && rows.length === 0) return
-
-    const anyConnected = rows.some((row) => row.state === 'connected')
-    if (anyConnected) {
-      autoOffRef.current = branch.id
-      return
-    }
-    const current = normalizeDeviceSettings(branch.device_settings)
-    const anyOn = Object.values(current).some(Boolean)
-    autoOffRef.current = branch.id
-    if (!anyOn) return
-
-    const next = {
-      barcode_scanner: false,
-      receipt_printer: false,
-      cash_drawer: false,
-    }
-    const applyLocal = (saved) => {
-      setBranch(saved)
-      if (user?.branchId === saved.id) {
-        useAuthStore.setState({
-          user: { ...user, deviceSettings: next },
-        })
-      }
-    }
-    if (!hasSupabase) {
-      applyLocal({ ...branch, device_settings: next })
-      return
-    }
-    setDeviceBusy('auto')
-    saveBranch({
-      id: branch.id,
-      name: branch.name,
-      address: branch.address,
-      is_active: branch.is_active,
-      device_settings: next,
-    })
-      .then((saved) => applyLocal({ ...saved, device_settings: saved.device_settings || next }))
-      .catch((err) => {
-        autoOffRef.current = ''
-        setError(formatSupportError(err, 'DEV02'))
-      })
-      .finally(() => setDeviceBusy(null))
-  }, [branch, telemetry.devices, deviceBusy, user])
-
   const persistDeviceSettings = async (next, previousBranch) => {
     if (!hasSupabase) {
       const saved = { ...previousBranch, device_settings: next }
@@ -308,6 +265,19 @@ function ManagerBranchDashboard() {
     if (!selectedProduct) return []
     return (data.movements || []).filter((m) => m.productId === selectedProduct.id)
   }, [data.movements, selectedProduct])
+
+  const pettyTimeline = useMemo(() => data.pettyTimeline || [], [data.pettyTimeline])
+  const cashStats = useMemo(() => {
+    return pettyTimeline.reduce(
+      (acc, row) => {
+        if (row.kind === 'change_fund') acc.changeFund += Number(row.amount || 0)
+        else if (row.kind === 'pickup') acc.pickup += Number(row.amount || 0)
+        else acc.paidOut += Number(row.amount || 0)
+        return acc
+      },
+      { changeFund: 0, pickup: 0, paidOut: 0 },
+    )
+  }, [pettyTimeline])
 
   const invPages = Math.max(1, Math.ceil(data.products.length / PAGE_SIZE))
   const pageIndex = Math.min(invPage, invPages - 1)
@@ -539,6 +509,61 @@ function ManagerBranchDashboard() {
         </TableCard>
       </div>
 
+      <TableCard className="mb-4 max-h-none">
+        <div className="flex items-center justify-between px-4 py-3">
+          <div>
+            <h2 className="m-0 text-base">Cash accountability timeline</h2>
+            <p className="m-0 mt-0.5 text-[11px] text-brand-subtle">
+              Change fund, cash pickup, and petty cash entries for business day {todayKey}
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2 bg-[#f7f7f4] px-4 py-3 text-xs max-[700px]:grid-cols-1">
+          <div>
+            <span className="block text-[10px] uppercase tracking-[1px] text-[#989e99]">Change fund</span>
+            <strong className="text-brand-ink">{money(cashStats.changeFund)}</strong>
+          </div>
+          <div>
+            <span className="block text-[10px] uppercase tracking-[1px] text-[#989e99]">Cash pickups</span>
+            <strong className="text-brand-ink">{money(cashStats.pickup)}</strong>
+          </div>
+          <div>
+            <span className="block text-[10px] uppercase tracking-[1px] text-[#989e99]">Paid-out</span>
+            <strong className="text-brand-ink">{money(cashStats.paidOut)}</strong>
+          </div>
+        </div>
+        <div className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]">
+          <span>Time</span>
+          <span>Type</span>
+          <span className="text-right">Amount</span>
+          <span className="max-[900px]:hidden">Cashier</span>
+          <span className="max-[900px]:hidden">Note</span>
+        </div>
+        {pettyTimeline.map((row) => (
+          <div
+            key={row.id}
+            className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]"
+          >
+            <span className="text-brand-slate">
+              {row.createdAt ? new Date(row.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+            </span>
+            <strong className="capitalize text-brand-ink">
+              {row.kind === 'change_fund' ? 'Change fund' : row.kind === 'pickup' ? 'Cash pickup' : 'Paid-out'}
+            </strong>
+            <span className="text-right tabular-nums">{money(row.amount)}</span>
+            <span className="truncate max-[900px]:hidden">{row.staffName}</span>
+            <span className="truncate text-brand-slate max-[900px]:hidden" title={row.reason || ''}>
+              {row.reason || '—'}
+            </span>
+          </div>
+        ))}
+        {pettyTimeline.length === 0 && (
+          <div className="px-4 py-6 text-xs text-brand-subtle">
+            No cash accountability entries recorded for this business day yet.
+          </div>
+        )}
+      </TableCard>
+
       <TableCard className="max-h-none">
         <div className="flex items-center justify-between px-4 py-3">
           <h2 className="m-0 text-base">{isRestaurant ? "Today's menu / potahe" : 'Inventory'}</h2>
@@ -688,7 +713,7 @@ function ManagerBranchDashboard() {
         <div className="px-4 py-3">
           <h2 className="m-0 text-base">Branch devices</h2>
           <p className="m-0 mt-0.5 text-[11px] text-brand-subtle">
-            Switches start Off when nothing is connected. Turn On when hardware is ready.
+            Manager switches control whether each device is enabled for this branch.
           </p>
         </div>
         <div className="grid grid-cols-3 gap-0 border-t border-brand-softline max-[700px]:grid-cols-1">
@@ -762,6 +787,11 @@ function ManagerBranchDashboard() {
             </button>
             <Eyebrow>PRODUCT HISTORY</Eyebrow>
             <h2 className="m-0 mb-1 text-lg capitalize">{selectedProduct.name}</h2>
+            {!isRestaurant && typeof selectedProduct.discountEligible === 'boolean' && (
+              <p className="m-0 mb-2 text-[11px] text-brand-subtle">
+                Discountable: {selectedProduct.discountEligible ? 'Yes' : 'No'}
+              </p>
+            )}
             <p className="m-0 text-xs text-brand-muted">
               {selectedProduct.sku}
               {selectedProduct.barcode ? ` - ${selectedProduct.barcode}` : ''} -{' '}

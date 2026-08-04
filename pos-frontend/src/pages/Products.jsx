@@ -427,6 +427,11 @@ function Products() {
                 </SecondaryButton>
               )}
             </div>
+            {typeof form.discountEligible === 'boolean' && (
+              <p className="m-0 mb-2 text-[11px] text-brand-subtle">
+                Discountable: {form.discountEligible ? 'Yes' : 'No'}
+              </p>
+            )}
             {error && (
               <p className="my-2 mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
             )}
