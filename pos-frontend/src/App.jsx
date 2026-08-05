@@ -151,11 +151,9 @@ function App() {
               path="/data"
               element={
                 <StaffOnly>
-                  <SupervisorOnly>
-                    <RequireModule moduleId="inventory">
-                      <ManagerData />
-                    </RequireModule>
-                  </SupervisorOnly>
+                  <RequireModule moduleId="catalog">
+                    <ManagerData />
+                  </RequireModule>
                 </StaffOnly>
               }
             />

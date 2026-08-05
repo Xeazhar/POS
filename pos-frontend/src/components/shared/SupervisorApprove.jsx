@@ -36,13 +36,14 @@ function SupervisorApprove({
               return
             }
             const result = await verifySupervisorPin(branchId, loginCode, pin)
-            const staffId = typeof result === 'string' ? result : result?.staff_id || result?.id
+            const row = Array.isArray(result) ? result[0] : result
+            const staffId = typeof row === 'string' ? row : row?.staff_id || row?.id
             if (!staffId) {
               throw new Error('Invalid supervisor code or PIN')
             }
             onApproved({
               staffId,
-              name: result?.full_name || result?.name || 'Supervisor',
+              name: (typeof row === 'object' && (row?.full_name || row?.name)) || 'Supervisor',
             })
           } catch (err) {
             setError(formatSupportError(err, 'AUTH06'))

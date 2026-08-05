@@ -2,15 +2,18 @@ import { useEffect, useMemo, useState } from 'react'
 import { FiX } from 'react-icons/fi'
 import { Link, useParams } from 'react-router-dom'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
-import { DayEndReportPanels, RestockAlertBanner } from '../../components/dayend/DayEndReportPanels'
+import { DayEndReportPanels } from '../../components/dayend/DayEndReportPanels'
 import {
   ErrorBanner,
   Eyebrow,
   Field,
+  Modal,
+  ModalActions,
   PageHeader,
   Pager,
   PrimaryButton,
   SecondaryButton,
+  SectionHeading,
   TableCard,
   ToggleSwitch,
 } from '../../components/ui'
@@ -22,6 +25,7 @@ import {
   fetchRefundSummary,
   fetchTransactionDetail,
   hasSupabase,
+  approveDayEnd,
   reopenDayEnd,
   saveBranch,
 } from '../../lib/api'
@@ -29,7 +33,8 @@ import { BRANCH_DEVICES, normalizeDeviceSettings } from '../../devices'
 import { useAuthStore } from '../../stores/posStore'
 import { previousDayRestockReport } from '../../utils/dayEndReport'
 import { formatSupportError } from '../../utils/errors'
-import { businessDate, formatOpenHourLabel, greetingFor, money, qty } from '../../utils/format'
+import { businessDate, formatOpenHourLabel, money, qty } from '../../utils/format'
+import { isSupervisorOrAbove } from '../../utils/roles'
 import { isUuid } from '../../utils/transactionDetail'
 
 const PAGE_SIZE = 10
@@ -44,6 +49,9 @@ function ManagerBranchDashboard() {
   const [error, setError] = useState('')
   const [invPage, setInvPage] = useState(0)
   const [reopening, setReopening] = useState(null)
+  const [reopenTarget, setReopenTarget] = useState(null)
+  const [reopenReason, setReopenReason] = useState('')
+  const [approving, setApproving] = useState(null)
   const [telemetry, setTelemetry] = useState({ devices: [] })
   const [detail, setDetail] = useState(null)
   const [refundSummary, setRefundSummary] = useState(null)
@@ -164,13 +172,38 @@ function ManagerBranchDashboard() {
         sum + Math.abs(item.quantityChange) * (data.products.find((p) => p.id === item.productId)?.price || 0),
       0,
     )
-  const closedToday = (data.dayEnds || []).find((entry) => entry.date === todayKey && entry.status === 'closed')
+  const todayEntry = (data.dayEnds || []).find((entry) => entry.date === todayKey)
+  const submittedToday = todayEntry?.status === 'submitted'
+  const closedToday = todayEntry?.status === 'closed'
+  const canApprove = isSupervisorOrAbove(user?.role)
 
-  const handleReopen = async (entry) => {
+  const handleApprove = async (entry) => {
+    setApproving(entry.id)
+    setError('')
+    try {
+      await approveDayEnd({ id: entry.id, staffId: user.id })
+      await reload()
+    } catch (err) {
+      setError(formatSupportError(err, 'TILL02'))
+    } finally {
+      setApproving(null)
+    }
+  }
+
+  const handleReopen = async () => {
+    const entry = reopenTarget
+    if (!entry) return
+    const reason = reopenReason.trim()
+    if (!reason) {
+      setError('Reopen reason is required.')
+      return
+    }
     setReopening(entry.id)
     setError('')
     try {
-      await reopenDayEnd({ id: entry.id, staffId: user.id })
+      await reopenDayEnd({ id: entry.id, staffId: user.id, reason })
+      setReopenTarget(null)
+      setReopenReason('')
       await reload()
     } catch (err) {
       setError(formatSupportError(err, 'TILL02'))
@@ -290,7 +323,7 @@ function ManagerBranchDashboard() {
     <div>
       <PageHeader
         eyebrow={isRestaurant ? 'CARINDERIA' : 'BRANCH'}
-        title={`${greetingFor(user)}${branch?.name ? ` - ${branch.name}` : ''}`}
+        title={branch?.name || 'Branch'}
       >
         <div className="flex flex-wrap items-center justify-end gap-2">
           <SecondaryButton compact type="button" onClick={() => { setForm(branch); setEditing(true) }}>
@@ -305,21 +338,7 @@ function ManagerBranchDashboard() {
         <ErrorBanner error={error} onDismiss={() => setError('')} />
       )}
 
-      {restockEntry && (
-        <>
-          <RestockAlertBanner entry={restockEntry} />
-          <DayEndReportPanels
-            report={restockEntry.dayReport}
-            title={`Sold · ${restockEntry.date}`}
-            showRestock
-            compact
-            alert
-            fromDate={restockEntry.date}
-          />
-        </>
-      )}
-
-      <div className="mb-4 grid grid-cols-4 gap-3 max-[900px]:grid-cols-2 max-[700px]:grid-cols-1">
+      <div className="mb-4 grid grid-cols-4 gap-3.5 max-[900px]:grid-cols-2 max-[700px]:grid-cols-1">
         {(isRestaurant
           ? [
               ['Sales today', money(revenue), refundedToday > 0 ? `−${money(refundedToday)} refunded` : ''],
@@ -339,53 +358,16 @@ function ManagerBranchDashboard() {
             className="rounded-[9px] bg-brand-dark p-4 text-white max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:p-3.5"
           >
             <span className="block text-[10px] tracking-wide text-white/60 uppercase">{label}</span>
-            <strong className="mt-1 block text-xl tabular-nums max-[700px]:mt-0 max-[700px]:text-lg">{value}</strong>
-            {hint ? <span className="mt-0.5 block text-[10px] text-[#f0c9a0]">{hint}</span> : null}
+            <strong className="mt-2 block text-xl tabular-nums max-[700px]:mt-0 max-[700px]:text-lg">{value}</strong>
+            {hint ? <span className="mt-1 block text-[10px] text-[#f0c9a0]">{hint}</span> : null}
           </div>
         ))}
       </div>
 
-      {isRestaurant && plateMix.byCategory.length > 0 && (
-        <TableCard className="mb-4 max-h-none">
-          <div className="px-4 py-3">
-            <h2 className="m-0 text-base">Plate mix today</h2>
-            <p className="m-0 mt-0.5 text-[11px] text-brand-subtle">Sales by menu category (meat, veggie, pancit, etc.)</p>
-          </div>
-          <div className="grid grid-cols-[1.4fr_1fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase">
-            <span>Category</span>
-            <span className="text-right">Sales</span>
-          </div>
-          {plateMix.byCategory.map((row) => (
-            <div key={row.category} className="grid grid-cols-[1.4fr_1fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs">
-              <strong className="text-brand-ink">{row.category}</strong>
-              <span className="text-right tabular-nums text-brand-gold">{money(row.value)}</span>
-            </div>
-          ))}
-          {plateMix.byCombo.length > 0 && (
-            <div className="border-t border-brand-softline px-4 py-3">
-              <p className="m-0 mb-2 text-[11px] font-bold text-brand-subtle">2-ulam combos (count)</p>
-              <div className="flex flex-wrap gap-2">
-                {plateMix.byCombo.map((row) => (
-                  <span
-                    key={row.label}
-                    className="rounded border border-brand-border bg-white px-2 py-1 text-[11px] text-brand-ink"
-                  >
-                    {row.label}: <strong>{row.count}</strong>
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </TableCard>
-      )}
-
-      <div className="mb-3.5 grid grid-cols-2 gap-3.5 max-[900px]:grid-cols-1">
-        <TableCard className="max-h-none">
-          <div className="flex items-center justify-between px-4 py-3">
-            <h2 className="m-0 text-base">Recent transactions</h2>
-            <span className="text-[11px] text-brand-subtle">{data.transactions.length} total</span>
-          </div>
-          <div className="grid grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]">
+      <div className="mb-4 grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
+        <TableCard className="max-h-none overflow-hidden">
+          <SectionHeading title="Recent transactions" meta={`${data.transactions.length} total`} />
+          <div className="grid grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]">
             <span>Date</span>
             <span>Order</span>
             <span className="max-[900px]:hidden">Cashier</span>
@@ -436,20 +418,42 @@ function ManagerBranchDashboard() {
           )}
         </TableCard>
 
-        <TableCard className="max-h-none">
-          <div className="flex items-center justify-between px-4 py-3">
-            <h2 className="m-0 text-base">Day ends</h2>
-            <span className="text-[11px] text-brand-subtle">{(data.dayEnds || []).length} recorded</span>
-          </div>
+        <TableCard className="max-h-none overflow-hidden">
+          <SectionHeading title="Day ends" meta={`${(data.dayEnds || []).length} recorded`} />
+          {submittedToday && (
+            <div className="mx-4 my-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-3 py-2.5 text-xs text-brand-warn">
+              <span>
+                Business day {todayKey} submitted — awaiting approval. POS sales locked until approved.
+              </span>
+              {canApprove && (
+                <PrimaryButton
+                  compact
+                  type="button"
+                  disabled={approving === todayEntry.id}
+                  onClick={() => handleApprove(todayEntry)}
+                >
+                  {approving === todayEntry.id ? 'Approving…' : 'Approve & close'}
+                </PrimaryButton>
+              )}
+            </div>
+          )}
           {closedToday && (
-            <div className="mx-4 mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-3 py-2.5 text-xs text-brand-warn">
+            <div className="mx-4 my-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-3 py-2.5 text-xs text-brand-warn">
               <span>Business day {todayKey} is closed — POS sales locked for this branch.</span>
-              <PrimaryButton compact type="button" disabled={reopening === closedToday.id} onClick={() => handleReopen(closedToday)}>
-                {reopening === closedToday.id ? 'Reopening…' : 'Reopen till'}
+              <PrimaryButton
+                compact
+                type="button"
+                disabled={reopening === todayEntry.id}
+                onClick={() => {
+                  setReopenTarget(todayEntry)
+                  setReopenReason('')
+                }}
+              >
+                Reopen till
               </PrimaryButton>
             </div>
           )}
-          <div className="grid grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem]">
+          <div className="grid grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem]">
             <span>Date</span>
             <span className="text-right max-[900px]:hidden">Expected</span>
             <span className="text-right max-[900px]:hidden">Counted</span>
@@ -488,14 +492,26 @@ function ManagerBranchDashboard() {
                 {entry.note || '—'}
               </span>
               <span className="text-right">
-                {entry.status === 'closed' ? (
+                {entry.status === 'submitted' && canApprove ? (
+                  <button
+                    type="button"
+                    className="border-0 bg-transparent text-[11px] font-bold whitespace-nowrap text-brand-ink underline disabled:opacity-40"
+                    disabled={approving === entry.id}
+                    onClick={() => handleApprove(entry)}
+                  >
+                    {approving === entry.id ? '…' : 'Approve'}
+                  </button>
+                ) : entry.status === 'closed' ? (
                   <button
                     type="button"
                     className="border-0 bg-transparent text-[11px] font-bold whitespace-nowrap text-brand-ink underline disabled:opacity-40"
                     disabled={reopening === entry.id}
-                    onClick={() => handleReopen(entry)}
+                    onClick={() => {
+                      setReopenTarget(entry)
+                      setReopenReason('')
+                    }}
                   >
-                    {reopening === entry.id ? '…' : 'Reopen'}
+                    Reopen
                   </button>
                 ) : (
                   <span className="text-brand-subtle">—</span>
@@ -509,30 +525,60 @@ function ManagerBranchDashboard() {
         </TableCard>
       </div>
 
-      <TableCard className="mb-4 max-h-none">
-        <div className="flex items-center justify-between px-4 py-3">
-          <div>
-            <h2 className="m-0 text-base">Cash accountability timeline</h2>
-            <p className="m-0 mt-0.5 text-[11px] text-brand-subtle">
-              Change fund, cash pickup, and petty cash entries for business day {todayKey}
-            </p>
+      {isRestaurant && plateMix.byCategory.length > 0 && (
+        <TableCard className="mb-4 max-h-none overflow-hidden">
+          <SectionHeading
+            title="Plate mix today"
+            subtitle="Sales by menu category (meat, veggie, pancit, etc.)"
+          />
+          <div className="grid grid-cols-[1.4fr_1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase">
+            <span>Category</span>
+            <span className="text-right">Sales</span>
           </div>
-        </div>
-        <div className="grid grid-cols-3 gap-2 bg-[#f7f7f4] px-4 py-3 text-xs max-[700px]:grid-cols-1">
+          {plateMix.byCategory.map((row) => (
+            <div key={row.category} className="grid grid-cols-[1.4fr_1fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs">
+              <strong className="text-brand-ink">{row.category}</strong>
+              <span className="text-right tabular-nums text-brand-gold">{money(row.value)}</span>
+            </div>
+          ))}
+          {plateMix.byCombo.length > 0 && (
+            <div className="border-t border-brand-softline px-4 py-3">
+              <p className="m-0 mb-2 text-[11px] font-bold text-brand-subtle">2-ulam combos (count)</p>
+              <div className="flex flex-wrap gap-2">
+                {plateMix.byCombo.map((row) => (
+                  <span
+                    key={row.label}
+                    className="rounded border border-brand-border bg-white px-2 py-1 text-[11px] text-brand-ink"
+                  >
+                    {row.label}: <strong>{row.count}</strong>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </TableCard>
+      )}
+
+      <TableCard className="mb-4 max-h-none overflow-hidden">
+        <SectionHeading
+          title="Cash accountability timeline"
+          subtitle={`Change fund, cash pickup, and petty cash · ${todayKey}`}
+        />
+        <div className="grid grid-cols-3 gap-2 border-b border-brand-line bg-white px-4 py-3 text-xs max-[700px]:grid-cols-1">
           <div>
-            <span className="block text-[10px] uppercase tracking-[1px] text-[#989e99]">Change fund</span>
+            <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Change fund</span>
             <strong className="text-brand-ink">{money(cashStats.changeFund)}</strong>
           </div>
           <div>
-            <span className="block text-[10px] uppercase tracking-[1px] text-[#989e99]">Cash pickups</span>
+            <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Cash pickups</span>
             <strong className="text-brand-ink">{money(cashStats.pickup)}</strong>
           </div>
           <div>
-            <span className="block text-[10px] uppercase tracking-[1px] text-[#989e99]">Paid-out</span>
+            <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Paid-out</span>
             <strong className="text-brand-ink">{money(cashStats.paidOut)}</strong>
           </div>
         </div>
-        <div className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr] gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]">
+        <div className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]">
           <span>Time</span>
           <span>Type</span>
           <span className="text-right">Amount</span>
@@ -564,15 +610,25 @@ function ManagerBranchDashboard() {
         )}
       </TableCard>
 
-      <TableCard className="max-h-none">
-        <div className="flex items-center justify-between px-4 py-3">
-          <h2 className="m-0 text-base">{isRestaurant ? "Today's menu / potahe" : 'Inventory'}</h2>
-          <span className="text-[11px] text-brand-subtle">
-            {data.products.length} {isRestaurant ? 'items' : 'SKUs'}
-          </span>
-        </div>
+      {restockEntry && (
+        <DayEndReportPanels
+          report={restockEntry.dayReport}
+          title="Sold"
+          showRestock
+          compact
+          alert
+          fromDate={restockEntry.date}
+          inventoryHref={null}
+        />
+      )}
+
+      <TableCard className="max-h-none overflow-hidden">
+        <SectionHeading
+          title={isRestaurant ? "Today's menu / potahe" : 'Inventory'}
+          meta={`${data.products.length} ${isRestaurant ? 'items' : 'SKUs'}`}
+        />
         <div
-          className={`grid gap-2 bg-[#f7f7f4] px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase ${
+          className={`grid gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase ${
             isRestaurant ? 'grid-cols-[2.5rem_1.6fr_1fr_0.7fr_0.7fr]' : 'grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr]'
           }`}
         >
@@ -709,13 +765,11 @@ function ManagerBranchDashboard() {
         </div>
       )}
 
-      <TableCard className="mb-4 max-h-none">
-        <div className="px-4 py-3">
-          <h2 className="m-0 text-base">Branch devices</h2>
-          <p className="m-0 mt-0.5 text-[11px] text-brand-subtle">
-            Manager switches control whether each device is enabled for this branch.
-          </p>
-        </div>
+      <TableCard className="mb-4 max-h-none overflow-hidden">
+        <SectionHeading
+          title="Branch devices"
+          subtitle="Manager switches control whether each device is enabled for this branch."
+        />
         <div className="grid grid-cols-3 gap-0 border-t border-brand-softline max-[700px]:grid-cols-1">
           {BRANCH_DEVICES.map((device) => {
             const telemetryRow = (telemetry.devices || []).find((row) => row.key === device.key)
@@ -873,6 +927,34 @@ function ManagerBranchDashboard() {
             <p className="mt-4 text-[11px] text-brand-subtle">View only — edit stock or prices from cashier / Data tools.</p>
           </aside>
         </div>
+      )}
+      {reopenTarget && (
+        <Modal wide onClose={() => setReopenTarget(null)}>
+          <Eyebrow>REOPEN TILL</Eyebrow>
+          <h2 className="mb-3 text-[22px] max-[700px]:text-lg">Reopen {reopenTarget.date}?</h2>
+          <p className="mb-3 text-xs text-brand-muted">
+            POS sales will unlock for this business day. A reason is required and will be logged.
+          </p>
+          <Field
+            label="Why reopen?"
+            value={reopenReason}
+            onChange={(e) => setReopenReason(e.target.value.replace(/[<>]/g, ''))}
+            placeholder="e.g. missed transaction, count correction"
+          />
+          <ModalActions>
+            <SecondaryButton compact type="button" onClick={() => setReopenTarget(null)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton
+              compact
+              type="button"
+              disabled={!reopenReason.trim() || reopening === reopenTarget.id}
+              onClick={handleReopen}
+            >
+              {reopening === reopenTarget.id ? 'Reopening…' : 'Reopen till'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
       )}
     </div>
   )

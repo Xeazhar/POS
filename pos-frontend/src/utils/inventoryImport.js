@@ -7,23 +7,106 @@ export async function sha256Hex(buffer) {
     .join('')
 }
 
+/** Lowercase / trim sheet headers so Name/SKU/etc. still match. */
+export function normalizeSheetRows(rawRows) {
+  return (rawRows || []).map((row) => {
+    const next = {}
+    Object.entries(row || {}).forEach(([key, value]) => {
+      const k = String(key || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, '')
+      if (!k) return
+      // map common aliases
+      if (k === 'regularprice') next.price = value
+      else if (k === 'pricingmode' || k === 'mode') next.pricingMode = value
+      else if (k === 'menukind') next.menuKind = value
+      else if (k === 'budgetprice') next.budgetPrice = value
+      else if (k === 'lowstockat' || k === 'lowstock') next.lowStockAt = value
+      else if (k === 'availabletoday') next.availableToday = value
+      else if (
+        k === 'discounteligible' ||
+        k === 'discountable' ||
+        k === 'discount' ||
+        k === 'pwddiscount' ||
+        k === 'seniordiscount'
+      ) {
+        next.discountEligible = value
+      }
+      else next[k] = value
+    })
+    return next
+  })
+}
+
+/**
+ * Reject files that don't include required columns.
+ * @returns {{ ok: true } | { ok: false, message: string }}
+ */
+export function validateImportHeaders(rawRows, { restaurant = false, mode = 'inventory' } = {}) {
+  if (!Array.isArray(rawRows) || rawRows.length === 0) {
+    return {
+      ok: false,
+      message: 'This file has no data rows. Check the import guide for the required format.',
+    }
+  }
+  const sample = normalizeSheetRows([rawRows[0]])[0] || {}
+  const keys = new Set(Object.keys(sample))
+  const required =
+    mode === 'catalog'
+      ? restaurant
+        ? ['name', 'sku', 'price', 'category', 'discountEligible']
+        : ['name', 'sku', 'barcode', 'price', 'category', 'pricingMode', 'discountEligible']
+      : restaurant
+        ? ['name', 'sku', 'price', 'category', 'discountEligible']
+        : ['name', 'sku', 'barcode', 'price', 'stock', 'category', 'pricingMode', 'discountEligible']
+
+  const missing = required.filter((col) => !keys.has(col))
+  if (missing.length) {
+    const stockHint =
+      mode === 'catalog'
+        ? ' Network catalog does not use stock — set stock later on branch Inventory.'
+        : ''
+    return {
+      ok: false,
+      message: `This file does not follow the required format. Missing column(s): ${missing.join(
+        ', ',
+      )}.${stockHint} See the import guide.`,
+    }
+  }
+  return { ok: true }
+}
+
+function parseBoolFlag(value, { defaultValue = false } = {}) {
+  if (value === undefined || value === null || String(value).trim() === '') return defaultValue
+  const v = String(value).trim().toLowerCase()
+  if (['1', 'true', 'yes', 'y', 'eligible'].includes(v)) return true
+  if (['0', 'false', 'no', 'n'].includes(v)) return false
+  return null
+}
+
 export function normalizeImportRow(raw, { restaurant = false } = {}) {
   const name = String(raw.name || '').trim().replace(/[<>]/g, '')
   const sku = String(raw.sku || '').trim().replace(/[<>]/g, '')
   const barcode = String(raw.barcode || '').replace(/\D/g, '')
-  const rawCategory = String(
-    raw.category || (restaurant ? 'Meat' : 'Groceries'),
-  ).trim() || (restaurant ? 'Meat' : 'Groceries')
+  const categoryRaw = String(raw.category || '').trim()
   const menuKind = restaurant
-    ? normalizeMenuKind(raw.menuKind || raw.menu_kind, rawCategory)
+    ? normalizeMenuKind(raw.menuKind || raw.menu_kind, categoryRaw || 'Meat')
     : null
-  const category = restaurant ? categoryForMenuKind(menuKind, rawCategory) : rawCategory
-  const pricingMode =
-    restaurant
-      ? 'pc'
-      : raw.pricingMode === 'kg' || raw.pricingMode === 'per_kg'
-        ? 'kg'
-        : 'pc'
+  const category = restaurant
+    ? categoryForMenuKind(menuKind, categoryRaw || 'Meat')
+    : categoryRaw
+  const modeRaw = String(raw.pricingMode || raw.pricing_mode || '')
+    .trim()
+    .toLowerCase()
+  let pricingMode = null
+  if (restaurant) {
+    pricingMode = 'pc'
+  } else if (modeRaw === 'kg' || modeRaw === 'per_kg') {
+    pricingMode = 'kg'
+  } else if (modeRaw === 'pc' || modeRaw === 'per_unit' || modeRaw === 'unit') {
+    pricingMode = 'pc'
+  }
   const price = Number(raw.price ?? raw.regular_price ?? raw.regularPrice ?? 0)
   const budgetRaw = raw.budgetPrice ?? raw.budget_price
   const budgetPrice =
@@ -38,6 +121,9 @@ export function normalizeImportRow(raw, { restaurant = false } = {}) {
     String(raw.availableToday || raw.available_today || 'true').toLowerCase() === 'false'
       ? false
       : true
+  const discountEligible = parseBoolFlag(raw.discountEligible ?? raw.discountable ?? raw.discount, {
+    defaultValue: false,
+  })
   return {
     name,
     sku,
@@ -50,7 +136,23 @@ export function normalizeImportRow(raw, { restaurant = false } = {}) {
     stock,
     lowStockAt,
     availableToday,
+    discountEligible,
   }
+}
+
+function validateRetailImportFields(values, { restaurant = false } = {}) {
+  if (!values.category) {
+    return 'Missing category'
+  }
+  if (!restaurant) {
+    if (!values.pricingMode) {
+      return 'pricingMode must be pc or kg'
+    }
+  }
+  if (values.discountEligible == null) {
+    return 'discountEligible must be true or false'
+  }
+  return null
 }
 
 export function buildImportPreview(rawRows, existingProducts, { restaurant = false } = {}) {
@@ -66,7 +168,12 @@ export function buildImportPreview(rawRows, existingProducts, { restaurant = fal
       return
     }
     if (!restaurant && !values.barcode) {
-      skipped.push({ index, reason: 'Missing name, SKU, or barcode', values })
+      skipped.push({ index, reason: 'Missing barcode', values })
+      return
+    }
+    const fieldErr = validateRetailImportFields(values, { restaurant })
+    if (fieldErr) {
+      skipped.push({ index, reason: fieldErr, values })
       return
     }
     if (Number.isNaN(values.price) || values.price < 0) {
@@ -82,7 +189,7 @@ export function buildImportPreview(rawRows, existingProducts, { restaurant = fal
       return
     }
     if (!restaurant && Number.isNaN(values.stock)) {
-      skipped.push({ index, reason: 'Invalid price or stock', values })
+      skipped.push({ index, reason: 'Invalid stock', values })
       return
     }
 
@@ -135,5 +242,90 @@ export function buildImportPreview(rawRows, existingProducts, { restaurant = fal
     updateCount: updates.length,
     skippedCount: skipped.length,
     lines: [...creates, ...updates],
+  }
+}
+
+/**
+ * Manager network-catalog import.
+ * Creates new catalog rows; skips only when SKU (or barcode) already exists in catalog,
+ * or the row is invalid / duplicate in the file.
+ */
+export function buildCatalogImportPreview(rawRows, existingCatalog, { restaurant = false } = {}) {
+  const seen = new Set()
+  const creates = []
+  const skipped = []
+
+  rawRows.forEach((raw, index) => {
+    const values = normalizeImportRow(raw, { restaurant })
+    // Network catalog never stores on-hand stock (branch Inventory does)
+    values.stock = 0
+    delete values.quantityAdded
+
+    if (!values.name || !values.sku) {
+      skipped.push({ index, reason: 'Missing name or SKU', values, action: 'skip' })
+      return
+    }
+    if (!restaurant && !values.barcode) {
+      skipped.push({ index, reason: 'Missing barcode', values, action: 'skip' })
+      return
+    }
+    const fieldErr = validateRetailImportFields(values, { restaurant })
+    if (fieldErr) {
+      skipped.push({ index, reason: fieldErr, values, action: 'skip' })
+      return
+    }
+    if (Number.isNaN(values.price) || values.price < 0) {
+      skipped.push({ index, reason: 'Invalid price', values, action: 'skip' })
+      return
+    }
+    if (
+      restaurant &&
+      values.budgetPrice != null &&
+      (Number.isNaN(values.budgetPrice) || values.budgetPrice < 0)
+    ) {
+      skipped.push({ index, reason: 'Invalid budget price', values, action: 'skip' })
+      return
+    }
+
+    const key = values.sku.toLowerCase()
+    if (seen.has(key)) {
+      skipped.push({ index, reason: 'Duplicate SKU in file', values, action: 'skip' })
+      return
+    }
+    seen.add(key)
+
+    const existing = existingCatalog.find(
+      (item) =>
+        String(item.sku || '').toLowerCase() === key ||
+        (values.barcode && String(item.barcode || '') === values.barcode),
+    )
+    if (existing) {
+      skipped.push({
+        index,
+        reason: 'Already in network catalog',
+        values,
+        action: 'skip',
+        existing,
+      })
+      return
+    }
+
+    creates.push({
+      index,
+      action: 'create',
+      values,
+    })
+  })
+
+  return {
+    creates,
+    updates: [],
+    skipped,
+    rowCount: rawRows.length,
+    createCount: creates.length,
+    updateCount: 0,
+    skippedCount: skipped.length,
+    lines: creates,
+    restaurant,
   }
 }

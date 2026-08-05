@@ -12,21 +12,23 @@ const toDbPricing = (mode) => (mode === 'kg' ? 'per_kg' : 'per_unit')
 
 export function mapDayEndRow(row) {
   if (!row) return null
+  const fmtTime = (value) =>
+    value ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
   return {
     id: row.id,
     date: row.business_date,
     recordedCash: Number(row.recorded_cash),
     cashOnHand: Number(row.cash_on_hand),
     variance: Number(row.variance),
+    expectedCash: Number(row.expected_cash ?? 0),
     note: row.note || '',
     status: row.status || 'closed',
     cashier: row.staff?.full_name || '',
-    closedAt: row.closed_at
-      ? new Date(row.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : '',
-    reopenedAt: row.reopened_at
-      ? new Date(row.reopened_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : null,
+    closedAt: fmtTime(row.closed_at),
+    submittedAt: fmtTime(row.submitted_at),
+    approvedAt: fmtTime(row.approved_at),
+    reopenedAt: row.reopened_at ? fmtTime(row.reopened_at) : null,
+    reopenReason: row.reopen_reason || '',
     dayReport: mapDayReport(row.day_report),
     branchId: row.branch_id || null,
   }
@@ -263,11 +265,171 @@ export async function verifySupervisorPin(branchId, loginCode, pin) {
     p_pin: String(pin || '').trim(),
   })
   if (error) throw error
-  return data
+  // Hardened RPC returns table rows; older builds returned a bare uuid string.
+  if (typeof data === 'string') return { staff_id: data, full_name: null }
+  const row = Array.isArray(data) ? data[0] : data
+  if (!row) return null
+  return {
+    staff_id: row.staff_id || row.id || null,
+    full_name: row.full_name || row.name || null,
+  }
 }
 
 export async function signOut() {
   await supabase.auth.signOut()
+}
+
+export async function claimStaffSession(staffId, sessionId) {
+  const { error } = await supabase.rpc('claim_staff_session', {
+    p_staff_id: staffId,
+    p_session_id: sessionId,
+  })
+  if (error) throw error
+  return true
+}
+
+export async function heartbeatStaffSession(staffId, sessionId) {
+  const { error } = await supabase.rpc('heartbeat_staff_session', {
+    p_staff_id: staffId,
+    p_session_id: sessionId,
+  })
+  if (error) throw error
+  return true
+}
+
+export async function releaseStaffSession(staffId, sessionId) {
+  if (!staffId || !sessionId) return true
+  const { error } = await supabase.rpc('release_staff_session', {
+    p_staff_id: staffId,
+    p_session_id: sessionId,
+  })
+  if (error) console.warn('release_staff_session:', error.message)
+  return true
+}
+
+const MANAGER_UNLOCK_SESSION_KEY = 'cale-manager-unlock-v1'
+
+async function sha256Text(text) {
+  const data = new TextEncoder().encode(String(text))
+  const hash = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+/**
+ * Remember password verifier for lock-screen unlock.
+ * Session stays signed in — we only compare a local hash (no Auth / no CAPTCHA).
+ */
+export async function setManagerUnlockSecret(staffId, password) {
+  if (!staffId || password == null || password === '') return
+  const digest = await sha256Text(`${staffId}:${password}`)
+  try {
+    sessionStorage.setItem(MANAGER_UNLOCK_SESSION_KEY, JSON.stringify({ staffId, digest }))
+  } catch {
+    /* ignore */
+  }
+  try {
+    const { saveUnlockSecret } = await import('../offline/session')
+    await saveUnlockSecret(staffId, digest)
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function clearManagerUnlockSecret() {
+  try {
+    sessionStorage.removeItem(MANAGER_UNLOCK_SESSION_KEY)
+  } catch {
+    /* ignore */
+  }
+  try {
+    const { clearUnlockSecret } = await import('../offline/session')
+    await clearUnlockSecret()
+  } catch {
+    /* ignore */
+  }
+}
+
+async function readUnlockDigest(staffId) {
+  try {
+    const raw = sessionStorage.getItem(MANAGER_UNLOCK_SESSION_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed?.staffId === staffId && parsed?.digest) return parsed.digest
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const { loadUnlockSecret } = await import('../offline/session')
+    const row = await loadUnlockSecret(staffId)
+    if (row?.digest) {
+      try {
+        sessionStorage.setItem(
+          MANAGER_UNLOCK_SESSION_KEY,
+          JSON.stringify({ staffId, digest: row.digest }),
+        )
+      } catch {
+        /* ignore */
+      }
+      return row.digest
+    }
+  } catch {
+    /* ignore */
+  }
+  return null
+}
+
+/** Lock-screen unlock for managers — local hash only (session stays open). */
+export async function verifyAccountPassword(_email, password, { staffId = null } = {}) {
+  const pwd = String(password || '')
+  if (!pwd) throw new Error('Enter your password')
+  if (!staffId) throw new Error('No staff session to unlock')
+
+  const expected = await readUnlockDigest(staffId)
+  if (!expected) {
+    throw new Error('Unlock not available for this session. Sign out and sign in again.')
+  }
+
+  const attempt = await sha256Text(`${staffId}:${pwd}`)
+  if (attempt !== expected) throw new Error('Incorrect password')
+  return true
+}
+
+export async function verifyOwnPin(staffId, pin) {
+  const { error } = await supabase.rpc('verify_own_pin', {
+    p_staff_id: staffId,
+    p_pin: String(pin || '').trim(),
+  })
+  if (error) throw error
+  return true
+}
+
+/** Persist device session id across reloads of the same browser tab. */
+export function getOrCreateDeviceSessionId() {
+  const key = 'cale-pos-device-session'
+  try {
+    let id = sessionStorage.getItem(key)
+    if (!id) {
+      id =
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `sess_${Date.now()}_${Math.random().toString(36).slice(2)}`
+      sessionStorage.setItem(key, id)
+    }
+    return id
+  } catch {
+    return `sess_${Date.now()}`
+  }
+}
+
+export function clearDeviceSessionId() {
+  try {
+    sessionStorage.removeItem('cale-pos-device-session')
+  } catch {
+    /* ignore */
+  }
 }
 
 export async function bootstrapBranchData(branchId) {
@@ -335,6 +497,149 @@ export async function bootstrapBranchData(branchId) {
   }
 }
 
+export async function fetchCatalogProducts({ branchType = null } = {}) {
+  let q = supabase
+    .from('catalog_products')
+    .select('*, categories(name)')
+    .eq('is_active', true)
+    .order('name')
+  if (branchType === 'retail' || branchType === 'restaurant') {
+    q = q.eq('branch_type', branchType)
+  }
+  const { data, error } = await q
+  if (error) {
+    // Fallback if branch_type column missing
+    if (String(error.message || '').includes('branch_type')) {
+      const fallback = await supabase
+        .from('catalog_products')
+        .select('*, categories(name)')
+        .eq('is_active', true)
+        .order('name')
+      if (fallback.error) throw error
+      let rows = fallback.data || []
+      if (branchType === 'restaurant') {
+        rows = rows.filter((r) => r.menu_kind != null)
+      } else if (branchType === 'retail') {
+        rows = rows.filter((r) => r.menu_kind == null)
+      }
+      return rows.map(mapCatalogRow)
+    }
+    throw error
+  }
+  return (data || []).map(mapCatalogRow)
+}
+
+function mapCatalogRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    sku: row.sku,
+    barcode: row.barcode || '',
+    category: row.categories?.name || '',
+    categoryId: row.category_id,
+    pricingMode: mapPricing(row.pricing_mode),
+    price: Number(row.price),
+    budgetPrice: row.budget_price != null ? Number(row.budget_price) : null,
+    menuKind: row.menu_kind || null,
+    discountEligible: row.discount_eligible === true,
+    lowStockAt: Number(row.low_stock_threshold ?? 10),
+    branchType: row.branch_type || (row.menu_kind ? 'restaurant' : 'retail'),
+  }
+}
+
+export async function createCatalogProduct(values) {
+  const { data: cat } = await supabase.from('categories').select('id').eq('name', values.category).maybeSingle()
+  let categoryId = cat?.id
+  if (!categoryId && values.category) {
+    const { data: created } = await supabase.from('categories').insert({ name: values.category }).select('id').single()
+    categoryId = created?.id
+  }
+  const { data, error } = await supabase
+    .from('catalog_products')
+    .insert({
+      name: values.name,
+      sku: values.sku,
+      barcode: values.barcode || null,
+      category_id: categoryId || null,
+      pricing_mode: toDbPricing(values.pricingMode || 'pc'),
+      price: Number(values.price),
+      budget_price:
+        values.budgetPrice != null && values.budgetPrice !== '' ? Number(values.budgetPrice) : null,
+      menu_kind: values.menuKind || null,
+      discount_eligible: values.discountEligible === true,
+      low_stock_threshold: values.lowStockAt || 10,
+      is_active: true,
+      branch_type: values.branchType === 'restaurant' || values.menuKind ? 'restaurant' : 'retail',
+    })
+    .select('*, categories(name)')
+    .single()
+  if (error) throw error
+  return data
+}
+
+/** Bulk-create network catalog rows (manager import). Skips are already filtered client-side. */
+export async function commitCatalogImport({
+  preview,
+  branchType = 'retail',
+  onProgress,
+}) {
+  const lines = preview?.lines || []
+  const total = lines.length || 1
+  let created = 0
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    const values = line.values || {}
+    await createCatalogProduct({
+      ...values,
+      branchType: preview?.restaurant || branchType === 'restaurant' ? 'restaurant' : 'retail',
+      menuKind: values.menuKind || null,
+      discountEligible: values.discountEligible === true,
+      lowStockAt: values.lowStockAt || 10,
+    })
+    created += 1
+    onProgress?.(i + 1, total)
+  }
+  return { created }
+}
+
+export async function updateCatalogProduct(id, values) {
+  const payload = {
+    name: values.name,
+    sku: values.sku,
+    barcode: values.barcode || null,
+    pricing_mode: toDbPricing(values.pricingMode || 'pc'),
+    price: Number(values.price),
+    budget_price:
+      values.budgetPrice != null && values.budgetPrice !== '' ? Number(values.budgetPrice) : null,
+    menu_kind: values.menuKind || null,
+    discount_eligible: values.discountEligible === true,
+    updated_at: new Date().toISOString(),
+  }
+  if (values.category) {
+    const { data: cat } = await supabase.from('categories').select('id').eq('name', values.category).maybeSingle()
+    payload.category_id = cat?.id || null
+  }
+  const { data, error } = await supabase
+    .from('catalog_products')
+    .update(payload)
+    .eq('id', id)
+    .select('*')
+    .single()
+  if (error) throw error
+  return data
+}
+
+/** Supervisor: add catalog items to this branch's sellable products + inventory. */
+export async function adoptCatalogProducts({ branchId, catalogIds, staffId }) {
+  const { data, error } = await supabase.rpc('adopt_catalog_products', {
+    p_branch_id: branchId,
+    p_catalog_ids: catalogIds,
+    p_staff_id: staffId || null,
+  })
+  if (error) throw error
+  return Number(data || 0)
+}
+
 export async function createProduct({ branchId, staffId, values, branchType = 'retail' }) {
   const isRestaurant = branchType === 'restaurant'
   const { data: cat } = await supabase.from('categories').select('id').eq('name', values.category).maybeSingle()
@@ -365,6 +670,43 @@ export async function createProduct({ branchId, staffId, values, branchType = 'r
     unit_cost: values.unitCost != null && values.unitCost !== '' ? Number(values.unitCost) : 0,
     discount_eligible: values.discountEligible === true,
   })
+
+  // Mirror into network catalog (managers creating products)
+  try {
+    const { data: existingCat } = await supabase
+      .from('catalog_products')
+      .select('id')
+      .eq('sku', values.sku)
+      .maybeSingle()
+    let catalogId = existingCat?.id
+    if (!catalogId) {
+      const { data: createdCat } = await supabase
+        .from('catalog_products')
+        .insert({
+          name: values.name,
+          sku: values.sku,
+          barcode: values.barcode || null,
+          category_id: categoryId || null,
+          pricing_mode: toDbPricing(values.pricingMode || 'pc'),
+          price: values.price,
+          budget_price:
+            values.budgetPrice != null && values.budgetPrice !== ''
+              ? Number(values.budgetPrice)
+              : null,
+          menu_kind: isRestaurant ? normalizeMenuKind(values.menuKind, values.category) : null,
+          discount_eligible: values.discountEligible === true,
+          low_stock_threshold: values.lowStockAt || 5,
+        })
+        .select('id')
+        .single()
+      catalogId = createdCat?.id
+    }
+    if (catalogId) {
+      await supabase.from('products').update({ catalog_product_id: catalogId }).eq('id', product.id)
+    }
+  } catch (err) {
+    console.warn('catalog_products sync skipped:', err?.message || err)
+  }
 
   if (!isRestaurant) {
     await supabase.from('branch_inventory').upsert({
@@ -536,6 +878,22 @@ export async function setInventoryStock({ branchId, productId, staffId, stock, p
   return mapMovement({ ...data, products: { name: productName } })
 }
 
+function isDuplicateClientIdError(error) {
+  const msg = String(error?.message || error || '')
+  return error?.code === '23505' && msg.includes('uq_transactions_branch_client')
+}
+
+async function loadTransactionByClientId(branchId, clientId) {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('*')
+    .eq('branch_id', branchId)
+    .eq('client_id', clientId)
+    .maybeSingle()
+  if (error) throw error
+  return data
+}
+
 export async function adjustStock({ branchId, productId, staffId, action, amount, productName }) {
   const type = action.toLowerCase()
   const quantityIn = type === 'restock' ? amount : 0
@@ -643,7 +1001,17 @@ export async function completeSale({
     delete fallback.discount_id_note
     ;({ data: txn, error } = await supabase.from('transactions').insert(fallback).select('*').single())
   }
+  if (error && clientId && isDuplicateClientIdError(error)) {
+    txn = await loadTransactionByClientId(branchId, clientId)
+    error = txn ? null : error
+  }
   if (error) throw error
+
+  const { count: existingLineCount, error: countError } = await supabase
+    .from('transaction_items')
+    .select('*', { count: 'exact', head: true })
+    .eq('transaction_id', txn.id)
+  if (countError) throw countError
 
   const lines = items.map((item) => {
     const unit = Number(item.unitPrice ?? item.price)
@@ -662,35 +1030,38 @@ export async function completeSale({
     }
     return row
   })
-  let { error: itemsError } = await supabase.from('transaction_items').insert(lines)
-  if (itemsError && isMissingColumnError(itemsError, 'price_tier')) {
-    ;({ error: itemsError } = await supabase
-      .from('transaction_items')
-      .insert(lines.map(({ price_tier, ...rest }) => rest)))
-  }
-  if (itemsError) throw itemsError
 
-  // Restaurant / carinderia: no inventory deduction — menu sales only
-  if (!isRestaurant) {
-    await Promise.all(
-      items.map((item) => {
-        const sold = item.pricingMode === 'kg' ? item.weight : item.quantity
-        return supabase
-          .rpc('record_stock_movement', {
-            p_branch_id: branchId,
-            p_product_id: item.id,
-            p_staff_id: staffId,
-            p_movement_type: 'sale',
-            p_quantity_in: 0,
-            p_quantity_out: sold,
-            p_reference: txn.id,
-            p_detail: item.name,
-          })
-          .then(({ error: moveError }) => {
-            if (moveError) throw moveError
-          })
-      }),
-    )
+  if (!existingLineCount) {
+    let { error: itemsError } = await supabase.from('transaction_items').insert(lines)
+    if (itemsError && isMissingColumnError(itemsError, 'price_tier')) {
+      ;({ error: itemsError } = await supabase
+        .from('transaction_items')
+        .insert(lines.map(({ price_tier, ...rest }) => rest)))
+    }
+    if (itemsError) throw itemsError
+
+    // Restaurant / carinderia: no inventory deduction — menu sales only
+    if (!isRestaurant) {
+      await Promise.all(
+        items.map((item) => {
+          const sold = item.pricingMode === 'kg' ? item.weight : item.quantity
+          return supabase
+            .rpc('record_stock_movement', {
+              p_branch_id: branchId,
+              p_product_id: item.id,
+              p_staff_id: staffId,
+              p_movement_type: 'sale',
+              p_quantity_in: 0,
+              p_quantity_out: sold,
+              p_reference: txn.id,
+              p_detail: item.name,
+            })
+            .then(({ error: moveError }) => {
+              if (moveError) throw moveError
+            })
+        }),
+      )
+    }
   }
 
   // Non-blocking audit trail
@@ -859,53 +1230,42 @@ export async function fetchRefundedQuantities(transactionId) {
   return summary.qtyByItem
 }
 
-export async function closeDayEnd({ branchId, staffId, entry }) {
-  const payload = {
-    branch_id: branchId,
-    staff_id: staffId,
-    business_date: entry.date,
-    recorded_cash: entry.recordedCash,
-    cash_on_hand: entry.cashOnHand,
-    variance: entry.variance,
-    note: entry.note,
-    status: 'closed',
-    closed_at: new Date().toISOString(),
-    reopened_at: null,
-    reopened_by: null,
-  }
-  if (entry.dayReport != null) {
-    payload.day_report = entry.dayReport
-  }
-
-  const run = async (body) => {
-    if (entry.id) {
-      return supabase
-        .from('day_ends')
-        .update(body)
-        .eq('id', entry.id)
-        .select('*, staff!staff_id(full_name)')
-        .single()
-    }
-    return supabase.from('day_ends').insert(body).select('*, staff!staff_id(full_name)').single()
-  }
-
-  let { data, error } = await run(payload)
-  if (error && payload.day_report && isMissingColumnError(error, 'day_report')) {
-    const fallback = { ...payload }
-    delete fallback.day_report
-    ;({ data, error } = await run(fallback))
-    if (!error) {
-      console.warn('day_report column missing — run migrate_day_end_report.sql')
-    }
-  }
+export async function submitDayEnd({ branchId, staffId, entry }) {
+  const { data, error } = await supabase.rpc('submit_day_end', {
+    p_branch_id: branchId,
+    p_staff_id: staffId,
+    p_business_date: entry.date,
+    p_recorded_cash: entry.recordedCash,
+    p_cash_on_hand: entry.cashOnHand,
+    p_variance: entry.variance,
+    p_expected_cash: entry.expectedCash ?? 0,
+    p_note: entry.note || null,
+    p_day_report: entry.dayReport ?? null,
+    p_day_end_id: entry.id || null,
+  })
   if (error) throw error
   return data
 }
 
-export async function reopenDayEnd({ id, staffId }) {
+export async function approveDayEnd({ id, staffId }) {
+  const { data, error } = await supabase.rpc('approve_day_end', {
+    p_day_end_id: id,
+    p_staff_id: staffId,
+  })
+  if (error) throw error
+  return data
+}
+
+/** @deprecated use submitDayEnd — kept for offline queue compatibility */
+export async function closeDayEnd(payload) {
+  return submitDayEnd(payload)
+}
+
+export async function reopenDayEnd({ id, staffId, reason }) {
   const { data, error } = await supabase.rpc('reopen_day_end', {
     p_day_end_id: id,
     p_staff_id: staffId,
+    p_reason: reason,
   })
   if (error) throw error
   return data
@@ -1300,13 +1660,32 @@ export async function revealStaffPin(staffId) {
   return { loginCode: data.login_code, loginPin: data.login_pin, name: data.full_name, role: data.role }
 }
 
-export async function clockIn({ branchId, staffId }) {
-  const { data, error } = await supabase
-    .from('staff_shifts')
-    .insert({ branch_id: branchId, staff_id: staffId, clock_in: new Date().toISOString() })
-    .select('*')
-    .single()
-  if (error) throw error
+export async function clockIn({ branchId, staffId, shiftPeriod = null }) {
+  const period = shiftPeriod === 'am' || shiftPeriod === 'pm' ? shiftPeriod : null
+  const payload = {
+    branch_id: branchId,
+    staff_id: staffId,
+    clock_in: new Date().toISOString(),
+  }
+  if (period) payload.shift_period = period
+  const { data, error } = await supabase.from('staff_shifts').insert(payload).select('*').single()
+  if (error) {
+    // Older DBs without shift_period — retry without it
+    if (period && (isMissingColumnError(error, 'shift_period') || /shift_period/i.test(String(error.message || '')))) {
+      const fallback = await supabase
+        .from('staff_shifts')
+        .insert({
+          branch_id: branchId,
+          staff_id: staffId,
+          clock_in: new Date().toISOString(),
+        })
+        .select('*')
+        .single()
+      if (fallback.error) throw fallback.error
+      return fallback.data
+    }
+    throw error
+  }
   return data
 }
 
@@ -1341,19 +1720,26 @@ export async function fetchOpenShift(staffId) {
 
 /** Shift log for supervisors (one branch) or managers (all / filtered). */
 export async function fetchStaffShifts({ branchId = null, start = null, end = null, limit = 300 } = {}) {
-  let query = supabase
-    .from('staff_shifts')
-    .select(
-      'id, branch_id, staff_id, clock_in, clock_out, created_at, staff:staff_id(id, full_name, role), branches:branch_id(id, name)',
-    )
-    .order('clock_in', { ascending: false })
-    .limit(limit)
+  const run = async (includePeriod) => {
+    let query = supabase
+      .from('staff_shifts')
+      .select(
+        includePeriod
+          ? 'id, branch_id, staff_id, clock_in, clock_out, shift_period, created_at, staff:staff_id(id, full_name, role), branches:branch_id(id, name)'
+          : 'id, branch_id, staff_id, clock_in, clock_out, created_at, staff:staff_id(id, full_name, role), branches:branch_id(id, name)',
+      )
+      .order('clock_in', { ascending: false })
+      .limit(limit)
+    if (branchId) query = query.eq('branch_id', branchId)
+    if (start) query = query.gte('clock_in', `${start}T00:00:00`)
+    if (end) query = query.lte('clock_in', `${end}T23:59:59.999`)
+    return query
+  }
 
-  if (branchId) query = query.eq('branch_id', branchId)
-  if (start) query = query.gte('clock_in', `${start}T00:00:00`)
-  if (end) query = query.lte('clock_in', `${end}T23:59:59.999`)
-
-  const { data, error } = await query
+  let { data, error } = await run(true)
+  if (error && /shift_period/i.test(String(error.message || ''))) {
+    ;({ data, error } = await run(false))
+  }
   if (error) {
     if (isMissingColumnError(error, 'staff_shifts') || /staff_shifts|schema cache/i.test(String(error.message || ''))) {
       return []
@@ -1369,6 +1755,7 @@ export async function fetchStaffShifts({ branchId = null, start = null, end = nu
     staffRole: row.staff?.role || '',
     clockIn: row.clock_in,
     clockOut: row.clock_out,
+    shiftPeriod: row.shift_period === 'am' || row.shift_period === 'pm' ? row.shift_period : null,
     open: !row.clock_out,
   }))
 }
@@ -1513,12 +1900,26 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
   start.setHours(0, 0, 0, 0)
   start.setDate(start.getDate() - (days - 1))
   const startIso = start.toISOString()
-  const { data: txs, error } = await supabase
+  const primary = await supabase
     .from('transactions')
-    .select('total_amount, status, created_at, branch_id, branches(name)')
+    .select('total_amount, status, created_at, branch_id, payment_method, branches(name)')
     .eq('status', 'completed')
     .gte('created_at', startIso)
-  if (error) throw error
+
+  let txs
+  if (primary.error && /payment_method|schema cache/i.test(String(primary.error.message || ''))) {
+    const fallback = await supabase
+      .from('transactions')
+      .select('total_amount, status, created_at, branch_id, branches(name)')
+      .eq('status', 'completed')
+      .gte('created_at', startIso)
+    if (fallback.error) throw fallback.error
+    txs = fallback.data || []
+  } else if (primary.error) {
+    throw primary.error
+  } else {
+    txs = primary.data || []
+  }
 
   const localKey = (value) => {
     const d = new Date(value)
@@ -1531,6 +1932,7 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
 
   const byBucket = {}
   const byBranch = {}
+  const byPay = { cash: 0, card: 0, ewallet: 0 }
   if (period === 'year') {
     for (let i = 11; i >= 0; i -= 1) {
       const d = new Date()
@@ -1553,7 +1955,7 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
   }
 
   const todayKey = localKey(new Date())
-  ;(txs || []).forEach((row) => {
+  txs.forEach((row) => {
     const when = new Date(row.created_at)
     const dayKey = localKey(when)
     let bucketKey = dayKey
@@ -1562,9 +1964,15 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
       if (dayKey !== todayKey) return
       bucketKey = String(when.getHours()).padStart(2, '0')
     }
-    if (byBucket[bucketKey] != null) byBucket[bucketKey] += Number(row.total_amount)
+    const amount = Number(row.total_amount) || 0
+    if (byBucket[bucketKey] != null) byBucket[bucketKey] += amount
     const name = row.branches?.name || 'Branch'
-    byBranch[name] = (byBranch[name] || 0) + Number(row.total_amount)
+    byBranch[name] = (byBranch[name] || 0) + amount
+    const method = String(row.payment_method || 'cash').toLowerCase()
+    if (method === 'card') byPay.card += amount
+    else if (method === 'ewallet' || method === 'e-wallet' || method === 'gcash' || method === 'maya') {
+      byPay.ewallet += amount
+    } else byPay.cash += amount
   })
 
   return {
@@ -1587,6 +1995,11 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
       }
     }),
     branchBars: Object.entries(byBranch).map(([category, value]) => ({ category, value })),
+    paymentMix: [
+      { id: 'cash', label: 'Cash', value: byPay.cash },
+      { id: 'card', label: 'Card', value: byPay.card },
+      { id: 'ewallet', label: 'E-wallet', value: byPay.ewallet },
+    ],
   }
 }
 
@@ -2003,6 +2416,7 @@ export async function commitInventoryImport({
       price: values.price,
       low_stock_threshold: values.lowStockAt || 5,
       available_today: values.availableToday !== false,
+      discount_eligible: values.discountEligible === true,
       ...(restaurant
         ? {
             budget_price: values.budgetPrice,
@@ -2051,11 +2465,7 @@ export async function commitInventoryImport({
       sku: values.sku,
       barcode: barcode || '',
     })
-    onProgress?.({
-      current: index + 1,
-      total,
-      label: values.name,
-    })
+    onProgress?.(index + 1, total, values.name)
   }
 
   if (itemRows.length) {
@@ -2085,20 +2495,40 @@ export async function revertInventoryImport(batchId, staffId) {
  * Returns: { event, rules } where rules includes ordered product ids.
  */
 export async function fetchActivePromoEventWithRules(branchId, { respectDuration = true } = {}) {
-  const { data: event, error: eventError } = await supabase
+  // Live on POS: active or stop_pending (still selling until stop approved)
+  let query = supabase
     .from('promo_events')
-    .select('id,name,is_active,starts_at,ends_at')
+    .select('id,name,is_active,status,starts_at,ends_at,stop_reason')
     .eq('branch_id', branchId)
-    .eq('is_active', true)
-    .maybeSingle()
 
-  if (eventError) throw eventError
+  const { data: events, error: eventError } = await query
+    .or('status.in.(active,stop_pending),and(is_active.eq.true,status.is.null)')
+    .order('created_at', { ascending: false })
+    .limit(5)
+
+  if (eventError) {
+    // Fallback if status column missing
+    const fallback = await supabase
+      .from('promo_events')
+      .select('id,name,is_active,starts_at,ends_at')
+      .eq('branch_id', branchId)
+      .eq('is_active', true)
+      .maybeSingle()
+    if (fallback.error) throw eventError
+    if (!fallback.data) return null
+    return loadPromoRulesForEvent(fallback.data, respectDuration)
+  }
+
+  const event =
+    (events || []).find((e) => e.status === 'active' || e.status === 'stop_pending') ||
+    (events || []).find((e) => e.is_active) ||
+    null
   if (!event) return null
+  return loadPromoRulesForEvent(event, respectDuration)
+}
 
+async function loadPromoRulesForEvent(event, respectDuration = true) {
   if (respectDuration) {
-    // Duration check in JS to keep the Supabase query simple.
-    // - if starts_at is null => already started
-    // - if ends_at is null => no end date
     const now = new Date()
     const startOk = !event.starts_at || new Date(event.starts_at) <= now
     const endOk = !event.ends_at || new Date(event.ends_at) >= now
@@ -2147,7 +2577,14 @@ export async function fetchActivePromoEventWithRules(branchId, { respectDuration
   })
 
   return {
-    event: { id: event.id, name: event.name, startsAt: event.starts_at, endsAt: event.ends_at },
+    event: {
+      id: event.id,
+      name: event.name,
+      status: event.status || (event.is_active ? 'active' : 'stopped'),
+      startsAt: event.starts_at,
+      endsAt: event.ends_at,
+      stopReason: event.stop_reason || null,
+    },
     rules: normalizedRules,
   }
 }
@@ -2192,21 +2629,93 @@ export async function fetchPromoRulesForEvent(promoEventId) {
   })
 }
 
-export async function createAndActivatePromoEvent({ branchId, name, startsAt = null, endsAt = null }) {
-  // Deactivate others first (unique index enforces only one active row).
-  await supabase.from('promo_events').update({ is_active: false }).eq('branch_id', branchId)
-
+export async function createAndActivatePromoEvent({
+  branchId,
+  name,
+  startsAt = null,
+  endsAt = null,
+  staffId = null,
+  activateImmediately = false,
+}) {
   const starts_iso = startsAt ? new Date(startsAt).toISOString() : null
   const ends_iso = endsAt ? new Date(endsAt).toISOString() : null
 
-  const { data, error } = await supabase
-    .from('promo_events')
-    .insert({ branch_id: branchId, name, is_active: true, starts_at: starts_iso, ends_at: ends_iso })
-    .select('id,name')
-    .single()
+  // Dual-control: create as pending unless manager activates immediately after approve path.
+  // New creates are always pending — never auto-activate.
+  const payload = {
+    branch_id: branchId,
+    name,
+    is_active: false,
+    status: 'pending',
+    starts_at: starts_iso,
+    ends_at: ends_iso,
+    requested_by: staffId || null,
+  }
 
+  let { data, error } = await supabase.from('promo_events').insert(payload).select('id,name,status').single()
+  if (error && (isMissingColumnError(error, 'status') || isMissingColumnError(error, 'requested_by'))) {
+    // Legacy: old schema activated immediately
+    await supabase.from('promo_events').update({ is_active: false }).eq('branch_id', branchId)
+    ;({ data, error } = await supabase
+      .from('promo_events')
+      .insert({
+        branch_id: branchId,
+        name,
+        is_active: activateImmediately,
+        starts_at: starts_iso,
+        ends_at: ends_iso,
+      })
+      .select('id,name')
+      .single())
+  }
   if (error) throw error
-  return { id: data.id, name: data.name }
+  return { id: data.id, name: data.name, status: data.status || 'pending' }
+}
+
+export async function approvePromoEvent({ id, staffId }) {
+  const { data, error } = await supabase.rpc('approve_promo_event', {
+    p_promo_event_id: id,
+    p_staff_id: staffId,
+  })
+  if (error) throw error
+  return data
+}
+
+export async function rejectPromoEvent({ id, staffId }) {
+  const { data, error } = await supabase.rpc('reject_promo_event', {
+    p_promo_event_id: id,
+    p_staff_id: staffId,
+  })
+  if (error) throw error
+  return data
+}
+
+export async function requestStopPromo({ id, staffId, reason }) {
+  const { data, error } = await supabase.rpc('request_stop_promo', {
+    p_promo_event_id: id,
+    p_staff_id: staffId,
+    p_reason: reason,
+  })
+  if (error) throw error
+  return data
+}
+
+export async function approveStopPromo({ id, staffId }) {
+  const { data, error } = await supabase.rpc('approve_stop_promo', {
+    p_promo_event_id: id,
+    p_staff_id: staffId,
+  })
+  if (error) throw error
+  return data
+}
+
+export async function rejectStopPromo({ id, staffId }) {
+  const { data, error } = await supabase.rpc('reject_stop_promo', {
+    p_promo_event_id: id,
+    p_staff_id: staffId,
+  })
+  if (error) throw error
+  return data
 }
 
 export async function createPromoRule({ promoEventId, ruleType, discountPct, productIds, buyQty = 1, getQty = 1 }) {
@@ -2264,11 +2773,21 @@ export async function deletePromoRule(promoRuleId) {
 export async function fetchPromoEventsForBranch(branchId) {
   const { data, error } = await supabase
     .from('promo_events')
-    .select('id,name,is_active,starts_at,ends_at,created_at')
+    .select(
+      'id,name,is_active,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
+    )
     .eq('branch_id', branchId)
     .order('created_at', { ascending: false })
 
-  if (error) throw error
+  if (error) {
+    const fallback = await supabase
+      .from('promo_events')
+      .select('id,name,is_active,starts_at,ends_at,created_at')
+      .eq('branch_id', branchId)
+      .order('created_at', { ascending: false })
+    if (fallback.error) throw error
+    return fallback.data || []
+  }
   return data || []
 }
 

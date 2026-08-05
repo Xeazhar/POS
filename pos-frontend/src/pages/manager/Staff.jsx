@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { FiEye, FiEyeOff } from 'react-icons/fi'
 import {
   Field,
   PageHeader,
@@ -77,6 +78,7 @@ function ManagerStaff() {
   const [formError, setFormError] = useState('')
   const [error, setError] = useState('')
   const [reveal, setReveal] = useState(null)
+  const [showPin, setShowPin] = useState(false)
 
   const reload = async () => {
     if (!hasSupabase) {
@@ -126,6 +128,7 @@ function ManagerStaff() {
           type="button"
           onClick={() => {
             setFormError('')
+            setShowPin(false)
             setForm({
               ...empty,
               branch_id: branches[0]?.id || '',
@@ -143,7 +146,7 @@ function ManagerStaff() {
         <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
       )}
       <TableCard>
-        <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)_0.8fr_0.7fr_0.7fr] gap-3 bg-[#f7f7f4] px-5 py-3 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[minmax(0,1fr)_auto] max-[700px]:px-3">
+        <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)_0.8fr_0.7fr_0.7fr] gap-3 bg-brand-dark px-5 py-3 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[700px]:grid-cols-[minmax(0,1fr)_auto] max-[700px]:px-3">
           <span>Name</span>
           <span className="max-[700px]:hidden">Branch</span>
           <span className="max-[700px]:hidden">Role</span>
@@ -201,6 +204,7 @@ function ManagerStaff() {
                 className="border-0 bg-transparent text-right text-xs font-bold text-brand-danger-soft"
                 onClick={() => {
                 setFormError('')
+                setShowPin(false)
                 setForm({
                   id: person.id,
                   full_name: person.full_name,
@@ -334,18 +338,28 @@ function ManagerStaff() {
                     Must be unique — no two staff can share the same code.
                   </p>
                   <div className="flex items-end gap-2">
-                    <Field
-                      label={form.id ? 'New PIN (leave blank to keep)' : 'PIN'}
-                      className="flex-1"
-                      required={!form.id}
-                      value={form.login_pin}
-                      onChange={(e) =>
-                        setForm({ ...form, login_pin: sanitizePinInput(e.target.value) })
-                      }
-                      type="password"
-                      autoComplete="new-password"
-                      placeholder="e.g. Ka!9mP2$"
-                    />
+                    <label className="relative block min-w-0 flex-1 text-[11px] font-bold text-[#646a66]">
+                      {form.id ? 'New PIN (leave blank to keep)' : 'PIN'}
+                      <input
+                        className="mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 pr-10 text-[13px] font-normal outline-none"
+                        required={!form.id}
+                        value={form.login_pin}
+                        onChange={(e) =>
+                          setForm({ ...form, login_pin: sanitizePinInput(e.target.value) })
+                        }
+                        type={showPin ? 'text' : 'password'}
+                        autoComplete="new-password"
+                        placeholder="e.g. Ka!9mP2$"
+                      />
+                      <button
+                        type="button"
+                        className="absolute right-2 bottom-2.5 border-0 bg-transparent p-1 text-[#7a807c] hover:text-brand-ink"
+                        aria-label={showPin ? 'Hide PIN' : 'Show PIN'}
+                        onClick={() => setShowPin((v) => !v)}
+                      >
+                        {showPin ? <FiEyeOff size={16} /> : <FiEye size={16} />}
+                      </button>
+                    </label>
                     <SecondaryButton
                       compact
                       type="button"
@@ -401,7 +415,7 @@ function ManagerStaff() {
                 ))}
               </SelectField>
               <fieldset className="rounded-md border border-brand-line p-3">
-                <legend className="px-1 text-[10px] font-bold tracking-wide text-[#989e99] uppercase">
+                <legend className="px-1 text-[10px] font-bold tracking-wide text-brand-label uppercase">
                   Module access
                 </legend>
                 <div className="grid grid-cols-2 gap-2">
@@ -443,6 +457,7 @@ function ManagerStaff() {
                 onClick={() => {
                   setForm(null)
                   setFormError('')
+                  setShowPin(false)
                 }}
               >
                 Cancel

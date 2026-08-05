@@ -9,7 +9,7 @@ import { isDeviceEnabled } from '../devices'
 import { fetchActivePromoEventWithRules, hasSupabase, updateProductPrice } from '../lib/api'
 import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { businessDate, formatOpenHourLabel, isTillClosed, money } from '../utils/format'
-import { isSupervisorOrAbove } from '../utils/roles'
+import { isManagerRole } from '../utils/roles'
 import { formatSupportError } from '../utils/errors'
 
 function menuSetupKey(branchId, bizDate) {
@@ -56,7 +56,7 @@ function POS() {
   ]
   const menuOnCount = products.filter((p) => p.availableToday !== false).length
   const menuOffCount = products.length - menuOnCount
-  const canChangePriceDirect = isSupervisorOrAbove(user?.role)
+  const canChangePrice = isManagerRole(user?.role)
 
   useEffect(() => {
     if (!isRestaurant) return
@@ -157,8 +157,9 @@ function POS() {
   }, [cartOverlayOpen, awaitingPriceApproval, priceTarget, weighted, inquiryProduct])
 
   return (
-    <div>
+    <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader
+        className="mb-3 shrink-0"
         eyebrow={isRestaurant ? 'CARINDERIA' : 'SALES FLOOR'}
         title={isRestaurant ? (manageMenu ? "Today's potahe" : 'Menu sale') : 'New sale'}
       >
@@ -200,22 +201,22 @@ function POS() {
         </div>
       )}
       <div
-        className={`relative grid gap-6 max-[800px]:grid-cols-1 max-[800px]:gap-4 ${
+        className={`relative grid min-h-0 flex-1 gap-4 max-[800px]:grid-cols-1 max-[800px]:gap-3 max-[800px]:overflow-auto ${
           isRestaurant && manageMenu
             ? 'grid-cols-1'
             : barcodeTableMode
               ? 'grid-cols-1'
-              : 'grid-cols-[minmax(0,1fr)_minmax(440px,480px)] max-[1100px]:grid-cols-[minmax(0,1fr)_420px]'
+              : 'grid-cols-[minmax(0,1fr)_minmax(400px,440px)] max-[1100px]:grid-cols-[minmax(0,1fr)_380px]'
         }`}
       >
         {!barcodeTableMode && (
           <div
-            className={`flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[10px] border border-brand-line bg-white p-[18px] max-[700px]:p-3.5 max-[800px]:min-h-[390px] ${
+            className={`flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[10px] border border-brand-line bg-white p-[18px] max-[700px]:p-3.5 ${
               isRestaurant && manageMenu
                 ? 'max-h-none'
                 : barcodeTableMode
                   ? 'h-auto'
-                  : 'h-[calc(100vh-140px)] max-[800px]:h-auto'
+                  : 'h-full max-[800px]:min-h-[390px] max-[800px]:h-auto'
             }`}
           >
           <div className="mb-3.5 flex min-w-0 flex-col gap-3">
@@ -297,7 +298,7 @@ function POS() {
                   Scanner results
                 </div>
                 <table className="min-w-full text-left text-xs">
-                  <thead className="sticky top-0 bg-[#f7f7f4] text-[10px] tracking-wide text-brand-subtle uppercase">
+                  <thead className="sticky top-0 bg-brand-dark text-[10px] tracking-wide text-[#c8ceca] uppercase">
                     <tr>
                       <th className="px-3 py-2">SKU</th>
                       <th className="px-3 py-2">Barcode</th>
@@ -427,7 +428,7 @@ function POS() {
                         </span>
                       )}
                     </button>
-                    {!(isRestaurant && manageMenu) && !tillClosed && (
+                    {!(isRestaurant && manageMenu) && !tillClosed && canChangePrice && (
                       <button
                         type="button"
                         title="Change price"
@@ -551,7 +552,7 @@ function POS() {
           {String(search || '').trim() ? (
             <div className="-mx-5 max-h-[50vh] overflow-auto border-t border-brand-softline max-[700px]:-mx-4">
               <table className="min-w-full text-left text-xs">
-                <thead className="sticky top-0 bg-[#f7f7f4] text-[10px] tracking-wide text-brand-subtle uppercase">
+                <thead className="sticky top-0 bg-brand-dark text-[10px] tracking-wide text-[#c8ceca] uppercase">
                   <tr>
                     <th className="px-3 py-2">SKU</th>
                     <th className="px-3 py-2">Barcode</th>
@@ -615,7 +616,7 @@ function POS() {
           <h2 className="mb-1 text-lg">Change price</h2>
           <p className="m-0 mb-3 text-xs text-brand-muted">
             {priceTarget.name} · current {money(priceTarget.price)}
-            {!canChangePriceDirect ? ' · supervisor PIN required' : ''}
+            {!canChangePrice ? ' · managers only' : ''}
           </p>
           <Field
             label="New price"
@@ -633,11 +634,11 @@ function POS() {
               compact
               type="button"
               onClick={() => {
-                if (canChangePriceDirect) applyPriceChange(user?.id)
+                if (canChangePrice) applyPriceChange(user?.id)
                 else setAwaitingPriceApproval(true)
               }}
             >
-              {canChangePriceDirect ? 'Save' : 'Continue'}
+              {canChangePrice ? 'Save' : 'Continue'}
             </PrimaryButton>
           </ModalActions>
         </Modal>

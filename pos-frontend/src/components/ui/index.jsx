@@ -58,18 +58,43 @@ export function SelectField({ label, className = '', children, ...props }) {
 
 export function Eyebrow({ children, className = '' }) {
   return (
-    <p className={`mb-2 text-[10px] font-bold tracking-[1.4px] text-brand-eyebrow ${className}`}>
+    <p className={`mb-2 text-[10px] font-bold tracking-[1.4px] text-brand-eyebrow uppercase ${className}`}>
       {children}
     </p>
   )
 }
 
+/** Panel section title — clean type above card content. */
+export function SectionHeading({ title, subtitle, meta, className = '', tone = 'default' }) {
+  const accent =
+    tone === 'warn'
+      ? 'text-brand-warn'
+      : tone === 'danger'
+        ? 'text-brand-danger'
+        : 'text-brand-ink'
+  return (
+    <div
+      className={`flex items-end justify-between gap-3 border-b border-brand-line bg-white px-4 py-3.5 ${className}`}
+    >
+      <div className="min-w-0">
+        <h2 className={`m-0 text-lg font-bold tracking-[-0.02em] ${accent}`}>{title}</h2>
+        {subtitle ? (
+          <p className="m-0 mt-1 text-[12px] leading-snug text-brand-muted">{subtitle}</p>
+        ) : null}
+      </div>
+      {meta != null ? (
+        <span className="shrink-0 pb-0.5 text-xs font-semibold text-brand-muted">{meta}</span>
+      ) : null}
+    </div>
+  )
+}
+
 export function PageHeader({ eyebrow, title, children, className = '' }) {
   return (
-    <div className={`mb-3.5 flex items-end justify-between gap-3 max-[700px]:flex-col max-[700px]:items-stretch ${className}`}>
+    <div className={`mb-4 flex items-end justify-between gap-3 max-[700px]:flex-col max-[700px]:items-stretch ${className}`}>
       <div className="min-w-0">
         <Eyebrow>{eyebrow}</Eyebrow>
-        <h1 className="m-0 text-[30px] tracking-[-1px] max-[700px]:text-[22px]">{title}</h1>
+        <h1 className="m-0 text-[30px] font-bold tracking-[-1px] text-brand-ink max-[700px]:text-[22px]">{title}</h1>
       </div>
       {children ? <div className="min-w-0 shrink-0 max-[700px]:w-full">{children}</div> : null}
     </div>
@@ -100,6 +125,10 @@ export function TableCard({ className = '', children, ...rest }) {
     </section>
   )
 }
+
+/** Shared column-header look — dark strip so headers don't blend into white rows. */
+export const tableHeadClass =
+  'bg-brand-dark text-[9px] font-bold tracking-[1.2px] text-[#c8ceca] uppercase'
 
 export function Modal({ wide = false, layer = false, className = '', onClose, children }) {
   return (

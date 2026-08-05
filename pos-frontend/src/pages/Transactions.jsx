@@ -21,7 +21,7 @@ import { isDeviceEnabled, receiptPrinter } from '../devices'
 import { getLocalTransactionDetail } from '../offline'
 import { useAuthStore, useInventoryStore } from '../stores/posStore'
 import { formatSupportError } from '../utils/errors'
-import { money, qty, today } from '../utils/format'
+import { isBusinessDayLocked, money, qty, today } from '../utils/format'
 import { buildReceipt } from '../utils/receipt'
 import { isSupervisorOrAbove } from '../utils/roles'
 import { detailFromLocalTxn, isUuid } from '../utils/transactionDetail'
@@ -46,6 +46,7 @@ const filterSelectClass =
 
 function Transactions() {
   const transactions = useInventoryStore((state) => state.transactions)
+  const dayEnds = useInventoryStore((state) => state.dayEnds)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const voidTransaction = useInventoryStore((state) => state.voidTransaction)
   const refundTransactionItems = useInventoryStore((state) => state.refundTransactionItems)
@@ -69,6 +70,7 @@ function Transactions() {
 
   const canApproveDirect = isSupervisorOrAbove(user?.role)
   const cashierDay = today(dayOpenHour)
+  const isTxnLocked = (item) => isBusinessDayLocked(dayEnds, item.date, dayOpenHour)
 
   const list = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -154,6 +156,10 @@ function Transactions() {
 
   const startRefund = async (item) => {
     setError('')
+    if (isTxnLocked(item)) {
+      setError('This business day is locked. Ask a manager to reopen before voiding or refunding.')
+      return
+    }
     setRefunding(item)
     setRefundMode(null)
     setRefundLines([])
@@ -314,7 +320,7 @@ function Transactions() {
       </div>
 
       <TableCard>
-        <div className="grid grid-cols-[1.1fr_1.2fr_1fr_0.7fr_0.5fr_0.8fr_0.7fr_0.5fr] gap-3 border-0 bg-[#f7f7f4] px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr]">
+        <div className="grid grid-cols-[1.1fr_1.2fr_1fr_0.7fr_0.5fr_0.8fr_0.7fr_0.5fr] gap-3 border-0 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr]">
           <span>OR / Invoice</span>
           <span>Time</span>
           <span>Cashier</span>
@@ -368,7 +374,14 @@ function Transactions() {
             <button
               type="button"
               className="border-0 bg-transparent text-[11px] text-brand-danger-soft disabled:text-[#b8bcba] max-[700px]:hidden"
-              disabled={item.status === 'Voided'}
+              disabled={item.status === 'Voided' || isTxnLocked(item)}
+              title={
+                isTxnLocked(item)
+                  ? 'Business day locked — reopen required'
+                  : item.status === 'Voided'
+                    ? 'Already voided'
+                    : 'Refund'
+              }
               onClick={(event) => {
                 event.stopPropagation()
                 startRefund(item)

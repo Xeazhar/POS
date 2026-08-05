@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import * as XLSX from 'xlsx'
-import { Field, PageHeader, PrimaryButton, SecondaryButton, SelectField } from '../../components/ui'
+import {
+  Field,
+  PageHeader,
+  PrimaryButton,
+  SecondaryButton,
+  SelectField,
+  StatusOverlay,
+} from '../../components/ui'
 import {
   fetchAllStaff,
   fetchAuditEvents,
@@ -514,6 +521,9 @@ function ManagerReports() {
 
   return (
     <div>
+      {busy && (
+        <StatusOverlay title="Generating report" message="Building preview — please wait…" />
+      )}
       <PageHeader eyebrow="MANAGER" title="Reports" />
 
       <div className="mb-3 border border-[#c8ccc4] bg-white p-3">

@@ -1,13 +1,27 @@
-import { useState } from 'react'
-import { NavLink, useNavigate } from 'react-router-dom'
-import { FiLogOut, FiMenu, FiX } from 'react-icons/fi'
+import { useEffect, useRef, useState } from 'react'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { FiLock, FiLogOut, FiMenu, FiX } from 'react-icons/fi'
 import { navLinksFor } from '../../constants/nav'
-import { hasSupabase, clockIn, clockOut, fetchOpenShift } from '../../lib/api'
+import {
+  hasSupabase,
+  clockIn,
+  clockOut,
+  fetchOpenShift,
+  heartbeatStaffSession,
+} from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
 import { useSyncStore } from '../../stores/syncStore'
 import { isManagerRole, usesPinLogin } from '../../utils/roles'
 import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
 import Clock from './Clock'
+import LockScreen from './LockScreen'
+
+const IDLE_LOCK_MS = 10 * 60 * 1000
+const HEARTBEAT_MS = 2.5 * 60 * 1000
+
+function defaultShiftPeriod() {
+  return new Date().getHours() < 12 ? 'am' : 'pm'
+}
 
 function syncCopy({ online, pending, status, lastError }) {
   const syncing = status === 'syncing' || status === 'pushing'
@@ -64,26 +78,71 @@ function Shell({ children }) {
   const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)
   const pendingClockIn = useAuthStore((state) => state.pendingClockIn)
+  const screenLocked = useAuthStore((state) => state.screenLocked)
+  const lockScreen = useAuthStore((state) => state.lockScreen)
+  const unlockScreen = useAuthStore((state) => state.unlockScreen)
+  const deviceSessionId = useAuthStore((state) => state.deviceSessionId)
   const online = useSyncStore((state) => state.online)
   const pending = useSyncStore((state) => state.pending)
   const status = useSyncStore((state) => state.status)
   const lastError = useSyncStore((state) => state.lastError)
   const navigate = useNavigate()
+  const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
   const [clockBusy, setClockBusy] = useState(false)
+  const [shiftPeriod, setShiftPeriod] = useState(defaultShiftPeriod)
   const [logoutPrompt, setLogoutPrompt] = useState(null) // { shift } | true (no shift info yet) | null
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [logoutError, setLogoutError] = useState('')
   const isManager = isManagerRole(user?.role) && user?.role !== 'master'
   const links = navLinksFor(user)
   const sync = syncCopy({ online, pending, status, lastError })
+  const isPosPage = location.pathname === '/pos'
+  const idleTimerRef = useRef(null)
+
+  const bumpIdle = () => {
+    if (screenLocked) return
+    if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current)
+    idleTimerRef.current = window.setTimeout(() => {
+      lockScreen()
+    }, IDLE_LOCK_MS)
+  }
+
+  useEffect(() => {
+    if (!user) return undefined
+    bumpIdle()
+    const events = ['pointerdown', 'keydown', 'touchstart', 'mousemove']
+    const onActivity = () => bumpIdle()
+    events.forEach((ev) => window.addEventListener(ev, onActivity, { passive: true }))
+    return () => {
+      events.forEach((ev) => window.removeEventListener(ev, onActivity))
+      if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- bumpIdle closes over screenLocked
+  }, [user?.id, screenLocked])
+
+  useEffect(() => {
+    if (!hasSupabase || !user?.id) return undefined
+    const sid = deviceSessionId || user.deviceSessionId
+    if (!sid) return undefined
+    const tick = () => {
+      heartbeatStaffSession(user.id, sid).catch(() => {})
+    }
+    tick()
+    const t = window.setInterval(tick, HEARTBEAT_MS)
+    return () => window.clearInterval(t)
+  }, [user?.id, deviceSessionId, user?.deviceSessionId])
 
   const dismissClock = () => useAuthStore.setState({ pendingClockIn: false })
   const doClockIn = async () => {
     setClockBusy(true)
     try {
       if (hasSupabase && user?.id && user?.branchId) {
-        await clockIn({ staffId: user.id, branchId: user.branchId })
+        await clockIn({
+          staffId: user.id,
+          branchId: user.branchId,
+          shiftPeriod: shiftPeriod === 'pm' ? 'pm' : 'am',
+        })
       }
     } catch {
       /* optional */
@@ -170,14 +229,40 @@ function Shell({ children }) {
           <Eyebrow>SHIFT</Eyebrow>
           <h2 className="mb-1 text-lg">Clock in?</h2>
           <p className="m-0 text-xs text-brand-muted">
-            Hi {user?.name || 'there'}. Clock in before starting your shift?
+            Hi {user?.name || 'there'}. Choose AM or PM so your shift is easy to spot later.
           </p>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {[
+              { id: 'am', label: 'AM', hint: 'Morning' },
+              { id: 'pm', label: 'PM', hint: 'Afternoon' },
+            ].map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                className={`rounded-[5px] border px-3 py-2.5 text-left transition-colors ${
+                  shiftPeriod === opt.id
+                    ? 'border-brand-dark bg-brand-dark text-white'
+                    : 'border-brand-border bg-white text-brand-ink'
+                }`}
+                onClick={() => setShiftPeriod(opt.id)}
+              >
+                <strong className="block text-sm">{opt.label}</strong>
+                <span
+                  className={`mt-0.5 block text-[10px] ${
+                    shiftPeriod === opt.id ? 'text-white/70' : 'text-brand-subtle'
+                  }`}
+                >
+                  {opt.hint}
+                </span>
+              </button>
+            ))}
+          </div>
           <ModalActions>
             <SecondaryButton compact type="button" onClick={dismissClock}>
               Skip for now
             </SecondaryButton>
             <PrimaryButton compact type="button" disabled={clockBusy} onClick={doClockIn}>
-              {clockBusy ? 'Clocking in…' : 'Clock in'}
+              {clockBusy ? 'Clocking in…' : `Clock in · ${shiftPeriod.toUpperCase()}`}
             </PrimaryButton>
           </ModalActions>
         </Modal>
@@ -304,8 +389,18 @@ function Shell({ children }) {
             <NavItems />
           </div>
 
+          <button
+            type="button"
+            className="mt-2 flex w-full flex-col items-center gap-1 rounded-lg border-0 bg-transparent px-1 py-2 text-[#a8aeaa] hover:bg-white/5 hover:text-white"
+            title="Lock screen"
+            onClick={() => lockScreen()}
+          >
+            <FiLock className="text-base" />
+            <span className="text-[9px] font-bold">Lock</span>
+          </button>
+
           <div
-            className="mt-2 shrink-0 rounded-lg bg-brand-panel px-1.5 py-2.5 text-center"
+            className="mt-1 shrink-0 rounded-lg bg-brand-panel px-1.5 py-2.5 text-center"
             title={lastError || sync.detail}
           >
             <span className={`mx-auto mb-1 block h-1.5 w-1.5 rounded-full ${toneDot[sync.tone]}`} />
@@ -316,10 +411,37 @@ function Shell({ children }) {
           </div>
         </aside>
 
-        <section className="min-h-0 min-w-0 flex-1 overflow-auto px-[22px] py-3.5 max-[700px]:px-3.5 max-[700px]:py-[22px]">
-          {children}
+        <section
+          className={`min-h-0 min-w-0 flex-1 px-[22px] py-3.5 max-[700px]:px-3.5 max-[700px]:py-[22px] ${
+            isPosPage ? 'flex flex-col overflow-hidden' : 'overflow-auto'
+          }`}
+        >
+          {isPosPage ? <div className="flex min-h-0 flex-1 flex-col">{children}</div> : children}
         </section>
       </div>
+
+      {/* Mobile lock affordance */}
+      <button
+        type="button"
+        className="fixed bottom-4 left-4 z-[15] hidden h-11 w-11 place-items-center rounded-full border-0 bg-brand-dark text-white shadow-lg max-[700px]:grid"
+        title="Lock screen"
+        onClick={() => lockScreen()}
+      >
+        <FiLock />
+      </button>
+
+      {screenLocked && (
+        <LockScreen
+          onUnlock={() => {
+            unlockScreen()
+            bumpIdle()
+          }}
+          onLogout={() => {
+            unlockScreen()
+            void requestLogout()
+          }}
+        />
+      )}
     </div>
   )
 }

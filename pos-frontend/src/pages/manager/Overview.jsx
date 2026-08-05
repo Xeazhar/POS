@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import PaymentMethodPie from '../../components/dashboard/PaymentMethodPie'
 import RevenueChart from '../../components/dashboard/RevenueChart'
 import SalesMixBar from '../../components/dashboard/SalesMixBar'
 import { PageHeader, TableCard } from '../../components/ui'
@@ -21,6 +22,7 @@ function ManagerOverview() {
   const [summaries, setSummaries] = useState({})
   const [linePoints, setLinePoints] = useState([])
   const [branchBars, setBranchBars] = useState([])
+  const [paymentMix, setPaymentMix] = useState([])
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -31,7 +33,13 @@ function ManagerOverview() {
         if (!hasSupabase) {
           if (!active) return
           setBranches([
-            { id: 'demo-main-branch', name: 'Bayombong Branch #001', is_active: true, address: 'Bayombong', branch_type: 'retail' },
+            {
+              id: 'demo-main-branch',
+              name: 'Bayombong Branch #001',
+              is_active: true,
+              address: 'Bayombong',
+              branch_type: 'retail',
+            },
           ])
           setSummaries({
             'demo-main-branch': { revenue: 86, orders: 2, lowStock: 2, branchType: 'retail' },
@@ -49,6 +57,11 @@ function ManagerOverview() {
           })
           setLinePoints(demoLine)
           setBranchBars([{ category: 'Bayombong Branch #001', value: 86 }])
+          setPaymentMix([
+            { id: 'cash', label: 'Cash', value: 48 },
+            { id: 'card', label: 'Card', value: 22 },
+            { id: 'ewallet', label: 'E-wallet', value: 16 },
+          ])
           return
         }
         const rows = await fetchBranches()
@@ -69,6 +82,7 @@ function ManagerOverview() {
             ? charts.branchBars
             : rows.map((b) => ({ category: b.name, value: next[b.id]?.revenue || 0 })),
         )
+        setPaymentMix(charts.paymentMix || [])
       })
       .catch((err) => {
         if (active) setError(err.message)
@@ -111,7 +125,9 @@ function ManagerOverview() {
           ))}
         </div>
       </PageHeader>
-      {error && <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>}
+      {error && (
+        <p className="mb-4 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
+      )}
       <div className="mb-4 grid grid-cols-3 gap-3.5 max-[700px]:grid-cols-1">
         {[
           [`Revenue - ${periodLabel}`, money(totals.revenue)],
@@ -128,13 +144,14 @@ function ManagerOverview() {
         ))}
       </div>
 
-      <div className="mb-4 grid grid-cols-[minmax(0,1.6fr)_minmax(220px,0.9fr)] items-stretch gap-3.5 max-[900px]:grid-cols-1">
+      <div className="mb-4 grid grid-cols-[minmax(0,1.4fr)_minmax(200px,0.75fr)_minmax(220px,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
         <RevenueChart points={linePoints} period={`Network - ${periodLabel}`} />
+        <PaymentMethodPie mix={paymentMix} subtitle={`${periodLabel} · PHP`} />
         <SalesMixBar mix={branchBars} title="Revenue by branch" subtitle={`${periodLabel} - PHP`} />
       </div>
 
       <TableCard>
-        <div className="grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem_4.5rem] items-center gap-3 bg-[#f7f7f4] px-5 py-3 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[minmax(0,1fr)_4.5rem]">
+        <div className="grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem_4.5rem] items-center gap-3 bg-brand-dark px-5 py-3 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[700px]:grid-cols-[minmax(0,1fr)_4.5rem]">
           <span>Branch</span>
           <span className="max-[700px]:hidden">Type</span>
           <span className="text-right max-[700px]:hidden">Revenue</span>

@@ -111,9 +111,14 @@ async function pushOne(item) {
       await api.setInventoryStock(payload)
       return
     }
+    case QUEUE_TYPES.SUBMIT_DAY:
     case QUEUE_TYPES.CLOSE_DAY: {
-      await api.closeDayEnd(payload)
+      await api.submitDayEnd(payload)
       if (payload.entry?.localId) await db.dayEnds.delete(payload.entry.localId)
+      return
+    }
+    case QUEUE_TYPES.APPROVE_DAY: {
+      await api.approveDayEnd(payload)
       return
     }
     case QUEUE_TYPES.REOPEN_DAY: {

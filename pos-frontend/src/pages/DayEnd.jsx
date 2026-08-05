@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { DayEndReportPanels } from '../components/dayend/DayEndReportPanels'
 import {
   Eyebrow,
@@ -16,6 +15,7 @@ import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posS
 import { buildDayEndReport } from '../utils/dayEndReport'
 import { formatSupportError } from '../utils/errors'
 import { businessDate, dayEndForBusinessDate, formatOpenHourLabel, money } from '../utils/format'
+import { isSupervisorOrAbove } from '../utils/roles'
 import { decimalOnly } from '../utils/validate'
 
 function DayEnd() {
@@ -26,9 +26,8 @@ function DayEnd() {
   const movements = useInventoryStore((state) => state.movements)
   const dayEnds = useInventoryStore((state) => state.dayEnds)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
-  const closeDay = useInventoryStore((state) => state.closeDay)
-  const lockAfterDayEnd = useAuthStore((state) => state.lockAfterDayEnd)
-  const navigate = useNavigate()
+  const submitDay = useInventoryStore((state) => state.submitDay)
+  const approveDay = useInventoryStore((state) => state.approveDay)
   const date = businessDate(new Date(), dayOpenHour)
   const recorded = transactions
     .filter((item) => item.status === 'Paid' && item.date === date)
@@ -40,11 +39,16 @@ function DayEnd() {
     )
     .reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
   const existing = dayEndForBusinessDate(dayEnds, date)
+  const isSubmitted = existing?.status === 'submitted'
   const isClosed = existing?.status === 'closed'
+  const isLocked = isSubmitted || isClosed
+  const canApprove = isSupervisorOrAbove(user?.role) && isSubmitted
   const [cashOnHand, setCashOnHand] = useState(existing ? String(existing.cashOnHand) : '')
   const [note, setNote] = useState(existing?.note || '')
-  const [confirming, setConfirming] = useState(false)
+  const [confirmSubmit, setConfirmSubmit] = useState(false)
+  const [confirmApprove, setConfirmApprove] = useState(false)
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
   const [petty, setPetty] = useState([])
   const [pettyAmount, setPettyAmount] = useState('')
   const [pettyReason, setPettyReason] = useState('')
@@ -74,6 +78,7 @@ function DayEnd() {
     (changeFundTotal + cashSales - paidOutTotal - pickupTotal).toFixed(2),
   )
   const variance = Number(cashOnHand || 0) - expectedCash
+  const noteRequired = variance !== 0
 
   useEffect(() => {
     let active = true
@@ -104,35 +109,59 @@ function DayEnd() {
       }),
     [date, transactions, movements, products, isRestaurant],
   )
-  const report = isClosed && existing?.dayReport ? existing.dayReport : liveReport
+  const report = isLocked && existing?.dayReport ? existing.dayReport : liveReport
 
-  const submit = async () => {
+  const buildEntry = () => {
+    const dayReport = buildDayEndReport({
+      date,
+      transactions,
+      movements,
+      products,
+      isRestaurant,
+    })
+    return {
+      id: existing?.id,
+      date,
+      recordedCash: recorded,
+      cashOnHand: Number(cashOnHand || 0),
+      variance,
+      expectedCash,
+      note: [note, pettyTotal ? `Petty cash ${pettyTotal}` : ''].filter(Boolean).join(' · '),
+      cashier: user?.name || 'Staff',
+      dayReport: { ...dayReport, pettyCashTotal: pettyTotal, expectedCash },
+    }
+  }
+
+  const handleSubmit = async () => {
     setError('')
+    if (noteRequired && !note.trim()) {
+      setError('A note is required when variance is not zero.')
+      setConfirmSubmit(false)
+      return
+    }
+    setBusy(true)
     try {
-      const dayReport = buildDayEndReport({
-        date,
-        transactions,
-        movements,
-        products,
-        isRestaurant,
-      })
-      await closeDay({
-        id: existing?.id,
-        date,
-        recordedCash: recorded,
-        cashOnHand: Number(cashOnHand || 0),
-        variance,
-        note: [note, pettyTotal ? `Petty cash ${pettyTotal}` : ''].filter(Boolean).join(' · '),
-        cashier: user?.name || 'Staff',
-        closedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        dayReport: { ...dayReport, pettyCashTotal: pettyTotal, expectedCash },
-      })
-      setConfirming(false)
-      await lockAfterDayEnd()
-      navigate('/login', { replace: true })
+      await submitDay(buildEntry())
+      setConfirmSubmit(false)
     } catch (err) {
       setError(formatSupportError(err, 'TILL02'))
-      setConfirming(false)
+      setConfirmSubmit(false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleApprove = async () => {
+    setError('')
+    setBusy(true)
+    try {
+      await approveDay(existing.id)
+      setConfirmApprove(false)
+    } catch (err) {
+      setError(formatSupportError(err, 'TILL02'))
+      setConfirmApprove(false)
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -144,9 +173,17 @@ function DayEnd() {
         </span>
       </PageHeader>
 
+      {isSubmitted && (
+        <div className="mb-3.5 rounded-md bg-brand-warn-bg px-4 py-3 text-xs text-brand-warn">
+          Awaiting supervisor or manager approval. POS sales are locked until the day is approved and
+          closed.
+          {existing.submittedAt ? ` Submitted at ${existing.submittedAt}.` : ''}
+        </div>
+      )}
+
       <DayEndReportPanels
         report={report}
-        title={isClosed ? 'Closed day report' : 'Today\'s sales report'}
+        title={isClosed ? 'Closed day report' : isSubmitted ? 'Submitted day report' : "Today's sales report"}
         showRestock={!isRestaurant}
       />
 
@@ -166,7 +203,7 @@ function DayEnd() {
             value={cashOnHand}
             onChange={(event) => setCashOnHand(decimalOnly(event.target.value))}
             placeholder="0.00"
-            disabled={isClosed}
+            disabled={isLocked}
           />
           <div>
             <span className="block text-[11px] text-brand-subtle">Variance vs expected</span>
@@ -183,31 +220,49 @@ function DayEnd() {
           </div>
         </div>
         <Field
-          label="Notes"
+          label={noteRequired ? 'Notes (required — variance not zero)' : 'Notes'}
           value={note}
           onChange={(event) => setNote(event.target.value.replace(/[<>]/g, ''))}
-          placeholder="Optional note"
-          disabled={isClosed}
+          placeholder={noteRequired ? 'Explain the variance' : 'Optional note'}
+          disabled={isLocked}
         />
         {error && <p className="text-xs text-brand-danger">{error}</p>}
         {isClosed ? (
           <p className="text-[13px] text-brand-muted">
-            Day closed at {existing.closedAt} by {existing.cashier || 'staff'}. POS sales are locked until a
-            manager reopens, or until {formatOpenHourLabel(dayOpenHour)} starts the next business day.
+            Day closed{existing.approvedAt ? ` at ${existing.approvedAt}` : existing.closedAt ? ` at ${existing.closedAt}` : ''}{' '}
+            by {existing.cashier || 'staff'}. POS sales are locked until a manager reopens, or until{' '}
+            {formatOpenHourLabel(dayOpenHour)} starts the next business day.
             {!isRestaurant && report?.restock?.length
               ? ` Restock list (${report.restock.length}) will show on the next open.`
               : ''}
           </p>
+        ) : isSubmitted ? (
+          <div>
+            <p className="mb-3 text-[13px] text-brand-muted">
+              Counts are locked while awaiting approval. A supervisor or manager must approve and close
+              the day.
+            </p>
+            {canApprove && (
+              <PrimaryButton compact disabled={busy} onClick={() => setConfirmApprove(true)}>
+                Approve &amp; close day
+              </PrimaryButton>
+            )}
+          </div>
         ) : (
           <div>
             {existing?.status === 'reopened' && (
               <p className="mb-3 text-xs text-brand-warn">
-                Till was reopened by a manager{existing.reopenedAt ? ` at ${existing.reopenedAt}` : ''}. You can
-                close the day again when ready.
+                Till was reopened by a manager
+                {existing.reopenedAt ? ` at ${existing.reopenedAt}` : ''}
+                {existing.reopenReason ? `: ${existing.reopenReason}` : ''}. Submit again when ready.
               </p>
             )}
-            <PrimaryButton compact disabled={cashOnHand === ''} onClick={() => setConfirming(true)}>
-              Close day
+            <PrimaryButton
+              compact
+              disabled={cashOnHand === '' || (noteRequired && !note.trim())}
+              onClick={() => setConfirmSubmit(true)}
+            >
+              Submit for closing
             </PrimaryButton>
           </div>
         )}
@@ -218,7 +273,7 @@ function DayEnd() {
         <p className="m-0 mb-3 text-xs text-brand-muted">
           Change fund (opening float), cash pickups, and paid-outs for this business day.
         </p>
-        {!isClosed && (
+        {!isLocked && (
           <div className="mb-4 grid gap-3 max-[900px]:grid-cols-1 md:grid-cols-2">
             <div className="rounded-md border border-brand-softline p-3">
               <strong className="block text-xs text-brand-ink">Change fund</strong>
@@ -329,7 +384,7 @@ function DayEnd() {
 
       <TableCard className="mb-3.5 max-h-none p-5">
         <h2 className="m-0 mb-3 text-base">Paid-out (petty cash)</h2>
-        {!isClosed && (
+        {!isLocked && (
           <div className="mb-3 grid grid-cols-[1fr_1.4fr_auto] gap-2 max-[700px]:grid-cols-1">
             <Field
               label="Amount"
@@ -402,7 +457,7 @@ function DayEnd() {
         <div className="flex items-center justify-between px-5 pt-4 pb-3">
           <h2 className="m-0 text-lg capitalize">Previous day ends</h2>
         </div>
-        <div className="grid grid-cols-[1fr_0.9fr_0.9fr_0.9fr_0.8fr_1fr_1.2fr] gap-3 bg-[#f7f7f4] px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase max-[700px]:grid-cols-[minmax(0,1.2fr)_0.9fr_0.9fr] max-[700px]:px-3">
+        <div className="grid grid-cols-[1fr_0.9fr_0.9fr_0.9fr_0.8fr_1fr_1.2fr] gap-3 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[700px]:grid-cols-[minmax(0,1.2fr)_0.9fr_0.9fr] max-[700px]:px-3">
           <span>Date</span>
           <span className="max-[700px]:hidden">Recorded</span>
           <span>On hand</span>
@@ -440,13 +495,15 @@ function DayEnd() {
           </div>
         ))}
       </TableCard>
-      {confirming && (
-        <Modal wide onClose={() => setConfirming(false)}>
-          <Eyebrow>CONFIRM DAY END</Eyebrow>
-          <h2 className="mb-3 text-[22px] max-[700px]:text-lg">Close {date}?</h2>
+
+      {confirmSubmit && (
+        <Modal wide onClose={() => setConfirmSubmit(false)}>
+          <Eyebrow>SUBMIT FOR CLOSING</Eyebrow>
+          <h2 className="mb-3 text-[22px] max-[700px]:text-lg">Submit {date}?</h2>
           <p className="mb-2 text-xs text-brand-muted">
-            This locks POS sales and signs you out. The sales report
-            {!isRestaurant ? ' and restock list' : ''} will be saved for the next open.
+            This locks POS sales until a supervisor or manager approves and closes the day. The sales
+            report
+            {!isRestaurant ? ' and restock list' : ''} will be saved with your counts.
           </p>
           <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px]">
             <span>Recorded</span>
@@ -471,11 +528,46 @@ function DayEnd() {
             )}
           </div>
           <ModalActions>
-            <SecondaryButton compact type="button" onClick={() => setConfirming(false)}>
+            <SecondaryButton compact type="button" onClick={() => setConfirmSubmit(false)}>
               Cancel
             </SecondaryButton>
-            <PrimaryButton compact type="button" onClick={submit}>
-              Close day
+            <PrimaryButton compact type="button" disabled={busy} onClick={handleSubmit}>
+              Submit for closing
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {confirmApprove && (
+        <Modal wide onClose={() => setConfirmApprove(false)}>
+          <Eyebrow>APPROVE DAY CLOSE</Eyebrow>
+          <h2 className="mb-3 text-[22px] max-[700px]:text-lg">Approve &amp; close {date}?</h2>
+          <p className="mb-2 text-xs text-brand-muted">
+            This finalizes the day close. POS stays locked until a manager reopens or the next business
+            day begins.
+          </p>
+          <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px]">
+            <span>Cash on hand</span>
+            <strong className="text-right">{money(existing?.cashOnHand ?? 0)}</strong>
+            <span>Variance</span>
+            <strong
+              className={`text-right ${Number(existing?.variance) < 0 ? 'text-brand-danger' : 'text-brand-success'}`}
+            >
+              {money(existing?.variance ?? 0)}
+            </strong>
+            {existing?.note && (
+              <>
+                <span>Note</span>
+                <span className="text-right text-brand-muted">{existing.note}</span>
+              </>
+            )}
+          </div>
+          <ModalActions>
+            <SecondaryButton compact type="button" onClick={() => setConfirmApprove(false)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton compact type="button" disabled={busy} onClick={handleApprove}>
+              Approve &amp; close day
             </PrimaryButton>
           </ModalActions>
         </Modal>

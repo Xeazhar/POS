@@ -1,5 +1,5 @@
 import { money } from '../../utils/format'
-import { TableCard } from '../ui'
+import { SectionHeading, TableCard } from '../ui'
 
 function RevenueChart({ points = [], period }) {
   const max = Math.max(...points.map((item) => item.total), 1)
@@ -17,56 +17,55 @@ function RevenueChart({ points = [], period }) {
   }))
 
   return (
-    <TableCard className="h-auto max-h-none p-4 px-[18px]">
-      <div className="flex items-center justify-between pb-3">
-        <h2 className="m-0 text-lg capitalize">Revenue over time</h2>
-        <span className="text-[11px] text-brand-subtle">{period} · PHP</span>
-      </div>
-      {points.length === 0 ? (
-        <div className="py-9 text-xs text-brand-subtle">No paid sales in this period.</div>
-      ) : (
-        <div className="w-full max-w-[640px]">
-          <svg
-            viewBox={`0 0 ${width} ${height}`}
-            className="line-chart block aspect-[640/220] h-auto w-full"
-            preserveAspectRatio="xMidYMid meet"
-            role="img"
-            aria-label="Revenue over time"
-          >
-            <g className="chart-grid-lines">
-              {[0, 1, 2, 3, 4].map((step) => {
-                const y = top + (step / 4) * plotHeight
-                return (
-                  <g key={step}>
-                    <line x1={left} x2={width - 16} y1={y} y2={y} />
-                    <text x="4" y={y + 3}>
-                      ₱{Math.round(max - (step / 4) * max)}
-                    </text>
-                  </g>
-                )
-              })}
-            </g>
-            <polyline
-              points={coords.map((point) => `${point.x},${point.y}`).join(' ')}
-              fill="none"
-              stroke="#e9b949"
-              strokeWidth="3"
-              strokeLinejoin="round"
-              strokeLinecap="round"
-            />
-            {coords.map(({ item, x, y }) => (
-              <g key={item.label}>
-                <circle cx={x} cy={y} r="4.5" className="chart-dot">
-                  <title>{`${item.label}: ${money(item.total)}`}</title>
-                </circle>
-                <text x={x} y={height - 8} textAnchor="middle">
-                  {item.short}
-                </text>
+    <TableCard className="h-auto max-h-none overflow-hidden p-0">
+      <SectionHeading title="Revenue over time" subtitle={`${period} · PHP`} />
+      <div className="px-4 pb-4 pt-3">
+        {points.length === 0 ? (
+          <div className="py-9 text-xs text-brand-muted">No paid sales in this period.</div>
+        ) : (
+          <div className="w-full max-w-[640px]">
+            <svg
+              viewBox={`0 0 ${width} ${height}`}
+              className="line-chart block aspect-[640/220] h-auto w-full"
+              preserveAspectRatio="xMidYMid meet"
+              role="img"
+              aria-label="Revenue over time"
+            >
+              <g className="chart-grid-lines">
+                {[0, 1, 2, 3, 4].map((step) => {
+                  const y = top + (step / 4) * plotHeight
+                  return (
+                    <g key={step}>
+                      <line x1={left} x2={width - 16} y1={y} y2={y} />
+                      <text x="4" y={y + 3}>
+                        ₱{Math.round(max - (step / 4) * max)}
+                      </text>
+                    </g>
+                  )
+                })}
               </g>
-            ))}
-          </svg>
-        </div>
-      )}
+              <polyline
+                points={coords.map((point) => `${point.x},${point.y}`).join(' ')}
+                fill="none"
+                stroke="#e9b949"
+                strokeWidth="3"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+              {coords.map(({ item, x, y }) => (
+                <g key={item.label}>
+                  <circle cx={x} cy={y} r="4.5" className="chart-dot">
+                    <title>{`${item.label}: ${money(item.total)}`}</title>
+                  </circle>
+                  <text x={x} y={height - 8} textAnchor="middle">
+                    {item.short}
+                  </text>
+                </g>
+              ))}
+            </svg>
+          </div>
+        )}
+      </div>
     </TableCard>
   )
 }

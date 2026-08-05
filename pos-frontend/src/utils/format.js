@@ -1,5 +1,11 @@
+export const PESO = '\u20B1'
+
 export const money = (value) =>
-  `₱${Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  `${PESO}${Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+/** Whole-peso label for quick-cash buttons (no decimals). */
+export const pesoWhole = (value) =>
+  `${PESO}${Number(value || 0).toLocaleString('en-PH', { maximumFractionDigits: 0 })}`
 
 /** Time-of-day greeting with optional first name: "Good morning, Ana" */
 export function greetingFor(user) {
@@ -54,11 +60,28 @@ export function dayEndForBusinessDate(dayEnds, date) {
   return (dayEnds || []).find((item) => item.date === date) || null
 }
 
-/** Till is locked only when current business day has status = closed. */
+/** Till is locked when current business day is submitted (awaiting approval) or closed. */
 export function isTillClosed(dayEnds, openHour = DEFAULT_OPEN_HOUR) {
+  const date = businessDate(new Date(), openHour)
+  return isBusinessDayLocked(dayEnds, date)
+}
+
+export function isDaySubmitted(dayEnds, openHour = DEFAULT_OPEN_HOUR) {
+  const date = businessDate(new Date(), openHour)
+  const entry = dayEndForBusinessDate(dayEnds, date)
+  return entry?.status === 'submitted'
+}
+
+export function isDayFullyClosed(dayEnds, openHour = DEFAULT_OPEN_HOUR) {
   const date = businessDate(new Date(), openHour)
   const entry = dayEndForBusinessDate(dayEnds, date)
   return entry?.status === 'closed'
+}
+
+/** True when voids/refunds should be blocked for a given business date. */
+export function isBusinessDayLocked(dayEnds, date, _openHour = DEFAULT_OPEN_HOUR) {
+  const entry = dayEndForBusinessDate(dayEnds, date)
+  return entry?.status === 'submitted' || entry?.status === 'closed'
 }
 
 export const localDateKey = (value) => {

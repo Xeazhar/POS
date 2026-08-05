@@ -168,18 +168,19 @@ function Shifts() {
 
       <TableCard className="max-h-none">
         <div
-          className={`grid gap-2 bg-[#f7f7f4] px-4 py-2.5 text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase ${
+          className={`grid gap-2 bg-brand-dark px-4 py-2.5 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase ${
             isManager
-              ? 'grid-cols-[1.2fr_1.1fr_0.8fr_1fr_1fr_0.7fr_0.7fr]'
-              : 'grid-cols-[1.3fr_0.9fr_1fr_1fr_0.7fr_0.7fr]'
-          } max-[800px]:grid-cols-[1.2fr_1fr_0.8fr]`}
+              ? 'grid-cols-[1.2fr_1.1fr_0.7fr_0.55fr_1fr_1fr_0.7fr_0.7fr]'
+              : 'grid-cols-[1.3fr_0.8fr_0.55fr_1fr_1fr_0.7fr_0.7fr]'
+          } max-[900px]:grid-cols-[1.2fr_0.55fr_1fr_0.8fr]`}
         >
           <span>Staff</span>
-          {isManager && <span className="max-[800px]:hidden">Branch</span>}
-          <span className="max-[800px]:hidden">Role</span>
+          {isManager && <span className="max-[900px]:hidden">Branch</span>}
+          <span className="max-[900px]:hidden">Role</span>
+          <span>Shift</span>
           <span>Clock in</span>
-          <span className="max-[800px]:hidden">Clock out</span>
-          <span className="max-[800px]:hidden">Duration</span>
+          <span className="max-[900px]:hidden">Clock out</span>
+          <span className="max-[900px]:hidden">Duration</span>
           <span>Status</span>
         </div>
         {visible.map((row) => (
@@ -187,22 +188,25 @@ function Shifts() {
             key={row.id}
             className={`grid items-center gap-2 border-t border-brand-softline px-4 py-3 text-xs ${
               isManager
-                ? 'grid-cols-[1.2fr_1.1fr_0.8fr_1fr_1fr_0.7fr_0.7fr]'
-                : 'grid-cols-[1.3fr_0.9fr_1fr_1fr_0.7fr_0.7fr]'
-            } max-[800px]:grid-cols-[1.2fr_1fr_0.8fr]`}
+                ? 'grid-cols-[1.2fr_1.1fr_0.7fr_0.55fr_1fr_1fr_0.7fr_0.7fr]'
+                : 'grid-cols-[1.3fr_0.8fr_0.55fr_1fr_1fr_0.7fr_0.7fr]'
+            } max-[900px]:grid-cols-[1.2fr_0.55fr_1fr_0.8fr]`}
           >
             <strong className="truncate text-brand-ink">{row.staffName}</strong>
             {isManager && (
-              <span className="truncate text-brand-muted max-[800px]:hidden">{row.branchName}</span>
+              <span className="truncate text-brand-muted max-[900px]:hidden">{row.branchName}</span>
             )}
-            <span className="capitalize text-brand-muted max-[800px]:hidden">
+            <span className="capitalize text-brand-muted max-[900px]:hidden">
               {row.staffRole || '—'}
             </span>
+            <span className="font-bold tabular-nums text-brand-ink">
+              {row.shiftPeriod ? row.shiftPeriod.toUpperCase() : '—'}
+            </span>
             <span className="tabular-nums">{formatWhen(row.clockIn)}</span>
-            <span className="tabular-nums text-brand-muted max-[800px]:hidden">
+            <span className="tabular-nums text-brand-muted max-[900px]:hidden">
               {formatWhen(row.clockOut)}
             </span>
-            <span className="tabular-nums max-[800px]:hidden">
+            <span className="tabular-nums max-[900px]:hidden">
               {formatDuration(row.clockIn, row.clockOut)}
             </span>
             <span

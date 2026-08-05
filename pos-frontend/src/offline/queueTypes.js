@@ -4,6 +4,8 @@ export const QUEUE_TYPES = {
   VOID_SALE: 'void_sale',
   ADJUST_STOCK: 'adjust_stock',
   SET_INVENTORY: 'set_inventory',
+  SUBMIT_DAY: 'submit_day',
+  APPROVE_DAY: 'approve_day',
   CLOSE_DAY: 'close_day',
   REOPEN_DAY: 'reopen_day',
   CREATE_PRODUCT: 'create_product',

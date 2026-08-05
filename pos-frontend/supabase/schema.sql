@@ -215,10 +215,16 @@ create table if not exists day_ends (
   variance numeric(10,2) not null default 0,
   note text,
   day_report jsonb,
-  status text not null default 'closed' check (status in ('closed', 'reopened')),
+  status text not null default 'closed' check (status in ('submitted', 'closed', 'reopened')),
   closed_at timestamptz not null default now(),
+  expected_cash numeric(10,2),
+  submitted_at timestamptz,
+  submitted_by uuid references staff(id) on delete set null,
+  approved_at timestamptz,
+  approved_by uuid references staff(id) on delete set null,
   reopened_at timestamptz,
   reopened_by uuid references staff(id) on delete set null,
+  reopen_reason text,
   unique (branch_id, business_date)
 );
 
@@ -518,36 +524,234 @@ begin
   where branch_id = p_branch_id
     and business_date = v_biz_date;
 
-  if v_status = 'closed' then
-    raise exception 'Till is closed for this business day. Ask a manager to reopen.';
+  if v_status in ('closed', 'submitted') then
+    raise exception 'Till is locked for this business day. Submit is pending approval or the day is closed — ask a manager.';
   end if;
 end;
 $$;
 
-create or replace function public.reopen_day_end(p_day_end_id uuid, p_staff_id uuid)
+create or replace function public.business_date_for(p_when timestamptz, p_open_hour integer default 7)
+returns date
+language sql
+stable
+set search_path = public
+as $$
+  select case
+    when extract(hour from (timezone('Asia/Manila', p_when))) < greatest(0, least(23, coalesce(p_open_hour, 7)))
+      then (timezone('Asia/Manila', p_when))::date - 1
+    else (timezone('Asia/Manila', p_when))::date
+  end;
+$$;
+
+create or replace function public.assert_business_day_mutable(p_branch_id uuid, p_when timestamptz)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_status text;
+  v_open_hour integer;
+  v_biz_date date;
+begin
+  select coalesce(day_open_hour, 7) into v_open_hour
+  from branches
+  where id = p_branch_id;
+
+  v_biz_date := public.business_date_for(p_when, coalesce(v_open_hour, 7));
+
+  select status into v_status
+  from day_ends
+  where branch_id = p_branch_id
+    and business_date = v_biz_date;
+
+  if v_status in ('closed', 'submitted') then
+    raise exception 'This business day is locked. Voids and refunds require the day to be reopened first.';
+  end if;
+end;
+$$;
+
+create or replace function public.submit_day_end(
+  p_branch_id uuid,
+  p_staff_id uuid,
+  p_business_date date,
+  p_recorded_cash numeric,
+  p_cash_on_hand numeric,
+  p_variance numeric,
+  p_expected_cash numeric,
+  p_note text default null,
+  p_day_report jsonb default null,
+  p_day_end_id uuid default null
+)
 returns public.day_ends
 language plpgsql
 security definer
 set search_path = public
 as $$
-declare v_row public.day_ends;
+declare
+  v_row public.day_ends;
+begin
+  if p_branch_id is distinct from public.current_staff_branch() and not public.is_manager() then
+    raise exception 'Not authorized for this branch';
+  end if;
+
+  select * into v_row
+  from day_ends
+  where branch_id = p_branch_id
+    and business_date = p_business_date
+  for update;
+
+  if found and v_row.status = 'closed' then
+    raise exception 'Day is already closed';
+  end if;
+
+  if found then
+    update day_ends
+    set
+      staff_id = p_staff_id,
+      recorded_cash = p_recorded_cash,
+      cash_on_hand = p_cash_on_hand,
+      variance = p_variance,
+      expected_cash = p_expected_cash,
+      note = p_note,
+      day_report = coalesce(p_day_report, day_report),
+      status = 'submitted',
+      submitted_at = now(),
+      submitted_by = p_staff_id,
+      approved_at = null,
+      approved_by = null,
+      closed_at = coalesce(closed_at, now()),
+      reopened_at = null,
+      reopened_by = null,
+      reopen_reason = null
+    where id = v_row.id
+    returning * into v_row;
+    return v_row;
+  end if;
+
+  insert into day_ends (
+    branch_id, staff_id, business_date,
+    recorded_cash, cash_on_hand, variance, expected_cash,
+    note, day_report, status,
+    submitted_at, submitted_by, closed_at
+  ) values (
+    p_branch_id, p_staff_id, p_business_date,
+    p_recorded_cash, p_cash_on_hand, p_variance, p_expected_cash,
+    p_note, p_day_report, 'submitted',
+    now(), p_staff_id, now()
+  )
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+create or replace function public.approve_day_end(p_day_end_id uuid, p_staff_id uuid)
+returns public.day_ends
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.day_ends;
+begin
+  if not public.is_supervisor_or_above() then
+    raise exception 'Only supervisors or managers can approve day close';
+  end if;
+
+  update day_ends
+  set
+    status = 'closed',
+    approved_at = now(),
+    approved_by = p_staff_id,
+    closed_at = coalesce(closed_at, now())
+  where id = p_day_end_id
+    and status = 'submitted'
+  returning * into v_row;
+
+  if not found then
+    raise exception 'No submitted day end found to approve';
+  end if;
+
+  insert into audit_events (branch_id, staff_id, event_type, detail, meta)
+  values (
+    v_row.branch_id,
+    p_staff_id,
+    'day_end_approved',
+    'Approved close for ' || v_row.business_date::text,
+    jsonb_build_object(
+      'day_end_id', v_row.id,
+      'business_date', v_row.business_date,
+      'variance', v_row.variance,
+      'cash_on_hand', v_row.cash_on_hand
+    )
+  );
+
+  return v_row;
+end;
+$$;
+
+create or replace function public.reopen_day_end(
+  p_day_end_id uuid,
+  p_staff_id uuid,
+  p_reason text
+)
+returns public.day_ends
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.day_ends;
+  v_reason text;
 begin
   if not public.is_manager() then
     raise exception 'Only managers can reopen the till';
   end if;
+
+  v_reason := nullif(trim(p_reason), '');
+  if v_reason is null then
+    raise exception 'Reopen reason is required';
+  end if;
+
   update day_ends
-  set status = 'reopened',
-      reopened_at = now(),
-      reopened_by = p_staff_id
+  set
+    status = 'reopened',
+    reopened_at = now(),
+    reopened_by = p_staff_id,
+    reopen_reason = v_reason
   where id = p_day_end_id
-  returning * into strict v_row;
+    and status = 'closed'
+  returning * into v_row;
+
+  if not found then
+    raise exception 'Only a closed day can be reopened';
+  end if;
+
+  insert into audit_events (branch_id, staff_id, event_type, detail, meta)
+  values (
+    v_row.branch_id,
+    p_staff_id,
+    'day_end_reopen',
+    'Reopened till for ' || v_row.business_date::text || ': ' || left(v_reason, 200),
+    jsonb_build_object(
+      'day_end_id', v_row.id,
+      'business_date', v_row.business_date,
+      'reason', v_reason
+    )
+  );
+
   return v_row;
 end;
 $$;
 
 grant execute on function public.current_business_date(integer) to authenticated;
 grant execute on function public.assert_till_open(uuid) to authenticated;
-grant execute on function public.reopen_day_end(uuid, uuid) to authenticated;
+grant execute on function public.business_date_for(timestamptz, integer) to authenticated;
+grant execute on function public.assert_business_day_mutable(uuid, timestamptz) to authenticated;
+grant execute on function public.submit_day_end(uuid, uuid, date, numeric, numeric, numeric, numeric, text, jsonb, uuid) to authenticated;
+grant execute on function public.approve_day_end(uuid, uuid) to authenticated;
+grant execute on function public.reopen_day_end(uuid, uuid, text) to authenticated;
 
 create policy "branch read import batches" on import_batches for select to authenticated
   using (branch_id = public.current_staff_branch() or public.is_manager());

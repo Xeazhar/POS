@@ -15,7 +15,10 @@ import {
   TableCard,
 } from '../components/ui'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
-import { money, qty, today, formatDate, stockTone } from '../utils/format'
+import { hasSupabase, logAuditEvent, bootstrapBranchData } from '../lib/api'
+import { isDayFullyClosed, money, qty, today, formatDate, stockTone } from '../utils/format'
+import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'
+import InventoryImportPanel from '../components/inventory/InventoryImportPanel'
 import {
   decimalOnly,
   digitsOnly,
@@ -23,7 +26,6 @@ import {
   findProductDuplicate,
   sanitizeText,
 } from '../utils/validate'
-import { hasSupabase } from '../lib/api'
 
 const PAGE_SIZE = 10
 
@@ -47,6 +49,8 @@ function Products() {
   const toggleAvailableToday = useProductStore((state) => state.toggleAvailableToday)
   const movements = useInventoryStore((state) => state.movements)
   const addMovement = useInventoryStore((state) => state.addMovement)
+  const dayEnds = useInventoryStore((state) => state.dayEnds)
+  const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const [query, setQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('All')
   const [stockFilter, setStockFilter] = useState('all')
@@ -57,6 +61,22 @@ function Products() {
   const [error, setError] = useState('')
   const [confirmSave, setConfirmSave] = useState(false)
   const [confirmAdjust, setConfirmAdjust] = useState(null)
+  const [adjustReason, setAdjustReason] = useState('')
+
+  const dayClosed = isDayFullyClosed(dayEnds, dayOpenHour)
+  const needsAdjustReason = dayClosed && isSupervisorOrAbove(user?.role)
+  const canEditProduct = isManagerRole(user?.role)
+  const canImportStock = isSupervisorOrAbove(user?.role) && !isRestaurant
+
+  const reloadProducts = async () => {
+    if (!hasSupabase || !user?.branchId) return
+    try {
+      const data = await bootstrapBranchData(user.branchId)
+      useProductStore.getState().setProducts(data.products || [])
+    } catch {
+      /* keep local */
+    }
+  }
 
   useEffect(() => {
     setPage(0)
@@ -68,6 +88,7 @@ function Products() {
     setError('')
     setConfirmSave(false)
     setConfirmAdjust(null)
+    setAdjustReason('')
   }
 
   const open = (product) => {
@@ -185,6 +206,10 @@ function Products() {
 
   const commitAdjust = async () => {
     const { amount, action } = confirmAdjust
+    if (needsAdjustReason && !adjustReason.trim()) {
+      setError('A reason is required for inventory adjustments on a closed day.')
+      return
+    }
     const signed = action === 'Restock' ? amount : -amount
     const product = products.find((item) => item.id === selected)
     const stock = Number((product.stock + signed).toFixed(2))
@@ -196,6 +221,21 @@ function Products() {
           action,
           amount,
         })
+        if (needsAdjustReason && user?.branchId) {
+          await logAuditEvent({
+            branchId: user.branchId,
+            staffId: user.id,
+            eventType: 'inventory_adjustment',
+            detail: `${action} ${product.name} (${amount}) on closed day`,
+            meta: {
+              productId: selected,
+              action,
+              amount,
+              reason: adjustReason.trim(),
+              businessDate: today(dayOpenHour),
+            },
+          })
+        }
         const refreshed = useProductStore.getState().products.find((item) => item.id === selected)
         setForm((prev) => ({ ...prev, stock: String(refreshed?.stock ?? stock) }))
       } else {
@@ -211,9 +251,11 @@ function Products() {
         setForm((prev) => ({ ...prev, stock: String(stock) }))
       }
       setConfirmAdjust(null)
+      setAdjustReason('')
     } catch (err) {
       setError(err.message || 'Adjustment failed')
       setConfirmAdjust(null)
+      setAdjustReason('')
     }
   }
 
@@ -254,6 +296,11 @@ function Products() {
           {products.length} {isRestaurant ? 'items' : 'SKUs'}
         </span>
       </PageHeader>
+
+      {canImportStock && (
+        <InventoryImportPanel products={products} onDone={reloadProducts} />
+      )}
+
       <div className="mb-[18px] flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
         <SearchBox
           className="w-full max-w-[330px]"
@@ -303,7 +350,7 @@ function Products() {
         <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
       )}
       <TableCard>
-        <div className={`grid gap-3 border-0 bg-[#f7f7f4] px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#989e99] uppercase ${
+        <div className={`grid gap-3 border-0 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase ${
           isRestaurant
             ? 'grid-cols-[2.5rem_1.5fr_1fr_0.7fr_0.8fr] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr]'
             : 'grid-cols-[2.5rem_1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr_0.7fr]'
@@ -421,7 +468,7 @@ function Products() {
             <Eyebrow>PRODUCT DETAIL</Eyebrow>
             <div className="mb-2 flex items-center justify-between gap-3">
               <h2 className="m-0 text-lg capitalize">{form.name || 'Product'}</h2>
-              {!editing && (
+              {!editing && canEditProduct && (
                 <SecondaryButton compact type="button" onClick={() => setEditing(true)}>
                   <FiEdit2 /> Edit
                 </SecondaryButton>
@@ -677,6 +724,11 @@ function Products() {
         <Modal wide layer onClose={() => setConfirmAdjust(null)}>
           <Eyebrow>CONFIRM MOVEMENT</Eyebrow>
           <h2 className="mb-3 text-[22px]">Record {confirmAdjust.action.toLowerCase()}?</h2>
+          {needsAdjustReason && (
+            <p className="mb-3 text-xs text-brand-warn">
+              Today&apos;s business day is closed. This manager adjustment will be audited.
+            </p>
+          )}
           <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px]">
             <span>Product</span>
             <strong className="text-right">{form.name}</strong>
@@ -694,11 +746,24 @@ function Products() {
               )}
             </strong>
           </div>
+          {needsAdjustReason && (
+            <Field
+              label="Reason (required — closed day)"
+              value={adjustReason}
+              onChange={(e) => setAdjustReason(e.target.value.replace(/[<>]/g, ''))}
+              placeholder="Why adjust stock after close?"
+            />
+          )}
           <ModalActions>
             <SecondaryButton compact type="button" onClick={() => setConfirmAdjust(null)}>
               Back
             </SecondaryButton>
-            <PrimaryButton compact type="button" onClick={commitAdjust}>
+            <PrimaryButton
+              compact
+              type="button"
+              disabled={needsAdjustReason && !adjustReason.trim()}
+              onClick={commitAdjust}
+            >
               Confirm
             </PrimaryButton>
           </ModalActions>

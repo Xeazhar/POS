@@ -1,11 +1,11 @@
-name,sku,barcode,category,pricingMode,price,stock,lowStockAt
-White Sugar 1kg,GRO-SUG-1,4801000000011,Groceries,pc,65,24,5
-Cooking Oil 1L,GRO-OIL-1,4801000000028,Groceries,pc,95,18,5
-Soy Sauce 1L,GRO-SOY-1,4801000000035,Groceries,pc,55,30,8
-Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,3
-Ground Pork,MEA-GINIL,4801000000059,Meat,kg,280,8,3
-Chicken Thigh,MEA-THIGH,4801000000066,Meat,kg,210,10,3
-Pandesa,BAK-PAN,4801000000073,Bakery,pc,8,80,20
-Ensaymada,BAK-ENS,4801000000080,Bakery,pc,25,40,10
-Egg Tray 30s,GRO-EGG-30,4801000000097,Groceries,pc,250,6,2
-Bottled Water 500ml,GRO-WATER,4801000000103,Groceries,pc,15,48,12
+name,sku,barcode,category,pricingMode,price,stock,discountEligible,lowStockAt
+White Sugar 1kg,GRO-SUG-1,4801000000011,Groceries,pc,65,24,true,5
+Cooking Oil 1L,GRO-OIL-1,4801000000028,Groceries,pc,95,18,true,5
+Soy Sauce 1L,GRO-SOY-1,4801000000035,Groceries,pc,55,30,true,8
+Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3
+Ground Pork,MEA-GINIL,4801000000059,Meat,kg,280,8,false,3
+Chicken Thigh,MEA-THIGH,4801000000066,Meat,kg,210,10,false,3
+Pandesa,BAK-PAN,4801000000073,Bakery,pc,8,80,true,20
+Ensaymada,BAK-ENS,4801000000080,Bakery,pc,25,40,true,10
+Egg Tray 30s,GRO-EGG-30,4801000000097,Groceries,pc,250,6,true,2
+Bottled Water 500ml,GRO-WATER,4801000000103,Groceries,pc,15,48,true,12

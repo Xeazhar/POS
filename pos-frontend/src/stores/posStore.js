@@ -39,6 +39,8 @@ export const useAuthStore = create(persist((set, get) => ({
   booting: false,
   error: '',
   pendingClockIn: false,
+  screenLocked: false,
+  deviceSessionId: null,
   login: async (emailOrCode, passwordOrPin, { mode = 'email', captchaToken } = {}) => {
     set({ error: '', booting: true })
     try {
@@ -62,7 +64,7 @@ export const useAuthStore = create(persist((set, get) => ({
           permissions: null,
           vatRate: 0.12,
         }
-        set({ user, booting: false })
+        set({ user, booting: false, screenLocked: false, deviceSessionId: 'demo-session' })
         useCartStore.getState().clear()
         await clearRequireFreshLogin()
         await saveLocalSession(user)
@@ -75,7 +77,7 @@ export const useAuthStore = create(persist((set, get) => ({
         const cached = await loadLocalSession()
         if (cached) {
           useCartStore.getState().clear()
-          set({ user: cached, booting: false })
+          set({ user: cached, booting: false, screenLocked: false })
           setSyncBranchId(cached.branchId)
           return cached
         }
@@ -86,10 +88,25 @@ export const useAuthStore = create(persist((set, get) => ({
           ? await api.signInWithPin(emailOrCode, passwordOrPin, { captchaToken })
           : await api.signIn(emailOrCode, passwordOrPin, { captchaToken })
       if (!user) throw appError('AUTH02')
+
+      if (mode === 'email') {
+        await api.setManagerUnlockSecret(user.id, passwordOrPin)
+      } else {
+        await api.clearManagerUnlockSecret()
+      }
+
+      const sessionId = api.getOrCreateDeviceSessionId()
+      try {
+        await api.claimStaffSession(user.id, sessionId)
+      } catch (claimErr) {
+        await api.signOut().catch(() => {})
+        throw claimErr
+      }
+
       useCartStore.getState().clear()
-      set({ user, booting: false })
+      set({ user, booting: false, screenLocked: false, deviceSessionId: sessionId })
       await clearRequireFreshLogin()
-      await saveLocalSession(user)
+      await saveLocalSession({ ...user, deviceSessionId: sessionId })
       setSyncBranchId(user.branchId)
       api.logAuditEvent({
         branchId: user.branchId,
@@ -111,7 +128,7 @@ export const useAuthStore = create(persist((set, get) => ({
       if (await needsFreshLogin()) {
         if (isOnline()) await api.signOut().catch(() => {})
         await clearLocalSession()
-        set({ user: null, booting: false })
+        set({ user: null, booting: false, screenLocked: false })
         return null
       }
       let user = null
@@ -123,7 +140,23 @@ export const useAuthStore = create(persist((set, get) => ({
       } else {
         await saveLocalSession(user)
       }
-      set({ user, booting: false })
+      if (user?.id && isOnline()) {
+        const sessionId = user.deviceSessionId || api.getOrCreateDeviceSessionId()
+        try {
+          await api.claimStaffSession(user.id, sessionId)
+          user = { ...user, deviceSessionId: sessionId }
+          await saveLocalSession(user)
+          set({ user, booting: false, deviceSessionId: sessionId })
+        } catch (claimErr) {
+          await api.signOut().catch(() => {})
+          await clearLocalSession()
+          api.clearDeviceSessionId()
+          set({ user: null, booting: false, error: claimErr.message, screenLocked: false })
+          return null
+        }
+      } else {
+        set({ user, booting: false })
+      }
       if (user?.branchId) setSyncBranchId(user.branchId)
       return user
     } catch {
@@ -137,9 +170,12 @@ export const useAuthStore = create(persist((set, get) => ({
       return cached
     }
   },
+  lockScreen: () => set({ screenLocked: true }),
+  unlockScreen: () => set({ screenLocked: false }),
   /** Secure lockout after day-end — clears session so next open needs password. */
   lockAfterDayEnd: async () => {
     const user = get().user
+    const sessionId = get().deviceSessionId || user?.deviceSessionId
     useCartStore.getState().clear()
     if (api.hasSupabase && user) {
       api.logAuditEvent({
@@ -148,15 +184,19 @@ export const useAuthStore = create(persist((set, get) => ({
         eventType: 'day_end_lock',
         detail: 'Day closed — session locked until next login',
       })
+      if (sessionId) await api.releaseStaffSession(user.id, sessionId).catch(() => {})
     }
     await markRequireFreshLogin()
     if (api.hasSupabase && isOnline()) await api.signOut().catch(() => {})
     await clearLocalSession()
+    api.clearDeviceSessionId()
+    await api.clearManagerUnlockSecret()
     setSyncBranchId(null)
-    set({ user: null, pendingClockIn: false })
+    set({ user: null, pendingClockIn: false, screenLocked: false, deviceSessionId: null })
   },
   logout: async () => {
     const user = get().user
+    const sessionId = get().deviceSessionId || user?.deviceSessionId
     useCartStore.getState().clear()
     if (api.hasSupabase && user) {
       api.logAuditEvent({
@@ -165,11 +205,14 @@ export const useAuthStore = create(persist((set, get) => ({
         eventType: 'logout',
         detail: `Signed out ${user.name}`,
       })
+      if (sessionId) await api.releaseStaffSession(user.id, sessionId).catch(() => {})
     }
     if (api.hasSupabase && isOnline()) await api.signOut()
     await clearLocalSession()
+    api.clearDeviceSessionId()
+    await api.clearManagerUnlockSecret()
     setSyncBranchId(null)
-    set({ user: null, pendingClockIn: false })
+    set({ user: null, pendingClockIn: false, screenLocked: false, deviceSessionId: null })
   },
 }), { name: 'cale-pos-auth-v4', partialize: (state) => ({ user: api.hasSupabase ? null : state.user }) }))
 
@@ -841,7 +884,7 @@ export const useInventoryStore = create((set, get) => ({
       movements: [{ ...movement, id: `${movement.productId}-${Date.now()}` }, ...state.movements],
     }))
   },
-  closeDay: async (entry) => {
+  submitDay: async (entry) => {
     const user = useAuthStore.getState().user
     const existing = get().dayEnds.find((item) => item.date === entry.date)
     if (existing?.status === 'closed') return existing
@@ -849,8 +892,9 @@ export const useInventoryStore = create((set, get) => ({
     const mapped = {
       ...entry,
       id: existing?.id || newClientId('day'),
-      status: 'closed',
+      status: 'submitted',
       cashier: user?.name || entry.cashier,
+      submittedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       reopenedAt: null,
       branchId: user?.branchId,
       dayReport: entry.dayReport || null,
@@ -862,7 +906,7 @@ export const useInventoryStore = create((set, get) => ({
 
     if (api.hasSupabase && user?.branchId) {
       if (isOnline()) {
-        const row = await api.closeDayEnd({
+        const row = await api.submitDayEnd({
           branchId: user.branchId,
           staffId: user.id,
           entry: { ...entry, id: existing?.id },
@@ -876,7 +920,7 @@ export const useInventoryStore = create((set, get) => ({
         return remote
       }
       await enqueue(
-        QUEUE_TYPES.CLOSE_DAY,
+        QUEUE_TYPES.SUBMIT_DAY,
         {
           branchId: user.branchId,
           staffId: user.id,
@@ -888,7 +932,35 @@ export const useInventoryStore = create((set, get) => ({
     }
     return mapped
   },
-  reopenDay: async (id) => {
+  /** @deprecated use submitDay */
+  closeDay: async (entry) => get().submitDay(entry),
+  approveDay: async (id) => {
+    const user = useAuthStore.getState().user
+    set((state) => ({
+      dayEnds: state.dayEnds.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              status: 'closed',
+              approvedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            }
+          : item,
+      ),
+    }))
+    if (api.hasSupabase && user) {
+      if (isOnline()) {
+        const row = await api.approveDayEnd({ id, staffId: user.id })
+        const mapped = api.mapDayEndRow(row)
+        set((state) => ({
+          dayEnds: state.dayEnds.map((item) => (item.id === id ? mapped : item)),
+        }))
+        return mapped
+      }
+      await enqueue(QUEUE_TYPES.APPROVE_DAY, { id, staffId: user.id }, { branchId: user.branchId })
+      useSyncStore.getState().refresh(user.branchId)
+    }
+  },
+  reopenDay: async (id, reason) => {
     const user = useAuthStore.getState().user
     set((state) => ({
       dayEnds: state.dayEnds.map((item) =>
@@ -897,20 +969,25 @@ export const useInventoryStore = create((set, get) => ({
               ...item,
               status: 'reopened',
               reopenedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              reopenReason: reason || item.reopenReason,
             }
           : item,
       ),
     }))
     if (api.hasSupabase && user) {
       if (isOnline()) {
-        const row = await api.reopenDayEnd({ id, staffId: user.id })
+        const row = await api.reopenDayEnd({ id, staffId: user.id, reason })
         const mapped = api.mapDayEndRow(row)
         set((state) => ({
           dayEnds: state.dayEnds.map((item) => (item.id === id ? mapped : item)),
         }))
         return mapped
       }
-      await enqueue(QUEUE_TYPES.REOPEN_DAY, { id, staffId: user.id }, { branchId: user.branchId })
+      await enqueue(
+        QUEUE_TYPES.REOPEN_DAY,
+        { id, staffId: user.id, reason },
+        { branchId: user.branchId },
+      )
       useSyncStore.getState().refresh(user.branchId)
     }
   },

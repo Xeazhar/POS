@@ -6,7 +6,7 @@ export const staffLinks = [
   ['/pos', 'POS', FiGrid, 'pos'],
   ['/transactions', 'Transactions', FiClipboard, 'transactions'],
   ['/inventory', 'Inventory', FiPackage, 'inventory'],
-  ['/data', 'Catalog', FiDatabase, 'inventory'],
+  ['/data', 'Catalog', FiDatabase, 'catalog'],
   ['/day-end', 'Day end', FiMoon, 'day_end'],
   ['/manager/promos', 'Promos', FiTag, 'manager_promos'],
   ['/shifts', 'Shifts', FiClock, 'shifts'],
@@ -21,7 +21,7 @@ export function staffLinksFor(user) {
           ['/pos', 'POS', FiGrid, 'pos'],
           ['/transactions', 'Sales', FiClipboard, 'transactions'],
           ['/inventory', 'Menu', FiCoffee, 'inventory'],
-          ['/data', 'Catalog', FiDatabase, 'inventory'],
+          ['/data', 'Catalog', FiDatabase, 'catalog'],
           ['/day-end', 'Day end', FiMoon, 'day_end'],
           ['/manager/promos', 'Promos', FiTag, 'manager_promos'],
           ['/shifts', 'Shifts', FiClock, 'shifts'],
@@ -42,8 +42,6 @@ export function staffLinksFor(user) {
     if (!canAccessModule(user, moduleId)) return false
     // Managers/master already have Shifts under manager nav
     if (moduleId === 'shifts' && isManagerRole(user.role)) return false
-    // Add/import catalog is supervisor+ only (cashiers keep Inventory for stock view)
-    if (path === '/data' && user?.role !== 'supervisor' && user?.role !== 'master') return false
     return true
   })
 }

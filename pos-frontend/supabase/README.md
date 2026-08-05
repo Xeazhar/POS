@@ -13,16 +13,23 @@
 2. Run any **new** migrations you haven’t applied yet, e.g.:
    - `migrate_pin_security_hardening.sql` (PIN lockout + no password leak)
    - `migrate_promos_supervisor_branch_scope.sql`
+   - `migrate_staff_shift_period.sql` (AM/PM on clock-in)
+   - `migrate_day_end_dual_control.sql` (submit → approve close, immutability)
+   - `migrate_promo_dual_control.sql` (promo create/stop need manager approval)
+   - `migrate_staff_active_session.sql` (one active login + lock-screen PIN verify)
+   - `migrate_network_product_catalog.sql` (shared catalog; supervisors adopt to branch)
+   - `migrate_catalog_branch_type.sql` (retail vs restaurant catalog filter)
+   - `wipe_products_clean_start.sql` (**destructive**) — wipe products + catalog for a fresh import
    - etc.
 
 ## Table map (mental model)
 
 ```
 branches
-  ├─ staff (+ pin login / permissions)
-  ├─ products → branch_inventory, stock_movements
+  ├─ staff (+ pin login / permissions / active_session_id)
+  ├─ catalog_products (network master) → products (per-branch adopt) → branch_inventory
   ├─ transactions → transaction_items
-  ├─ promo_events → promo_rules → promo_rule_products
+  ├─ promo_events (status: pending|active|stop_pending|…) → promo_rules → promo_rule_products
   ├─ day_ends
   ├─ import_batches → import_batch_items
   ├─ petty_cash, staff_shifts

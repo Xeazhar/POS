@@ -6,7 +6,7 @@ import { useIsTouchUi } from '../../hooks/useIsTouchUi'
 import { useAuthStore, useCartStore, useInventoryStore } from '../../stores/posStore'
 import { formatSupportError } from '../../utils/errors'
 import { buildReceipt } from '../../utils/receipt'
-import { money, qty, today, formatOpenHourLabel } from '../../utils/format'
+import { money, pesoWhole, PESO, qty, today, formatOpenHourLabel } from '../../utils/format'
 import { hasBudgetTier, lineTotal } from '../../utils/ulam'
 import { isSupervisorOrAbove } from '../../utils/roles'
 import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton, StatusOverlay } from '../ui'
@@ -285,7 +285,6 @@ function Cart({
       const cash =
         paymentMethod === 'cash' ? Number(tendered) : Number(payTotal)
       const saved = await addTransaction({
-        id: `TX-${items.length}-${Math.round(payTotal * 100)}`,
         time: 'Just now',
         cashier: user?.name || 'Staff',
         total: payTotal,
@@ -306,7 +305,7 @@ function Cart({
           discountType === 'pwd' || discountType === 'senior' ? String(discountIdNote).trim() : null,
       })
       const change = Math.max(0, cash - payTotal)
-      const orLabel = saved?.orNumber || saved?.id || '—'
+      const orLabel = saved?.orNumber || saved?.id || 'Sale'
       const saleOrderType = isRestaurant ? orderType : undefined
 
       clear()
@@ -410,11 +409,11 @@ function Cart({
 
   const quickCash = [
     { label: 'Exact', value: payTotal },
-    { label: '₱50', value: 50 },
-    { label: '₱100', value: 100 },
-    { label: '₱200', value: 200 },
-    { label: '₱500', value: 500 },
-    { label: '₱1000', value: 1000 },
+    { label: pesoWhole(50), value: 50 },
+    { label: pesoWhole(100), value: 100 },
+    { label: pesoWhole(200), value: 200 },
+    { label: pesoWhole(500), value: 500 },
+    { label: pesoWhole(1000), value: 1000 },
   ]
 
   const methodLabel =
@@ -452,7 +451,7 @@ function Cart({
           <h2 className="mb-1 pr-8 text-[22px] max-[700px]:text-xl">{money(payTotal)}</h2>
           <p className="m-0 mb-3 text-xs text-brand-muted">
             {items.length} item{items.length === 1 ? '' : 's'}
-            {pricing.discountAmount > 0 ? ` · discount −${money(pricing.discountAmount)}` : ''}
+            {pricing.discountAmount > 0 ? ` · discount -${money(pricing.discountAmount)}` : ''}
           </p>
 
           <p className="mb-1.5 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">Payment</p>
@@ -529,7 +528,7 @@ function Cart({
                 </div>
                 <div className="mt-1 flex items-center justify-between text-brand-muted">
                   <span>Discount ({discountType === 'pwd' ? 'PWD' : 'Senior'} 20%)</span>
-                  <strong className="text-brand-danger">−{money(pricing.discountAmount)}</strong>
+                  <strong className="text-brand-danger">-{money(pricing.discountAmount)}</strong>
                 </div>
                 {discountedItemBreakdown.length > 0 && (
                   <div className="mt-2 px-0 py-1">
@@ -540,7 +539,7 @@ function Cart({
                       {discountedItemBreakdown.map((row, idx) => (
                         <div key={`${row.name}-${idx}`} className="flex items-center justify-between gap-3 text-[11px] text-brand-muted">
                           <span className="truncate">{row.name}</span>
-                          <strong className="shrink-0 text-brand-danger">−{money(row.amount)}</strong>
+                          <strong className="shrink-0 text-brand-danger">-{money(row.amount)}</strong>
                         </div>
                       ))}
                     </div>
@@ -571,7 +570,7 @@ function Cart({
               </div>
               <div className="mt-1 flex items-center justify-between text-brand-muted">
                 <span>Discount ({pricing.discountType || 'Promo'})</span>
-                <strong className="text-brand-danger">−{money(pricing.discountAmount)}</strong>
+                <strong className="text-brand-danger">-{money(pricing.discountAmount)}</strong>
               </div>
               <div className="mt-1 flex items-center justify-between">
                 <span className="font-bold text-brand-ink">Amount due</span>
@@ -585,7 +584,7 @@ function Cart({
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-xs text-brand-muted">Cash tendered</span>
                 <strong className="font-mono text-lg tabular-nums text-brand-ink">
-                  {tendered === '' ? '₱0.00' : `₱${tendered}`}
+                  {tendered === '' ? money(0) : `${PESO}${tendered}`}
                 </strong>
               </div>
               {touchUi ? (
@@ -599,7 +598,7 @@ function Cart({
               ) : (
                 <>
                   <label className="mb-2 flex items-center rounded border border-brand-line bg-white px-2.5">
-                    <span className="shrink-0 font-mono text-brand-subtle">₱</span>
+                    <span className="shrink-0 font-mono text-brand-subtle">{PESO}</span>
                     <input
                       className="w-full bg-transparent py-2.5 text-right font-mono text-brand-ink outline-none"
                       value={tendered}
@@ -698,7 +697,7 @@ function Cart({
           }}
         />
       )}
-      <section className="flex h-[calc(100vh-140px)] min-h-0 min-w-0 flex-col rounded-[10px] border border-brand-line bg-white text-brand-ink max-[1050px]:h-auto max-[1050px]:min-h-[520px] max-[800px]:h-auto max-[800px]:min-h-[560px]">
+      <section className="flex h-full min-h-0 min-w-0 flex-col rounded-[10px] border border-brand-line bg-white text-brand-ink max-[800px]:min-h-[520px] max-[800px]:h-auto">
         <div className="flex shrink-0 items-start justify-between gap-3 border-b border-brand-cart-line px-5 pt-5 pb-4 max-[700px]:px-3.5">
           <div>
             <Eyebrow className="text-[#a8aeaa]">CURRENT SALE</Eyebrow>
@@ -751,7 +750,7 @@ function Cart({
             <div className="min-h-0 overflow-auto px-5 py-2 max-[1050px]:min-h-[320px] max-[800px]:min-h-[340px] max-[700px]:px-3.5">
               {items.length ? (
                 <div className="overflow-hidden bg-white">
-                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-[#f7f7f4] px-3 py-2 text-[10px] font-bold tracking-wide text-[#989e99] uppercase">
+                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-brand-dark px-3 py-2 text-[10px] font-bold tracking-wide text-[#c8ceca] uppercase">
                     <span>Item</span>
                     <span className="text-right">Price</span>
                     <span className="text-center">Qty</span>
@@ -896,7 +895,7 @@ function Cart({
             <div className="min-h-0 flex-1 overflow-auto px-5 py-2 max-[1050px]:min-h-[320px] max-[800px]:min-h-[340px] max-[700px]:px-3.5">
               {items.length ? (
                 <div className="overflow-hidden bg-white">
-                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-[#f7f7f4] px-3 py-2 text-[10px] font-bold tracking-wide text-[#989e99] uppercase">
+                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-brand-dark px-3 py-2 text-[10px] font-bold tracking-wide text-[#c8ceca] uppercase">
                     <span>Item</span>
                     <span className="text-right">Price</span>
                     <span className="text-center">Qty</span>
@@ -1005,7 +1004,7 @@ function Cart({
                 <div>
                   <span className="block text-[11px] text-[#8a908c]">
                     {items.length} item{items.length === 1 ? '' : 's'}
-                    {pricing.discountAmount > 0 ? ` · −${money(pricing.discountAmount)} disc.` : ''}
+                    {pricing.discountAmount > 0 ? ` · -${money(pricing.discountAmount)} disc.` : ''}
                   </span>
                   <strong className="mt-0.5 block text-xl tabular-nums text-brand-ink">{money(payTotal)}</strong>
                 </div>

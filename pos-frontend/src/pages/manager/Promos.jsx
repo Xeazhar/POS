@@ -5,11 +5,17 @@ import {
   createAndActivatePromoEvent,
   createPromoRule,
   fetchActivePromoEventWithRules,
+  fetchPromoRulesForEvent,
   deletePromoRule,
   updatePromoEventDetails,
   fetchPromoEventsForBranch,
   deletePromoEvent,
   fetchBranches,
+  approvePromoEvent,
+  rejectPromoEvent,
+  requestStopPromo,
+  approveStopPromo,
+  rejectStopPromo,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
 import { isManagerRole } from '../../utils/roles'
@@ -67,6 +73,9 @@ export default function ManagerPromos() {
   const [editStartsAt, setEditStartsAt] = useState('')
   const [editEndsAt, setEditEndsAt] = useState('')
   const [pendingDelete, setPendingDelete] = useState(null)
+  const [workingEvent, setWorkingEvent] = useState(null) // pending event for adding rules
+  const [stopReason, setStopReason] = useState('')
+  const [stopModal, setStopModal] = useState(false)
 
   const selectedBranch = branches.find((b) => b.id === branchId)
   const selectedProductsForRule = useMemo(() => {
@@ -164,13 +173,35 @@ export default function ManagerPromos() {
   const refreshActive = async () => {
     if (!branchId) {
       setActive(null)
+      setWorkingEvent(null)
       setHistory([])
       return
     }
     const next = await fetchActivePromoEventWithRules(branchId, { respectDuration: false })
     setActive(next)
-    await refreshHistory()
+    const rows = await fetchPromoEventsForBranch(branchId)
+    setHistory(rows)
+    const pending = (rows || []).find((r) => r.status === 'pending')
+    if (pending) {
+      const rules = await fetchPromoRulesForEvent(pending.id).catch(() => [])
+      setWorkingEvent({
+        event: {
+          id: pending.id,
+          name: pending.name,
+          status: 'pending',
+          startsAt: pending.starts_at,
+          endsAt: pending.ends_at,
+        },
+        rules,
+      })
+    } else {
+      setWorkingEvent(null)
+    }
   }
+
+  const eventForRules = active?.event?.status === 'active' || active?.event?.status === 'stop_pending'
+    ? active
+    : workingEvent
 
   const onCreateEvent = async () => {
     if (!branchId) {
@@ -190,11 +221,83 @@ export default function ManagerPromos() {
         name: eventName.trim(),
         startsAt: startsAt || null,
         endsAt: endsAt || null,
+        staffId: user?.id,
       })
       setEventName('')
       await refreshActive()
     } catch (e) {
       setError(e?.message || 'Failed to create promo event.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onApproveCreate = async (id) => {
+    setBusy(true)
+    setError('')
+    try {
+      await approvePromoEvent({ id, staffId: user.id })
+      await refreshActive()
+    } catch (e) {
+      setError(e?.message || 'Failed to approve promo.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onRejectCreate = async (id) => {
+    setBusy(true)
+    setError('')
+    try {
+      await rejectPromoEvent({ id, staffId: user.id })
+      await refreshActive()
+    } catch (e) {
+      setError(e?.message || 'Failed to reject promo.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onRequestStop = async () => {
+    if (!active?.event?.id || !stopReason.trim()) {
+      setError('Enter a reason to request stop.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await requestStopPromo({ id: active.event.id, staffId: user.id, reason: stopReason.trim() })
+      setStopModal(false)
+      setStopReason('')
+      await refreshActive()
+    } catch (e) {
+      setError(e?.message || 'Failed to request stop.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onApproveStop = async (id) => {
+    setBusy(true)
+    setError('')
+    try {
+      await approveStopPromo({ id, staffId: user.id })
+      await refreshActive()
+    } catch (e) {
+      setError(e?.message || 'Failed to approve stop.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onRejectStop = async (id) => {
+    setBusy(true)
+    setError('')
+    try {
+      await rejectStopPromo({ id, staffId: user.id })
+      await refreshActive()
+    } catch (e) {
+      setError(e?.message || 'Failed to reject stop.')
     } finally {
       setBusy(false)
     }
@@ -291,7 +394,8 @@ export default function ManagerPromos() {
   }
 
   const onAddRule = async () => {
-    if (!active?.event?.id) return
+    const eventId = eventForRules?.event?.id
+    if (!eventId) return
     if (!selectedProductsForRule.length) return
     if (discountPct < 0 || discountPct > 100) return
     setBusy(true)
@@ -299,13 +403,12 @@ export default function ManagerPromos() {
     try {
       let buyQty = 1
       let getQty = 1
-      // MVP: B1T1 only (buy 1, get 1)
       if (ruleType !== 'bogo_pct') {
         buyQty = 1
         getQty = 1
       }
       await createPromoRule({
-        promoEventId: active.event.id,
+        promoEventId: eventId,
         ruleType,
         discountPct: Number(discountPct),
         productIds: selectedProductsForRule,
@@ -373,18 +476,41 @@ export default function ManagerPromos() {
       <TableCard className="mb-4 max-h-none overflow-visible p-5">
         <div className="grid gap-4 sm:grid-cols-2 sm:items-start">
           <div>
-            <Eyebrow>Active promo</Eyebrow>
-            <h2 className="m-0 text-lg">{active?.event?.name || 'No active promo event'}</h2>
+            <Eyebrow>Live promo</Eyebrow>
+            <h2 className="m-0 text-lg">{active?.event?.name || 'No live promo'}</h2>
             <p className="m-0 mt-1 text-xs text-brand-muted">
-              One event can be active at a time for this branch, but that event can contain multiple promo rules.
+              New promos require manager approval before going live. Stopping also needs manager approval first.
             </p>
+            {active?.event?.status === 'stop_pending' && (
+              <p className="mt-2 rounded-md bg-brand-warn-bg px-3 py-2 text-xs text-brand-warn">
+                Stop awaiting manager approval
+                {active.event.stopReason ? `: ${active.event.stopReason}` : ''}
+              </p>
+            )}
+            {active?.event?.status === 'active' && (
+              <div className="mt-3">
+                <PrimaryButton compact type="button" disabled={busy} onClick={() => setStopModal(true)}>
+                  Request stop
+                </PrimaryButton>
+              </div>
+            )}
+            {managerView && active?.event?.status === 'stop_pending' && (
+              <div className="mt-3 flex gap-2">
+                <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveStop(active.event.id)}>
+                  Approve stop
+                </PrimaryButton>
+                <SecondaryButton compact type="button" disabled={busy} onClick={() => onRejectStop(active.event.id)}>
+                  Reject stop
+                </SecondaryButton>
+              </div>
+            )}
           </div>
 
           <div className="flex flex-col gap-3">
             <div className="flex items-end gap-2">
               <div className="flex-1">
                 <Field
-                  label="New promo event name"
+                  label="Request new promo event"
                   value={eventName}
                   onChange={(e) => setEventName(e.target.value)}
                   placeholder="e.g. Valentines"
@@ -396,7 +522,7 @@ export default function ManagerPromos() {
                 disabled={busy || !branchId || !eventName.trim() || !startsAt || !endsAt}
                 onClick={onCreateEvent}
               >
-                {busy ? 'Saving…' : 'Create'}
+                {busy ? 'Saving…' : 'Submit for approval'}
               </PrimaryButton>
             </div>
 
@@ -419,26 +545,49 @@ export default function ManagerPromos() {
                   className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
                 />
               </label>
-              {/* Duration is required before creating an event; no separate save button. */}
             </div>
           </div>
         </div>
       </TableCard>
+
+      {workingEvent && (
+        <TableCard className="mb-4 max-h-none overflow-visible p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <Eyebrow>PENDING APPROVAL</Eyebrow>
+              <h2 className="m-0 text-lg">{workingEvent.event.name}</h2>
+              <p className="m-0 mt-1 text-xs text-brand-muted">Add rules while waiting. Not live on POS yet.</p>
+            </div>
+            {managerView && (
+              <div className="flex gap-2">
+                <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveCreate(workingEvent.event.id)}>
+                  Approve &amp; activate
+                </PrimaryButton>
+                <SecondaryButton compact type="button" disabled={busy} onClick={() => onRejectCreate(workingEvent.event.id)}>
+                  Reject
+                </SecondaryButton>
+              </div>
+            )}
+          </div>
+        </TableCard>
+      )}
 
       <TableCard className="mb-4 max-h-none overflow-visible p-5">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="m-0 text-base">Rules</h2>
             <p className="m-0 mt-1 text-xs text-brand-subtle">
-              {active?.rules?.length ? `${active.rules.length} rule(s)` : 'Add rules to the active event.'}
+              {eventForRules?.rules?.length
+                ? `${eventForRules.rules.length} rule(s) on ${eventForRules.event?.status || 'event'}`
+                : 'Add rules to the pending or live event.'}
             </p>
           </div>
         </div>
 
-        {active?.rules?.length ? (
+        {eventForRules?.rules?.length ? (
           <div className="mt-4 overflow-x-auto overflow-y-visible">
             <table className="min-w-full text-left text-xs">
-              <thead className="bg-[#f7f7f4] text-[9px] tracking-[1px] text-[#989e99] uppercase">
+              <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
                 <tr>
                   <th className="px-3 py-3">Type</th>
                   <th className="px-3 py-3">Discount</th>
@@ -447,7 +596,7 @@ export default function ManagerPromos() {
                 </tr>
               </thead>
               <tbody>
-                {active.rules.map((r) => (
+                {eventForRules.rules.map((r) => (
                   <tr key={r.id} className="border-t border-brand-softline">
                     <td className="px-3 py-3 font-bold text-brand-ink">{r.ruleType}</td>
                     <td className="px-3 py-3">
@@ -474,7 +623,7 @@ export default function ManagerPromos() {
                       <button
                         type="button"
                         className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                        disabled={busy}
+                        disabled={busy || active?.event?.status === 'stop_pending'}
                         onClick={() =>
                           openDeleteConfirm({
                             kind: 'rule',
@@ -508,7 +657,7 @@ export default function ManagerPromos() {
         {history.length ? (
           <div className="mt-4 overflow-x-auto overflow-y-visible">
             <table className="min-w-full text-left text-xs">
-              <thead className="bg-[#f7f7f4] text-[9px] tracking-[1px] text-[#989e99] uppercase">
+              <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
                 <tr>
                   <th className="px-3 py-3">Event</th>
                   <th className="px-3 py-3">Duration</th>
@@ -531,9 +680,47 @@ export default function ManagerPromos() {
                     <tr key={e.id} className="border-t border-brand-softline">
                       <td className="px-3 py-3 font-bold text-brand-ink">{e.name}</td>
                       <td className="px-3 py-3">{fmt(e.starts_at)} → {fmt(e.ends_at)}</td>
-                      <td className="px-3 py-3">{isActive ? 'Active' : 'Inactive'}</td>
+                      <td className="px-3 py-3 capitalize">{e.status || (isActive ? 'active' : 'inactive')}</td>
                       <td className="px-3 py-3 text-right">
-                        {isActive ? (
+                        {managerView && e.status === 'pending' ? (
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                              disabled={busy}
+                              onClick={() => onApproveCreate(e.id)}
+                            >
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                              disabled={busy}
+                              onClick={() => onRejectCreate(e.id)}
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        ) : managerView && e.status === 'stop_pending' ? (
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                              disabled={busy}
+                              onClick={() => onApproveStop(e.id)}
+                            >
+                              Approve stop
+                            </button>
+                            <button
+                              type="button"
+                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                              disabled={busy}
+                              onClick={() => onRejectStop(e.id)}
+                            >
+                              Reject stop
+                            </button>
+                          </div>
+                        ) : isActive || e.status === 'active' || e.status === 'stop_pending' ? (
                           <span className="text-brand-subtle">—</span>
                         ) : (
                           <div className="flex items-center justify-end gap-2">
@@ -664,7 +851,7 @@ export default function ManagerPromos() {
           <SecondaryButton
             compact
             type="button"
-            disabled={busy || !active?.event?.id || !selectedProductsForRule.length}
+            disabled={busy || !eventForRules?.event?.id || !selectedProductsForRule.length}
             onClick={onAddRule}
           >
             <FiPlus className="mr-1" />
@@ -732,6 +919,30 @@ export default function ManagerPromos() {
             </SecondaryButton>
             <PrimaryButton compact type="button" disabled={busy} onClick={() => void confirmDelete()}>
               {busy ? 'Deleting…' : 'Confirm delete'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {stopModal && (
+        <Modal onClose={() => !busy && setStopModal(false)}>
+          <Eyebrow>REQUEST STOP</Eyebrow>
+          <h2 className="m-0 mb-2 text-lg">Stop {active?.event?.name}?</h2>
+          <p className="m-0 mb-3 text-xs text-brand-muted">
+            Promo stays live until a manager approves this stop request.
+          </p>
+          <Field
+            label="Reason (required)"
+            value={stopReason}
+            onChange={(e) => setStopReason(e.target.value.replace(/[<>]/g, ''))}
+            placeholder="Why end this promo early?"
+          />
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={busy} onClick={() => setStopModal(false)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton compact type="button" disabled={busy || !stopReason.trim()} onClick={onRequestStop}>
+              {busy ? 'Submitting…' : 'Submit stop request'}
             </PrimaryButton>
           </ModalActions>
         </Modal>
