@@ -1,7 +1,10 @@
 import { useEffect, useId, useRef } from 'react'
 
 const SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
-const SITEKEY = import.meta.env.VITE_TURNSTILE_SITEKEY || ''
+// Backward compatible env support:
+// - preferred: VITE_TURNSTILE_SITEKEY
+// - fallback:  VITE_HCAPTCHA_SITEKEY (older deploy env name)
+const SITEKEY = import.meta.env.VITE_TURNSTILE_SITEKEY || import.meta.env.VITE_HCAPTCHA_SITEKEY || ''
 
 let scriptPromise = null
 
