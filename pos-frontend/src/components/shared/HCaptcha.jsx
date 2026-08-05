@@ -1,79 +1,71 @@
 import { useEffect, useId, useRef } from 'react'
 
-const SCRIPT_SRC = 'https://js.hcaptcha.com/1/api.js?render=explicit'
-const SITEKEY = import.meta.env.VITE_HCAPTCHA_SITEKEY || ''
+const SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
+const SITEKEY = import.meta.env.VITE_TURNSTILE_SITEKEY || ''
 
 let scriptPromise = null
 
-function loadHCaptchaScript() {
+function loadTurnstileScript() {
   if (typeof window === 'undefined') return Promise.reject(new Error('No window'))
-  if (window.hcaptcha?.render) return Promise.resolve(window.hcaptcha)
+  if (window.turnstile?.render) return Promise.resolve(window.turnstile)
   if (scriptPromise) return scriptPromise
 
   scriptPromise = new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src^="https://js.hcaptcha.com/1/api.js"]`)
+    const existing = document.querySelector(`script[src^="https://challenges.cloudflare.com/turnstile"]`)
     if (existing) {
-      existing.addEventListener('load', () => resolve(window.hcaptcha))
-      existing.addEventListener('error', () => reject(new Error('Failed to load hCaptcha')))
-      if (window.hcaptcha?.render) resolve(window.hcaptcha)
+      existing.addEventListener('load', () => resolve(window.turnstile))
+      existing.addEventListener('error', () => reject(new Error('Failed to load Turnstile')))
+      if (window.turnstile?.render) resolve(window.turnstile)
       return
     }
     const script = document.createElement('script')
     script.src = SCRIPT_SRC
     script.async = true
     script.defer = true
-    script.onload = () => resolve(window.hcaptcha)
-    script.onerror = () => reject(new Error('Failed to load hCaptcha'))
+    script.onload = () => resolve(window.turnstile)
+    script.onerror = () => reject(new Error('Failed to load Turnstile'))
     document.head.appendChild(script)
   })
   return scriptPromise
 }
 
 /** Public sitekey — safe in the browser. Empty = captcha disabled. */
-export function hcaptchaSiteKey() {
+export function turnstileSiteKey() {
   return String(SITEKEY || '').trim()
 }
 
-/** True on localhost / loopback — hCaptcha hostname allowlisting is unreliable here. */
-export function isLocalHost() {
-  if (typeof window === 'undefined') return false
-  const host = window.location.hostname
-  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.local')
+export function isTurnstileEnabled() {
+  return Boolean(turnstileSiteKey())
 }
 
 /**
- * Captcha widget is shown whenever a sitekey is configured.
- * Token must be passed to Supabase Auth (Dashboard → Auth → CAPTCHA protection).
- */
-export function isHCaptchaEnabled() {
-  return Boolean(hcaptchaSiteKey())
-}
-
-/**
- * Explicit hCaptcha widget for login / forms.
+ * Cloudflare Turnstile widget.
  * Calls onVerify(token) when solved; onExpire/onError clear the token.
+ * Token is passed to Supabase Auth (signInWithPassword captchaToken option).
+ * Supabase Auth must be configured with Turnstile provider + secret key.
  */
-export default function HCaptcha({ onVerify, onExpire, onError, className = '' }) {
+export default function Turnstile({ onVerify, onExpire, onError, className = '' }) {
   const hostId = useId().replace(/:/g, '')
   const widgetIdRef = useRef(null)
   const callbacksRef = useRef({ onVerify, onExpire, onError })
   callbacksRef.current = { onVerify, onExpire, onError }
 
   useEffect(() => {
-    const sitekey = hcaptchaSiteKey()
+    const sitekey = turnstileSiteKey()
     if (!sitekey) return undefined
 
     let cancelled = false
 
-    void loadHCaptchaScript()
-      .then((hcaptcha) => {
-        if (cancelled || !hcaptcha?.render) return
+    void loadTurnstileScript()
+      .then((turnstile) => {
+        if (cancelled || !turnstile?.render) return
         const el = document.getElementById(hostId)
         if (!el) return
-        // Avoid double-render if Strict Mode remounts with leftover DOM
         el.innerHTML = ''
-        widgetIdRef.current = hcaptcha.render(el, {
+        widgetIdRef.current = turnstile.render(el, {
           sitekey,
+          // Force white/light UI to match the app's login card.
+          theme: 'light',
           callback: (token) => callbacksRef.current.onVerify?.(token),
           'expired-callback': () => {
             callbacksRef.current.onExpire?.()
@@ -92,8 +84,8 @@ export default function HCaptcha({ onVerify, onExpire, onError, className = '' }
     return () => {
       cancelled = true
       try {
-        if (widgetIdRef.current != null && window.hcaptcha?.reset) {
-          window.hcaptcha.reset(widgetIdRef.current)
+        if (widgetIdRef.current != null && window.turnstile?.remove) {
+          window.turnstile.remove(widgetIdRef.current)
         }
       } catch {
         /* ignore */
@@ -102,11 +94,16 @@ export default function HCaptcha({ onVerify, onExpire, onError, className = '' }
     }
   }, [hostId])
 
-  if (!hcaptchaSiteKey()) return null
+  if (!turnstileSiteKey()) return null
 
   return (
     <div className={className}>
-      <div id={hostId} className="h-captcha" data-sitekey={hcaptchaSiteKey()} />
+      <div
+        id={hostId}
+        className="cf-turnstile"
+        data-sitekey={turnstileSiteKey()}
+        data-theme="light"
+      />
     </div>
   )
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eyebrow, ErrorBanner, Field, PrimaryButton } from '../components/ui'
-import HCaptcha, { isHCaptchaEnabled } from '../components/shared/HCaptcha'
+import Turnstile, { isTurnstileEnabled } from '../components/shared/HCaptcha'
 import { allowDemoMode, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { formatSupportError } from '../utils/errors'
@@ -11,7 +11,7 @@ import * as api from '../lib/api'
 
 function Login() {
   const configured = hasSupabase || allowDemoMode
-  const captchaRequired = hasSupabase && isHCaptchaEnabled()
+  const captchaRequired = hasSupabase && isTurnstileEnabled()
   const [mode, setMode] = useState('pin') // pin | email
   const [loginCode, setLoginCode] = useState('')
   const [pin, setPin] = useState('')
@@ -149,7 +149,7 @@ function Login() {
 
               {captchaRequired && (
                 <div className="mt-[18px]">
-                  <HCaptcha
+                  <Turnstile
                     key={captchaKey}
                     onVerify={setCaptchaToken}
                     onExpire={() => setCaptchaToken('')}
@@ -161,7 +161,7 @@ function Login() {
               {error && (
                 <ErrorBanner
                   className="mt-3 mb-0"
-                  error={formatSupportError(error, /captcha|hcaptcha/i.test(String(error)) ? 'AUTH06' : 'AUTH01')}
+                  error={formatSupportError(error, /captcha|turnstile/i.test(String(error)) ? 'AUTH06' : 'AUTH01')}
                 />
               )}
               <PrimaryButton
