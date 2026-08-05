@@ -115,7 +115,7 @@ function Login() {
                     inputMode="numeric"
                     autoFocus
                     required
-                    placeholder="4–6 digit code"
+                    placeholder=""
                   />
                   <Field
                     label="PIN"
@@ -125,7 +125,7 @@ function Login() {
                     type="password"
                     autoComplete="current-password"
                     required
-                    placeholder="Letters, numbers & symbols"
+                    placeholder=""
                   />
                 </>
               ) : (
