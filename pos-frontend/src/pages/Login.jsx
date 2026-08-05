@@ -20,6 +20,8 @@ function Login() {
   const [email, setEmail] = useState(hasSupabase ? '' : allowDemoMode ? 'demo@calepos.local' : '')
   const [password, setPassword] = useState(hasSupabase ? '' : allowDemoMode ? 'demo' : '')
   const [captchaToken, setCaptchaToken] = useState('')
+  const [captchaReady, setCaptchaReady] = useState(false)
+  const [captchaWidgetError, setCaptchaWidgetError] = useState(false)
   const [captchaKey, setCaptchaKey] = useState(0)
   const login = useAuthStore((state) => state.login)
   const error = useAuthStore((state) => state.error)
@@ -30,8 +32,13 @@ function Login() {
 
   const resetCaptcha = () => {
     setCaptchaToken('')
+    setCaptchaReady(false)
+    setCaptchaWidgetError(false)
     setCaptchaKey((k) => k + 1)
   }
+
+  // Only block submit once the widget is on-screen and waiting for a token.
+  const captchaBlocking = captchaActive && captchaReady && !captchaWidgetError && !captchaToken
 
   async function afterLogin(user) {
     if (hasSupabase && user?.branchId) {
@@ -88,8 +95,8 @@ function Login() {
               onSubmit={async (event) => {
                 event.preventDefault()
                 try {
-                  if (captchaActive && !captchaToken) {
-                    useAuthStore.setState({ error: 'Complete the captcha before signing in.' })
+                  if (captchaActive && captchaReady && !captchaWidgetError && !captchaToken) {
+                    useAuthStore.setState({ error: 'Complete the security check before signing in.' })
                     return
                   }
                   // Pass token to Supabase Auth (Auth → CAPTCHA protection). Do not use a separate verify call.
@@ -159,14 +166,18 @@ function Login() {
                 </div>
               )}
 
-              {captchaActive && (
+              {captchaActive && !captchaLoading && (
                 <div className="mt-[18px]">
                   <Turnstile
                     key={captchaKey}
                     siteKey={turnstileSiteKey}
+                    onReady={() => setCaptchaReady(true)}
                     onVerify={setCaptchaToken}
                     onExpire={() => setCaptchaToken('')}
-                    onError={() => setCaptchaToken('')}
+                    onError={() => {
+                      setCaptchaWidgetError(true)
+                      setCaptchaToken('')
+                    }}
                   />
                 </div>
               )}
@@ -180,7 +191,7 @@ function Login() {
               <PrimaryButton
                 className="mt-[25px]"
                 type="submit"
-                disabled={booting || (captchaActive && !captchaToken)}
+                disabled={booting || captchaBlocking}
               >
                 {booting ? 'Signing in…' : 'Enter CalePOS'} <span>→</span>
               </PrimaryButton>

@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 const SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
-
-let scriptPromise = null
+const FALLBACK_SITE_KEY = '0x4AAAAAAEG89XtzHd_oWzOv'
 
 function envSiteKey() {
   return String(import.meta.env.VITE_TURNSTILE_SITEKEY || '').trim()
@@ -20,20 +19,23 @@ async function loadRuntimeSiteKey() {
 }
 
 export function useTurnstileSiteKey() {
-  const [siteKey, setSiteKey] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [siteKey, setSiteKey] = useState(() => envSiteKey() || FALLBACK_SITE_KEY)
+  const [loading, setLoading] = useState(() => !envSiteKey())
   const [error, setError] = useState('')
 
   useEffect(() => {
-    let cancelled = false
+    if (envSiteKey()) {
+      setSiteKey(envSiteKey())
+      setLoading(false)
+      return undefined
+    }
 
+    let cancelled = false
     void (async () => {
-      const key = envSiteKey() || (await loadRuntimeSiteKey())
+      const key = (await loadRuntimeSiteKey()) || FALLBACK_SITE_KEY
       if (cancelled) return
       setSiteKey(key)
-      if (!key) {
-        setError('Turnstile site key missing. Set VITE_TURNSTILE_SITEKEY or public/captcha.json.')
-      }
+      if (!key) setError('Turnstile site key missing. Set VITE_TURNSTILE_SITEKEY.')
       setLoading(false)
     })()
 
@@ -48,14 +50,19 @@ export function useTurnstileSiteKey() {
 function loadTurnstileScript() {
   if (typeof window === 'undefined') return Promise.reject(new Error('No window'))
   if (window.turnstile?.render) return Promise.resolve(window.turnstile)
-  if (scriptPromise) return scriptPromise
 
-  scriptPromise = new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const existing = document.querySelector('script[src*="challenges.cloudflare.com/turnstile"]')
-    if (existing && window.turnstile?.render) {
-      resolve(window.turnstile)
+    if (existing) {
+      existing.addEventListener('load', () => {
+        if (window.turnstile?.render) resolve(window.turnstile)
+        else reject(new Error('Turnstile failed to initialize'))
+      })
+      existing.addEventListener('error', () => reject(new Error('Failed to load Turnstile')))
+      if (window.turnstile?.render) resolve(window.turnstile)
       return
     }
+
     const script = document.createElement('script')
     script.src = SCRIPT_SRC
     script.async = true
@@ -67,66 +74,74 @@ function loadTurnstileScript() {
     script.onerror = () => reject(new Error('Failed to load Turnstile'))
     document.head.appendChild(script)
   })
-  return scriptPromise
 }
 
 /**
  * Cloudflare Turnstile (explicit render).
- * Do NOT use class "cf-turnstile" here — that conflicts with explicit mode.
  */
-export default function Turnstile({ siteKey, onVerify, onExpire, onError, className = '' }) {
+export default function Turnstile({ siteKey, onVerify, onExpire, onError, onReady, className = '' }) {
   const containerRef = useRef(null)
   const widgetIdRef = useRef(null)
-  const callbacksRef = useRef({ onVerify, onExpire, onError })
-  callbacksRef.current = { onVerify, onExpire, onError }
+  const callbacksRef = useRef({ onVerify, onExpire, onError, onReady })
+  callbacksRef.current = { onVerify, onExpire, onError, onReady }
+  const [widgetError, setWidgetError] = useState('')
 
   useEffect(() => {
     if (!siteKey || !containerRef.current) return undefined
 
     let cancelled = false
     const el = containerRef.current
+    setWidgetError('')
 
     const mount = (turnstile) => {
       if (cancelled || !el) return
-      if (widgetIdRef.current != null) {
-        try {
+      try {
+        if (widgetIdRef.current != null) {
           turnstile.remove(widgetIdRef.current)
-        } catch {
-          /* ignore */
+          widgetIdRef.current = null
         }
-        widgetIdRef.current = null
+        el.innerHTML = ''
+        widgetIdRef.current = turnstile.render(el, {
+          sitekey: siteKey,
+          theme: 'light',
+          callback: (token) => callbacksRef.current.onVerify?.(token),
+          'expired-callback': () => {
+            callbacksRef.current.onExpire?.()
+            callbacksRef.current.onVerify?.('')
+          },
+          'error-callback': () => {
+            setWidgetError('Security check failed. Refresh the page and try again.')
+            callbacksRef.current.onError?.()
+            callbacksRef.current.onVerify?.('')
+          },
+        })
+        callbacksRef.current.onReady?.()
+      } catch (e) {
+        setWidgetError(e?.message || 'Could not show security check.')
+        callbacksRef.current.onError?.()
       }
-      el.innerHTML = ''
-      widgetIdRef.current = turnstile.render(el, {
-        sitekey: siteKey,
-        theme: 'light',
-        callback: (token) => callbacksRef.current.onVerify?.(token),
-        'expired-callback': () => {
-          callbacksRef.current.onExpire?.()
-          callbacksRef.current.onVerify?.('')
-        },
-        'error-callback': () => {
-          callbacksRef.current.onError?.()
-          callbacksRef.current.onVerify?.('')
-        },
-      })
     }
 
-    void loadTurnstileScript()
-      .then((turnstile) => {
-        if (cancelled) return
-        if (turnstile.ready) {
-          turnstile.ready(() => mount(turnstile))
-        } else {
+    const tryMount = () => {
+      void loadTurnstileScript()
+        .then((turnstile) => {
+          if (cancelled) return
+          // Do not use turnstile.ready() with async script loading — mount after onload instead.
           mount(turnstile)
-        }
-      })
-      .catch(() => {
-        callbacksRef.current.onError?.()
-      })
+        })
+        .catch((e) => {
+          if (cancelled) return
+          setWidgetError(e?.message || 'Could not load security check.')
+          callbacksRef.current.onError?.()
+        })
+    }
+
+    // Small delay so the container is painted before Turnstile measures it.
+    const timer = window.setTimeout(tryMount, 50)
 
     return () => {
       cancelled = true
+      window.clearTimeout(timer)
       try {
         if (widgetIdRef.current != null && window.turnstile?.remove) {
           window.turnstile.remove(widgetIdRef.current)
@@ -142,7 +157,10 @@ export default function Turnstile({ siteKey, onVerify, onExpire, onError, classN
 
   return (
     <div className={className}>
-      <div ref={containerRef} />
+      <div ref={containerRef} className="min-h-[65px]" />
+      {widgetError && (
+        <p className="mt-2 text-xs text-brand-danger">{widgetError}</p>
+      )}
     </div>
   )
 }
