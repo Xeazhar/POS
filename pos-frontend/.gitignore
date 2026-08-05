@@ -34,4 +34,4 @@ dist-ssr
 Thumbs.db
 coverage
 *.tsbuildinfo
-.vercel
+.wrangler

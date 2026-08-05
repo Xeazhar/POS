@@ -73,7 +73,7 @@ export function errorCodeOf(err) {
 export function formatSupportError(err, fallbackCode = 'GEN01') {
   if (!err) return `${ERROR_CATALOG[fallbackCode]} · Code ${fallbackCode}`
   const raw = typeof err === 'string' ? err : err.message || ''
-  if (/captcha|hcaptcha/i.test(raw)) {
+  if (/captcha|turnstile/i.test(raw)) {
     const msg = raw || ERROR_CATALOG.AUTH06
     return `${msg} · Code AUTH06`
   }
@@ -94,7 +94,7 @@ export function classifyError(err, fallbackCode = 'GEN01') {
   const raw = String(err?.message || err || '')
   if (/device_settings|migrate_device_settings/i.test(raw)) return appError('DEV01', raw)
   if (/Invalid login|invalid_credentials|Email not confirmed/i.test(raw)) return appError('AUTH01', raw)
-  if (/captcha|hcaptcha|turnstile/i.test(raw)) return appError('AUTH06', raw)
+  if (/captcha|turnstile/i.test(raw)) return appError('AUTH06', raw)
   if (/pop-?up|blocked/i.test(raw)) return appError('PRINT01', raw)
   if (/Failed to fetch|NetworkError|offline/i.test(raw)) return appError('SYNC01', raw)
   if (err?.code && ERROR_CATALOG[err.code]) return err

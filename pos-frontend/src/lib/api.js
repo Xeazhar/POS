@@ -227,64 +227,6 @@ export async function fetchSessionStaff() {
   }
 }
 
-/** Verify hCaptcha token via Edge Function (requires HCAPTCHA_SECRET secret). */
-export async function verifyHCaptcha(token) {
-  const response = String(token || '').trim()
-  if (!response) throw new Error('Complete the captcha before signing in.')
-
-  const base = String(import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
-  const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
-  if (!base || !key) throw new Error('Supabase not configured')
-
-  // Direct fetch so login works before a session exists, and with new publishable keys.
-  // Function must be deployed with verify_jwt = false (see supabase/config.toml).
-  let res
-  try {
-    res = await fetch(`${base}/functions/v1/verify-hcaptcha`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        apikey: key,
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({ token: response }),
-    })
-  } catch {
-    throw new Error('Captcha service unavailable. Check your network connection.')
-  }
-
-  let data = null
-  try {
-    data = await res.json()
-  } catch {
-    data = null
-  }
-
-  if (res.status === 404) {
-    throw new Error('Captcha service unavailable. Deploy the verify-hcaptcha Edge Function.')
-  }
-  if (res.status === 401 || res.status === 403) {
-    // 401 from gateway = JWT still required; 403 from our function = bad token
-    const codes = Array.isArray(data?.codes) ? data.codes.join(', ') : ''
-    if (data?.error || codes) {
-      const detail = [data?.error, codes].filter(Boolean).join(' — ')
-      throw new Error(
-        /disallowed|host|domain/i.test(detail)
-          ? 'Captcha rejected this host. Add your real domain in the hCaptcha dashboard (localhost is skipped automatically).'
-          : `Captcha verification failed (${detail}). Solve it again.`,
-      )
-    }
-    throw new Error(
-      'Captcha service blocked. In Supabase → Edge Functions → verify-hcaptcha, turn OFF "Verify JWT".',
-    )
-  }
-  if (!res.ok || !data?.ok) {
-    const codes = Array.isArray(data?.codes) ? data.codes.join(', ') : ''
-    throw new Error(data?.error || codes || 'Captcha verification failed.')
-  }
-  return true
-}
-
 export async function signIn(email, password, { captchaToken } = {}) {
   const { error } = await supabase.auth.signInWithPassword({
     email,

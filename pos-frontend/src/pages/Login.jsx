@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eyebrow, ErrorBanner, Field, PrimaryButton } from '../components/ui'
-import Turnstile, { useTurnstileSiteKey } from '../components/shared/HCaptcha'
+import Turnstile, { useTurnstileSiteKey } from '../components/shared/Turnstile'
 import { allowDemoMode, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { formatSupportError } from '../utils/errors'
@@ -180,7 +180,7 @@ function Login() {
               <PrimaryButton
                 className="mt-[25px]"
                 type="submit"
-                disabled={booting || captchaLoading || (captchaActive && !captchaToken)}
+                disabled={booting || (captchaActive && !captchaToken)}
               >
                 {booting ? 'Signing in…' : 'Enter CalePOS'} <span>→</span>
               </PrimaryButton>

@@ -66,11 +66,11 @@ In the Supabase SQL editor, apply in order (if not already applied):
 2. Any `pos-frontend/supabase/migrate_*.sql` files you have not run yet  
    (day-end till lock, branch open hour, price change history, products per branch, etc.)
 
-Confirm **Row Level Security** is enabled on all app tables. Never put the **service role** key in the frontend or in Vercel env vars for this app — only the **publishable/anon** key.
+Confirm **Row Level Security** is enabled on all app tables. Never put the **service role** key in the frontend or in Cloudflare Pages env vars for this app — only the **publishable/anon** key.
 
-### 2. Environment (Vercel / host)
+### 2. Environment (Cloudflare Pages)
 
-Set:
+Set in **Cloudflare Pages → Settings → Environment variables**:
 
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
@@ -79,19 +79,23 @@ Optional: `VITE_APP_VERSION=1.0.0`
 
 **Login captcha (recommended for production):**
 
-- Set `VITE_HCAPTCHA_SITEKEY` (public sitekey) in the app env
-- In Supabase → **Authentication** → **Bot and Abuse Protection** → enable CAPTCHA → choose hCaptcha → paste the **Secret** key there
+- Set `VITE_TURNSTILE_SITEKEY` (public sitekey) in Cloudflare Pages env
+- Or ship `public/captcha.json` as a fallback
+- In Supabase → **Authentication** → **Bot and Abuse Protection** → enable CAPTCHA → choose **Turnstile** → paste the **Secret** key
 - The login form passes `captchaToken` into `signInWithPassword` (required when Auth CAPTCHA is on)
-- In the hCaptcha dashboard, allowlist your production hostname
+- In Cloudflare Turnstile dashboard, allowlist your production hostname
 
 Do **not** set `VITE_ALLOW_DEMO` in production.
 
-### 3. Deploy
+### 3. Deploy (Cloudflare Pages)
 
-Root directory for the project: `pos-frontend`  
-Build: `npm run build`  
-Output: `dist`  
-SPA rewrites + security headers are in `pos-frontend/vercel.json`.
+- **Root directory:** `pos-frontend`
+- **Build command:** `npm run build`
+- **Build output directory:** `dist`
+- SPA routing: `public/_redirects` (`/* /index.html 200`)
+- Security/cache headers: `public/_headers`
+
+Connect your Git repo in Cloudflare Pages, or upload `dist` after a local build.
 
 ### 4. Auth & staff
 
