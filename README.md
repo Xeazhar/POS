@@ -87,15 +87,16 @@ Optional: `VITE_APP_VERSION=1.0.0`
 
 Do **not** set `VITE_ALLOW_DEMO` in production.
 
-### 3. Deploy (Cloudflare Pages)
+### 3. Deploy (Cloudflare Workers)
 
 - **Root directory:** `pos-frontend`
 - **Build command:** `npm run build`
-- **Build output directory:** `dist`
-- SPA routing: `public/_redirects` (`/* /index.html 200`)
-- Security/cache headers: `public/_headers`
+- **Deploy command:** `npx wrangler deploy`
+- SPA routing: `wrangler.jsonc` → `assets.not_found_handling: "single-page-application"`
+- Do **not** use `public/_redirects` with Wrangler SPA mode (causes infinite redirect loop)
+- Optional cache/security headers: `public/_headers`
 
-Connect your Git repo in Cloudflare Pages, or upload `dist` after a local build.
+Set environment variables in your Cloudflare Workers/Pages project settings before building.
 
 ### 4. Auth & staff
 
