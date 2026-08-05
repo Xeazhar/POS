@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eyebrow, ErrorBanner, Field, PrimaryButton } from '../components/ui'
-import Turnstile, { isTurnstileEnabled } from '../components/shared/HCaptcha'
+import Turnstile, { useTurnstileSiteKey } from '../components/shared/HCaptcha'
 import { allowDemoMode, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { formatSupportError } from '../utils/errors'
@@ -11,7 +11,9 @@ import * as api from '../lib/api'
 
 function Login() {
   const configured = hasSupabase || allowDemoMode
-  const captchaRequired = hasSupabase && isTurnstileEnabled()
+  const { siteKey: turnstileSiteKey, loading: captchaLoading, error: captchaConfigError, enabled: captchaRequired } =
+    useTurnstileSiteKey()
+  const captchaActive = hasSupabase && captchaRequired
   const [mode, setMode] = useState('pin') // pin | email
   const [loginCode, setLoginCode] = useState('')
   const [pin, setPin] = useState('')
@@ -86,7 +88,7 @@ function Login() {
               onSubmit={async (event) => {
                 event.preventDefault()
                 try {
-                  if (captchaRequired && !captchaToken) {
+                  if (captchaActive && !captchaToken) {
                     useAuthStore.setState({ error: 'Complete the captcha before signing in.' })
                     return
                   }
@@ -147,10 +149,21 @@ function Login() {
                 </>
               )}
 
-              {captchaRequired && (
+              {captchaLoading && hasSupabase && (
+                <p className="mt-[18px] text-xs text-brand-muted">Loading security check…</p>
+              )}
+
+              {captchaConfigError && hasSupabase && (
+                <div className="mt-[18px] rounded-md border border-brand-danger bg-white px-3 py-2 text-xs text-brand-danger">
+                  {captchaConfigError}
+                </div>
+              )}
+
+              {captchaActive && (
                 <div className="mt-[18px]">
                   <Turnstile
                     key={captchaKey}
+                    siteKey={turnstileSiteKey}
                     onVerify={setCaptchaToken}
                     onExpire={() => setCaptchaToken('')}
                     onError={() => setCaptchaToken('')}
@@ -167,7 +180,7 @@ function Login() {
               <PrimaryButton
                 className="mt-[25px]"
                 type="submit"
-                disabled={booting || (captchaRequired && !captchaToken)}
+                disabled={booting || captchaLoading || (captchaActive && !captchaToken)}
               >
                 {booting ? 'Signing in…' : 'Enter CalePOS'} <span>→</span>
               </PrimaryButton>
