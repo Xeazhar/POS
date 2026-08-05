@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Eyebrow, Field, Modal, ModalActions, PrimaryButton, SecondaryButton, ErrorBanner } from '../ui'
 import { verifySupervisorPin, hasSupabase } from '../../lib/api'
 import { formatSupportError } from '../../utils/errors'
+import { sanitizePinInput } from '../../utils/pin'
 
 /**
  * Modal asking for supervisor/manager staff code + PIN before a sensitive action.
@@ -62,9 +63,9 @@ function SupervisorApprove({
           label="PIN"
           className="mt-3"
           value={pin}
-          onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+          onChange={(e) => setPin(sanitizePinInput(e.target.value))}
           type="password"
-          inputMode="numeric"
+          autoComplete="current-password"
           required
         />
         {error && <ErrorBanner className="mt-3 mb-0" error={error} />}

@@ -17,6 +17,7 @@ import {
   updateStaffRow,
 } from '../../lib/api'
 import { MODULES, defaultPermissionsFor, usesPinLogin } from '../../utils/roles'
+import { PIN_RULES_HINT, randomComplexPin, sanitizePinInput, validateComplexPin } from '../../utils/pin'
 
 const empty = {
   full_name: '',
@@ -37,7 +38,7 @@ const fallbackRoles = [
   { name: 'master', label: 'Master' },
 ]
 
-function randomPin(digits = 4) {
+function randomStaffCode(digits = 4) {
   let s = ''
   for (let i = 0; i < digits; i += 1) s += String(Math.floor(Math.random() * 10))
   return s
@@ -50,15 +51,14 @@ function uniqueStaffCode(existingStaff, excludeId = null, digits = 4) {
       .map((p) => String(p.login_code)),
   )
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const code = randomPin(digits)
+    const code = randomStaffCode(digits)
     if (!taken.has(code)) return code
   }
-  // Fall back to 6 digits if 4-digit space is crowded
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const code = randomPin(6)
+    const code = randomStaffCode(6)
     if (!taken.has(code)) return code
   }
-  return randomPin(6)
+  return randomStaffCode(6)
 }
 
 function isStaffCodeTaken(existingStaff, code, excludeId = null) {
@@ -131,7 +131,7 @@ function ManagerStaff() {
               branch_id: branches[0]?.id || '',
               role: 'cashier',
               login_code: uniqueStaffCode(staff),
-              login_pin: randomPin(4),
+              login_pin: randomComplexPin(10),
               permissions: defaultPermissionsFor('cashier'),
             })
           }}
@@ -234,6 +234,13 @@ function ManagerStaff() {
                     throw new Error('That staff code is already in use. Each person needs a unique code.')
                   }
                 }
+                if (usesPinLogin(form.role)) {
+                  const pinRequired = !form.id || Boolean(form.login_pin)
+                  if (pinRequired) {
+                    const pinErr = validateComplexPin(form.login_pin)
+                    if (pinErr) throw new Error(pinErr)
+                  }
+                }
                 if (form.id) {
                   const changes = {
                     full_name: form.full_name,
@@ -328,15 +335,16 @@ function ManagerStaff() {
                   </p>
                   <div className="flex items-end gap-2">
                     <Field
-                      label={form.id ? 'New PIN (leave blank to keep)' : 'PIN (4–6 digits)'}
+                      label={form.id ? 'New PIN (leave blank to keep)' : 'PIN'}
                       className="flex-1"
                       required={!form.id}
                       value={form.login_pin}
                       onChange={(e) =>
-                        setForm({ ...form, login_pin: e.target.value.replace(/\D/g, '').slice(0, 6) })
+                        setForm({ ...form, login_pin: sanitizePinInput(e.target.value) })
                       }
                       type="password"
-                      inputMode="numeric"
+                      autoComplete="new-password"
+                      placeholder="e.g. Ka!9mP2$"
                     />
                     <SecondaryButton
                       compact
@@ -344,14 +352,15 @@ function ManagerStaff() {
                       onClick={() =>
                         setForm({
                           ...form,
-                          login_code: uniqueStaffCode(staff, form.id || null),
-                          login_pin: randomPin(4),
+                          login_code: form.login_code || uniqueStaffCode(staff, form.id || null),
+                          login_pin: randomComplexPin(10),
                         })
                       }
                     >
                       Generate
                     </SecondaryButton>
                   </div>
+                  <p className="m-0 -mt-1 text-[10px] text-brand-subtle">{PIN_RULES_HINT}</p>
                 </>
               )}
               <SelectField
@@ -379,7 +388,7 @@ function ManagerStaff() {
                     ...(usesPinLogin(role) && !form.login_code
                       ? {
                           login_code: uniqueStaffCode(staff, form.id || null),
-                          login_pin: form.login_pin || randomPin(4),
+                          login_pin: form.login_pin || randomComplexPin(10),
                         }
                       : {}),
                   })

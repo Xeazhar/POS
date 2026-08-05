@@ -240,7 +240,11 @@ export async function signIn(email, password, { captchaToken } = {}) {
 /** Cashier/supervisor PIN login via staff code + PIN. */
 export async function signInWithPin(loginCode, pin, { captchaToken } = {}) {
   const code = String(loginCode || '').replace(/\D/g, '')
-  const pinVal = String(pin || '').replace(/\D/g, '')
+  // Complex PINs: keep letters/symbols (do not strip to digits).
+  const pinVal = String(pin || '').trim()
+  if (!captchaToken) {
+    throw new Error('Complete the security check before signing in.')
+  }
   const { data, error } = await supabase.rpc('resolve_pin_login', {
     p_login_code: code,
     p_pin: pinVal,
@@ -248,15 +252,15 @@ export async function signInWithPin(loginCode, pin, { captchaToken } = {}) {
   if (error) throw error
   const row = Array.isArray(data) ? data[0] : data
   if (!row?.auth_email) throw new Error('Invalid staff code or PIN')
-  const authPassword = row.auth_password || pinVal
-  return signIn(row.auth_email, authPassword, { captchaToken })
+  // RPC no longer returns Auth password — sign in with the till PIN after server validated it.
+  return signIn(row.auth_email, pinVal, { captchaToken })
 }
 
 export async function verifySupervisorPin(branchId, loginCode, pin) {
   const { data, error } = await supabase.rpc('verify_supervisor_pin', {
     p_branch_id: branchId,
     p_login_code: String(loginCode || '').replace(/\D/g, ''),
-    p_pin: String(pin || '').replace(/\D/g, ''),
+    p_pin: String(pin || '').trim(),
   })
   if (error) throw error
   return data
@@ -1179,10 +1183,9 @@ export async function createStaffAccount({
   const managerSession = sessionData.session
   const pinRole = role === 'cashier' || role === 'supervisor'
   const authEmail = pinRole && loginCode ? pinAuthEmail(loginCode, branchId) : email
-  const authSecret = pinRole
-    ? `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, '')
-    : null
-  const authPassword = pinRole ? authSecret : password
+  // Till PIN is also the Auth password (never returned to clients after login resolve).
+  const authPassword = pinRole ? String(loginPin || '') : password
+  if (pinRole && !authPassword) throw new Error('PIN is required for cashier/supervisor accounts.')
 
   const { data, error } = await supabase.auth.signUp({
     email: authEmail,
@@ -1198,7 +1201,7 @@ export async function createStaffAccount({
       is_active: true,
       login_code: pinRole ? String(loginCode || '').replace(/\D/g, '') : null,
       login_pin: pinRole ? String(loginPin || '') : null,
-      auth_secret: pinRole ? authSecret : null,
+      auth_secret: pinRole ? String(loginPin || '') : null,
       permissions: permissions || null,
     }
     const { data: existing } = await supabase
@@ -1261,6 +1264,8 @@ export async function updateStaffRow(id, changes) {
   }
   if ('loginPin' in payload) {
     payload.login_pin = payload.loginPin
+    // Keep Auth secret aligned so next PIN login can sign in with the till PIN.
+    payload.auth_secret = payload.loginPin
     delete payload.loginPin
   }
   let { data, error } = await supabase.from('staff').update(payload).eq('id', id).select('*, branches(name)').single()

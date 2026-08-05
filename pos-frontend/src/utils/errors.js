@@ -13,6 +13,7 @@ export const ERROR_CATALOG = {
   AUTH04: 'Day was closed — sign in again with password to open the till.',
   AUTH05: 'App not configured — missing Supabase environment keys.',
   AUTH06: 'Complete the captcha, then try signing in again.',
+  AUTH07: 'Too many failed PIN attempts — wait and try again.',
 
 
   TILL01: 'Till is closed — ask a manager to reopen.',
@@ -77,6 +78,9 @@ export function formatSupportError(err, fallbackCode = 'GEN01') {
     const msg = raw || ERROR_CATALOG.AUTH06
     return `${msg} · Code AUTH06`
   }
+  if (/Too many failed PIN|locked/i.test(raw)) {
+    return `${ERROR_CATALOG.AUTH07} · Code AUTH07`
+  }
   if (typeof err === 'string') {
     const code = errorCodeOf({ message: err }) || fallbackCode
     const known = ERROR_CATALOG[code]
@@ -95,6 +99,7 @@ export function classifyError(err, fallbackCode = 'GEN01') {
   if (/device_settings|migrate_device_settings/i.test(raw)) return appError('DEV01', raw)
   if (/Invalid login|invalid_credentials|Email not confirmed/i.test(raw)) return appError('AUTH01', raw)
   if (/captcha|turnstile/i.test(raw)) return appError('AUTH06', raw)
+  if (/Too many failed PIN|locked/i.test(raw)) return appError('AUTH07', raw)
   if (/pop-?up|blocked/i.test(raw)) return appError('PRINT01', raw)
   if (/Failed to fetch|NetworkError|offline/i.test(raw)) return appError('SYNC01', raw)
   if (err?.code && ERROR_CATALOG[err.code]) return err

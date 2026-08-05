@@ -79,11 +79,12 @@ Optional: `VITE_APP_VERSION=1.0.0`
 
 **Login captcha (recommended for production):**
 
-- Set `VITE_TURNSTILE_SITEKEY` (public sitekey) in Cloudflare Pages env
+- Set `VITE_TURNSTILE_SITEKEY` (public sitekey — safe to expose) in Cloudflare Pages/Workers env
 - Or ship `public/captcha.json` as a fallback
 - In Supabase → **Authentication** → **Bot and Abuse Protection** → enable CAPTCHA → choose **Turnstile** → paste the **Secret** key
 - The login form passes `captchaToken` into `signInWithPassword` (required when Auth CAPTCHA is on)
 - In Cloudflare Turnstile dashboard, allowlist your production hostname
+- PIN login rate limiting: run `supabase/migrate_pin_security_hardening.sql` (locks after 5 failed attempts for 15 minutes)
 
 Do **not** set `VITE_ALLOW_DEMO` in production.
 

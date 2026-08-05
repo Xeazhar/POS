@@ -1,5 +1,25 @@
+-- =============================================================================
+-- CalePOS — canonical schema (new installs)
+-- Existing DBs: apply migrate_*.sql patches instead of re-running this whole file.
+-- See supabase/README.md for table map + apply order.
+--
+-- Sections:
+--   1. Core org (branches, roles, staff)
+--   2. Catalog (categories, products, inventory, movements)
+--   3. Sales (transactions, items)
+--   4. Promos
+--   5. Day-end & imports
+--   6. RLS helpers + policies
+--   7. Business functions / triggers
+--   8. Presence / devices
+--   9. PIN lockout (auth hardening)
+-- =============================================================================
+
 create extension if not exists pgcrypto;
 
+-- ---------------------------------------------------------------------------
+-- 1. Core org
+-- ---------------------------------------------------------------------------
 create table if not exists branches (
   id uuid primary key default gen_random_uuid(),
   name text not null,
@@ -8,6 +28,7 @@ create table if not exists branches (
   branch_type text not null default 'retail' check (branch_type in ('retail', 'restaurant')),
   day_open_hour integer not null default 7 check (day_open_hour >= 0 and day_open_hour <= 23),
   device_settings jsonb not null default '{"barcode_scanner":false,"receipt_printer":false,"cash_drawer":false}'::jsonb,
+  vat_rate numeric(5,4) not null default 0.12,
   created_at timestamptz not null default now()
 );
 
@@ -20,8 +41,10 @@ create table if not exists roles (
 
 insert into roles (name, label, sort_order) values
   ('cashier', 'Cashier', 1),
-  ('manager', 'Manager', 2),
-  ('admin', 'Admin', 3)
+  ('supervisor', 'Supervisor', 2),
+  ('manager', 'Manager', 3),
+  ('admin', 'Admin', 4),
+  ('master', 'Master', 5)
 on conflict (name) do nothing;
 
 create table if not exists staff (
@@ -31,10 +54,21 @@ create table if not exists staff (
   full_name text not null,
   role text not null references roles(name) on update cascade on delete restrict,
   is_active boolean not null default true,
+  -- Till login (cashiers / supervisors): numeric staff code + complex PIN
+  login_code text,
+  login_pin text,
+  auth_secret text,
+  permissions jsonb,
   created_at timestamptz not null default now()
 );
 create index if not exists idx_staff_branch on staff(branch_id);
+create unique index if not exists idx_staff_login_code_unique
+  on staff (login_code)
+  where login_code is not null and login_code <> '';
 
+-- ---------------------------------------------------------------------------
+-- 2. Catalog
+-- ---------------------------------------------------------------------------
 create table if not exists categories (
   id uuid primary key default gen_random_uuid(),
   name text not null unique,
@@ -58,6 +92,7 @@ create table if not exists products (
   menu_kind text check (menu_kind is null or menu_kind in ('meat', 'veggie', 'pancit', 'drink', 'rice', 'extra')),
   low_stock_threshold numeric(10,2) not null default 10,
   medium_stock_threshold numeric(10,2) not null default 30,
+  discount_eligible boolean not null default true,
   is_active boolean not null default true,
   available_today boolean not null default true,
   created_at timestamptz not null default now(),
@@ -94,6 +129,9 @@ create table if not exists stock_movements (
   created_at timestamptz not null default now()
 );
 
+-- ---------------------------------------------------------------------------
+-- 3. Sales
+-- ---------------------------------------------------------------------------
 create table if not exists transactions (
   id uuid primary key default gen_random_uuid(),
   branch_id uuid not null references branches(id) on delete restrict,
@@ -124,7 +162,9 @@ create table if not exists transaction_items (
   discount_amount numeric(10,2) not null default 0
 );
 
--- Promo system (Manager-hosted events)
+-- ---------------------------------------------------------------------------
+-- 4. Promos
+-- ---------------------------------------------------------------------------
 create table if not exists promo_events (
   id uuid primary key default gen_random_uuid(),
   branch_id uuid not null references branches(id) on delete cascade,
@@ -162,6 +202,9 @@ create unique index if not exists uniq_active_promo_event_per_branch
   on promo_events(branch_id)
   where is_active = true;
 
+-- ---------------------------------------------------------------------------
+-- 5. Day-end & imports
+-- ---------------------------------------------------------------------------
 create table if not exists day_ends (
   id uuid primary key default gen_random_uuid(),
   branch_id uuid not null references branches(id) on delete cascade,
@@ -211,6 +254,9 @@ create table if not exists import_batch_items (
 );
 create index if not exists idx_import_batch_items_batch on import_batch_items(batch_id);
 
+-- ---------------------------------------------------------------------------
+-- 6. RLS
+-- ---------------------------------------------------------------------------
 alter table branches enable row level security;
 alter table staff enable row level security;
 alter table roles enable row level security;
@@ -227,6 +273,9 @@ alter table day_ends enable row level security;
 alter table import_batches enable row level security;
 alter table import_batch_items enable row level security;
 
+-- ---------------------------------------------------------------------------
+-- 7. RLS helpers + policies
+-- ---------------------------------------------------------------------------
 create or replace function public.current_staff_role() returns text
 language sql stable security definer set search_path = public as $$
   select role from public.staff where auth_user_id = auth.uid() and is_active = true limit 1;
@@ -680,7 +729,9 @@ where not exists (select 1 from branches where name = 'Bayombong Branch #001');
 
 insert into categories (name) values ('Meat'), ('Bakery'), ('Groceries') on conflict (name) do nothing;
 
--- Branch presence / devices (also see migrate_branch_presence.sql)
+-- ---------------------------------------------------------------------------
+-- 8. Presence / devices
+-- ---------------------------------------------------------------------------
 create table if not exists branch_presence (
   branch_id uuid primary key references branches(id) on delete cascade,
   staff_id uuid references staff(id) on delete set null,
@@ -700,3 +751,19 @@ create table if not exists branch_devices (
   updated_at timestamptz not null default now(),
   primary key (branch_id, device_key)
 );
+
+-- ---------------------------------------------------------------------------
+-- 9. PIN lockout (Auth hardening) — see migrate_pin_security_hardening.sql
+-- ---------------------------------------------------------------------------
+create table if not exists pin_login_attempts (
+  login_code text primary key,
+  fail_count integer not null default 0,
+  locked_until timestamptz null,
+  last_attempt_at timestamptz not null default now()
+);
+alter table pin_login_attempts enable row level security;
+drop policy if exists "deny all pin_login_attempts" on pin_login_attempts;
+create policy "deny all pin_login_attempts" on pin_login_attempts
+  for all to authenticated, anon
+  using (false)
+  with check (false);
