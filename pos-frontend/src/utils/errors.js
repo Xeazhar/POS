@@ -12,6 +12,8 @@ export const ERROR_CATALOG = {
   AUTH03: 'Offline and no saved session — connect once to sign in.',
   AUTH04: 'Day was closed — sign in again with password to open the till.',
   AUTH05: 'App not configured — missing Supabase environment keys.',
+  AUTH06: 'Complete the captcha, then try signing in again.',
+
 
   TILL01: 'Till is closed — ask a manager to reopen.',
   TILL02: 'Could not reopen till.',
@@ -70,6 +72,11 @@ export function errorCodeOf(err) {
 /** User-facing one-liner with support code. */
 export function formatSupportError(err, fallbackCode = 'GEN01') {
   if (!err) return `${ERROR_CATALOG[fallbackCode]} · Code ${fallbackCode}`
+  const raw = typeof err === 'string' ? err : err.message || ''
+  if (/captcha|hcaptcha/i.test(raw)) {
+    const msg = raw || ERROR_CATALOG.AUTH06
+    return `${msg} · Code AUTH06`
+  }
   if (typeof err === 'string') {
     const code = errorCodeOf({ message: err }) || fallbackCode
     const known = ERROR_CATALOG[code]
@@ -87,6 +94,7 @@ export function classifyError(err, fallbackCode = 'GEN01') {
   const raw = String(err?.message || err || '')
   if (/device_settings|migrate_device_settings/i.test(raw)) return appError('DEV01', raw)
   if (/Invalid login|invalid_credentials|Email not confirmed/i.test(raw)) return appError('AUTH01', raw)
+  if (/captcha|hcaptcha/i.test(raw)) return appError('AUTH06', raw)
   if (/pop-?up|blocked/i.test(raw)) return appError('PRINT01', raw)
   if (/Failed to fetch|NetworkError|offline/i.test(raw)) return appError('SYNC01', raw)
   if (err?.code && ERROR_CATALOG[err.code]) return err

@@ -227,14 +227,76 @@ export async function fetchSessionStaff() {
   }
 }
 
-export async function signIn(email, password) {
-  const { error } = await supabase.auth.signInWithPassword({ email, password })
+/** Verify hCaptcha token via Edge Function (requires HCAPTCHA_SECRET secret). */
+export async function verifyHCaptcha(token) {
+  const response = String(token || '').trim()
+  if (!response) throw new Error('Complete the captcha before signing in.')
+
+  const base = String(import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
+  const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
+  if (!base || !key) throw new Error('Supabase not configured')
+
+  // Direct fetch so login works before a session exists, and with new publishable keys.
+  // Function must be deployed with verify_jwt = false (see supabase/config.toml).
+  let res
+  try {
+    res = await fetch(`${base}/functions/v1/verify-hcaptcha`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({ token: response }),
+    })
+  } catch {
+    throw new Error('Captcha service unavailable. Check your network connection.')
+  }
+
+  let data = null
+  try {
+    data = await res.json()
+  } catch {
+    data = null
+  }
+
+  if (res.status === 404) {
+    throw new Error('Captcha service unavailable. Deploy the verify-hcaptcha Edge Function.')
+  }
+  if (res.status === 401 || res.status === 403) {
+    // 401 from gateway = JWT still required; 403 from our function = bad token
+    const codes = Array.isArray(data?.codes) ? data.codes.join(', ') : ''
+    if (data?.error || codes) {
+      const detail = [data?.error, codes].filter(Boolean).join(' — ')
+      throw new Error(
+        /disallowed|host|domain/i.test(detail)
+          ? 'Captcha rejected this host. Add your real domain in the hCaptcha dashboard (localhost is skipped automatically).'
+          : `Captcha verification failed (${detail}). Solve it again.`,
+      )
+    }
+    throw new Error(
+      'Captcha service blocked. In Supabase → Edge Functions → verify-hcaptcha, turn OFF "Verify JWT".',
+    )
+  }
+  if (!res.ok || !data?.ok) {
+    const codes = Array.isArray(data?.codes) ? data.codes.join(', ') : ''
+    throw new Error(data?.error || codes || 'Captcha verification failed.')
+  }
+  return true
+}
+
+export async function signIn(email, password, { captchaToken } = {}) {
+  const { error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+    options: captchaToken ? { captchaToken } : undefined,
+  })
   if (error) throw error
   return fetchSessionStaff()
 }
 
 /** Cashier/supervisor PIN login via staff code + PIN. */
-export async function signInWithPin(loginCode, pin) {
+export async function signInWithPin(loginCode, pin, { captchaToken } = {}) {
   const code = String(loginCode || '').replace(/\D/g, '')
   const pinVal = String(pin || '').replace(/\D/g, '')
   const { data, error } = await supabase.rpc('resolve_pin_login', {
@@ -245,7 +307,7 @@ export async function signInWithPin(loginCode, pin) {
   const row = Array.isArray(data) ? data[0] : data
   if (!row?.auth_email) throw new Error('Invalid staff code or PIN')
   const authPassword = row.auth_password || pinVal
-  return signIn(row.auth_email, authPassword)
+  return signIn(row.auth_email, authPassword, { captchaToken })
 }
 
 export async function verifySupervisorPin(branchId, loginCode, pin) {

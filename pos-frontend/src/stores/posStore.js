@@ -39,7 +39,7 @@ export const useAuthStore = create(persist((set, get) => ({
   booting: false,
   error: '',
   pendingClockIn: false,
-  login: async (emailOrCode, passwordOrPin, { mode = 'email' } = {}) => {
+  login: async (emailOrCode, passwordOrPin, { mode = 'email', captchaToken } = {}) => {
     set({ error: '', booting: true })
     try {
       if (!api.hasSupabase) {
@@ -83,8 +83,8 @@ export const useAuthStore = create(persist((set, get) => ({
       }
       const user =
         mode === 'pin'
-          ? await api.signInWithPin(emailOrCode, passwordOrPin)
-          : await api.signIn(emailOrCode, passwordOrPin)
+          ? await api.signInWithPin(emailOrCode, passwordOrPin, { captchaToken })
+          : await api.signIn(emailOrCode, passwordOrPin, { captchaToken })
       if (!user) throw appError('AUTH02')
       useCartStore.getState().clear()
       set({ user, booting: false })

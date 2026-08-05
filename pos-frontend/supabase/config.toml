@@ -1,0 +1,5 @@
+# Minimal Supabase config for Edge Functions.
+# verify-hcaptcha must allow anonymous calls (login happens before auth).
+
+[functions.verify-hcaptcha]
+verify_jwt = false

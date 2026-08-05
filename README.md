@@ -77,6 +77,13 @@ Set:
 
 Optional: `VITE_APP_VERSION=1.0.0`
 
+**Login captcha (recommended for production):**
+
+- Set `VITE_HCAPTCHA_SITEKEY` (public sitekey) in the app env
+- In Supabase → **Authentication** → **Bot and Abuse Protection** → enable CAPTCHA → choose hCaptcha → paste the **Secret** key there
+- The login form passes `captchaToken` into `signInWithPassword` (required when Auth CAPTCHA is on)
+- In the hCaptcha dashboard, allowlist your production hostname
+
 Do **not** set `VITE_ALLOW_DEMO` in production.
 
 ### 3. Deploy

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eyebrow, ErrorBanner, Field, PrimaryButton } from '../components/ui'
+import HCaptcha, { isHCaptchaEnabled } from '../components/shared/HCaptcha'
 import { allowDemoMode, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { formatSupportError } from '../utils/errors'
@@ -10,17 +11,25 @@ import * as api from '../lib/api'
 
 function Login() {
   const configured = hasSupabase || allowDemoMode
+  const captchaRequired = hasSupabase && isHCaptchaEnabled()
   const [mode, setMode] = useState('pin') // pin | email
   const [loginCode, setLoginCode] = useState('')
   const [pin, setPin] = useState('')
   const [email, setEmail] = useState(hasSupabase ? '' : allowDemoMode ? 'demo@calepos.local' : '')
   const [password, setPassword] = useState(hasSupabase ? '' : allowDemoMode ? 'demo' : '')
+  const [captchaToken, setCaptchaToken] = useState('')
+  const [captchaKey, setCaptchaKey] = useState(0)
   const login = useAuthStore((state) => state.login)
   const error = useAuthStore((state) => state.error)
   const booting = useAuthStore((state) => state.booting)
   const hydrate = useInventoryStore((state) => state.hydrate)
   const loadBranch = useProductStore((state) => state.loadBranch)
   const navigate = useNavigate()
+
+  const resetCaptcha = () => {
+    setCaptchaToken('')
+    setCaptchaKey((k) => k + 1)
+  }
 
   async function afterLogin(user) {
     if (hasSupabase && user?.branchId) {
@@ -73,15 +82,22 @@ function Login() {
             </p>
             <form
               className="mt-[22px]"
+              method="POST"
               onSubmit={async (event) => {
                 event.preventDefault()
                 try {
+                  if (captchaRequired && !captchaToken) {
+                    useAuthStore.setState({ error: 'Complete the captcha before signing in.' })
+                    return
+                  }
+                  // Pass token to Supabase Auth (Auth → CAPTCHA protection). Do not use a separate verify call.
                   const user =
                     mode === 'pin'
-                      ? await login(loginCode, pin, { mode: 'pin' })
-                      : await login(email, password, { mode: 'email' })
+                      ? await login(loginCode, pin, { mode: 'pin', captchaToken: captchaToken || undefined })
+                      : await login(email, password, { mode: 'email', captchaToken: captchaToken || undefined })
                   await afterLogin(user)
                 } catch {
+                  resetCaptcha()
                   /* error in store */
                 }
               }}
@@ -130,8 +146,29 @@ function Login() {
                   />
                 </>
               )}
-              {error && <ErrorBanner className="mt-3 mb-0" error={formatSupportError(error, 'AUTH01')} />}
-              <PrimaryButton className="mt-[25px]" type="submit" disabled={booting}>
+
+              {captchaRequired && (
+                <div className="mt-[18px]">
+                  <HCaptcha
+                    key={captchaKey}
+                    onVerify={setCaptchaToken}
+                    onExpire={() => setCaptchaToken('')}
+                    onError={() => setCaptchaToken('')}
+                  />
+                </div>
+              )}
+
+              {error && (
+                <ErrorBanner
+                  className="mt-3 mb-0"
+                  error={formatSupportError(error, /captcha|hcaptcha/i.test(String(error)) ? 'AUTH06' : 'AUTH01')}
+                />
+              )}
+              <PrimaryButton
+                className="mt-[25px]"
+                type="submit"
+                disabled={booting || (captchaRequired && !captchaToken)}
+              >
                 {booting ? 'Signing in…' : 'Enter CalePOS'} <span>→</span>
               </PrimaryButton>
             </form>
@@ -143,7 +180,10 @@ function Login() {
                 <button
                   type="button"
                   className="border-0 bg-transparent p-0 text-[10px] text-[#b0b5b1] underline-offset-2 hover:text-[#7a807c] hover:underline"
-                  onClick={() => setMode('email')}
+                  onClick={() => {
+                    setMode('email')
+                    resetCaptcha()
+                  }}
                 >
                   Manager login
                 </button>
@@ -151,7 +191,10 @@ function Login() {
                 <button
                   type="button"
                   className="border-0 bg-transparent p-0 text-[10px] text-[#b0b5b1] underline-offset-2 hover:text-[#7a807c] hover:underline"
-                  onClick={() => setMode('pin')}
+                  onClick={() => {
+                    setMode('pin')
+                    resetCaptcha()
+                  }}
                 >
                   Use staff PIN
                 </button>
