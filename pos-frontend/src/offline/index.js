@@ -5,3 +5,9 @@ export * from './repository'
 export { syncBranch, pullFromRemote, pushQueue, getSyncStatus, subscribeSync, isOnline } from './syncEngine'
 export { startConnectivityWatcher, setSyncBranchId } from './connectivity'
 export { saveLocalSession, loadLocalSession, clearLocalSession } from './session'
+export {
+  consumeBrowserClosedFlag,
+  installSessionLifecycle,
+  markBrowserClosed,
+  clearAuthSessionStorage,
+} from './sessionLifecycle'

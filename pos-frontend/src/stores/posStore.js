@@ -12,6 +12,7 @@ import {
   upsertLocalSale,
 } from '../offline'
 import { clearLocalSession, clearRequireFreshLogin, loadLocalSession, markRequireFreshLogin, needsFreshLogin, saveLocalSession } from '../offline/session'
+import { clearAuthSessionStorage, consumeBrowserClosedFlag } from '../offline/sessionLifecycle'
 import { appError } from '../utils/errors'
 import { isTillClosed, today } from '../utils/format'
 import { detectUlamCombo, effectiveUnitPrice, hasBudgetTier, lineTotal, normalizeMenuKind } from '../utils/ulam'
@@ -125,6 +126,17 @@ export const useAuthStore = create(persist((set, get) => ({
     if (!api.hasSupabase) return get().user
     set({ booting: true })
     try {
+      // Tab/browser was closed (or crashed with close mark) — never auto-login.
+      if (consumeBrowserClosedFlag()) {
+        clearAuthSessionStorage()
+        if (isOnline()) await api.signOut().catch(() => {})
+        await clearLocalSession()
+        api.clearDeviceSessionId()
+        await api.clearManagerUnlockSecret().catch(() => {})
+        set({ user: null, booting: false, screenLocked: false, deviceSessionId: null })
+        return null
+      }
+
       if (await needsFreshLogin()) {
         if (isOnline()) await api.signOut().catch(() => {})
         await clearLocalSession()

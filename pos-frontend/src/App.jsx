@@ -5,6 +5,7 @@ import { PageSkeleton } from './components/ui'
 import { useBranchHeartbeat } from './hooks/useBranchHeartbeat'
 import { hasSupabase } from './lib/api'
 import { startConnectivityWatcher } from './offline'
+import { installSessionLifecycle, consumeBrowserClosedFlag } from './offline/sessionLifecycle'
 import { useAuthStore, useInventoryStore, useProductStore } from './stores/posStore'
 import { bindSyncStore } from './stores/syncStore'
 import { canAccessModule, isManagerRole, isSupervisorOrAbove } from './utils/roles'
@@ -85,6 +86,7 @@ function App() {
   const user = useAuthStore((state) => state.user)
   const booting = useAuthStore((state) => state.booting)
   const restoreSession = useAuthStore((state) => state.restoreSession)
+  const logout = useAuthStore((state) => state.logout)
   const hydrate = useInventoryStore((state) => state.hydrate)
   const loadBranch = useProductStore((state) => state.loadBranch)
 
@@ -95,8 +97,17 @@ function App() {
     startConnectivityWatcher()
   }, [])
 
+  // Close tab/browser → next open needs login. Reload keeps session. Idle → Shell lock screen.
+  useEffect(() => {
+    if (!user) return undefined
+    return installSessionLifecycle({ enabled: true })
+  }, [user])
+
   useEffect(() => {
     if (!hasSupabase) {
+      if (consumeBrowserClosedFlag()) {
+        void logout()
+      }
       useAuthStore.setState({ booting: false })
       return
     }
@@ -106,7 +117,7 @@ function App() {
         if (data) hydrate(data)
       }
     })
-  }, [restoreSession, loadBranch, hydrate])
+  }, [restoreSession, loadBranch, hydrate, logout])
 
   return (
     <BrowserRouter>

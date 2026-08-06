@@ -10,8 +10,9 @@ export const allowDemoMode =
 export const isConfigured = Boolean(supabaseUrl && supabaseKey)
 
 /**
- * Auth lives in sessionStorage only — closing the browser clears the session.
- * No localStorage “remember me” / quick re-open login.
+ * Auth lives in sessionStorage only — closing the tab/browser clears tokens.
+ * App also marks a localStorage "browser closed" flag so Chrome session
+ * restore cannot silently auto-login. Idle lock remains in Shell.
  */
 function authStorage() {
   if (typeof window === 'undefined') return undefined
