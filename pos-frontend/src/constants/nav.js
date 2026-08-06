@@ -62,14 +62,15 @@ export function managerLinksFor(user) {
 
 export function navLinksFor(user) {
   if (!user) return []
-  if (user.role === 'master') {
-    const staff = staffLinksFor(user)
-    const mgr = managerLinksFor(user)
-    // Avoid duplicate "/"
-    return [...mgr, ...staff.filter(([path]) => path !== '/')]
-  }
-  if (isManagerRole(user.role)) return managerLinksFor(user)
-  return staffLinksFor(user)
+  const staff = staffLinksFor(user)
+  const mgr = managerLinksFor(user)
+  const seen = new Set()
+  const combined = [...mgr, ...staff]
+  return combined.filter(([path]) => {
+    if (seen.has(path)) return false
+    seen.add(path)
+    return true
+  })
 }
 
 /** Default landing path after login / unknown URLs */

@@ -14,13 +14,28 @@ import {
 import {
   createStaffAccount,
   fetchAllStaff,
+  fetchSessionStaff,
   fetchBranches,
   fetchRoles,
   hasSupabase,
   revealStaffPin,
   updateStaffRow,
 } from '../../lib/api'
+import { useAuthStore } from '../../stores/posStore'
 import { MODULES, defaultPermissionsFor, usesPinLogin } from '../../utils/roles'
+
+function samePerms(a, b) {
+  const left = [...(a || [])].map(String).sort()
+  const right = [...(b || [])].map(String).sort()
+  if (left.length !== right.length) return false
+  return left.every((id, i) => id === right[i])
+}
+
+function accessMode(person) {
+  if (!Array.isArray(person.permissions)) return 'default'
+  if (samePerms(person.permissions, defaultPermissionsFor(person.role))) return 'default'
+  return 'custom'
+}
 import { PIN_RULES_HINT, randomComplexPin, sanitizePinInput, validateComplexPin } from '../../utils/pin'
 
 const empty = {
@@ -74,6 +89,7 @@ function isStaffCodeTaken(existingStaff, code, excludeId = null) {
 }
 
 function ManagerStaff() {
+  const currentUser = useAuthStore((state) => state.user)
   const [staff, setStaff] = useState([])
   const [branches, setBranches] = useState([])
   const [roles, setRoles] = useState(fallbackRoles)
@@ -174,6 +190,14 @@ function ManagerStaff() {
           >
             <div className="min-w-0">
               <strong className="block truncate text-brand-ink">{person.full_name}</strong>
+              <span className="mt-1 inline-flex items-center gap-1.5">
+                <StatusBadge
+                  tone={accessMode(person) === 'custom' ? 'warn' : 'neutral'}
+                  className="min-w-0 rounded-md px-1.5 py-0.5 text-[9px]"
+                >
+                  {accessMode(person) === 'custom' ? 'Custom access' : 'Default access'}
+                </StatusBadge>
+              </span>
               <small className="mt-0.5 hidden text-[10px] leading-snug text-brand-subtle max-[700px]:block">
                 {person.branches?.name || '—'}
                 {' · '}
@@ -186,7 +210,12 @@ function ManagerStaff() {
               </small>
             </div>
             <span className="truncate max-[700px]:hidden">{person.branches?.name || '—'}</span>
-            <span className="max-[700px]:hidden">{person.roles?.label || person.role}</span>
+            <span className="max-[700px]:hidden">
+              {person.roles?.label || person.role}
+              <span className="mt-0.5 block text-[10px] text-brand-subtle">
+                {accessMode(person) === 'custom' ? 'Custom modules' : 'Role defaults'}
+              </span>
+            </span>
             <span className="max-[700px]:hidden">
               <StatusBadge tone={person.is_active ? 'success' : 'danger'}>
                 {person.is_active ? 'Active' : 'Inactive'}
@@ -229,7 +258,9 @@ function ManagerStaff() {
                   password: '',
                   login_code: person.login_code || '',
                   login_pin: '',
-                  permissions: person.permissions || defaultPermissionsFor(person.role),
+                  permissions: Array.isArray(person.permissions)
+                    ? person.permissions
+                    : defaultPermissionsFor(person.role),
                 })
               }}
             >
@@ -272,6 +303,12 @@ function ManagerStaff() {
                     if (form.login_pin) changes.loginPin = form.login_pin
                   }
                   await updateStaffRow(form.id, changes)
+                  if (currentUser?.id === form.id && hasSupabase) {
+                    const refreshed = await fetchSessionStaff()
+                    if (refreshed) {
+                      useAuthStore.setState((state) => ({ ...state, user: refreshed }))
+                    }
+                  }
                 } else {
                   if (!hasSupabase) throw new Error('Connect Supabase to create staff logins.')
                   if (usesPinLogin(form.role)) {

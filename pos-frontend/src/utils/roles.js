@@ -92,7 +92,7 @@ export function defaultPermissionsFor(role) {
 
 export function effectivePermissions(user) {
   if (!user) return []
-  if (Array.isArray(user.permissions) && user.permissions.length) return user.permissions
+  if (Array.isArray(user.permissions)) return user.permissions
   return defaultPermissionsFor(user.role)
 }
 

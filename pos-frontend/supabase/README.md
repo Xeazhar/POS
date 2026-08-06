@@ -20,6 +20,7 @@
    - `migrate_network_product_catalog.sql` (shared catalog; supervisors adopt to branch)
    - `migrate_catalog_branch_type.sql` (retail vs restaurant catalog filter)
    - `migrate_rename_petty_cash_to_cash_drawer_entries.sql` (**only this one** for change fund / petty cash / cash drawer — creates `cash_drawer_entries` + columns; do not also run `migrate_cash_accountability_controls.sql`)
+   - `migrate_manager_can_approve_any_branch.sql` (managers may PIN-approve any branch; supervisors stay branch-scoped)
    - `wipe_products_clean_start.sql` (**destructive**) — wipe products + catalog for a fresh import
    - etc.
 

@@ -1620,7 +1620,7 @@ export async function createStaffAccount({
       login_code: pinRole ? String(loginCode || '').replace(/\D/g, '') : null,
       login_pin: pinRole ? String(loginPin || '') : null,
       auth_secret: pinRole ? String(loginPin || '') : null,
-      permissions: permissions || null,
+      permissions: Array.isArray(permissions) ? permissions : null,
     }
     const { data: existing } = await supabase
       .from('staff')

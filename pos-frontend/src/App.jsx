@@ -8,7 +8,7 @@ import { startConnectivityWatcher } from './offline'
 import { installSessionLifecycle, consumeBrowserClosedFlag } from './offline/sessionLifecycle'
 import { useAuthStore, useInventoryStore, useProductStore } from './stores/posStore'
 import { bindSyncStore } from './stores/syncStore'
-import { canAccessModule, isManagerRole, isSupervisorOrAbove } from './utils/roles'
+import { canAccessModule } from './utils/roles'
 import { staffHomePath } from './constants/nav'
 
 const Login = lazy(() => import('./pages/Login.jsx'))
@@ -43,42 +43,12 @@ function RequireModule({ moduleId, children, fallback }) {
   return children
 }
 
-function ManagerOnly({ children }) {
-  const user = useAuthStore((state) => state.user)
-  if (!isManagerRole(user?.role)) return <Navigate to={firstHomePath(user)} replace />
-  return children
-}
-
-function SupervisorOrAboveOnly({ children }) {
-  const user = useAuthStore((state) => state.user)
-  if (!isSupervisorOrAbove(user?.role)) return <Navigate to={firstHomePath(user)} replace />
-  return children
-}
-
-function StaffOnly({ children }) {
-  const user = useAuthStore((state) => state.user)
-  // Managers (except master) stay in manager shell; cashiers/supervisors/master can use staff routes
-  if (isManagerRole(user?.role) && user?.role !== 'master') {
-    return <Navigate to={firstHomePath(user)} replace />
-  }
-  return children
-}
-
-function SupervisorOnly({ children }) {
-  const user = useAuthStore((state) => state.user)
-  if (user?.role !== 'supervisor' && user?.role !== 'master') {
-    return <Navigate to={firstHomePath(user)} replace />
-  }
-  return children
-}
-
 function Home() {
   const user = useAuthStore((state) => state.user)
   const first = firstHomePath(user)
   // Cashiers / anyone whose home isn't "/" — send them to their first screen
   if (first && first !== '/') return <Navigate to={first} replace />
-  if (isManagerRole(user?.role) && user?.role !== 'master') return <ManagerOverview />
-  if (user?.role === 'master' && canAccessModule(user, 'manager_overview')) return <ManagerOverview />
+  if (canAccessModule(user, 'manager_overview')) return <ManagerOverview />
   return <Dashboard />
 }
 
@@ -133,174 +103,138 @@ function App() {
               <Route
                 path="/pos"
                 element={
-                  <StaffOnly>
-                    <RequireModule moduleId="pos">
-                      <POS />
-                    </RequireModule>
-                  </StaffOnly>
+                  <RequireModule moduleId="pos">
+                    <POS />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/transactions"
                 element={
-                  <StaffOnly>
-                    <RequireModule moduleId="transactions">
-                      <Transactions />
-                    </RequireModule>
-                  </StaffOnly>
+                  <RequireModule moduleId="transactions">
+                    <Transactions />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/inventory"
                 element={
-                  <StaffOnly>
-                    <RequireModule moduleId="inventory">
-                      <Products />
-                    </RequireModule>
-                  </StaffOnly>
+                  <RequireModule moduleId="inventory">
+                    <Products />
+                  </RequireModule>
                 }
               />
               <Route path="/products" element={<Navigate to="/inventory" replace />} />
               <Route
                 path="/inventory/*"
                 element={
-                  <StaffOnly>
-                    <RequireModule moduleId="inventory">
-                      <Products />
-                    </RequireModule>
-                  </StaffOnly>
+                  <RequireModule moduleId="inventory">
+                    <Products />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/data"
                 element={
-                  <StaffOnly>
-                    <RequireModule moduleId="catalog">
-                      <ManagerData />
-                    </RequireModule>
-                  </StaffOnly>
+                  <RequireModule moduleId="catalog">
+                    <ManagerData />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/day-end"
                 element={
-                  <StaffOnly>
-                    <RequireModule moduleId="day_end">
-                      <DayEnd />
-                    </RequireModule>
-                  </StaffOnly>
+                  <RequireModule moduleId="day_end">
+                    <DayEnd />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/settings/devices"
                 element={
-                  <StaffOnly>
-                    <RequireModule moduleId="devices">
-                      <Devices />
-                    </RequireModule>
-                  </StaffOnly>
+                  <RequireModule moduleId="devices">
+                    <Devices />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/shifts"
                 element={
-                  <StaffOnly>
-                    <RequireModule moduleId="shifts">
-                      <SupervisorOrAboveOnly>
-                        <Shifts />
-                      </SupervisorOrAboveOnly>
-                    </RequireModule>
-                  </StaffOnly>
+                  <RequireModule moduleId="shifts">
+                    <Shifts />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/promos"
                 element={
-                  <StaffOnly>
-                    <SupervisorOnly>
-                      <ManagerPromos />
-                    </SupervisorOnly>
-                  </StaffOnly>
+                  <RequireModule moduleId="manager_promos">
+                    <ManagerPromos />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/manager"
                 element={
-                  <ManagerOnly>
-                    <RequireModule moduleId="manager_overview">
-                      <ManagerOverview />
-                    </RequireModule>
-                  </ManagerOnly>
+                  <RequireModule moduleId="manager_overview">
+                    <ManagerOverview />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/manager/branches"
                 element={
-                  <ManagerOnly>
-                    <RequireModule moduleId="manager_branches">
-                      <ManagerBranches />
-                    </RequireModule>
-                  </ManagerOnly>
+                  <RequireModule moduleId="manager_branches">
+                    <ManagerBranches />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/manager/branches/:branchId"
                 element={
-                  <ManagerOnly>
-                    <RequireModule moduleId="manager_branches">
-                      <ManagerBranchDashboard />
-                    </RequireModule>
-                  </ManagerOnly>
+                  <RequireModule moduleId="manager_branches">
+                    <ManagerBranchDashboard />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/manager/staff"
                 element={
-                  <ManagerOnly>
-                    <RequireModule moduleId="manager_staff">
-                      <ManagerStaff />
-                    </RequireModule>
-                  </ManagerOnly>
+                  <RequireModule moduleId="manager_staff">
+                    <ManagerStaff />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/manager/shifts"
                 element={
-                  <ManagerOnly>
-                    <RequireModule moduleId="shifts">
-                      <Shifts />
-                    </RequireModule>
-                  </ManagerOnly>
+                  <RequireModule moduleId="shifts">
+                    <Shifts />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/manager/data"
                 element={
-                  <ManagerOnly>
-                    <RequireModule moduleId="manager_data">
-                      <ManagerData />
-                    </RequireModule>
-                  </ManagerOnly>
+                  <RequireModule moduleId="manager_data">
+                    <ManagerData />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/manager/promos"
                 element={
-                  <ManagerOnly>
-                    <RequireModule moduleId="manager_promos">
-                      <ManagerPromos />
-                    </RequireModule>
-                  </ManagerOnly>
+                  <RequireModule moduleId="manager_promos">
+                    <ManagerPromos />
+                  </RequireModule>
                 }
               />
               <Route
                 path="/manager/reports"
                 element={
-                  <ManagerOnly>
-                    <RequireModule moduleId="manager_reports">
-                      <ManagerReports />
-                    </RequireModule>
-                  </ManagerOnly>
+                  <RequireModule moduleId="manager_reports">
+                    <ManagerReports />
+                  </RequireModule>
                 }
               />
               <Route path="*" element={<Navigate to="/" replace />} />

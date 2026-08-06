@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { FiLock, FiLogOut, FiMenu, FiX } from 'react-icons/fi'
+import { FiLock, FiLogOut, FiMenu, FiRefreshCw, FiX } from 'react-icons/fi'
 import { navLinksFor } from '../../constants/nav'
 import {
   hasSupabase,
@@ -491,6 +491,16 @@ function Shell({ children }) {
           <button
             type="button"
             className="mt-2 flex w-full flex-col items-center gap-1 rounded-lg border-0 bg-transparent px-1 py-2 text-[#a8aeaa] hover:bg-white/5 hover:text-white"
+            title="Refresh page"
+            onClick={() => window.location.reload()}
+          >
+            <FiRefreshCw className="text-base" />
+            <span className="text-[9px] font-bold">Refresh</span>
+          </button>
+
+          <button
+            type="button"
+            className="mt-1 flex w-full flex-col items-center gap-1 rounded-lg border-0 bg-transparent px-1 py-2 text-[#a8aeaa] hover:bg-white/5 hover:text-white"
             title="Lock screen"
             onClick={() => lockScreen()}
           >

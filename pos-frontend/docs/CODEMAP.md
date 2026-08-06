@@ -571,6 +571,43 @@ Product name in UI/docs: **CalePOS**.
   - applies promo discounts only when PWD/Senior is *not* selected
 
 ---
+
+## Backlog for external AI (Gemini / ChatGPT)
+
+### DONE in recent pass (do not re-implement)
+- Module access: explicit `permissions[]` wins; routes gated by `RequireModule` only; Staff shows **Custom access** vs **Default access**.
+- Manager cover for supervisor approvals: `SupervisorApprove` has **Approve as manager** when signed-in role is manager/admin/master; SQL `migrate_manager_can_approve_any_branch.sql` lets manager PIN work cross-branch.
+- Sidebar **Refresh** button → `window.location.reload()`.
+
+### TODO — Multiple concurrent promos (NOT started)
+**Current limitation:** one live promo per branch.
+- `fetchActivePromoEventWithRules(branchId)` returns a single active/stop_pending event.
+- Creating/activating a promo typically deactivates others (`is_active = false` on same branch).
+- POS maps `promoByProductId` from one event’s rules.
+
+**Target behavior:** multiple **active** promo events per branch at once; POS stacks/applies all matching rules; Promos UI lists all live events (not one “Live promo” card).
+
+**Implementation sketch:**
+1. **SQL / RPC**
+   - Stop forcing single active: remove `update … set is_active=false where branch_id=…` on activate (see `approve_promo_event` / create paths in `api.js` + `migrate_promo_dual_control.sql`).
+   - Add `fetch_active_promo_events_with_rules(p_branch_id)` returning **set of** events + rules (or query multiple rows in `api.js`).
+2. **API** (`src/lib/api.js`)
+   - Replace/extend `fetchActivePromoEventWithRules` → `fetchActivePromoEventsWithRules` → array.
+   - Keep backward-compat wrapper returning first event if needed.
+3. **POS** (`src/pages/POS.jsx`)
+   - Load array; merge rules into `promoByProductId` (define conflict policy: best discount wins, or first match, or sum — **pick one and document**).
+4. **Cart** (`src/components/pos/Cart.jsx` + `src/utils/promo.js`)
+   - Accept `promoEvents[]` or flattened `promoRules[]` from multiple events; label may show multiple event names.
+5. **Promos UI** (`src/pages/manager/Promos.jsx`)
+   - Replace single “Live promo” panel with list of active events; allow create without killing others; stop/approve per event.
+6. **Tests / manual**
+   - Two active item_pct events on same SKU → verify chosen conflict policy.
+   - Network overview already lists multiple rows — keep consistent.
+
+### Conflict policy recommendation
+Prefer **best (highest) discount per line** across events; never double-apply two % discounts on the same line unless product explicitly supports stacking later.
+
+---
 ## Block-level navigation hints (useful for future AI/code-review)
 
 ### `src/pages/POS.jsx` blocks
