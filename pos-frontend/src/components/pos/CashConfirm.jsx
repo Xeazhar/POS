@@ -1,4 +1,4 @@
-import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
+import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton, moneyClass } from '../ui'
 import { money, qty } from '../../utils/format'
 import { lineTotal as calcLineTotal } from '../../utils/ulam'
 
@@ -31,7 +31,7 @@ function CashConfirm({
             >
               <div className="min-w-0">
                 <strong className="block truncate">{item.name}</strong>
-                <small className="mt-[3px] block text-[10px] text-brand-subtle">
+                <small className={`mt-[3px] block text-[10px] text-brand-subtle ${moneyClass}`}>
                   {item.pricingMode === 'kg'
                     ? `${qty(item.weight, 'kg')} × ${money(item.price)}/kg`
                     : `${qty(item.quantity, 'pc')} × ${money(item.price)}/pc${
@@ -39,12 +39,12 @@ function CashConfirm({
                       }`}
                 </small>
               </div>
-              <b className="shrink-0 whitespace-nowrap">{money(line)}</b>
+              <b className={`shrink-0 whitespace-nowrap ${moneyClass}`}>{money(line)}</b>
             </div>
           )
         })}
       </div>
-      <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px]">
+      <div className={`my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px] ${moneyClass}`}>
         {discountAmount > 0 && (
           <>
             <span>Discount</span>

@@ -5,7 +5,10 @@ import {
   PageHeader,
   SecondaryButton,
   SelectField,
+  SkeletonRows,
+  StatusBadge,
   TableCard,
+  tableRowClass,
 } from '../components/ui'
 import { fetchBranches, fetchStaffShifts, hasSupabase } from '../lib/api'
 import { useAuthStore } from '../stores/posStore'
@@ -48,7 +51,7 @@ function Shifts() {
   const [end, setEnd] = useState(today())
   const [status, setStatus] = useState('all') // all | open | closed
   const [rows, setRows] = useState([])
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -183,10 +186,13 @@ function Shifts() {
           <span className="max-[900px]:hidden">Duration</span>
           <span>Status</span>
         </div>
-        {visible.map((row) => (
+        {loading ? (
+          <SkeletonRows rows={8} cols={isManager ? 5 : 4} />
+        ) : (
+          visible.map((row) => (
           <div
             key={row.id}
-            className={`grid items-center gap-2 border-t border-brand-softline px-4 py-3 text-xs ${
+            className={`grid items-center gap-2 px-4 py-3 text-xs ${tableRowClass} ${
               isManager
                 ? 'grid-cols-[1.2fr_1.1fr_0.7fr_0.55fr_1fr_1fr_0.7fr_0.7fr]'
                 : 'grid-cols-[1.3fr_0.8fr_0.55fr_1fr_1fr_0.7fr_0.7fr]'
@@ -209,15 +215,12 @@ function Shifts() {
             <span className="tabular-nums max-[900px]:hidden">
               {formatDuration(row.clockIn, row.clockOut)}
             </span>
-            <span
-              className={
-                row.open ? 'font-bold text-brand-success' : 'text-brand-muted'
-              }
-            >
+            <StatusBadge tone={row.open ? 'success' : 'neutral'}>
               {row.open ? 'Open' : 'Ended'}
-            </span>
+            </StatusBadge>
           </div>
-        ))}
+          ))
+        )}
         {!loading && visible.length === 0 && (
           <div className="px-4 py-8 text-xs text-brand-subtle">No shifts in this range.</div>
         )}

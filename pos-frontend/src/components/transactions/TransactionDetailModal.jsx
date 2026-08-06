@@ -1,4 +1,4 @@
-import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
+import { Eyebrow, Modal, ModalActions, PageSkeleton, PrimaryButton, SecondaryButton, moneyClass } from '../ui'
 import { money, qty } from '../../utils/format'
 
 function TransactionDetailModal({
@@ -8,6 +8,7 @@ function TransactionDetailModal({
   onRefund,
   onPrint,
   refundSummary = null,
+  layer = false,
 }) {
   const qtyByItem = refundSummary?.qtyByItem || {}
   const amountByItem = refundSummary?.amountByItem || {}
@@ -23,9 +24,9 @@ function TransactionDetailModal({
   const refundLines = refundSummary?.lines || []
 
   return (
-    <Modal wide onClose={onClose}>
+    <Modal wide layer={layer} onClose={onClose}>
       {loading || !detail ? (
-        <p className="text-xs text-brand-subtle">Loading…</p>
+        <PageSkeleton variant="detail" />
       ) : (
         <>
           <Eyebrow>TRANSACTION DETAIL</Eyebrow>
@@ -62,7 +63,9 @@ function TransactionDetailModal({
                     {line.sku && <small className="text-[10px] text-brand-subtle">{line.sku}</small>}
                     {Number(line.discountAmount || 0) > 0 && (
                       <small className="block text-[10px] text-brand-danger">
-                        Discounted item −{money(Number(line.discountAmount || 0))}
+                        {detail.discountType
+                          ? `${detail.discountType} −${money(Number(line.discountAmount || 0))}`
+                          : `Discounted item −${money(Number(line.discountAmount || 0))}`}
                       </small>
                     )}
                     {refundedQty > 0 && (
@@ -75,11 +78,11 @@ function TransactionDetailModal({
                       </small>
                     )}
                   </div>
-                  <span className="text-right tabular-nums">
+                  <span className={`text-right ${moneyClass}`}>
                     {qty(line.quantity, line.pricingMode === 'kg' ? 'kg' : 'pc')}
                   </span>
-                  <span className="text-right tabular-nums">{money(line.unitPrice)}</span>
-                  <strong className="text-right tabular-nums">
+                  <span className={`text-right ${moneyClass}`}>{money(line.unitPrice)}</span>
+                  <strong className={`text-right ${moneyClass}`}>
                     {refundedAmt > 0 ? money(netLine) : money(line.lineTotal)}
                   </strong>
                 </div>
@@ -108,13 +111,13 @@ function TransactionDetailModal({
                       : ''}
                     {row.reason ? ` · ${row.reason}` : ''}
                   </span>
-                  <strong className="shrink-0 text-brand-danger">−{money(row.amount)}</strong>
+                  <strong className={`shrink-0 text-brand-danger ${moneyClass}`}>−{money(row.amount)}</strong>
                 </div>
               ))}
             </div>
           )}
 
-          <div className="mt-3 grid gap-1 text-xs">
+          <div className={`mt-3 grid gap-1 text-xs ${moneyClass}`}>
             <div className="flex justify-between">
               <span>Payment</span>
               <strong>

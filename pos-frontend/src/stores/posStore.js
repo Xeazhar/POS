@@ -36,7 +36,7 @@ const offlineDemo = !api.hasSupabase
 
 export const useAuthStore = create(persist((set, get) => ({
   user: null,
-  booting: false,
+  booting: true,
   error: '',
   pendingClockIn: false,
   screenLocked: false,
@@ -128,18 +128,27 @@ export const useAuthStore = create(persist((set, get) => ({
       if (await needsFreshLogin()) {
         if (isOnline()) await api.signOut().catch(() => {})
         await clearLocalSession()
+        api.clearDeviceSessionId()
+        await api.clearManagerUnlockSecret().catch(() => {})
         set({ user: null, booting: false, screenLocked: false })
         return null
       }
+
+      // Safety: never auto-login from IndexedDB/local cache.
+      // Only continue if this browser tab still has an Auth session (sessionStorage).
       let user = null
       if (isOnline()) {
         user = await api.fetchSessionStaff()
       }
       if (!user) {
-        user = await loadLocalSession()
-      } else {
-        await saveLocalSession(user)
+        await clearLocalSession()
+        api.clearDeviceSessionId()
+        await api.clearManagerUnlockSecret().catch(() => {})
+        set({ user: null, booting: false, screenLocked: false })
+        return null
       }
+
+      await saveLocalSession(user)
       if (user?.id && isOnline()) {
         const sessionId = user.deviceSessionId || api.getOrCreateDeviceSessionId()
         try {
@@ -151,6 +160,7 @@ export const useAuthStore = create(persist((set, get) => ({
           await api.signOut().catch(() => {})
           await clearLocalSession()
           api.clearDeviceSessionId()
+          await api.clearManagerUnlockSecret().catch(() => {})
           set({ user: null, booting: false, error: claimErr.message, screenLocked: false })
           return null
         }
@@ -160,14 +170,9 @@ export const useAuthStore = create(persist((set, get) => ({
       if (user?.branchId) setSyncBranchId(user.branchId)
       return user
     } catch {
-      if (await needsFreshLogin()) {
-        set({ user: null, booting: false })
-        return null
-      }
-      const cached = await loadLocalSession()
-      set({ user: cached, booting: false })
-      if (cached?.branchId) setSyncBranchId(cached.branchId)
-      return cached
+      await clearLocalSession().catch(() => {})
+      set({ user: null, booting: false, screenLocked: false })
+      return null
     }
   },
   lockScreen: () => set({ screenLocked: true }),
@@ -903,6 +908,7 @@ export const useInventoryStore = create((set, get) => ({
     set((state) => ({
       dayEnds: [mapped, ...state.dayEnds.filter((item) => item.date !== entry.date)],
     }))
+    useCartStore.getState().clear()
 
     if (api.hasSupabase && user?.branchId) {
       if (isOnline()) {

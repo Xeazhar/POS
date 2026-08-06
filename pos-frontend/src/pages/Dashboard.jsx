@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import RevenueChart from '../components/dashboard/RevenueChart'
 import SalesMixBar from '../components/dashboard/SalesMixBar'
 import { DayEndReportPanels } from '../components/dayend/DayEndReportPanels'
-import { PageHeader, PrimaryButton, SectionHeading, TableCard } from '../components/ui'
+import { PageHeader, PageSkeleton, PrimaryButton, SectionHeading, TableCard, moneyClass } from '../components/ui'
 import { hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { previousDayRestockReport } from '../utils/dayEndReport'
@@ -182,23 +182,33 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const user = useAuthStore((state) => state.user)
   const isRestaurant = user?.branchType === 'restaurant'
   const storeProducts = useProductStore((state) => state.products)
+  const productsLoading = useProductStore((state) => state.loading)
   const storeTransactions = useInventoryStore((state) => state.transactions)
   const storeMovements = useInventoryStore((state) => state.movements)
   const dayEnds = useInventoryStore((state) => state.dayEnds)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const [period, setPeriod] = useState('Today')
+  const [bootingPage, setBootingPage] = useState(Boolean(hasSupabase))
   const loadBranch = useProductStore((state) => state.loadBranch)
   const hydrate = useInventoryStore((state) => state.hydrate)
 
   useEffect(() => {
-    if (!hasSupabase) return
+    if (!hasSupabase) {
+      setBootingPage(false)
+      return
+    }
     const branchId = scopedBranchId || user?.branchId
-    if (!branchId) return
+    if (!branchId) {
+      setBootingPage(false)
+      return
+    }
+    setBootingPage(true)
     loadBranch(branchId)
       .then((data) => {
         if (data) hydrate(data)
       })
       .catch(() => {})
+      .finally(() => setBootingPage(false))
   }, [scopedBranchId, user?.branchId, loadBranch, hydrate])
 
   const products = storeProducts
@@ -233,6 +243,10 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const greeting = greetingFor(user)
   const todayKey = businessDate(new Date(), dayOpenHour)
   const restockEntry = !isRestaurant ? previousDayRestockReport(dayEnds, todayKey) : null
+
+  if (bootingPage || (productsLoading && !products.length)) {
+    return <PageSkeleton variant="dashboard" />
+  }
 
   return (
     <div className="overflow-auto pt-2.5 pb-[18px]">
@@ -273,13 +287,13 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
         ).map(([label, value, note]) => (
           <div
             key={label}
-            className="rounded-[9px] bg-brand-dark p-[14px] text-white max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:gap-3 max-[700px]:p-3.5"
+            className="rounded-[10px] bg-brand-dark p-[14px] text-white max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:gap-3 max-[700px]:p-3.5"
           >
             <div className="min-w-0">
               <span className="block text-[11px] text-[#abb1ad] max-[700px]:text-[10px]">{label}</span>
               <small className="mt-1 hidden text-[10px] text-[#abb1ad] max-[700px]:block">{note}</small>
             </div>
-            <strong className="mt-2 block text-[28px] text-brand-gold max-[700px]:mt-0 max-[700px]:shrink-0 max-[700px]:text-[22px]">
+            <strong className={`mt-2 block text-[28px] text-brand-gold max-[700px]:mt-0 max-[700px]:shrink-0 max-[700px]:text-[22px] ${moneyClass}`}>
               {value}
             </strong>
             <small className="block text-[11px] text-[#abb1ad] max-[700px]:hidden">{note}</small>
@@ -290,7 +304,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
       {restockEntry && (
         <DayEndReportPanels
           report={restockEntry.dayReport}
-          title="Sold"
+          title="Units sold & restock"
           showRestock
           compact
           alert
@@ -300,7 +314,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
       )}
 
       {isRestaurant && menuOn.length === 0 && products.length > 0 && (
-        <div className="mb-3.5 flex flex-wrap items-center justify-between gap-3 rounded-[9px] border border-[#e8d4a8] bg-[#fff8ea] px-4 py-3 max-[700px]:px-3">
+        <div className="mb-3.5 flex flex-wrap items-center justify-between gap-3 rounded-[10px] border border-[#e8d4a8] bg-[#fff8ea] px-4 py-3 max-[700px]:px-3">
           <div className="min-w-0">
             <strong className="block text-sm text-[#6a5520]">Set today&apos;s potahe first</strong>
             <p className="m-0 mt-1 text-xs text-[#6a5520]">
@@ -332,7 +346,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
             />
             <div className="px-4 py-3">
               <div className="mb-2 flex gap-2 text-[11px]">
-                <span className="rounded bg-[#eef6ea] px-2 py-1 font-bold text-brand-success">
+                <span className="rounded bg-brand-success-bg px-2 py-1 font-bold text-brand-success-text">
                   Serving {menuOn.length}
                 </span>
                 <span className="rounded border border-brand-line bg-white px-2 py-1 font-bold text-brand-muted">
@@ -358,7 +372,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
                           {product.productCode ? ` · ${product.productCode}` : ''}
                         </small>
                       </div>
-                      <strong className={on ? 'text-brand-success' : 'text-brand-muted'}>
+                      <strong className={on ? 'text-brand-success-text' : 'text-brand-muted'}>
                         {on ? 'Serving' : 'Off'}
                       </strong>
                     </div>
@@ -423,7 +437,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
                       {product.category} · {qty(product.qty, product.pricingMode === 'kg' ? 'kg' : 'pc')}
                     </small>
                   </div>
-                  <strong className="text-brand-ink">{money(product.revenue)}</strong>
+                  <strong className={`text-brand-ink ${moneyClass}`}>{money(product.revenue)}</strong>
                 </div>
               ))
             )}

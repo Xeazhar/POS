@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import PaymentMethodPie from '../../components/dashboard/PaymentMethodPie'
 import RevenueChart from '../../components/dashboard/RevenueChart'
 import SalesMixBar from '../../components/dashboard/SalesMixBar'
-import { PageHeader, TableCard } from '../../components/ui'
+import { PageHeader, PageSkeleton, TableCard, moneyClass, tableRowClass } from '../../components/ui'
 import { branchSummary, fetchBranches, fetchNetworkDashboard, hasSupabase } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
 import { greetingFor, money } from '../../utils/format'
@@ -24,9 +24,11 @@ function ManagerOverview() {
   const [branchBars, setBranchBars] = useState([])
   const [paymentMix, setPaymentMix] = useState([])
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     let active = true
+    setLoading(true)
     const meta = PERIODS.find((p) => p.id === period) || PERIODS[1]
     Promise.resolve()
       .then(async () => {
@@ -62,6 +64,7 @@ function ManagerOverview() {
             { id: 'card', label: 'Card', value: 22 },
             { id: 'ewallet', label: 'E-wallet', value: 16 },
           ])
+          setLoading(false)
           return
         }
         const rows = await fetchBranches()
@@ -83,9 +86,13 @@ function ManagerOverview() {
             : rows.map((b) => ({ category: b.name, value: next[b.id]?.revenue || 0 })),
         )
         setPaymentMix(charts.paymentMix || [])
+        setLoading(false)
       })
       .catch((err) => {
-        if (active) setError(err.message)
+        if (active) {
+          setError(err.message)
+          setLoading(false)
+        }
       })
     return () => {
       active = false
@@ -104,6 +111,10 @@ function ManagerOverview() {
 
   const periodLabel = PERIODS.find((p) => p.id === period)?.label || 'Week'
   const hasRestaurant = branches.some((b) => b.branch_type === 'restaurant')
+
+  if (loading) {
+    return <PageSkeleton variant="dashboard" />
+  }
 
   return (
     <div>
@@ -137,9 +148,9 @@ function ManagerOverview() {
             hasRestaurant ? totals.menuOn : totals.lowStock,
           ],
         ].map(([label, value]) => (
-          <div key={label} className="rounded-[9px] bg-brand-dark p-4 text-white">
+          <div key={label} className="rounded-[10px] bg-brand-dark p-4 text-white">
             <span className="block text-[11px] text-[#abb1ad]">{label}</span>
-            <strong className="mt-2 block text-[26px] text-brand-gold">{value}</strong>
+            <strong className={`mt-2 block text-[26px] text-brand-gold ${moneyClass}`}>{value}</strong>
           </div>
         ))}
       </div>
@@ -165,7 +176,7 @@ function ManagerOverview() {
           return (
             <div
               key={branch.id}
-              className="grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem_4.5rem] items-center gap-3 border-t border-brand-softline px-5 py-3 text-xs max-[700px]:grid-cols-[minmax(0,1fr)_4.5rem]"
+              className={`grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem_4.5rem] items-center gap-3 px-5 py-3 text-xs max-[700px]:grid-cols-[minmax(0,1fr)_4.5rem] ${tableRowClass}`}
             >
               <div className="min-w-0">
                 <strong className="block truncate text-brand-ink">{branch.name}</strong>
@@ -174,12 +185,12 @@ function ManagerOverview() {
               <span className="max-[700px]:hidden text-[11px]">
                 {restaurant ? 'Restaurant' : 'Retail'}
               </span>
-              <strong className="text-right tabular-nums text-brand-gold max-[700px]:hidden">
+              <strong className={`text-right text-brand-gold max-[700px]:hidden ${moneyClass}`}>
                 {money(summary.revenue)}
               </strong>
-              <span className="text-right tabular-nums max-[700px]:hidden">{summary.orders}</span>
+              <span className={`text-right max-[700px]:hidden ${moneyClass}`}>{summary.orders}</span>
               <span
-                className={`text-right tabular-nums max-[700px]:hidden ${
+                className={`text-right max-[700px]:hidden ${moneyClass} ${
                   restaurant ? 'text-brand-success' : 'text-brand-danger'
                 }`}
               >

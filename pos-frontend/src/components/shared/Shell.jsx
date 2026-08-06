@@ -8,13 +8,18 @@ import {
   clockOut,
   fetchOpenShift,
   heartbeatStaffSession,
+  recordChangeFund,
 } from '../../lib/api'
-import { useAuthStore } from '../../stores/posStore'
+import { useAuthStore, useInventoryStore } from '../../stores/posStore'
 import { useSyncStore } from '../../stores/syncStore'
+import { formatSyncError } from '../../utils/errors'
 import { isManagerRole, usesPinLogin } from '../../utils/roles'
-import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
+import { businessDate } from '../../utils/format'
+import { decimalOnly } from '../../utils/validate'
+import { Eyebrow, Field, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
 import Clock from './Clock'
 import LockScreen from './LockScreen'
+import RequestNotifications from './RequestNotifications'
 
 const IDLE_LOCK_MS = 10 * 60 * 1000
 const HEARTBEAT_MS = 2.5 * 60 * 1000
@@ -30,6 +35,7 @@ function syncCopy({ online, pending, status, lastError }) {
       label: pending ? `Offline · ${pending}` : 'Offline',
       detail: pending ? `${pending} saved locally` : 'No network',
       tone: 'off',
+      isError: false,
     }
   }
   if (syncing) {
@@ -37,6 +43,17 @@ function syncCopy({ online, pending, status, lastError }) {
       label: 'Syncing…',
       detail: pending ? `${pending} queued` : 'Updating',
       tone: 'sync',
+      isError: false,
+    }
+  }
+  if (status === 'error' || lastError) {
+    const formatted = formatSyncError(lastError)
+    return {
+      label: formatted.title,
+      detail: formatted.body,
+      hint: formatted.hint || '',
+      tone: 'warn',
+      isError: true,
     }
   }
   if (pending) {
@@ -44,19 +61,14 @@ function syncCopy({ online, pending, status, lastError }) {
       label: `${pending} queued`,
       detail: 'Waiting to sync',
       tone: 'warn',
-    }
-  }
-  if (status === 'error' || lastError) {
-    return {
-      label: 'Sync issue',
-      detail: String(lastError || 'Retrying').slice(0, 28),
-      tone: 'warn',
+      isError: false,
     }
   }
   return {
     label: 'Synced',
     detail: 'Up to date',
     tone: 'ok',
+    isError: false,
   }
 }
 
@@ -91,14 +103,24 @@ function Shell({ children }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [clockBusy, setClockBusy] = useState(false)
   const [shiftPeriod, setShiftPeriod] = useState(defaultShiftPeriod)
+  const [changeFundAmount, setChangeFundAmount] = useState('')
+  const [changeFundError, setChangeFundError] = useState('')
   const [logoutPrompt, setLogoutPrompt] = useState(null) // { shift } | true (no shift info yet) | null
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [logoutError, setLogoutError] = useState('')
+  const [syncBannerDismissed, setSyncBannerDismissed] = useState(false)
+  const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const isManager = isManagerRole(user?.role) && user?.role !== 'master'
   const links = navLinksFor(user)
   const sync = syncCopy({ online, pending, status, lastError })
   const isPosPage = location.pathname === '/pos'
   const idleTimerRef = useRef(null)
+  const showSyncBanner = sync.isError && lastError && !syncBannerDismissed
+
+  useEffect(() => {
+    // New sync error → show banner again
+    if (lastError) setSyncBannerDismissed(false)
+  }, [lastError])
 
   const bumpIdle = () => {
     if (screenLocked) return
@@ -133,23 +155,78 @@ function Shell({ children }) {
     return () => window.clearInterval(t)
   }, [user?.id, deviceSessionId, user?.deviceSessionId])
 
-  const dismissClock = () => useAuthStore.setState({ pendingClockIn: false })
-  const doClockIn = async () => {
+  useEffect(() => {
+    if (!hasSupabase || !user?.id || !user?.branchId) return undefined
+    if (!usesPinLogin(user?.role)) return undefined
+    let active = true
+    fetchOpenShift(user.id)
+      .then((open) => {
+        if (!active) return
+        if (!open) useAuthStore.setState({ pendingClockIn: true })
+      })
+      .catch(() => {
+        /* clock-in gate soft-fails if shifts table/migration missing */
+      })
+    return () => {
+      active = false
+    }
+  }, [user?.id, user?.branchId, user?.role])
+
+  const clearClockForm = () => {
+    setChangeFundAmount('')
+    setChangeFundError('')
+  }
+
+  const isSupervisorClockIn = user?.role === 'supervisor' || user?.role === 'master'
+
+  const finishClockIn = async () => {
     setClockBusy(true)
+    setChangeFundError('')
     try {
       if (hasSupabase && user?.id && user?.branchId) {
-        await clockIn({
+        const shift = await clockIn({
           staffId: user.id,
           branchId: user.branchId,
           shiftPeriod: shiftPeriod === 'pm' ? 'pm' : 'am',
         })
+        const amt = Number(changeFundAmount)
+        // Cashiers record opening float; supervisors skip (drawer already set by cashier).
+        if (!isSupervisorClockIn && amt > 0 && shift?.id) {
+          await recordChangeFund({
+            branchId: user.branchId,
+            staffId: user.id,
+            shiftId: shift.id,
+            amount: amt,
+            note: 'Opening float',
+            confirmedBy: user.id,
+            businessDate: businessDate(new Date(), dayOpenHour),
+          })
+        }
       }
-    } catch {
-      /* optional */
+      useAuthStore.setState({ pendingClockIn: false })
+      clearClockForm()
+    } catch (err) {
+      setChangeFundError(err?.message || 'Could not clock in / record change fund.')
     } finally {
       setClockBusy(false)
-      dismissClock()
     }
+  }
+
+  const signOutWithoutShift = async () => {
+    await logout()
+    clearClockForm()
+    navigate('/')
+  }
+
+  const doClockIn = async () => {
+    if (!isSupervisorClockIn) {
+      const amt = Number(changeFundAmount)
+      if (!changeFundAmount || Number.isNaN(amt) || amt <= 0) {
+        setChangeFundError('Enter the change fund (starting cash) counted into the drawer.')
+        return
+      }
+    }
+    await finishClockIn()
   }
 
   const finishLogout = async () => {
@@ -225,11 +302,13 @@ function Shell({ children }) {
   return (
     <div className="min-h-screen bg-brand-canvas">
       {pendingClockIn && (
-        <Modal onClose={dismissClock}>
+        <Modal>
           <Eyebrow>SHIFT</Eyebrow>
-          <h2 className="mb-1 text-lg">Clock in?</h2>
+          <h2 className="mb-1 text-lg">Clock in required</h2>
           <p className="m-0 text-xs text-brand-muted">
-            Hi {user?.name || 'there'}. Choose AM or PM so your shift is easy to spot later.
+            {isSupervisorClockIn
+              ? 'Choose AM/PM to start your shift. Change fund is entered by the cashier on their clock-in.'
+              : 'Choose AM/PM, then enter the change fund counted into your drawer. You cannot use POS or other tools until you clock in.'}
           </p>
           <div className="mt-3 grid grid-cols-2 gap-2">
             {[
@@ -257,12 +336,27 @@ function Shell({ children }) {
               </button>
             ))}
           </div>
+          {!isSupervisorClockIn && (
+            <Field
+              className="mt-3"
+              label="Change fund (starting cash)"
+              value={changeFundAmount}
+              onChange={(e) => {
+                setChangeFundAmount(decimalOnly(e.target.value))
+                setChangeFundError('')
+              }}
+              inputMode="decimal"
+              required
+              placeholder="0.00"
+            />
+          )}
+          {changeFundError && <p className="mt-2 text-xs text-brand-danger">{changeFundError}</p>}
           <ModalActions>
-            <SecondaryButton compact type="button" onClick={dismissClock}>
-              Skip for now
+            <SecondaryButton compact type="button" disabled={clockBusy} onClick={signOutWithoutShift}>
+              Sign out
             </SecondaryButton>
             <PrimaryButton compact type="button" disabled={clockBusy} onClick={doClockIn}>
-              {clockBusy ? 'Clocking in…' : `Clock in · ${shiftPeriod.toUpperCase()}`}
+              {clockBusy ? 'Working…' : `Clock in · ${shiftPeriod.toUpperCase()}`}
             </PrimaryButton>
           </ModalActions>
         </Modal>
@@ -303,6 +397,10 @@ function Shell({ children }) {
           </ModalActions>
         </Modal>
       )}
+      <div
+        aria-hidden={pendingClockIn || undefined}
+        className={pendingClockIn ? 'pointer-events-none select-none' : undefined}
+      >
       <header className="flex h-[62px] items-center justify-between gap-3 bg-brand-dark px-6 text-white max-[700px]:px-4">
         <div className="flex min-w-0 shrink-0 items-center gap-2">
           <button
@@ -329,6 +427,7 @@ function Shell({ children }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-2.5 text-[13px]">
+          <RequestNotifications />
           <div className="grid h-[35px] w-[35px] place-items-center rounded-full bg-brand-gold font-bold text-brand-dark">
             {user?.name?.[0] || 'A'}
           </div>
@@ -400,14 +499,26 @@ function Shell({ children }) {
           </button>
 
           <div
-            className="mt-1 shrink-0 rounded-lg bg-brand-panel px-1.5 py-2.5 text-center"
-            title={lastError || sync.detail}
+            className={`mt-1 shrink-0 rounded-lg px-1.5 py-2.5 text-center ${
+              sync.isError ? 'bg-[#3a3228] ring-1 ring-[#c9a45a]/40' : 'bg-brand-panel'
+            }`}
           >
             <span className={`mx-auto mb-1 block h-1.5 w-1.5 rounded-full ${toneDot[sync.tone]}`} />
             <strong className={`block text-[9px] font-bold leading-tight ${toneText[sync.tone]}`}>
               {sync.label}
             </strong>
-            <span className="mt-0.5 block text-[8px] leading-tight text-[#8a908c]">{sync.detail}</span>
+            <span
+              className={`mt-0.5 block text-[8px] leading-snug break-words ${
+                sync.isError ? 'text-[#e8d9b8]' : 'text-[#8a908c]'
+              }`}
+            >
+              {sync.detail}
+            </span>
+            {sync.hint ? (
+              <span className="mt-1 block text-[8px] leading-snug text-[#c9a45a] break-words">
+                {sync.hint}
+              </span>
+            ) : null}
           </div>
         </aside>
 
@@ -416,6 +527,30 @@ function Shell({ children }) {
             isPosPage ? 'flex flex-col overflow-hidden' : 'overflow-auto'
           }`}
         >
+          {showSyncBanner && (
+            <div
+              role="alert"
+              className="mb-3 flex shrink-0 items-start gap-3 rounded-[10px] border border-[#e8d4a8] bg-[#fff8ea] px-3.5 py-3 text-left"
+            >
+              <div className="min-w-0 flex-1">
+                <strong className="block text-sm text-[#6a5520]">{sync.label}</strong>
+                <p className="m-0 mt-1 text-xs leading-snug text-[#6a5520] break-words">{sync.detail}</p>
+                {sync.hint ? (
+                  <p className="m-0 mt-1.5 text-xs font-semibold leading-snug text-[#6a5520] break-words">
+                    {sync.hint}
+                  </p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className="shrink-0 border-0 bg-transparent p-1 text-base leading-none text-[#6a5520]"
+                aria-label="Dismiss sync message"
+                onClick={() => setSyncBannerDismissed(true)}
+              >
+                <FiX />
+              </button>
+            </div>
+          )}
           {isPosPage ? <div className="flex min-h-0 flex-1 flex-col">{children}</div> : children}
         </section>
       </div>
@@ -442,6 +577,7 @@ function Shell({ children }) {
           }}
         />
       )}
+      </div>
     </div>
   )
 }

@@ -76,11 +76,32 @@ export function receiptToHtml(receipt) {
       <tr>
         <td>
           ${escapeHtml(line.name)}
-          ${line.discountAmount > 0 ? `<div class="muted">Discount -${money(line.discountAmount)}</div>` : ''}
+          ${
+            line.discountAmount > 0
+              ? `<div class="muted">Discount${
+                  t.discountType ? ` (${escapeHtml(t.discountType)})` : ''
+                } -${money(line.discountAmount)}</div>`
+              : ''
+          }
         </td>
         <td class="num">${qty(line.qty, line.unit)}</td>
-        <td class="num">${money(line.unitPrice)}</td>
-        <td class="num">${money(line.lineTotal)}</td>
+        <td class="num">${
+          line.discountAmount > 0
+            ? `<div class="muted strike">${money(line.unitPrice)}</div>${money(
+                Number(
+                  (
+                    line.unitPrice -
+                    line.discountAmount / Math.max(1, Number(line.qty) || 1)
+                  ).toFixed(2),
+                ),
+              )}`
+            : money(line.unitPrice)
+        }</td>
+        <td class="num">${
+          line.discountAmount > 0
+            ? `<div class="muted strike">${money(line.lineTotal)}</div>${money(line.netLineTotal)}`
+            : money(line.lineTotal)
+        }</td>
       </tr>`,
     )
     .join('')
@@ -96,6 +117,7 @@ export function receiptToHtml(receipt) {
     h1 { font-size: 14px; margin: 0 0 4px; text-align: center; }
     .center { text-align: center; }
     .muted { color: #555; }
+    .strike { text-decoration: line-through; }
     .rule { border-top: 1px dashed #999; margin: 10px 0; }
     table { width: 100%; border-collapse: collapse; }
     td { padding: 2px 0; vertical-align: top; }

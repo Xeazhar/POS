@@ -5,12 +5,15 @@ import {
   Modal,
   ModalActions,
   PageHeader,
+  PageSkeleton,
   Pager,
   PrimaryButton,
   SearchBox,
   SecondaryButton,
   SelectField,
+  SkeletonRows,
   TableCard,
+  tableRowClass,
 } from '../ui'
 import {
   adoptCatalogProducts,
@@ -49,11 +52,13 @@ export default function SupervisorCatalogAdopt() {
   const [showAdd, setShowAdd] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
   const [selected, setSelected] = useState(() => new Set())
+  const [loading, setLoading] = useState(true)
 
   const reload = async () => {
     if (!hasSupabase || !user?.branchId) {
       setProducts([])
       setCatalog([])
+      setLoading(false)
       return
     }
     const [branch, catRows] = await Promise.all([
@@ -63,10 +68,15 @@ export default function SupervisorCatalogAdopt() {
     setProducts(branch.products || [])
     setStoreProducts(branch.products || [])
     setCatalog(catRows || [])
+    setLoading(false)
   }
 
   useEffect(() => {
-    reload().catch((err) => setError(err.message))
+    setLoading(true)
+    reload().catch((err) => {
+      setError(err.message)
+      setLoading(false)
+    })
   }, [user?.branchId, branchType])
 
   useEffect(() => {
@@ -171,6 +181,10 @@ export default function SupervisorCatalogAdopt() {
     }
   }
 
+  if (loading && !products.length) {
+    return <PageSkeleton variant="table" />
+  }
+
   return (
     <div>
       <PageHeader eyebrow="CATALOG" title="Branch products">
@@ -265,8 +279,15 @@ export default function SupervisorCatalogAdopt() {
               </tr>
             </thead>
             <tbody>
-              {pageRows.map((product) => (
-                <tr key={product.id} className="border-t border-brand-softline">
+              {loading ? (
+                <tr>
+                  <td colSpan={7} className="p-0">
+                    <SkeletonRows rows={8} cols={5} />
+                  </td>
+                </tr>
+              ) : (
+              pageRows.map((product) => (
+                <tr key={product.id} className={tableRowClass}>
                   <td className="px-5 py-3 tabular-nums font-bold text-brand-ink">
                     {product.productCode || '—'}
                   </td>
@@ -287,16 +308,17 @@ export default function SupervisorCatalogAdopt() {
                     {qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}
                   </td>
                 </tr>
-              ))}
+              ))
+              )}
             </tbody>
           </table>
-          {filtered.length === 0 && (
+          {!loading && filtered.length === 0 && (
             <div className="px-5 py-6 text-xs text-brand-subtle">
               No products on this branch yet. Click Add item to select from the network catalog.
             </div>
           )}
         </div>
-        {filtered.length > 0 && (
+        {!loading && filtered.length > 0 && (
           <Pager
             page={pageIndex + 1}
             pageCount={pageCount}
@@ -332,7 +354,7 @@ export default function SupervisorCatalogAdopt() {
             {availableCatalog.map((row) => (
               <label
                 key={row.id}
-                className="grid cursor-pointer grid-cols-[2rem_1.4fr_0.9fr_0.9fr_0.7fr] items-center gap-2 border-t border-brand-softline px-3 py-2 text-xs max-[700px]:grid-cols-[2rem_1fr_0.8fr]"
+                className={`grid cursor-pointer grid-cols-[2rem_1.4fr_0.9fr_0.9fr_0.7fr] items-center gap-2 px-3 py-2 text-xs max-[700px]:grid-cols-[2rem_1fr_0.8fr] ${tableRowClass}`}
               >
                 <input type="checkbox" checked={selected.has(row.id)} onChange={() => toggle(row.id)} />
                 <strong className="truncate text-brand-ink">{row.name}</strong>

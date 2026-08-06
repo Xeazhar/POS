@@ -1,14 +1,34 @@
-import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { FiSearch } from 'react-icons/fi'
 import Cart from '../components/pos/Cart'
 import WeightModal from '../components/pos/WeightModal'
 import SupervisorApprove from '../components/shared/SupervisorApprove'
-import { Field, Modal, ModalActions, PageHeader, PrimaryButton, SearchBox, SecondaryButton, Eyebrow } from '../components/ui'
+import {
+  Field,
+  Modal,
+  ModalActions,
+  PageHeader,
+  PageSkeleton,
+  PrimaryButton,
+  SearchBox,
+  SecondaryButton,
+  Eyebrow,
+  UnitBadge,
+  moneyClass,
+} from '../components/ui'
 import { isDeviceEnabled } from '../devices'
 import { fetchActivePromoEventWithRules, hasSupabase, updateProductPrice } from '../lib/api'
 import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '../stores/posStore'
-import { businessDate, formatOpenHourLabel, isTillClosed, money } from '../utils/format'
+import {
+  businessDate,
+  formatOpenHourLabel,
+  isDayFullyClosed,
+  isDaySubmitted,
+  isTillClosed,
+  money,
+} from '../utils/format'
+import { buildPromoByProductId, promoBadgeLabel, promoUnitPrice } from '../utils/promo'
 import { isManagerRole } from '../utils/roles'
 import { formatSupportError } from '../utils/errors'
 
@@ -20,6 +40,7 @@ function POS() {
   const user = useAuthStore((state) => state.user)
   const isRestaurant = user?.branchType === 'restaurant'
   const products = useProductStore((state) => state.products)
+  const productsLoading = useProductStore((state) => state.loading)
   const setProducts = useProductStore((state) => state.setProducts)
   const toggleAvailableToday = useProductStore((state) => state.toggleAvailableToday)
   const dayEnds = useInventoryStore((state) => state.dayEnds)
@@ -42,13 +63,24 @@ function POS() {
   const [activePromo, setActivePromo] = useState(null)
   const [searchParams, setSearchParams] = useSearchParams()
   const tillClosed = isTillClosed(dayEnds, dayOpenHour)
+  const daySubmitted = isDaySubmitted(dayEnds, dayOpenHour)
+  const dayFullyClosed = isDayFullyClosed(dayEnds, dayOpenHour)
   const bizDate = businessDate(new Date(), dayOpenHour)
   const barcodeOn = isDeviceEnabled(user?.deviceSettings, 'barcode_scanner')
   const barcodeTableMode = barcodeOn && !isRestaurant && !manageMenu
   const cartEmpty = items.length === 0
+  const clearCart = useCartStore((state) => state.clear)
+
+  useEffect(() => {
+    if (tillClosed) clearCart()
+  }, [tillClosed, clearCart])
   const promoProductIds = activePromo?.rules?.length
     ? new Set(activePromo.rules.flatMap((r) => (r.products || []).map((p) => p.productId)).filter(Boolean))
     : new Set()
+  const promoByProductId = useMemo(
+    () => buildPromoByProductId(activePromo?.rules || [], activePromo?.event?.name || ''),
+    [activePromo],
+  )
   const categories = [
     'All',
     ...(promoProductIds.size ? ['Promos'] : []),
@@ -73,15 +105,25 @@ function POS() {
   }, [isRestaurant, searchParams, user?.branchId, bizDate, products.length])
 
   useEffect(() => {
-    if (!hasSupabase || !user?.branchId) return
+    if (!hasSupabase || !user?.branchId) {
+      setActivePromo(null)
+      return undefined
+    }
     let active = true
-    void (async () => {
-      const next = await fetchActivePromoEventWithRules(user.branchId)
-      if (!active) return
-      setActivePromo(next)
-    })()
+    const load = async () => {
+      try {
+        const next = await fetchActivePromoEventWithRules(user.branchId)
+        if (active) setActivePromo(next)
+      } catch (err) {
+        console.warn('Failed to load active promo', err)
+        if (active) setActivePromo(null)
+      }
+    }
+    void load()
+    const t = window.setInterval(load, 60_000)
     return () => {
       active = false
+      window.clearInterval(t)
     }
   }, [hasSupabase, user?.branchId])
 
@@ -156,6 +198,53 @@ function POS() {
     }
   }, [cartOverlayOpen, awaitingPriceApproval, priceTarget, weighted, inquiryProduct])
 
+  if (tillClosed) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <PageHeader className="mb-3 shrink-0" eyebrow="SALES FLOOR" title="POS locked">
+          <span className="text-xs text-brand-subtle">Business day {bizDate}</span>
+        </PageHeader>
+        <div
+          className="grid min-h-0 flex-1 place-items-center rounded-[10px] border border-brand-danger/25 bg-[#fff8f7] px-6 py-10"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="max-w-md text-center">
+            <strong className="block text-lg text-brand-danger">
+              {dayFullyClosed
+                ? 'Day end is closed'
+                : daySubmitted
+                  ? 'Day end submitted'
+                  : 'Till is closed'}
+            </strong>
+            <p className="m-0 mt-2 text-sm leading-relaxed text-[#6a4038]">
+              {dayFullyClosed
+                ? `No sales until a manager reopens the till, or automatically at ${formatOpenHourLabel(dayOpenHour)} for the next business day.`
+                : daySubmitted
+                  ? 'Waiting for a manager to approve day end. POS stays locked — no sales, scans, or cart changes.'
+                  : 'Sales are locked for this business day.'}
+            </p>
+            <p className="m-0 mt-3 text-xs text-brand-subtle">
+              Nothing on this screen can be used until the till is reopened.
+            </p>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+              <Link
+                to="/day-end"
+                className="inline-flex items-center justify-center rounded-[5px] border-0 bg-brand-gold px-4 py-2.5 text-xs font-bold text-brand-dark no-underline"
+              >
+                Open day end
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (productsLoading && !products.length) {
+    return <PageSkeleton variant="dashboard" />
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader
@@ -193,10 +282,10 @@ function POS() {
             the sale screen.
           </p>
           <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-            <span className="rounded bg-[#eef6ea] px-2 py-1 font-bold text-brand-success">
+            <span className="rounded bg-brand-success-bg px-2 py-1 font-bold text-brand-success-text">
               Serving {menuOnCount}
             </span>
-            <span className="rounded bg-[#fce8e8] px-2 py-1 font-bold text-brand-danger">Off {menuOffCount}</span>
+            <span className="rounded bg-brand-danger-bg px-2 py-1 font-bold text-brand-danger">Off {menuOffCount}</span>
           </div>
         </div>
       )}
@@ -308,7 +397,11 @@ function POS() {
                     </tr>
                   </thead>
                   <tbody>
-                    {visible.map((product) => (
+                    {visible.map((product) => {
+                      const promoInfo = promoByProductId.get(product.id)
+                      const salePrice = promoUnitPrice(product.price, promoInfo)
+                      const badge = promoBadgeLabel(promoInfo)
+                      return (
                       <tr
                         key={product.id}
                         className="cursor-pointer border-t border-brand-softline hover:bg-[#fafaf7]"
@@ -319,9 +412,24 @@ function POS() {
                         <td className="px-3 py-2">
                           <strong className="text-brand-ink">{product.name}</strong>
                           <div className="text-[10px] text-brand-subtle">{product.category || '—'}</div>
+                          {badge && (
+                            <div className="mt-0.5 text-[10px] font-bold text-brand-danger">
+                              {badge}
+                              {promoInfo?.eventName ? ` · ${promoInfo.eventName}` : ''}
+                            </div>
+                          )}
                         </td>
-                        <td className="px-3 py-2 text-right font-bold text-brand-ink">
-                          {money(product.price)}
+                        <td className={`px-3 py-2 text-right font-bold text-brand-ink ${moneyClass}`}>
+                          {salePrice != null ? (
+                            <span className="block">
+                              <span className="block text-[10px] font-normal text-brand-subtle line-through">
+                                {money(product.price)}
+                              </span>
+                              <span className="text-brand-danger">{money(salePrice)}</span>
+                            </span>
+                          ) : (
+                            money(product.price)
+                          )}
                         </td>
                         <td className="px-3 py-2 text-right">
                           {product.pricingMode === 'kg'
@@ -329,7 +437,8 @@ function POS() {
                             : `${Number(product.stock || 0).toFixed(0)} pcs`}
                         </td>
                       </tr>
-                    ))}
+                      )
+                    })}
                   </tbody>
                 </table>
                 {visible.length === 0 && (
@@ -350,6 +459,9 @@ function POS() {
               {visible.map((product) => {
                 const offToday = isRestaurant && product.availableToday === false
                 const flashing = flashId === product.id
+                const promoInfo = promoByProductId.get(product.id)
+                const salePrice = promoUnitPrice(product.price, promoInfo)
+                const badge = promoBadgeLabel(promoInfo)
                 return (
                   <div key={product.id} className="relative">
                     <button
@@ -364,7 +476,9 @@ function POS() {
                               }`
                           : offToday && manageMenu
                             ? 'border-[#e8e9e3] bg-[#f3f3f0] opacity-55'
-                            : 'border-[#e8e9e3] bg-[#fbfbf9] hover:border-brand-gold hover:shadow-[0_2px_8px_#00000012] active:border-brand-gold'
+                            : promoInfo
+                              ? 'border-brand-danger/40 bg-[#fff8f7] hover:border-brand-danger hover:shadow-[0_2px_8px_#00000012] active:border-brand-danger'
+                              : 'border-[#e8e9e3] bg-[#fbfbf9] hover:border-brand-gold hover:shadow-[0_2px_8px_#00000012] active:border-brand-gold'
                       }`}
                       onClick={async () => {
                         if (manageMenu && isRestaurant) {
@@ -381,38 +495,51 @@ function POS() {
                         select(product)
                       }}
                     >
+                      {badge && !(isRestaurant && manageMenu) && (
+                        <span className="mb-1 rounded bg-brand-danger px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-white uppercase">
+                          {badge}
+                        </span>
+                      )}
                       {isRestaurant && manageMenu ? (
                         <span
                           className={`rounded px-2 py-1 text-[10px] font-bold tracking-wide uppercase ${
-                            offToday ? 'bg-[#fce8e8] text-brand-danger' : 'bg-[#eef6ea] text-brand-success'
+                            offToday
+                              ? 'bg-brand-danger-bg text-brand-danger'
+                              : 'bg-brand-success-bg text-brand-success-text'
                           }`}
                         >
                           {offToday ? 'Not available' : 'Serving'}
                         </span>
-                      ) : (
+                      ) : isRestaurant ? (
                         <div
                           className={`grid h-14 w-14 place-items-center rounded-lg text-xs font-bold ${
-                            isRestaurant
-                              ? product.menuKind === 'veggie'
-                                ? 'bg-brand-success-bg text-brand-success-text'
-                                : product.menuKind === 'drink' || product.menuKind === 'rice'
-                                  ? 'bg-[#eef1f6] text-[#4a5568]'
-                                  : 'bg-brand-meat text-brand-meat-text'
-                              : product.category === 'Meat'
-                                ? 'bg-brand-meat text-brand-meat-text'
-                                : 'bg-brand-success-bg text-brand-success-text'
+                            product.menuKind === 'veggie'
+                              ? 'bg-brand-success-bg text-brand-success-text'
+                              : product.menuKind === 'drink' || product.menuKind === 'rice'
+                                ? 'bg-[#eef1f6] text-[#4a5568]'
+                                : 'bg-brand-meat text-brand-meat-text'
                           }`}
                         >
-                          {isRestaurant
-                            ? (product.menuKind || 'ON').slice(0, 4).toUpperCase()
-                            : product.pricingMode === 'kg'
-                              ? 'KG'
-                              : 'PC'}
+                          {(product.menuKind || 'ON').slice(0, 4).toUpperCase()}
                         </div>
+                      ) : (
+                        <UnitBadge mode={product.pricingMode} size="tile" />
                       )}
                       <strong className="mt-auto line-clamp-2 text-[15px] leading-snug">{product.name}</strong>
-                      <span className="mt-1.5 text-[12px] text-[#808581]">
-                        {money(product.price)}
+                      {promoInfo?.eventName && !(isRestaurant && manageMenu) && (
+                        <span className="mt-0.5 line-clamp-1 text-[10px] font-bold text-brand-danger">
+                          {promoInfo.eventName}
+                        </span>
+                      )}
+                      <span className={`mt-1.5 text-[12px] text-[#808581] ${moneyClass}`}>
+                        {salePrice != null ? (
+                          <>
+                            <span className="mr-1.5 text-[#a8aeaa] line-through">{money(product.price)}</span>
+                            <span className="font-bold text-brand-danger">{money(salePrice)}</span>
+                          </>
+                        ) : (
+                          money(product.price)
+                        )}
                         {isRestaurant && product.budgetPrice != null ? ` - ${money(product.budgetPrice)} bud` : ''}
                         {isRestaurant ? '' : ` / ${product.pricingMode === 'kg' ? 'kg' : 'pc'}`}
                       </span>
@@ -562,7 +689,11 @@ function POS() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visible.map((product) => (
+                  {visible.map((product) => {
+                    const promoInfo = promoByProductId.get(product.id)
+                    const salePrice = promoUnitPrice(product.price, promoInfo)
+                    const badge = promoBadgeLabel(promoInfo)
+                    return (
                     <tr
                       key={product.id}
                       className="cursor-pointer border-t border-brand-softline hover:bg-[#fafaf7]"
@@ -576,18 +707,37 @@ function POS() {
                       <td className="px-3 py-2">
                         <strong className="text-brand-ink">{product.name}</strong>
                         <div className="text-[10px] text-brand-subtle">{product.category || '—'}</div>
-                        <div className="text-[10px] text-brand-subtle">
-                          Discountable: {product.discountEligible ? 'Yes' : 'No'}
-                        </div>
+                        {badge ? (
+                          <div className="text-[10px] font-bold text-brand-danger">
+                            {badge}
+                            {promoInfo?.eventName ? ` · ${promoInfo.eventName}` : ''}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-brand-subtle">
+                            Discountable: {product.discountEligible ? 'Yes' : 'No'}
+                          </div>
+                        )}
                       </td>
-                      <td className="px-3 py-2 text-right font-bold text-brand-ink">{money(product.price)}</td>
+                      <td className={`px-3 py-2 text-right font-bold text-brand-ink ${moneyClass}`}>
+                        {salePrice != null ? (
+                          <span className="block">
+                            <span className="block text-[10px] font-normal text-brand-subtle line-through">
+                              {money(product.price)}
+                            </span>
+                            <span className="text-brand-danger">{money(salePrice)}</span>
+                          </span>
+                        ) : (
+                          money(product.price)
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right">
                         {product.pricingMode === 'kg'
                           ? `${Number(product.stock || 0).toFixed(2)} kg`
                           : `${Number(product.stock || 0).toFixed(0)} pcs`}
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
               {visible.length === 0 && (
@@ -660,28 +810,52 @@ function POS() {
             {inquiryProduct.sku || 'No SKU'}
             {inquiryProduct.barcode ? ` · ${inquiryProduct.barcode}` : ''}
           </p>
-          <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
-            <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
-              <span className="block text-[10px] text-brand-subtle">Price</span>
-              <strong>{money(inquiryProduct.price)}</strong>
-            </div>
-            <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
-              <span className="block text-[10px] text-brand-subtle">On hand</span>
-              <strong>
-                {inquiryProduct.pricingMode === 'kg'
-                  ? `${Number(inquiryProduct.stock || 0).toFixed(2)} kg`
-                  : `${Number(inquiryProduct.stock || 0).toFixed(0)} pc`}
-              </strong>
-            </div>
-            <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
-              <span className="block text-[10px] text-brand-subtle">Category</span>
-              <strong>{inquiryProduct.category || '—'}</strong>
-            </div>
-            <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
-              <span className="block text-[10px] text-brand-subtle">Mode</span>
-              <strong>{inquiryProduct.pricingMode === 'kg' ? 'Weighed' : 'Piece'}</strong>
-            </div>
-          </div>
+          {(() => {
+            const promoInfo = promoByProductId.get(inquiryProduct.id)
+            const salePrice = promoUnitPrice(inquiryProduct.price, promoInfo)
+            const badge = promoBadgeLabel(promoInfo)
+            return (
+              <>
+                {badge && (
+                  <p className="mt-2 mb-0 text-xs font-bold text-brand-danger">
+                    {badge}
+                    {promoInfo?.eventName ? ` · ${promoInfo.eventName}` : ''}
+                  </p>
+                )}
+                <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                    <span className="block text-[10px] text-brand-subtle">
+                      {salePrice != null ? 'Promo price' : 'Price'}
+                    </span>
+                    {salePrice != null ? (
+                      <strong>
+                        <span className="mr-1 text-brand-subtle line-through">{money(inquiryProduct.price)}</span>
+                        <span className="text-brand-danger">{money(salePrice)}</span>
+                      </strong>
+                    ) : (
+                      <strong>{money(inquiryProduct.price)}</strong>
+                    )}
+                  </div>
+                  <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                    <span className="block text-[10px] text-brand-subtle">On hand</span>
+                    <strong>
+                      {inquiryProduct.pricingMode === 'kg'
+                        ? `${Number(inquiryProduct.stock || 0).toFixed(2)} kg`
+                        : `${Number(inquiryProduct.stock || 0).toFixed(0)} pc`}
+                    </strong>
+                  </div>
+                  <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                    <span className="block text-[10px] text-brand-subtle">Category</span>
+                    <strong>{inquiryProduct.category || '—'}</strong>
+                  </div>
+                  <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                    <span className="block text-[10px] text-brand-subtle">Mode</span>
+                    <strong>{inquiryProduct.pricingMode === 'kg' ? 'Weighed' : 'Piece'}</strong>
+                  </div>
+                </div>
+              </>
+            )
+          })()}
           <ModalActions>
             <SecondaryButton compact type="button" onClick={() => setInquiryProduct(null)}>
               Close

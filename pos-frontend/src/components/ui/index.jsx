@@ -130,6 +130,100 @@ export function TableCard({ className = '', children, ...rest }) {
 export const tableHeadClass =
   'bg-brand-dark text-[9px] font-bold tracking-[1.2px] text-[#c8ceca] uppercase'
 
+/** Standard table body row — zebra + soft hover. */
+export const tableRowClass =
+  'border-t border-brand-softline even:bg-brand-sheet-alt hover:bg-[#fafaf7] active:bg-[#f0f1ec]'
+
+/** Comfortable padding for list pages (Products, Transactions, DayEnd history). */
+export const tableRowComfortableClass = `${tableRowClass} px-5 py-[17px]`
+
+/** Dense padding for manager dashboards / compact tables. */
+export const tableRowDenseClass = `${tableRowClass} px-4 py-2.5`
+
+/** Tabular figures for money / qty columns. */
+export const moneyClass = 'tabular-nums'
+
+/** Thin money display — prefer className={moneyClass} when already formatting with money(). */
+export function Money({ value, className = '', children, ...props }) {
+  return (
+    <span className={`${moneyClass} ${className}`} {...props}>
+      {children != null ? children : value}
+    </span>
+  )
+}
+
+function normalizeUnitMode(mode) {
+  const m = String(mode || '')
+    .toLowerCase()
+    .trim()
+  if (m === 'kg' || m === 'per_kg' || m.endsWith('_kg') || m.includes('kg')) return 'kg'
+  return 'pc'
+}
+
+/** Color classes for KG (meat) / PC (success) unit badges. */
+export function unitBadgeClass(mode) {
+  return normalizeUnitMode(mode) === 'kg'
+    ? 'bg-brand-meat text-brand-meat-text'
+    : 'bg-brand-success-bg text-brand-success-text'
+}
+
+/**
+ * Unit badge — KG = brand-meat, PC = brand-success.
+ * `size="tile"` matches POS product tiles (h-14 w-14).
+ */
+export function UnitBadge({ mode, className = '', size = 'sm' }) {
+  const label = normalizeUnitMode(mode) === 'kg' ? 'KG' : 'PC'
+  const sizeCls =
+    size === 'tile' || size === 'lg'
+      ? 'grid h-14 w-14 place-items-center rounded-lg text-xs font-bold'
+      : 'inline-flex min-w-[2rem] items-center justify-center rounded-md px-1.5 py-0.5 text-[10px] font-bold'
+  return <span className={`${sizeCls} ${unitBadgeClass(mode)} ${className}`}>{label}</span>
+}
+
+const STATUS_TONES = {
+  success: 'bg-brand-success-bg text-brand-success-text',
+  warn: 'bg-brand-warn-bg text-brand-warn',
+  danger: 'bg-brand-danger-bg text-brand-danger',
+  neutral: 'bg-[#eceee9] text-brand-muted',
+}
+
+/** Status pill — tones: success | warn | danger | neutral (brand tokens). */
+export function StatusBadge({ tone = 'neutral', children, className = '' }) {
+  return (
+    <span
+      className={`inline-block min-w-[62px] rounded-[20px] px-2 py-[5px] text-center text-[10px] font-bold ${
+        STATUS_TONES[tone] || STATUS_TONES.neutral
+      } ${className}`}
+    >
+      {children}
+    </span>
+  )
+}
+
+/** Paid=success, Partial (refunded)=warn, Voided=danger. */
+export function statusToneFromTxn(item) {
+  if (!item) return 'neutral'
+  if (item.status === 'Voided') return 'danger'
+  if (Number(item.refundedAmount || 0) > 0) return 'warn'
+  if (item.status === 'Paid') return 'success'
+  return 'neutral'
+}
+
+export function statusLabelFromTxn(item) {
+  if (!item) return '—'
+  if (item.status === 'Voided') return 'Voided'
+  if (Number(item.refundedAmount || 0) > 0) return 'Partial'
+  return item.status || '—'
+}
+
+/** Cash variance: zero=success, short=danger, over=warn. */
+export function varianceToneClass(variance) {
+  const v = Number(variance)
+  if (!Number.isFinite(v) || v === 0) return 'text-brand-success'
+  if (v < 0) return 'text-brand-danger'
+  return 'text-brand-warn'
+}
+
 export function Modal({ wide = false, layer = false, className = '', onClose, children }) {
   return (
     <div
@@ -230,7 +324,7 @@ export function StatusOverlay({
           />
         )}
         {done && (
-          <div className="mx-auto mb-4 grid h-8 w-8 place-items-center rounded-full bg-[#eef6ea] text-sm font-bold text-brand-success">
+          <div className="mx-auto mb-4 grid h-8 w-8 place-items-center rounded-full bg-brand-success-bg text-sm font-bold text-brand-success">
             ✓
           </div>
         )}
@@ -326,7 +420,7 @@ export function ToggleSwitch({
       disabled={disabled || busy}
       onClick={() => onChange?.(!checked)}
       className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-0 p-0.5 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-55 ${
-        checked ? 'bg-[#2f6b3c]' : 'bg-[#c5cac4]'
+        checked ? 'bg-brand-success' : 'bg-[#c5cac4]'
       } ${className}`}
     >
       <span
@@ -335,5 +429,107 @@ export function ToggleSwitch({
         } ${busy ? 'opacity-70' : ''}`}
       />
     </button>
+  )
+}
+
+/** Pulsing placeholder block for loading states. */
+export function Skeleton({ className = '' }) {
+  return (
+    <div
+      aria-hidden
+      className={`animate-pulse rounded-md bg-[#e6e8e3] ${className}`}
+    />
+  )
+}
+
+/** Table-style skeleton rows (list pages). */
+export function SkeletonRows({ rows = 6, cols = 4, className = '' }) {
+  return (
+    <div className={className} role="status" aria-live="polite" aria-label="Loading">
+      {Array.from({ length: rows }, (_, row) => (
+        <div
+          key={row}
+          className="grid items-center gap-3 border-t border-brand-softline px-4 py-3.5"
+          style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+        >
+          {Array.from({ length: cols }, (_, col) => (
+            <Skeleton
+              key={col}
+              className={`h-3 ${col === 0 ? 'w-[72%]' : col === cols - 1 ? 'w-10 justify-self-end' : 'w-[55%]'}`}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** Stat / card grid skeleton. */
+export function SkeletonCards({ count = 4, className = '' }) {
+  return (
+    <div
+      className={`grid grid-cols-4 gap-3.5 max-[900px]:grid-cols-2 max-[700px]:grid-cols-1 ${className}`}
+      role="status"
+      aria-live="polite"
+      aria-label="Loading"
+    >
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="rounded-[10px] border border-brand-line bg-white p-4">
+          <Skeleton className="mb-3 h-2.5 w-16" />
+          <Skeleton className="h-6 w-24" />
+          <Skeleton className="mt-2 h-2.5 w-20" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** Full page content skeleton (route loads / heavy fetches). */
+export function PageSkeleton({ variant = 'table', className = '' }) {
+  return (
+    <div className={className} role="status" aria-live="polite" aria-label="Loading">
+      <div className="mb-4">
+        <Skeleton className="mb-2 h-2.5 w-20" />
+        <Skeleton className="h-8 w-48 max-[700px]:w-36" />
+      </div>
+      {variant === 'cards' || variant === 'dashboard' ? (
+        <>
+          <SkeletonCards count={4} className="mb-4" />
+          <div className="mb-4 grid grid-cols-2 gap-3.5 max-[900px]:grid-cols-1">
+            <div className="rounded-[10px] border border-brand-line bg-white p-4">
+              <Skeleton className="mb-4 h-3 w-28" />
+              <Skeleton className="h-40 w-full" />
+            </div>
+            <div className="rounded-[10px] border border-brand-line bg-white p-4">
+              <Skeleton className="mb-4 h-3 w-28" />
+              <Skeleton className="h-40 w-full" />
+            </div>
+          </div>
+          {variant === 'dashboard' && (
+            <TableCard className="max-h-none">
+              <div className="border-b border-brand-softline px-4 py-3">
+                <Skeleton className="h-3 w-32" />
+              </div>
+              <SkeletonRows rows={5} cols={4} />
+            </TableCard>
+          )}
+        </>
+      ) : variant === 'detail' ? (
+        <div className="space-y-3">
+          <Skeleton className="h-3 w-40" />
+          <Skeleton className="h-3 w-56" />
+          <Skeleton className="mt-4 h-28 w-full" />
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-3 w-32" />
+        </div>
+      ) : (
+        <TableCard className="max-h-none">
+          <div className="border-b border-brand-softline px-4 py-3">
+            <Skeleton className="h-3 w-36" />
+          </div>
+          <SkeletonRows rows={8} cols={4} />
+        </TableCard>
+      )}
+    </div>
   )
 }

@@ -6,13 +6,18 @@ import {
   Modal,
   ModalActions,
   PageHeader,
+  PageSkeleton,
   Pager,
   PrimaryButton,
   SearchBox,
   SecondaryButton,
   SelectField,
+  SkeletonRows,
   StockBadge,
   TableCard,
+  UnitBadge,
+  moneyClass,
+  tableRowClass,
 } from '../components/ui'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { hasSupabase, logAuditEvent, bootstrapBranchData } from '../lib/api'
@@ -45,6 +50,7 @@ function Products() {
   const user = useAuthStore((state) => state.user)
   const isRestaurant = user?.branchType === 'restaurant'
   const products = useProductStore((state) => state.products)
+  const productsLoading = useProductStore((state) => state.loading)
   const updateProduct = useProductStore((state) => state.updateProduct)
   const toggleAvailableToday = useProductStore((state) => state.toggleAvailableToday)
   const movements = useInventoryStore((state) => state.movements)
@@ -62,6 +68,7 @@ function Products() {
   const [confirmSave, setConfirmSave] = useState(false)
   const [confirmAdjust, setConfirmAdjust] = useState(null)
   const [adjustReason, setAdjustReason] = useState('')
+  const [pageLoading, setPageLoading] = useState(Boolean(hasSupabase && user?.branchId))
 
   const dayClosed = isDayFullyClosed(dayEnds, dayOpenHour)
   const needsAdjustReason = dayClosed && isSupervisorOrAbove(user?.role)
@@ -77,6 +84,20 @@ function Products() {
       /* keep local */
     }
   }
+
+  useEffect(() => {
+    if (!hasSupabase || !user?.branchId) {
+      setPageLoading(false)
+      return
+    }
+    if (products.length) {
+      setPageLoading(false)
+      return
+    }
+    setPageLoading(true)
+    reloadProducts().finally(() => setPageLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.branchId])
 
   useEffect(() => {
     setPage(0)
@@ -286,6 +307,10 @@ function Products() {
   const pageIndex = Math.min(page, pageCount - 1)
   const pageRows = list.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
 
+  if ((pageLoading || productsLoading) && !products.length) {
+    return <PageSkeleton variant="table" />
+  }
+
   return (
     <div>
       <PageHeader
@@ -357,7 +382,7 @@ function Products() {
         }`}>
           <span>#</span>
           <span>{isRestaurant ? 'Potahe' : 'Product'}</span>
-          <span className="max-[700px]:hidden">{isRestaurant ? 'Plate' : 'Type'}</span>
+<span className="max-[700px]:hidden">{isRestaurant ? 'Plate' : 'Unit'}</span>
           {isRestaurant ? (
             <>
               <span className="text-center">Today</span>
@@ -372,7 +397,10 @@ function Products() {
             </>
           )}
         </div>
-        {pageRows.map((product, index) => {
+        {pageLoading || productsLoading ? (
+          <SkeletonRows rows={8} cols={isRestaurant ? 4 : 5} />
+        ) : (
+        pageRows.map((product, index) => {
           const tone = stockTone(product)
           const label = tone === 'low' ? 'Low' : tone === 'fair' ? 'Fair' : 'Good'
           return (
@@ -380,10 +408,10 @@ function Products() {
               key={product.id}
               role={isRestaurant ? undefined : 'button'}
               tabIndex={isRestaurant ? undefined : 0}
-              className={`grid items-center gap-3 border-t border-brand-softline px-5 py-[17px] text-xs text-brand-slate ${
+              className={`grid items-center gap-3 px-5 py-[17px] text-xs text-brand-slate ${tableRowClass} ${
                 isRestaurant
                   ? 'grid-cols-[2.5rem_1.5fr_1fr_0.7fr_0.8fr] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr]'
-                  : 'tap-row cursor-pointer grid-cols-[2.5rem_1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] hover:bg-[#fafaf7] active:bg-[#f0f1ec] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr_0.7fr]'
+                  : 'tap-row cursor-pointer grid-cols-[2.5rem_1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr_0.7fr]'
               }`}
               onClick={isRestaurant ? undefined : () => open(product)}
               onKeyDown={
@@ -399,7 +427,9 @@ function Products() {
                 <strong className="block text-brand-ink">{product.name}</strong>
                 <small className="text-[10px] text-brand-subtle">{product.sku}</small>
               </div>
-              <span className="max-[700px]:hidden">{isRestaurant ? product.category : product.pricingMode === 'kg' ? 'Meat' : 'Retail'}</span>
+              <span className="max-[700px]:hidden">
+                {isRestaurant ? product.category : <UnitBadge mode={product.pricingMode} />}
+              </span>
               {isRestaurant ? (
                 <>
                   <span className="justify-self-center">
@@ -421,11 +451,11 @@ function Products() {
                       {product.availableToday !== false ? 'Serving' : 'Off'}
                     </button>
                   </span>
-                  <span className="text-right tabular-nums font-bold text-brand-ink">{money(product.price)}</span>
+                  <span className={`text-right font-bold text-brand-ink ${moneyClass}`}>{money(product.price)}</span>
                 </>
               ) : (
                 <>
-                  <span className="text-right tabular-nums">
+                  <span className={`text-right ${moneyClass}`}>
                     {qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}
                   </span>
                   <span className="justify-self-center">
@@ -437,11 +467,12 @@ function Products() {
               )}
             </div>
           )
-        })}
-        {list.length === 0 && (
+        })
+        )}
+        {!pageLoading && !productsLoading && list.length === 0 && (
           <div className="border-t border-brand-softline px-5 py-6 text-xs text-brand-subtle">No products found.</div>
         )}
-        {list.length > 0 && (
+        {!pageLoading && !productsLoading && list.length > 0 && (
           <Pager
             page={pageIndex + 1}
             pageCount={pageCount}

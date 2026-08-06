@@ -10,12 +10,19 @@ import {
   Modal,
   ModalActions,
   PageHeader,
+  PageSkeleton,
   Pager,
   PrimaryButton,
   SecondaryButton,
   SectionHeading,
   TableCard,
   ToggleSwitch,
+  moneyClass,
+  statusLabelFromTxn,
+  statusToneFromTxn,
+  StatusBadge,
+  tableRowDenseClass,
+  varianceToneClass,
 } from '../../components/ui'
 import {
   bootstrapBranchData,
@@ -26,6 +33,8 @@ import {
   fetchTransactionDetail,
   hasSupabase,
   approveDayEnd,
+  approvePettyCash,
+  rejectPettyCash,
   reopenDayEnd,
   saveBranch,
 } from '../../lib/api'
@@ -35,6 +44,7 @@ import { previousDayRestockReport } from '../../utils/dayEndReport'
 import { formatSupportError } from '../../utils/errors'
 import { businessDate, formatOpenHourLabel, money, qty } from '../../utils/format'
 import { isSupervisorOrAbove } from '../../utils/roles'
+import { discountSourceLabel, isPromoDiscountType } from '../../utils/promo'
 import { isUuid } from '../../utils/transactionDetail'
 
 const PAGE_SIZE = 10
@@ -58,11 +68,14 @@ function ManagerBranchDashboard() {
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState(null)
   const [deviceBusy, setDeviceBusy] = useState(null)
+  const [pettyBusyId, setPettyBusyId] = useState(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     let active = true
     setInvPage(0)
     setSelectedProduct(null)
+    setLoading(true)
     Promise.resolve()
       .then(async () => {
         if (!hasSupabase) {
@@ -70,6 +83,7 @@ function ManagerBranchDashboard() {
           setBranch({ id: branchId, name: 'Bayombong Branch #001', address: 'Bayombong', is_active: true, day_open_hour: 7 })
           setData({ products: [], transactions: [], movements: [], dayEnds: [], dayOpenHour: 7 })
           setTelemetry({ devices: [] })
+          setLoading(false)
           return
         }
         const branches = await fetchBranches()
@@ -84,10 +98,14 @@ function ManagerBranchDashboard() {
         if (active) {
           setData({ ...payload, pettyTimeline })
           setTelemetry({ devices: tel.devices[branchId] || [] })
+          setLoading(false)
         }
       })
       .catch((err) => {
-        if (active) setError(err.message)
+        if (active) {
+          setError(err.message)
+          setLoading(false)
+        }
       })
 
     const poll = window.setInterval(() => {
@@ -305,12 +323,36 @@ function ManagerBranchDashboard() {
       (acc, row) => {
         if (row.kind === 'change_fund') acc.changeFund += Number(row.amount || 0)
         else if (row.kind === 'pickup') acc.pickup += Number(row.amount || 0)
-        else acc.paidOut += Number(row.amount || 0)
+        else if (row.kind === 'paid_out' && row.status === 'approved') {
+          acc.paidOut += Number(row.amount || 0)
+        }
         return acc
       },
       { changeFund: 0, pickup: 0, paidOut: 0 },
     )
   }, [pettyTimeline])
+
+  const promoSalesToday = useMemo(() => {
+    const byPromo = {}
+    for (const txn of todayTx) {
+      if (txn.status === 'Voided') continue
+      if (!isPromoDiscountType(txn.discountType)) continue
+      const name = discountSourceLabel(txn.discountType) || 'Promo'
+      if (!byPromo[name]) {
+        byPromo[name] = { name, receipts: 0, discount: 0, sales: 0 }
+      }
+      byPromo[name].receipts += 1
+      byPromo[name].discount += Number(txn.discountAmount || 0)
+      byPromo[name].sales += Number(txn.netTotal ?? txn.total ?? 0)
+    }
+    return Object.values(byPromo)
+      .map((row) => ({
+        ...row,
+        discount: Number(row.discount.toFixed(2)),
+        sales: Number(row.sales.toFixed(2)),
+      }))
+      .sort((a, b) => b.discount - a.discount)
+  }, [todayTx])
 
   const invPages = Math.max(1, Math.ceil(data.products.length / PAGE_SIZE))
   const pageIndex = Math.min(invPage, invPages - 1)
@@ -318,6 +360,10 @@ function ManagerBranchDashboard() {
   const restockEntry = !isRestaurant
     ? previousDayRestockReport(data.dayEnds || [], todayKey)
     : null
+
+  if (loading) {
+    return <PageSkeleton variant="dashboard" />
+  }
 
   return (
     <div>
@@ -355,10 +401,10 @@ function ManagerBranchDashboard() {
         ).map(([label, value, hint]) => (
           <div
             key={label}
-            className="rounded-[9px] bg-brand-dark p-4 text-white max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:p-3.5"
+            className="rounded-[10px] bg-brand-dark p-4 text-white max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:p-3.5"
           >
             <span className="block text-[10px] tracking-wide text-white/60 uppercase">{label}</span>
-            <strong className="mt-2 block text-xl tabular-nums max-[700px]:mt-0 max-[700px]:text-lg">{value}</strong>
+            <strong className={`mt-2 block text-xl max-[700px]:mt-0 max-[700px]:text-lg ${moneyClass}`}>{value}</strong>
             {hint ? <span className="mt-1 block text-[10px] text-[#f0c9a0]">{hint}</span> : null}
           </div>
         ))}
@@ -366,7 +412,7 @@ function ManagerBranchDashboard() {
 
       <div className="mb-4 grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
         <TableCard className="max-h-none overflow-hidden">
-          <SectionHeading title="Recent transactions" meta={`${data.transactions.length} total`} />
+          <SectionHeading title="Recent receipts" meta={`${data.transactions.length} loaded`} />
           <div className="grid grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]">
             <span>Date</span>
             <span>Order</span>
@@ -379,16 +425,29 @@ function ManagerBranchDashboard() {
               key={item.id}
               role="button"
               tabIndex={0}
-              className="tap-row grid cursor-pointer grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs hover:bg-[#fafaf7] active:bg-[#f0f1ec] max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]"
+              className={`tap-row grid cursor-pointer grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 text-xs max-[900px]:grid-cols-[1fr_0.8fr_0.7fr] ${tableRowDenseClass}`}
               onClick={() => openTxnDetail(item)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') openTxnDetail(item)
               }}
             >
               <span className="text-[11px] text-brand-slate">{item.time || item.date || '—'}</span>
-              <strong className="truncate text-brand-ink">{item.id.slice(0, 8)}</strong>
+              <strong className="truncate text-brand-ink">
+                {item.orNumber || item.id.slice(0, 8)}
+                {Number(item.discountAmount || 0) > 0 && (
+                  <span
+                    className={`mt-0.5 block truncate text-[10px] font-bold ${
+                      isPromoDiscountType(item.discountType) ? 'text-brand-danger' : 'text-brand-warn'
+                    }`}
+                  >
+                    {isPromoDiscountType(item.discountType)
+                      ? `Promo · ${discountSourceLabel(item.discountType)}`
+                      : discountSourceLabel(item.discountType) || 'Discount'}
+                  </span>
+                )}
+              </strong>
               <span className="truncate max-[900px]:hidden">{item.cashier}</span>
-              <span>
+              <span className={moneyClass}>
                 {money(item.netTotal ?? item.total)}
                 {Number(item.refundedAmount || 0) > 0 && item.status !== 'Voided' && (
                   <span className="mt-0.5 block text-[10px] text-brand-danger">
@@ -396,21 +455,9 @@ function ManagerBranchDashboard() {
                   </span>
                 )}
               </span>
-              <span
-                className={
-                  item.status === 'Voided'
-                    ? 'text-brand-danger'
-                    : Number(item.refundedAmount || 0) > 0
-                      ? 'text-[#8a6a3b]'
-                      : 'text-brand-success'
-                }
-              >
-                {item.status === 'Voided'
-                  ? 'Voided'
-                  : Number(item.refundedAmount || 0) > 0
-                    ? 'Partial'
-                    : item.status}
-              </span>
+              <StatusBadge tone={statusToneFromTxn(item)} className="justify-self-start">
+                {statusLabelFromTxn(item)}
+              </StatusBadge>
             </div>
           ))}
           {data.transactions.length === 0 && (
@@ -419,7 +466,7 @@ function ManagerBranchDashboard() {
         </TableCard>
 
         <TableCard className="max-h-none overflow-hidden">
-          <SectionHeading title="Day ends" meta={`${(data.dayEnds || []).length} recorded`} />
+          <SectionHeading title="Day-end closings" meta={`${(data.dayEnds || []).length} recorded`} />
           {submittedToday && (
             <div className="mx-4 my-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-3 py-2.5 text-xs text-brand-warn">
               <span>
@@ -465,7 +512,7 @@ function ManagerBranchDashboard() {
           {(data.dayEnds || []).slice(0, 8).map((entry) => (
             <div
               key={entry.id}
-              className="grid grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem]"
+              className={`grid grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 text-xs max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem] ${tableRowDenseClass}`}
             >
               <div className="min-w-0">
                 <strong className="block truncate text-brand-ink">{entry.date}</strong>
@@ -478,13 +525,9 @@ function ManagerBranchDashboard() {
                   {entry.status ? ` · ${entry.status}` : ''}
                 </small>
               </div>
-              <span className="text-right tabular-nums max-[900px]:hidden">{money(entry.recordedCash)}</span>
-              <span className="text-right tabular-nums max-[900px]:hidden">{money(entry.cashOnHand)}</span>
-              <span
-                className={`text-right tabular-nums font-bold ${
-                  Number(entry.variance) === 0 ? 'text-brand-success' : 'text-brand-danger'
-                }`}
-              >
+              <span className={`text-right max-[900px]:hidden ${moneyClass}`}>{money(entry.recordedCash)}</span>
+              <span className={`text-right max-[900px]:hidden ${moneyClass}`}>{money(entry.cashOnHand)}</span>
+              <span className={`text-right font-bold ${moneyClass} ${varianceToneClass(entry.variance)}`}>
                 {money(entry.variance)}
               </span>
               <span className="capitalize max-[900px]:hidden">{entry.status || 'closed'}</span>
@@ -525,6 +568,36 @@ function ManagerBranchDashboard() {
         </TableCard>
       </div>
 
+      <TableCard className="mb-4 max-h-none overflow-hidden">
+        <SectionHeading
+          title="Promo sales today"
+          meta={promoSalesToday.length ? `${promoSalesToday.length} promo(s)` : 'None yet'}
+          subtitle={`Discounted receipts on ${todayKey} — receipts, discount given, and net sales`}
+        />
+        <div className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase">
+          <span>Promo</span>
+          <span className="text-right">Receipts</span>
+          <span className="text-right">Discount</span>
+          <span className="text-right">Sales</span>
+        </div>
+        {promoSalesToday.map((row) => (
+          <div
+            key={row.name}
+            className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs"
+          >
+            <strong className="truncate text-brand-danger">{row.name}</strong>
+            <span className="text-right tabular-nums">{row.receipts}</span>
+            <span className="text-right tabular-nums text-brand-danger">−{money(row.discount)}</span>
+            <span className="text-right tabular-nums">{money(row.sales)}</span>
+          </div>
+        ))}
+        {promoSalesToday.length === 0 && (
+          <div className="px-4 py-6 text-xs text-brand-subtle">
+            No promo-tagged sales yet today. Promo name is saved on each discounted receipt.
+          </div>
+        )}
+      </TableCard>
+
       {isRestaurant && plateMix.byCategory.length > 0 && (
         <TableCard className="mb-4 max-h-none overflow-hidden">
           <SectionHeading
@@ -561,8 +634,8 @@ function ManagerBranchDashboard() {
 
       <TableCard className="mb-4 max-h-none overflow-hidden">
         <SectionHeading
-          title="Cash accountability timeline"
-          subtitle={`Change fund, cash pickup, and petty cash · ${todayKey}`}
+          title="Cash drawer log"
+          subtitle={`Change fund, cash pickups, and petty paid-outs · ${todayKey}`}
         />
         <div className="grid grid-cols-3 gap-2 border-b border-brand-line bg-white px-4 py-3 text-xs max-[700px]:grid-cols-1">
           <div>
@@ -578,28 +651,84 @@ function ManagerBranchDashboard() {
             <strong className="text-brand-ink">{money(cashStats.paidOut)}</strong>
           </div>
         </div>
-        <div className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]">
+        <div className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr_1.1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]">
           <span>Time</span>
           <span>Type</span>
           <span className="text-right">Amount</span>
           <span className="max-[900px]:hidden">Cashier</span>
           <span className="max-[900px]:hidden">Note</span>
+          <span className="max-[900px]:hidden">Action</span>
         </div>
         {pettyTimeline.map((row) => (
           <div
             key={row.id}
-            className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]"
+            className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr_1.1fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]"
           >
             <span className="text-brand-slate">
               {row.createdAt ? new Date(row.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
             </span>
             <strong className="capitalize text-brand-ink">
-              {row.kind === 'change_fund' ? 'Change fund' : row.kind === 'pickup' ? 'Cash pickup' : 'Paid-out'}
+              {row.kind === 'change_fund'
+                ? 'Change fund'
+                : row.kind === 'pickup'
+                  ? 'Cash pickup'
+                  : row.status === 'pending'
+                    ? 'Petty (pending)'
+                    : row.status === 'rejected'
+                      ? 'Petty (rejected)'
+                      : 'Paid-out'}
             </strong>
             <span className="text-right tabular-nums">{money(row.amount)}</span>
             <span className="truncate max-[900px]:hidden">{row.staffName}</span>
             <span className="truncate text-brand-slate max-[900px]:hidden" title={row.reason || ''}>
               {row.reason || '—'}
+              {row.receiptRef ? ` · ${row.receiptRef}` : ''}
+            </span>
+            <span className="max-[900px]:col-span-full">
+              {row.kind === 'paid_out' && row.status === 'pending' && isSupervisorOrAbove(user?.role) ? (
+                <span className="flex flex-wrap gap-1.5">
+                  <SecondaryButton
+                    compact
+                    type="button"
+                    disabled={pettyBusyId === row.id}
+                    onClick={async () => {
+                      try {
+                        setPettyBusyId(row.id)
+                        setError('')
+                        await rejectPettyCash({ id: row.id, approvedBy: user.id })
+                        await reload()
+                      } catch (err) {
+                        setError(formatSupportError(err, 'PETTY02'))
+                      } finally {
+                        setPettyBusyId(null)
+                      }
+                    }}
+                  >
+                    Reject
+                  </SecondaryButton>
+                  <PrimaryButton
+                    compact
+                    type="button"
+                    disabled={pettyBusyId === row.id}
+                    onClick={async () => {
+                      try {
+                        setPettyBusyId(row.id)
+                        setError('')
+                        await approvePettyCash({ id: row.id, approvedBy: user.id })
+                        await reload()
+                      } catch (err) {
+                        setError(formatSupportError(err, 'PETTY02'))
+                      } finally {
+                        setPettyBusyId(null)
+                      }
+                    }}
+                  >
+                    Approve
+                  </PrimaryButton>
+                </span>
+              ) : (
+                <span className="text-brand-subtle max-[900px]:hidden">—</span>
+              )}
             </span>
           </div>
         ))}
@@ -613,7 +742,7 @@ function ManagerBranchDashboard() {
       {restockEntry && (
         <DayEndReportPanels
           report={restockEntry.dayReport}
-          title="Sold"
+          title="Units sold & restock"
           showRestock
           compact
           alert
@@ -643,10 +772,10 @@ function ManagerBranchDashboard() {
             key={product.id}
             role={isRestaurant ? undefined : 'button'}
             tabIndex={isRestaurant ? undefined : 0}
-            className={`grid gap-2 border-t border-brand-softline px-4 py-2.5 text-xs ${
+            className={`grid gap-2 text-xs ${tableRowDenseClass} ${
               isRestaurant
                 ? 'grid-cols-[2.5rem_1.6fr_1fr_0.7fr_0.7fr]'
-                : 'tap-row cursor-pointer grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr] hover:bg-[#fafaf7] active:bg-[#f0f1ec]'
+                : 'tap-row cursor-pointer grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr]'
             }`}
             onClick={isRestaurant ? undefined : () => setSelectedProduct(product)}
             onKeyDown={
@@ -657,21 +786,21 @@ function ManagerBranchDashboard() {
                   }
             }
           >
-            <span className="tabular-nums text-brand-subtle">{pageIndex * PAGE_SIZE + index + 1}</span>
+            <span className={`${moneyClass} text-brand-subtle`}>{pageIndex * PAGE_SIZE + index + 1}</span>
             <strong className="truncate text-brand-ink">{product.name}</strong>
             <span className="truncate text-brand-subtle">
               {isRestaurant ? product.category : product.sku}
             </span>
             {isRestaurant ? (
               <>
-                <span className="tabular-nums">{money(product.price)}</span>
+                <span className={moneyClass}>{money(product.price)}</span>
                 <span className={product.availableToday !== false ? 'text-brand-success' : 'text-brand-muted'}>
                   {product.availableToday !== false ? 'On' : 'Off'}
                 </span>
               </>
             ) : (
               <>
-                <span>{qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}</span>
+                <span className={moneyClass}>{qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}</span>
                 <span className={product.stock <= Number(product.lowStockAt ?? 5) ? 'text-brand-danger' : 'text-brand-success'}>
                   {product.stock <= Number(product.lowStockAt ?? 5) ? 'Low' : 'OK'}
                 </span>
@@ -789,7 +918,7 @@ function ManagerBranchDashboard() {
                         !enabled
                           ? 'text-brand-muted'
                           : connected
-                            ? 'text-[#2f6b3c]'
+                            ? 'text-brand-success-text'
                             : 'text-brand-muted'
                       }`}
                     >

@@ -7,9 +7,10 @@ import { useAuthStore, useCartStore, useInventoryStore } from '../../stores/posS
 import { formatSupportError } from '../../utils/errors'
 import { buildReceipt } from '../../utils/receipt'
 import { money, pesoWhole, PESO, qty, today, formatOpenHourLabel } from '../../utils/format'
+import { computePromoDiscounts } from '../../utils/promo'
 import { hasBudgetTier, lineTotal } from '../../utils/ulam'
 import { isSupervisorOrAbove } from '../../utils/roles'
-import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton, StatusOverlay } from '../ui'
+import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton, StatusOverlay, moneyClass } from '../ui'
 import SupervisorApprove from '../shared/SupervisorApprove'
 import NumPad from './NumPad'
 
@@ -72,112 +73,7 @@ function Cart({
     )
     const pwdDiscountAmount = Number(pwdLineDiscounts.reduce((sum, v) => sum + v, 0).toFixed(2))
 
-    const computePromoDiscounts = () => {
-      if (isPwdSenior) return null
-      if (!promoRules?.length) return null
-
-      const lineDiscounts = items.map(() => 0)
-
-      const lineQtyPc = (item) => (item.pricingMode === 'kg' ? 0 : Number(item.quantity || 0))
-      const lineUnit = (idx) => Number(items[idx]?.price ?? 0)
-
-      const indicesByProductId = {}
-      items.forEach((item, idx) => {
-        if (item.pricingMode === 'kg') return
-        if (!indicesByProductId[item.id]) indicesByProductId[item.id] = []
-        indicesByProductId[item.id].push(idx)
-      })
-
-      const allocateUnitsForProduct = (productId, unitsToDiscount, discountAmountPerUnitFn) => {
-        const indices = indicesByProductId[productId] || []
-        let remaining = unitsToDiscount
-        for (const idx of indices) {
-          if (remaining <= 0) break
-          const q = lineQtyPc(items[idx])
-          if (q <= 0) continue
-          const take = Math.min(q, remaining)
-          lineDiscounts[idx] = Number((lineDiscounts[idx] + discountAmountPerUnitFn(idx, take)).toFixed(2))
-          remaining -= take
-        }
-      }
-
-      for (const rule of promoRules || []) {
-        const pct = Number(rule.discountPct || 0) / 100
-        if (pct <= 0) continue
-
-        const productIds = (rule.products || []).map((p) => p.productId)
-        if (!productIds.length) continue
-
-        if (rule.ruleType === 'item_pct') {
-          const productId = productIds[0]
-          for (const idx of indicesByProductId[productId] || []) {
-            lineDiscounts[idx] = Number((lineDiscounts[idx] + lineTotal(items[idx]) * pct).toFixed(2))
-          }
-          continue
-        }
-
-        if (rule.ruleType === 'pair_pct') {
-          const [a, b] = productIds
-          if (!a || !b) continue
-          const idxsA = indicesByProductId[a] || []
-          const idxsB = indicesByProductId[b] || []
-          const totalA = idxsA.reduce((s, idx) => s + lineQtyPc(items[idx]), 0)
-          const totalB = idxsB.reduce((s, idx) => s + lineQtyPc(items[idx]), 0)
-          const pairs = Math.min(totalA, totalB)
-          if (pairs <= 0) continue
-
-          const perUnit = (idx, take) => lineUnit(idx) * take * pct
-          allocateUnitsForProduct(a, pairs, perUnit)
-          allocateUnitsForProduct(b, pairs, perUnit)
-          continue
-        }
-
-        if (rule.ruleType === 'bundle_pct') {
-          if (productIds.length < 2) continue
-          const ids = productIds
-          const totals = ids.map((pid) => (indicesByProductId[pid] || []).reduce((s, idx) => s + lineQtyPc(items[idx]), 0))
-          const bundles = Math.min(...totals)
-          if (bundles <= 0) continue
-
-          const perUnit = (idx, take) => lineUnit(idx) * take * pct
-          for (const pid of ids) allocateUnitsForProduct(pid, bundles, perUnit)
-          continue
-        }
-
-        if (rule.ruleType === 'bogo_pct') {
-          const productId = productIds[0]
-          if (!productId) continue
-          const idxs = indicesByProductId[productId] || []
-          const total = idxs.reduce((s, idx) => s + lineQtyPc(items[idx]), 0)
-          if (total <= 0) continue
-
-          const buyQty = Number(rule.buyQty ?? 1)
-          const getQty = Number(rule.getQty ?? 1)
-          const group = buyQty + getQty
-          if (group <= 0) continue
-
-          const fullGroups = Math.floor(total / group)
-          const remainder = total % group
-          const freeUnits = fullGroups * getQty + Math.max(0, remainder - buyQty)
-          if (freeUnits <= 0) continue
-
-          const perUnit = (idx, take) => lineUnit(idx) * take * pct
-          allocateUnitsForProduct(productId, freeUnits, perUnit)
-          continue
-        }
-      }
-
-      // Clamp to line totals so multiple rules never exceed the item price.
-      for (let i = 0; i < lineDiscounts.length; i += 1) {
-        const maxDiscount = lineTotal(items[i])
-        lineDiscounts[i] = Math.min(lineDiscounts[i], maxDiscount)
-      }
-
-      const promoDiscountAmount = Number(lineDiscounts.reduce((sum, v) => sum + v, 0).toFixed(2))
-      return promoDiscountAmount > 0 ? { lineDiscounts, promoDiscountAmount } : null
-    }
-
-    const promoDiscount = computePromoDiscounts()
+    const promoDiscount = isPwdSenior ? null : computePromoDiscounts(items, promoRules)
     const appliedDiscountSource =
       isPwdSenior ? discountType : promoDiscount ? 'promo' : null
 
@@ -220,9 +116,24 @@ function Cart({
         .map((item, index) => ({
           name: item.name,
           amount: Number(pricing.lineDiscounts[index] || 0),
+          promo:
+            pricing.appliedDiscountSource === 'promo'
+              ? pricing.discountType || promoLabel || 'Promo'
+              : discountType === 'pwd'
+                ? 'PWD'
+                : discountType === 'senior'
+                  ? 'Senior'
+                  : pricing.discountType || null,
         }))
         .filter((row) => row.amount > 0),
-    [items, pricing.lineDiscounts],
+    [
+      items,
+      pricing.lineDiscounts,
+      pricing.appliedDiscountSource,
+      pricing.discountType,
+      promoLabel,
+      discountType,
+    ],
   )
   const needsCash = paymentMethod === 'cash'
   const canPay =
@@ -448,10 +359,10 @@ function Cart({
       {checkoutOpen && (
         <Modal wide onClose={() => setCheckoutOpen(false)}>
           <Eyebrow>CHECKOUT</Eyebrow>
-          <h2 className="mb-1 pr-8 text-[22px] max-[700px]:text-xl">{money(payTotal)}</h2>
+          <h2 className={`mb-1 pr-8 text-[22px] max-[700px]:text-xl ${moneyClass}`}>{money(payTotal)}</h2>
           <p className="m-0 mb-3 text-xs text-brand-muted">
             {items.length} item{items.length === 1 ? '' : 's'}
-            {pricing.discountAmount > 0 ? ` · discount -${money(pricing.discountAmount)}` : ''}
+            {pricing.discountAmount > 0 ? ` · discount −${money(pricing.discountAmount)}` : ''}
           </p>
 
           <p className="mb-1.5 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">Payment</p>
@@ -520,15 +431,15 @@ function Cart({
               <div className="mb-3 bg-transparent px-0 py-1 text-xs">
                 <div className="flex items-center justify-between text-brand-muted">
                   <span>Eligible items</span>
-                  <strong className="text-brand-ink">{money(pricing.eligibleTotal)}</strong>
+                  <strong className={`text-brand-ink ${moneyClass}`}>{money(pricing.eligibleTotal)}</strong>
                 </div>
                 <div className="flex items-center justify-between text-brand-muted">
                   <span>Original total</span>
-                  <strong className="text-brand-ink">{money(rawSubtotal)}</strong>
+                  <strong className={`text-brand-ink ${moneyClass}`}>{money(rawSubtotal)}</strong>
                 </div>
                 <div className="mt-1 flex items-center justify-between text-brand-muted">
                   <span>Discount ({discountType === 'pwd' ? 'PWD' : 'Senior'} 20%)</span>
-                  <strong className="text-brand-danger">-{money(pricing.discountAmount)}</strong>
+                  <strong className={`text-brand-danger ${moneyClass}`}>−{money(pricing.discountAmount)}</strong>
                 </div>
                 {discountedItemBreakdown.length > 0 && (
                   <div className="mt-2 px-0 py-1">
@@ -538,8 +449,15 @@ function Cart({
                     <div className="space-y-1">
                       {discountedItemBreakdown.map((row, idx) => (
                         <div key={`${row.name}-${idx}`} className="flex items-center justify-between gap-3 text-[11px] text-brand-muted">
-                          <span className="truncate">{row.name}</span>
-                          <strong className="shrink-0 text-brand-danger">-{money(row.amount)}</strong>
+                          <span className="min-w-0 truncate">
+                            {row.name}
+                            {row.promo ? (
+                              <span className="mt-0.5 block truncate text-[10px] font-bold text-brand-danger">
+                                {row.promo}
+                              </span>
+                            ) : null}
+                          </span>
+                          <strong className={`shrink-0 text-brand-danger ${moneyClass}`}>−{money(row.amount)}</strong>
                         </div>
                       ))}
                     </div>
@@ -547,7 +465,7 @@ function Cart({
                 )}
                 <div className="mt-1 flex items-center justify-between">
                   <span className="font-bold text-brand-ink">Amount due</span>
-                  <strong className="text-base text-brand-ink">{money(payTotal)}</strong>
+                  <strong className={`text-base text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
                 </div>
               </div>
               <label className="mb-3 block text-xs text-brand-muted">
@@ -566,15 +484,38 @@ function Cart({
             <div className="mb-3 bg-transparent px-0 py-1 text-xs">
               <div className="flex items-center justify-between text-brand-muted">
                 <span>Original total</span>
-                <strong className="text-brand-ink">{money(rawSubtotal)}</strong>
+                <strong className={`text-brand-ink ${moneyClass}`}>{money(rawSubtotal)}</strong>
               </div>
               <div className="mt-1 flex items-center justify-between text-brand-muted">
                 <span>Discount ({pricing.discountType || 'Promo'})</span>
-                <strong className="text-brand-danger">-{money(pricing.discountAmount)}</strong>
+                <strong className={`text-brand-danger ${moneyClass}`}>−{money(pricing.discountAmount)}</strong>
               </div>
+              {discountedItemBreakdown.length > 0 && (
+                <div className="mt-2 space-y-1 border-t border-[#f1f1ed] pt-2">
+                  <div className="mb-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+                    Promo items
+                  </div>
+                  {discountedItemBreakdown.map((row, idx) => (
+                    <div
+                      key={`${row.name}-${idx}`}
+                      className="flex items-center justify-between gap-3 text-[11px] text-brand-muted"
+                    >
+                      <span className="min-w-0 truncate">
+                        {row.name}
+                        {row.promo ? (
+                          <span className="mt-0.5 block truncate text-[10px] font-bold text-brand-danger">
+                            {row.promo}
+                          </span>
+                        ) : null}
+                      </span>
+                      <strong className={`shrink-0 text-brand-danger ${moneyClass}`}>−{money(row.amount)}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="mt-1 flex items-center justify-between">
                 <span className="font-bold text-brand-ink">Amount due</span>
-                <strong className="text-base text-brand-ink">{money(payTotal)}</strong>
+                <strong className={`text-base text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
               </div>
             </div>
           )}
@@ -723,12 +664,16 @@ function Cart({
               <button
                 key={opt.id}
                 type="button"
-                className={`flex-1 rounded-[5px] border px-2 py-2 text-xs font-bold transition-colors ${
+                disabled={tillClosed}
+                className={`flex-1 rounded-[5px] border px-2 py-2 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   orderType === opt.id
                     ? 'border-brand-gold bg-brand-gold/20 text-brand-gold'
                     : 'border-brand-cart-border bg-transparent text-[#aab0ac]'
                 }`}
-                onClick={() => setOrderType(opt.id)}
+                onClick={() => {
+                  if (tillClosed) return
+                  setOrderType(opt.id)
+                }}
               >
                 {opt.label}
               </button>
@@ -778,11 +723,11 @@ function Cart({
                           {pricing.lineDiscounts[index] > 0 && (
                             <small className="mt-0.5 block text-[10px] font-bold text-brand-danger">
                               {pricing.appliedDiscountSource === 'promo'
-                                ? 'Promo'
+                                ? pricing.discountType || 'Promo'
                                 : discountType === 'pwd'
                                   ? 'PWD'
                                   : 'Senior'}{' '}
-                              discount -{money(pricing.lineDiscounts[index])}
+                              −{money(pricing.lineDiscounts[index])}
                             </small>
                           )}
                           {(discountType === 'pwd' || discountType === 'senior') && !pricing.lineDiscounts[index] && (
@@ -810,7 +755,33 @@ function Cart({
                             </div>
                           )}
                         </div>
-                        <span className="text-right tabular-nums text-brand-ink">{money(item.price)}</span>
+                        <span className="text-right tabular-nums text-brand-ink">
+                          {pricing.lineDiscounts[index] > 0 ? (
+                            <span className="block">
+                              <span className="block text-[10px] text-brand-subtle line-through">
+                                {money(item.price)}
+                              </span>
+                              <span className="font-bold text-brand-danger">
+                                {money(
+                                  Number(
+                                    (
+                                      item.price -
+                                      pricing.lineDiscounts[index] /
+                                        Math.max(
+                                          1,
+                                          item.pricingMode === 'kg'
+                                            ? Number(item.weight || 1)
+                                            : Number(item.quantity || 1),
+                                        )
+                                    ).toFixed(2),
+                                  ),
+                                )}
+                              </span>
+                            </span>
+                          ) : (
+                            money(item.price)
+                          )}
+                        </span>
                         <div className="flex items-center justify-center gap-1">
                           <button
                             type="button"
@@ -832,7 +803,20 @@ function Cart({
                             <FiPlus size={12} />
                           </button>
                         </div>
-                        <b className="text-right tabular-nums text-brand-ink">{money(lineTotal(item))}</b>
+                        <b className="text-right tabular-nums text-brand-ink">
+                          {pricing.lineDiscounts[index] > 0 ? (
+                            <span className="block">
+                              <span className="block text-[10px] font-normal text-brand-subtle line-through">
+                                {money(lineTotal(item))}
+                              </span>
+                              <span className="text-brand-danger">
+                                {money(Number((lineTotal(item) - pricing.lineDiscounts[index]).toFixed(2)))}
+                              </span>
+                            </span>
+                          ) : (
+                            money(lineTotal(item))
+                          )}
+                        </b>
                         <button
                           type="button"
                           className="justify-self-end border-0 bg-transparent p-1 text-brand-cart-muted transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90 active:text-brand-ink"
@@ -859,12 +843,35 @@ function Cart({
                 <span className="block text-[10px] font-bold tracking-wide text-brand-subtle uppercase">Sale summary</span>
                 <div className="mt-3 flex items-center justify-between text-xs text-brand-muted">
                   <span>Subtotal</span>
-                  <strong className="text-brand-ink">{money(rawSubtotal)}</strong>
+                  <strong className={`text-brand-ink ${moneyClass}`}>{money(rawSubtotal)}</strong>
                 </div>
                 {pricing.discountAmount > 0 && (
                   <div className="mt-2 flex items-center justify-between text-xs text-brand-muted">
-                    <span>Discount</span>
-                    <strong className="text-brand-danger">-{money(pricing.discountAmount)}</strong>
+                    <span>
+                      Discount
+                      {pricing.discountType ? ` (${pricing.discountType})` : ''}
+                    </span>
+                    <strong className={`text-brand-danger ${moneyClass}`}>−{money(pricing.discountAmount)}</strong>
+                  </div>
+                )}
+                {pricing.appliedDiscountSource === 'promo' && discountedItemBreakdown.length > 0 && (
+                  <div className="mt-2 space-y-1 border-t border-[#f1f1ed] pt-2">
+                    {discountedItemBreakdown.map((row, idx) => (
+                      <div
+                        key={`${row.name}-${idx}`}
+                        className="flex items-center justify-between gap-2 text-[10px] text-brand-muted"
+                      >
+                        <span className="min-w-0 truncate">
+                          {row.name}
+                          {row.promo ? (
+                            <span className="mt-0.5 block truncate font-bold text-brand-danger">
+                              {row.promo}
+                            </span>
+                          ) : null}
+                        </span>
+                        <strong className={`shrink-0 text-brand-danger ${moneyClass}`}>−{money(row.amount)}</strong>
+                      </div>
+                    ))}
                   </div>
                 )}
                 {vatRate > 0 && (
@@ -877,7 +884,7 @@ function Cart({
                   <span className="block text-[11px] text-[#8a908c]">
                     {items.length} item{items.length === 1 ? '' : 's'}
                   </span>
-                  <strong className="mt-1 block text-2xl tabular-nums text-brand-ink">{money(payTotal)}</strong>
+                  <strong className={`mt-1 block text-2xl text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
                 </div>
               </div>
               <PrimaryButton
@@ -923,11 +930,11 @@ function Cart({
                           {pricing.lineDiscounts[index] > 0 && (
                             <small className="mt-0.5 block text-[10px] font-bold text-brand-danger">
                               {pricing.appliedDiscountSource === 'promo'
-                                ? 'Promo'
+                                ? pricing.discountType || 'Promo'
                                 : discountType === 'pwd'
                                   ? 'PWD'
                                   : 'Senior'}{' '}
-                              discount -{money(pricing.lineDiscounts[index])}
+                              −{money(pricing.lineDiscounts[index])}
                             </small>
                           )}
                           {(discountType === 'pwd' || discountType === 'senior') && !pricing.lineDiscounts[index] && (
@@ -955,7 +962,33 @@ function Cart({
                             </div>
                           )}
                         </div>
-                        <span className="text-right tabular-nums text-brand-ink">{money(item.price)}</span>
+                        <span className="text-right tabular-nums text-brand-ink">
+                          {pricing.lineDiscounts[index] > 0 ? (
+                            <span className="block">
+                              <span className="block text-[10px] text-brand-subtle line-through">
+                                {money(item.price)}
+                              </span>
+                              <span className="font-bold text-brand-danger">
+                                {money(
+                                  Number(
+                                    (
+                                      item.price -
+                                      pricing.lineDiscounts[index] /
+                                        Math.max(
+                                          1,
+                                          item.pricingMode === 'kg'
+                                            ? Number(item.weight || 1)
+                                            : Number(item.quantity || 1),
+                                        )
+                                    ).toFixed(2),
+                                  ),
+                                )}
+                              </span>
+                            </span>
+                          ) : (
+                            money(item.price)
+                          )}
+                        </span>
                         <div className="flex items-center justify-center gap-1">
                           <button
                             type="button"
@@ -977,7 +1010,20 @@ function Cart({
                             <FiPlus size={12} />
                           </button>
                         </div>
-                        <b className="text-right tabular-nums text-brand-ink">{money(lineTotal(item))}</b>
+                        <b className="text-right tabular-nums text-brand-ink">
+                          {pricing.lineDiscounts[index] > 0 ? (
+                            <span className="block">
+                              <span className="block text-[10px] font-normal text-brand-subtle line-through">
+                                {money(lineTotal(item))}
+                              </span>
+                              <span className="text-brand-danger">
+                                {money(Number((lineTotal(item) - pricing.lineDiscounts[index]).toFixed(2)))}
+                              </span>
+                            </span>
+                          ) : (
+                            money(lineTotal(item))
+                          )}
+                        </b>
                         <button
                           type="button"
                           className="justify-self-end border-0 bg-transparent p-1 text-brand-cart-muted transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90 active:text-brand-ink"
@@ -1004,9 +1050,9 @@ function Cart({
                 <div>
                   <span className="block text-[11px] text-[#8a908c]">
                     {items.length} item{items.length === 1 ? '' : 's'}
-                    {pricing.discountAmount > 0 ? ` · -${money(pricing.discountAmount)} disc.` : ''}
+                    {pricing.discountAmount > 0 ? ` · −${money(pricing.discountAmount)} disc.` : ''}
                   </span>
-                  <strong className="mt-0.5 block text-xl tabular-nums text-brand-ink">{money(payTotal)}</strong>
+                  <strong className={`mt-0.5 block text-xl text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
                 </div>
                 {vatRate > 0 && (
                   <span className="text-[10px] text-[#6e7470]">VAT incl. {money(pricing.vatAmount)}</span>

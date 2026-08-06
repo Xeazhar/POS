@@ -8,7 +8,7 @@ export const staffLinks = [
   ['/inventory', 'Inventory', FiPackage, 'inventory'],
   ['/data', 'Catalog', FiDatabase, 'catalog'],
   ['/day-end', 'Day end', FiMoon, 'day_end'],
-  ['/manager/promos', 'Promos', FiTag, 'manager_promos'],
+  ['/promos', 'Promos', FiTag, 'manager_promos'],
   ['/shifts', 'Shifts', FiClock, 'shifts'],
   ['/settings/devices', 'Devices', FiCpu, 'devices'],
 ]
@@ -23,7 +23,7 @@ export function staffLinksFor(user) {
           ['/inventory', 'Menu', FiCoffee, 'inventory'],
           ['/data', 'Catalog', FiDatabase, 'catalog'],
           ['/day-end', 'Day end', FiMoon, 'day_end'],
-          ['/manager/promos', 'Promos', FiTag, 'manager_promos'],
+          ['/promos', 'Promos', FiTag, 'manager_promos'],
           ['/shifts', 'Shifts', FiClock, 'shifts'],
           ['/settings/devices', 'Devices', FiCpu, 'devices'],
         ]

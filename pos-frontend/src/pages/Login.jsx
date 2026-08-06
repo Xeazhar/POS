@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Eyebrow, ErrorBanner, Field, PrimaryButton } from '../components/ui'
+import { Eyebrow, ErrorBanner, Field, PrimaryButton, Skeleton } from '../components/ui'
 import Turnstile, { useTurnstileSiteKey } from '../components/shared/Turnstile'
 import { allowDemoMode, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
@@ -151,7 +151,10 @@ function Login() {
               )}
 
               {captchaLoading && hasSupabase && (
-                <p className="mt-[18px] text-xs text-brand-muted">Loading security check…</p>
+                <div className="mt-[18px] space-y-2" role="status" aria-label="Loading">
+                  <Skeleton className="h-3 w-36" />
+                  <Skeleton className="h-[65px] w-full max-w-[300px]" />
+                </div>
               )}
 
               {captchaConfigError && hasSupabase && (

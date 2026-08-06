@@ -9,4 +9,32 @@ export const allowDemoMode =
 
 export const isConfigured = Boolean(supabaseUrl && supabaseKey)
 
-export const supabase = isConfigured ? createClient(supabaseUrl, supabaseKey) : null
+/**
+ * Auth lives in sessionStorage only — closing the browser clears the session.
+ * No localStorage “remember me” / quick re-open login.
+ */
+function authStorage() {
+  if (typeof window === 'undefined') return undefined
+  try {
+    // Drop any older localStorage Auth tokens so they cannot auto-login.
+    Object.keys(localStorage).forEach((key) => {
+      if (key.startsWith('sb-') && key.includes('auth')) {
+        localStorage.removeItem(key)
+      }
+    })
+  } catch {
+    /* ignore */
+  }
+  return window.sessionStorage
+}
+
+export const supabase = isConfigured
+  ? createClient(supabaseUrl, supabaseKey, {
+      auth: {
+        persistSession: true,
+        storage: authStorage(),
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    })
+  : null

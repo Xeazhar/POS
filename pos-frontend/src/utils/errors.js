@@ -105,3 +105,59 @@ export function classifyError(err, fallbackCode = 'GEN01') {
   if (err?.code && ERROR_CATALOG[err.code]) return err
   return appError(fallbackCode, raw)
 }
+
+/**
+ * User-facing sync status copy (sidebar + banner). Prefer readable guidance over raw Postgres text.
+ * @returns {{ title: string, body: string, hint?: string }}
+ */
+export function formatSyncError(raw) {
+  const msg = String(raw?.message || raw || '').trim()
+  if (!msg) {
+    return {
+      title: 'Sync issue',
+      body: 'Something went wrong while syncing. Check your connection and try again.',
+    }
+  }
+
+  const col = msg.match(/column\s+([\w."]+)\s+does not exist/i)
+  if (col) {
+    const column = col[1].replace(/"/g, '')
+    const hint = /day_ends\.expected_cash|expected_cash/i.test(column)
+      ? 'Run migrate_day_end_dual_control.sql in the Supabase SQL editor.'
+      : 'Run the matching migrate_*.sql for this column in Supabase.'
+    return {
+      title: 'Database needs an update',
+      body: `Missing column ${column}.`,
+      hint,
+    }
+  }
+
+  const table = msg.match(/relation\s+"?([\w.]+)"?\s+does not exist/i)
+  if (table) {
+    return {
+      title: 'Database needs an update',
+      body: `Missing table ${table[1]}.`,
+      hint: 'Run the matching migrate_*.sql in the Supabase SQL editor.',
+    }
+  }
+
+  if (/schema cache/i.test(msg)) {
+    return {
+      title: 'Database needs an update',
+      body: 'Supabase schema is out of date with the app.',
+      hint: 'Apply pending migrate_*.sql files, then wait a minute or reload the API schema.',
+    }
+  }
+
+  if (/Failed to fetch|NetworkError|offline|timeout/i.test(msg)) {
+    return {
+      title: 'Connection problem',
+      body: 'Could not reach the server. Sales are saved on this device until you are back online.',
+    }
+  }
+
+  return {
+    title: 'Sync issue',
+    body: msg,
+  }
+}

@@ -61,8 +61,14 @@ function fmtLongDate(isoDate) {
   return dt.toLocaleDateString('en-US', { month: 'long', day: '2-digit', year: 'numeric' })
 }
 
-function entryKind(reason) {
-  const r = String(reason || '')
+function entryKind(rowOrReason) {
+  if (rowOrReason && typeof rowOrReason === 'object') {
+    if (rowOrReason.kind === 'change_fund') return 'float'
+    if (rowOrReason.kind === 'pickup') return 'pickup'
+    if (rowOrReason.kind === 'paid_out') return 'paid_out'
+    return entryKind(rowOrReason.reason)
+  }
+  const r = String(rowOrReason || '')
   if (r.startsWith('[CHANGE FUND]')) return 'float'
   if (r.startsWith('[PICKUP]')) return 'pickup'
   return 'paid_out'
@@ -229,7 +235,9 @@ export function buildTerminalReportData({
   let pickupCash = 0
   let paidOut = 0
   ;(pettyCash || []).forEach((row) => {
-    const kind = entryKind(row.reason)
+    const kind = entryKind(row)
+    const status = row.status || (kind === 'paid_out' ? 'approved' : 'recorded')
+    if (kind === 'paid_out' && status !== 'approved') return
     const amt = Number(row.amount || 0)
     if (kind === 'float') floatAmt += amt
     else if (kind === 'pickup') pickupCash += amt

@@ -16,19 +16,32 @@ import {
   requestStopPromo,
   approveStopPromo,
   rejectStopPromo,
+  fetchPromoSalesStats,
+  fetchActivePromosAcrossBranches,
+  fetchTransactionDetail,
+  fetchRefundSummary,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
+import { money, qty } from '../../utils/format'
 import { isManagerRole } from '../../utils/roles'
+import { isUuid } from '../../utils/transactionDetail'
+import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
 import {
   Eyebrow,
   Field,
   Modal,
   ModalActions,
   PageHeader,
+  PageSkeleton,
   PrimaryButton,
   SelectField,
   SecondaryButton,
+  Skeleton,
+  SkeletonRows,
+  StatusBadge,
   TableCard,
+  moneyClass,
+  tableRowClass,
 } from '../../components/ui'
 import { FiPlus } from 'react-icons/fi'
 
@@ -76,6 +89,16 @@ export default function ManagerPromos() {
   const [workingEvent, setWorkingEvent] = useState(null) // pending event for adding rules
   const [stopReason, setStopReason] = useState('')
   const [stopModal, setStopModal] = useState(false)
+  const [promoStats, setPromoStats] = useState(null)
+  const [promoStatsBusy, setPromoStatsBusy] = useState(false)
+  const [historyStats, setHistoryStats] = useState({}) // eventId -> summary
+  const [trackingEvent, setTrackingEvent] = useState(null) // { event, stats, busy }
+  const [txnDetail, setTxnDetail] = useState(null)
+  const [txnRefundSummary, setTxnRefundSummary] = useState(null)
+  const [loadingTxnDetail, setLoadingTxnDetail] = useState(false)
+  const [networkActive, setNetworkActive] = useState([])
+  const [networkBusy, setNetworkBusy] = useState(false)
+  const [pageLoading, setPageLoading] = useState(false)
 
   const selectedBranch = branches.find((b) => b.id === branchId)
   const selectedProductsForRule = useMemo(() => {
@@ -132,22 +155,58 @@ export default function ManagerPromos() {
     setEditStartsAt('')
     setEditEndsAt('')
     setPendingDelete(null)
+    setWorkingEvent(null)
+    setPromoStats(null)
 
-    if (!hasSupabase || !branchId) return
+    if (!hasSupabase) return undefined
 
+    // Manager with no branch: show all live promos across the network
+    if (managerView && !branchId) {
+      let alive = true
+      setNetworkBusy(true)
+      fetchActivePromosAcrossBranches()
+        .then((rows) => {
+          if (alive) setNetworkActive(rows)
+        })
+        .catch((e) => {
+          if (alive) setError(e?.message || 'Failed to load active promos.')
+        })
+        .finally(() => {
+          if (alive) setNetworkBusy(false)
+        })
+      return () => {
+        alive = false
+      }
+    }
+
+    setNetworkActive([])
+    if (!branchId) {
+      setPageLoading(false)
+      return undefined
+    }
+
+    let alive = true
+    setPageLoading(true)
     void (async () => {
       try {
         const data = await bootstrapBranchData(branchId)
+        if (!alive) return
         setProducts(data.products || [])
         const next = await fetchActivePromoEventWithRules(branchId, { respectDuration: false })
+        if (!alive) return
         setActive(next)
         const rows = await fetchPromoEventsForBranch(branchId)
-        setHistory(rows)
+        if (alive) setHistory(rows)
       } catch (e) {
-        setError(e?.message || 'Failed to load branch promos.')
+        if (alive) setError(e?.message || 'Failed to load branch promos.')
+      } finally {
+        if (alive) setPageLoading(false)
       }
     })()
-  }, [branchId])
+    return () => {
+      alive = false
+    }
+  }, [branchId, managerView])
 
   useEffect(() => {
     const isoToLocalValue = (iso) => {
@@ -160,6 +219,87 @@ export default function ManagerPromos() {
     setStartsAt(isoToLocalValue(active?.event?.startsAt))
     setEndsAt(isoToLocalValue(active?.event?.endsAt))
   }, [active?.event?.startsAt, active?.event?.endsAt])
+
+  useEffect(() => {
+    if (!hasSupabase || !branchId || !active?.event?.name) {
+      setPromoStats(null)
+      return undefined
+    }
+    let alive = true
+    setPromoStatsBusy(true)
+    fetchPromoSalesStats({
+      branchId,
+      promoName: active.event.name,
+      startsAt: active.event.startsAt || null,
+      endsAt: active.event.endsAt || null,
+    })
+      .then((stats) => {
+        if (alive) setPromoStats(stats)
+      })
+      .catch(() => {
+        if (alive) setPromoStats(null)
+      })
+      .finally(() => {
+        if (alive) setPromoStatsBusy(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [branchId, active?.event?.id, active?.event?.name, active?.event?.startsAt, active?.event?.endsAt])
+
+  useEffect(() => {
+    // Clear cached Sales summaries when switching branches.
+    setHistoryStats({})
+  }, [branchId])
+
+  const openPromoTracking = async (eventRow) => {
+    if (!branchId || !eventRow?.name) return
+    setTrackingEvent({ event: eventRow, stats: null, busy: true })
+    try {
+      const stats = await fetchPromoSalesStats({
+        branchId,
+        promoName: eventRow.name,
+        startsAt: eventRow.starts_at || null,
+        endsAt: eventRow.ends_at || null,
+      })
+      setHistoryStats((prev) => ({
+        ...prev,
+        [eventRow.id]: {
+          receiptCount: stats.receiptCount,
+          discountTotal: stats.discountTotal,
+          saleTotal: stats.saleTotal,
+        },
+      }))
+      setTrackingEvent({ event: eventRow, stats, busy: false })
+    } catch (e) {
+      setError(e?.message || 'Failed to load promo transactions.')
+      setTrackingEvent(null)
+    }
+  }
+
+  const openTxnDetail = async (receipt) => {
+    if (!receipt?.id) return
+    setError('')
+    setLoadingTxnDetail(true)
+    setTxnDetail(null)
+    setTxnRefundSummary(null)
+    try {
+      if (!hasSupabase || !isUuid(receipt.id)) {
+        setError('Transaction details are only available after the sale has synced.')
+        return
+      }
+      const [row, summary] = await Promise.all([
+        fetchTransactionDetail(receipt.id),
+        fetchRefundSummary(receipt.id).catch(() => null),
+      ])
+      setTxnDetail(row)
+      setTxnRefundSummary(summary)
+    } catch (err) {
+      setError(err?.message || 'Could not load transaction')
+    } finally {
+      setLoadingTxnDetail(false)
+    }
+  }
 
   const refreshHistory = async () => {
     if (!hasSupabase || !branchId) {
@@ -216,6 +356,7 @@ export default function ManagerPromos() {
     setBusy(true)
     setError('')
     try {
+      // Managers create drafts they activate themselves; supervisors submit for manager approval.
       await createAndActivatePromoEvent({
         branchId,
         name: eventName.trim(),
@@ -260,18 +401,22 @@ export default function ManagerPromos() {
 
   const onRequestStop = async () => {
     if (!active?.event?.id || !stopReason.trim()) {
-      setError('Enter a reason to request stop.')
+      setError(managerView ? 'Enter a reason to stop this promo.' : 'Enter a reason to request stop.')
       return
     }
     setBusy(true)
     setError('')
     try {
       await requestStopPromo({ id: active.event.id, staffId: user.id, reason: stopReason.trim() })
+      // Managers are the approvers — stop immediately after recording the reason.
+      if (managerView) {
+        await approveStopPromo({ id: active.event.id, staffId: user.id })
+      }
       setStopModal(false)
       setStopReason('')
       await refreshActive()
     } catch (e) {
-      setError(e?.message || 'Failed to request stop.')
+      setError(e?.message || (managerView ? 'Failed to stop promo.' : 'Failed to request stop.'))
     } finally {
       setBusy(false)
     }
@@ -433,6 +578,11 @@ export default function ManagerPromos() {
       <PageHeader eyebrow={managerView ? 'MANAGER' : 'SUPERVISOR'} title="Manage promo events" />
       {error && <div className="mb-3 rounded-md border border-brand-danger bg-white px-3 py-2 text-xs text-brand-danger">{error}</div>}
 
+      {pageLoading ? (
+        <PageSkeleton variant="table" />
+      ) : (
+      <>
+
       <TableCard className="mb-4 max-h-none overflow-visible p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           {managerView ? (
@@ -442,7 +592,7 @@ export default function ManagerPromos() {
               value={branchId}
               onChange={(e) => setBranchId(e.target.value)}
             >
-              <option value="">Select a branch…</option>
+              <option value="">All branches · active overview</option>
               {branches.map((branch) => (
                 <option key={branch.id} value={branch.id}>
                   {branch.name}
@@ -460,17 +610,92 @@ export default function ManagerPromos() {
               Promo applies only to <strong className="text-brand-ink">{selectedBranch?.name || 'this branch'}</strong>
             </p>
           )}
+          {managerView && !branchId && (
+            <p className="m-0 text-xs text-brand-subtle sm:pb-1">
+              Showing live promos across all branches. Select a branch to create or edit.
+            </p>
+          )}
         </div>
       </TableCard>
 
       {!branchId ? (
-        <TableCard className="max-h-none overflow-visible p-5">
-          <p className="m-0 text-sm text-brand-muted">
-            {managerView
-              ? 'Select a branch first. Promos are per-branch and never apply to all branches automatically.'
-              : 'No assigned branch found for this account.'}
-          </p>
-        </TableCard>
+        managerView ? (
+          <TableCard className="max-h-none overflow-hidden">
+            <div className="px-5 pt-4 pb-2">
+              <Eyebrow>NETWORK</Eyebrow>
+              <h2 className="m-0 text-lg">Active promos</h2>
+              <p className="m-0 mt-1 text-xs text-brand-muted">
+                Every live and stop-pending promo across branches
+                {networkBusy ? '' : ` · ${networkActive.length} shown`}. Open a row to manage that branch.
+              </p>
+            </div>
+            <div className="grid grid-cols-[1.2fr_1.3fr_1fr_0.9fr_0.8fr] gap-2 bg-brand-dark px-5 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[1.2fr_1fr_0.8fr]">
+              <span>Branch</span>
+              <span>Promo</span>
+              <span className="max-[900px]:hidden">Duration</span>
+              <span>Status</span>
+              <span className="text-right">Open</span>
+            </div>
+            {networkBusy && (
+              <div className="px-2 py-2" role="status" aria-label="Loading">
+                <SkeletonRows rows={4} cols={4} />
+              </div>
+            )}
+            {!networkBusy &&
+              networkActive.map((row) => {
+                const fmt = (iso) => {
+                  if (!iso) return '—'
+                  const d = new Date(iso)
+                  if (Number.isNaN(d.getTime())) return '—'
+                  return d.toLocaleString([], {
+                    month: '2-digit',
+                    day: '2-digit',
+                    year: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })
+                }
+                return (
+                  <div
+                    key={row.id}
+                    role="button"
+                    tabIndex={0}
+                    className={`tap-row grid cursor-pointer grid-cols-[1.2fr_1.3fr_1fr_0.9fr_0.8fr] gap-2 px-5 py-3 text-xs max-[900px]:grid-cols-[1.2fr_1fr_0.8fr] ${tableRowClass}`}
+                    onClick={() => setBranchId(row.branch_id)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') setBranchId(row.branch_id)
+                    }}
+                  >
+                    <strong className="truncate text-brand-ink">{row.branchName}</strong>
+                    <span className="min-w-0">
+                      <strong className="block truncate text-brand-ink">{row.name}</strong>
+                      {row.stop_reason ? (
+                        <span className="mt-0.5 block truncate text-[10px] text-brand-warn">
+                          Stop: {row.stop_reason}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="text-brand-slate max-[900px]:hidden">
+                      {fmt(row.starts_at)} → {fmt(row.ends_at)}
+                    </span>
+                    <StatusBadge tone={row.status === 'stop_pending' ? 'warn' : 'success'}>
+                      {row.status === 'stop_pending' ? 'Stop pending' : row.status || 'active'}
+                    </StatusBadge>
+                    <span className="text-right font-bold text-brand-ink underline">Manage</span>
+                  </div>
+                )
+              })}
+            {!networkBusy && networkActive.length === 0 && (
+              <div className="px-5 py-6 text-xs text-brand-subtle">
+                No active promos on any branch right now. Select a branch to create one.
+              </div>
+            )}
+          </TableCard>
+        ) : (
+          <TableCard className="max-h-none overflow-visible p-5">
+            <p className="m-0 text-sm text-brand-muted">No assigned branch found for this account.</p>
+          </TableCard>
+        )
       ) : (
         <>
       <TableCard className="mb-4 max-h-none overflow-visible p-5">
@@ -479,7 +704,9 @@ export default function ManagerPromos() {
             <Eyebrow>Live promo</Eyebrow>
             <h2 className="m-0 text-lg">{active?.event?.name || 'No live promo'}</h2>
             <p className="m-0 mt-1 text-xs text-brand-muted">
-              New promos require manager approval before going live. Stopping also needs manager approval first.
+              {managerView
+                ? 'Create a promo, add rules, then activate it. Supervisor-submitted promos appear here for your approval.'
+                : 'New promos need manager approval before going live. Stopping also needs manager approval first.'}
             </p>
             {active?.event?.status === 'stop_pending' && (
               <p className="mt-2 rounded-md bg-brand-warn-bg px-3 py-2 text-xs text-brand-warn">
@@ -490,7 +717,7 @@ export default function ManagerPromos() {
             {active?.event?.status === 'active' && (
               <div className="mt-3">
                 <PrimaryButton compact type="button" disabled={busy} onClick={() => setStopModal(true)}>
-                  Request stop
+                  {managerView ? 'Stop promo' : 'Request stop'}
                 </PrimaryButton>
               </div>
             )}
@@ -510,7 +737,7 @@ export default function ManagerPromos() {
             <div className="flex items-end gap-2">
               <div className="flex-1">
                 <Field
-                  label="Request new promo event"
+                  label={managerView ? 'New promo event' : 'Request new promo event'}
                   value={eventName}
                   onChange={(e) => setEventName(e.target.value)}
                   placeholder="e.g. Valentines"
@@ -522,7 +749,7 @@ export default function ManagerPromos() {
                 disabled={busy || !branchId || !eventName.trim() || !startsAt || !endsAt}
                 onClick={onCreateEvent}
               >
-                {busy ? 'Saving…' : 'Submit for approval'}
+                {busy ? 'Saving…' : managerView ? 'Create promo' : 'Submit for approval'}
               </PrimaryButton>
             </div>
 
@@ -550,21 +777,124 @@ export default function ManagerPromos() {
         </div>
       </TableCard>
 
+      {active?.event?.name && (
+        <TableCard className="mb-4 max-h-none overflow-hidden">
+          <div className="px-5 pt-4 pb-2">
+            <Eyebrow>PROMO SALES</Eyebrow>
+            <h2 className="m-0 text-lg">{active.event.name}</h2>
+            <p className="m-0 mt-1 text-xs text-brand-muted">
+              Items sold on this promo — quantity, discount given, and net sales.
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-2 border-y border-brand-softline bg-white px-5 py-3 text-xs max-[700px]:grid-cols-1">
+            <div>
+              <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Receipts</span>
+              <strong className="text-brand-ink">
+                {promoStatsBusy ? '…' : promoStats?.receiptCount ?? 0}
+              </strong>
+            </div>
+            <div>
+              <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Discount given</span>
+              <strong className="text-brand-danger">
+                {promoStatsBusy ? '…' : `−${money(promoStats?.discountTotal || 0)}`}
+              </strong>
+            </div>
+            <div>
+              <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Net sales</span>
+              <strong className="text-brand-ink">
+                {promoStatsBusy ? '…' : money(promoStats?.saleTotal || 0)}
+              </strong>
+            </div>
+          </div>
+          <div className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-5 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[800px]:grid-cols-[1.2fr_0.7fr_0.9fr]">
+            <span>Item</span>
+            <span className="text-right">Qty sold</span>
+            <span className="text-right max-[800px]:hidden">Gross</span>
+            <span className="text-right">Discount</span>
+            <span className="text-right max-[800px]:hidden">Net</span>
+          </div>
+          {(promoStats?.items || []).map((row) => (
+            <div
+              key={row.productId}
+              className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr_0.9fr] gap-2 border-t border-brand-softline px-5 py-2.5 text-xs max-[800px]:grid-cols-[1.2fr_0.7fr_0.9fr]"
+            >
+              <div className="min-w-0">
+                <strong className="block truncate text-brand-ink">{row.name}</strong>
+                {row.sku ? <span className="text-[10px] text-brand-subtle">{row.sku}</span> : null}
+              </div>
+              <span className="text-right tabular-nums">
+                {qty(row.qty, row.pricingMode === 'kg' ? 'kg' : 'pc')}
+              </span>
+              <span className={`text-right max-[800px]:hidden ${moneyClass}`}>{money(row.gross)}</span>
+              <span className={`text-right text-brand-danger ${moneyClass}`}>−{money(row.discount)}</span>
+              <span className={`text-right max-[800px]:hidden ${moneyClass}`}>{money(row.net)}</span>
+            </div>
+          ))}
+          {!promoStatsBusy && !(promoStats?.items || []).length && (
+            <div className="px-5 py-6 text-xs text-brand-subtle">
+              No discounted items sold under this promo yet.
+            </div>
+          )}
+          {(promoStats?.receipts || []).length > 0 && (
+            <div className="border-t border-brand-softline px-5 py-3">
+              <p className="m-0 mb-2 text-[11px] font-bold text-brand-subtle uppercase tracking-wide">
+                Transactions ({promoStats.receipts.length})
+              </p>
+              <div className="max-h-[220px] overflow-auto rounded border border-brand-softline">
+                <div className="grid grid-cols-[1fr_1fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase">
+                  <span>OR / Time</span>
+                  <span>Cashier</span>
+                  <span className="text-right">Discount</span>
+                  <span className="text-right">Total</span>
+                </div>
+                {promoStats.receipts.map((r) => (
+                  <div
+                    key={r.id}
+                    role="button"
+                    tabIndex={0}
+                    className={`tap-row grid cursor-pointer grid-cols-[1fr_1fr_0.9fr_0.9fr] gap-2 px-3 py-2 text-xs ${tableRowClass}`}
+                    onClick={() => openTxnDetail(r)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') openTxnDetail(r)
+                    }}
+                    title="View transaction detail"
+                  >
+                    <div className="min-w-0">
+                      <strong className="block truncate text-brand-ink">
+                        {r.orNumber || String(r.id).slice(0, 8)}
+                      </strong>
+                      <span className="text-[10px] text-brand-subtle">{r.time}</span>
+                    </div>
+                    <span className="truncate">{r.cashier}</span>
+                    <span className="text-right tabular-nums text-brand-danger">−{money(r.discountAmount)}</span>
+                    <span className="text-right tabular-nums">{money(r.total)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </TableCard>
+      )}
+
       {workingEvent && (
         <TableCard className="mb-4 max-h-none overflow-visible p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <Eyebrow>PENDING APPROVAL</Eyebrow>
+              <Eyebrow>{managerView ? 'READY TO ACTIVATE' : 'PENDING APPROVAL'}</Eyebrow>
               <h2 className="m-0 text-lg">{workingEvent.event.name}</h2>
-              <p className="m-0 mt-1 text-xs text-brand-muted">Add rules while waiting. Not live on POS yet.</p>
+              <p className="m-0 mt-1 text-xs text-brand-muted">
+                {managerView
+                  ? 'Add rules, then activate when ready. Not live on POS yet.'
+                  : 'Add rules while waiting. Not live on POS yet.'}
+              </p>
             </div>
             {managerView && (
               <div className="flex gap-2">
                 <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveCreate(workingEvent.event.id)}>
-                  Approve &amp; activate
+                  Activate
                 </PrimaryButton>
                 <SecondaryButton compact type="button" disabled={busy} onClick={() => onRejectCreate(workingEvent.event.id)}>
-                  Reject
+                  Discard
                 </SecondaryButton>
               </div>
             )}
@@ -589,9 +919,9 @@ export default function ManagerPromos() {
             <table className="min-w-full text-left text-xs">
               <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
                 <tr>
-                  <th className="px-3 py-3">Type</th>
-                  <th className="px-3 py-3">Discount</th>
-                  <th className="px-3 py-3">Involved products</th>
+                  <th className="px-3 py-3">Rule type</th>
+                  <th className="px-3 py-3">Discount %</th>
+                  <th className="px-3 py-3">Products in rule</th>
                   <th className="px-3 py-3"></th>
                 </tr>
               </thead>
@@ -649,7 +979,7 @@ export default function ManagerPromos() {
           <div>
             <h2 className="m-0 text-base">Promo history</h2>
             <p className="m-0 mt-1 text-xs text-brand-subtle">
-              Inactive promo events can be deleted or have their duration modified.
+              Past and current events with sales tracking — open Sales to see receipts and items sold.
             </p>
           </div>
         </div>
@@ -659,9 +989,11 @@ export default function ManagerPromos() {
             <table className="min-w-full text-left text-xs">
               <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
                 <tr>
-                  <th className="px-3 py-3">Event</th>
-                  <th className="px-3 py-3">Duration</th>
+                  <th className="px-3 py-3">Promo name</th>
+                  <th className="px-3 py-3">Schedule</th>
                   <th className="px-3 py-3">Status</th>
+                  <th className="px-3 py-3 text-right">Promo receipts</th>
+                  <th className="px-3 py-3 text-right">Discount given</th>
                   <th className="px-3 py-3 text-right">Actions</th>
                 </tr>
               </thead>
@@ -669,6 +1001,7 @@ export default function ManagerPromos() {
                 {history.map((e) => {
                   const isActive = Boolean(e.is_active)
                   const isEditing = editingEventId === e.id
+                  const stats = historyStats[e.id]
                   const fmt = (iso) => {
                     if (!iso) return '—'
                     const d = new Date(iso)
@@ -681,9 +1014,24 @@ export default function ManagerPromos() {
                       <td className="px-3 py-3 font-bold text-brand-ink">{e.name}</td>
                       <td className="px-3 py-3">{fmt(e.starts_at)} → {fmt(e.ends_at)}</td>
                       <td className="px-3 py-3 capitalize">{e.status || (isActive ? 'active' : 'inactive')}</td>
+                      <td className="px-3 py-3 text-right tabular-nums">
+                        {stats ? stats.receiptCount : '—'}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums text-brand-danger">
+                        {stats ? `−${money(stats.discountTotal || 0)}` : '—'}
+                      </td>
                       <td className="px-3 py-3 text-right">
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            className="border-0 bg-transparent text-xs font-bold text-brand-danger underline"
+                            disabled={busy}
+                            onClick={() => openPromoTracking(e)}
+                          >
+                            Sales
+                          </button>
                         {managerView && e.status === 'pending' ? (
-                          <div className="flex items-center justify-end gap-2">
+                          <>
                             <button
                               type="button"
                               className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
@@ -700,9 +1048,9 @@ export default function ManagerPromos() {
                             >
                               Reject
                             </button>
-                          </div>
+                          </>
                         ) : managerView && e.status === 'stop_pending' ? (
-                          <div className="flex items-center justify-end gap-2">
+                          <>
                             <button
                               type="button"
                               className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
@@ -719,15 +1067,13 @@ export default function ManagerPromos() {
                             >
                               Reject stop
                             </button>
-                          </div>
-                        ) : isActive || e.status === 'active' || e.status === 'stop_pending' ? (
-                          <span className="text-brand-subtle">—</span>
-                        ) : (
-                          <div className="flex items-center justify-end gap-2">
+                          </>
+                        ) : isActive || e.status === 'active' || e.status === 'stop_pending' ? null : (
+                          <>
                             <button
                               type="button"
                               className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                              disabled={busy}
+                              disabled={busy || isEditing}
                               onClick={() => onStartEditEvent(e)}
                             >
                               Modify
@@ -745,8 +1091,9 @@ export default function ManagerPromos() {
                             >
                               Delete
                             </button>
-                          </div>
+                          </>
                         )}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -926,10 +1273,12 @@ export default function ManagerPromos() {
 
       {stopModal && (
         <Modal onClose={() => !busy && setStopModal(false)}>
-          <Eyebrow>REQUEST STOP</Eyebrow>
+          <Eyebrow>{managerView ? 'STOP PROMO' : 'REQUEST STOP'}</Eyebrow>
           <h2 className="m-0 mb-2 text-lg">Stop {active?.event?.name}?</h2>
           <p className="m-0 mb-3 text-xs text-brand-muted">
-            Promo stays live until a manager approves this stop request.
+            {managerView
+              ? 'This ends the promo on POS immediately.'
+              : 'Promo stays live until a manager approves this stop request.'}
           </p>
           <Field
             label="Reason (required)"
@@ -942,10 +1291,140 @@ export default function ManagerPromos() {
               Cancel
             </SecondaryButton>
             <PrimaryButton compact type="button" disabled={busy || !stopReason.trim()} onClick={onRequestStop}>
-              {busy ? 'Submitting…' : 'Submit stop request'}
+              {busy ? (managerView ? 'Stopping…' : 'Submitting…') : managerView ? 'Stop now' : 'Submit stop request'}
             </PrimaryButton>
           </ModalActions>
         </Modal>
+      )}
+
+      {trackingEvent && (
+        <Modal wide onClose={() => setTrackingEvent(null)}>
+          <Eyebrow>PROMO TRANSACTIONS</Eyebrow>
+          <h2 className="m-0 text-lg">{trackingEvent.event?.name}</h2>
+          <p className="m-0 mt-1 text-xs text-brand-muted">
+            Receipts and items sold under this promo
+            {trackingEvent.event?.status ? ` · ${trackingEvent.event.status}` : ''}
+          </p>
+
+          {trackingEvent.busy || !trackingEvent.stats ? (
+            <div className="mt-4 space-y-2" role="status" aria-label="Loading sales">
+              <Skeleton className="h-3 w-40" />
+              <Skeleton className="h-3 w-56" />
+              <Skeleton className="mt-3 h-24 w-full" />
+              <SkeletonRows rows={3} cols={3} />
+            </div>
+          ) : (
+            <>
+              <div className="mt-4 grid grid-cols-3 gap-2 text-xs max-[700px]:grid-cols-1">
+                <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                  <span className="block text-[10px] text-brand-subtle">Receipts</span>
+                  <strong>{trackingEvent.stats.receiptCount}</strong>
+                </div>
+                <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                  <span className="block text-[10px] text-brand-subtle">Discount given</span>
+                  <strong className="text-brand-danger">−{money(trackingEvent.stats.discountTotal)}</strong>
+                </div>
+                <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                  <span className="block text-[10px] text-brand-subtle">Net sales</span>
+                  <strong>{money(trackingEvent.stats.saleTotal)}</strong>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <p className="m-0 mb-2 text-[11px] font-bold uppercase tracking-wide text-brand-subtle">
+                  Transactions
+                </p>
+                <div className="max-h-[240px] overflow-auto rounded border border-brand-softline">
+                  <div className="grid grid-cols-[1fr_1fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase">
+                    <span>OR / Time</span>
+                    <span>Cashier</span>
+                    <span className="text-right">Discount</span>
+                    <span className="text-right">Total</span>
+                  </div>
+                  {(trackingEvent.stats.receipts || []).map((r) => (
+                    <div
+                      key={r.id}
+                      role="button"
+                      tabIndex={0}
+                      className={`tap-row grid cursor-pointer grid-cols-[1fr_1fr_0.9fr_0.9fr] gap-2 px-3 py-2 text-xs ${tableRowClass}`}
+                      onClick={() => openTxnDetail(r)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') openTxnDetail(r)
+                      }}
+                      title="View transaction detail"
+                    >
+                      <div className="min-w-0">
+                        <strong className="block truncate text-brand-ink">
+                          {r.orNumber || String(r.id).slice(0, 8)}
+                        </strong>
+                        <span className="text-[10px] text-brand-subtle">{r.time}</span>
+                      </div>
+                      <span className="truncate">{r.cashier}</span>
+                      <span className="text-right tabular-nums text-brand-danger">
+                        −{money(r.discountAmount)}
+                      </span>
+                      <span className="text-right tabular-nums">{money(r.total)}</span>
+                    </div>
+                  ))}
+                  {!(trackingEvent.stats.receipts || []).length && (
+                    <div className="px-3 py-6 text-xs text-brand-subtle">No transactions for this promo.</div>
+                  )}
+                </div>
+              </div>
+
+              {(trackingEvent.stats.items || []).length > 0 && (
+                <div className="mt-4">
+                  <p className="m-0 mb-2 text-[11px] font-bold uppercase tracking-wide text-brand-subtle">
+                    Items sold
+                  </p>
+                  <div className="max-h-[200px] overflow-auto rounded border border-brand-softline">
+                    <div className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase">
+                      <span>Item</span>
+                      <span className="text-right">Qty</span>
+                      <span className="text-right">Discount</span>
+                      <span className="text-right">Net</span>
+                    </div>
+                    {trackingEvent.stats.items.map((row) => (
+                      <div
+                        key={row.productId}
+                        className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr] gap-2 border-t border-brand-softline px-3 py-2 text-xs"
+                      >
+                        <strong className="truncate text-brand-ink">{row.name}</strong>
+                        <span className="text-right tabular-nums">
+                          {qty(row.qty, row.pricingMode === 'kg' ? 'kg' : 'pc')}
+                        </span>
+                        <span className="text-right tabular-nums text-brand-danger">−{money(row.discount)}</span>
+                        <span className="text-right tabular-nums">{money(row.net)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          <ModalActions>
+            <SecondaryButton compact type="button" onClick={() => setTrackingEvent(null)}>
+              Close
+            </SecondaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {(txnDetail || loadingTxnDetail) && (
+        <TransactionDetailModal
+          layer={Boolean(trackingEvent)}
+          detail={txnDetail}
+          loading={loadingTxnDetail}
+          refundSummary={txnRefundSummary}
+          onClose={() => {
+            setTxnDetail(null)
+            setTxnRefundSummary(null)
+            setLoadingTxnDetail(false)
+          }}
+        />
+      )}
+      </>
       )}
     </div>
   )

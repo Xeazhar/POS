@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Field, PageHeader, PrimaryButton, SecondaryButton, SelectField, TableCard } from '../../components/ui'
+import { Field, PageHeader, PrimaryButton, SecondaryButton, SelectField, SkeletonCards, StatusBadge, TableCard, moneyClass } from '../../components/ui'
 import { branchSummary, fetchBranches, hasSupabase, reorderBranches, saveBranch } from '../../lib/api'
 import { money } from '../../utils/format'
 
@@ -18,6 +18,7 @@ function ManagerBranches() {
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
   const [dragId, setDragId] = useState(null)
+  const [loading, setLoading] = useState(true)
 
   const reload = async () => {
     if (!hasSupabase) {
@@ -31,6 +32,7 @@ function ManagerBranches() {
         },
       ])
       setSummaries({ 'demo-main-branch': { revenue: 0, orders: 0, lowStock: 0 } })
+      setLoading(false)
       return
     }
     const rows = await fetchBranches()
@@ -42,14 +44,19 @@ function ManagerBranches() {
       }),
     )
     setSummaries(next)
+    setLoading(false)
   }
 
   useEffect(() => {
     let active = true
+    setLoading(true)
     Promise.resolve()
       .then(() => reload())
       .catch((err) => {
-        if (active) setError(err.message)
+        if (active) {
+          setError(err.message)
+          setLoading(false)
+        }
       })
     return () => {
       active = false
@@ -89,6 +96,9 @@ function ManagerBranches() {
       </PageHeader>
       <p className="mb-3 text-[11px] text-brand-subtle">Drag cards to set display order.</p>
       {error && <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>}
+      {loading ? (
+        <SkeletonCards count={3} />
+      ) : (
       <div className="grid grid-cols-3 gap-3.5 max-[1050px]:grid-cols-2 max-[700px]:grid-cols-1">
         {branches.map((branch) => {
           const summary = summaries[branch.id] || { revenue: 0, orders: 0, lowStock: 0 }
@@ -112,17 +122,13 @@ function ManagerBranches() {
                     </p>
                   )}
                 </div>
-                <span
-                  className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${
-                    branch.is_active ? 'bg-[#eef1ec] text-[#646a66]' : 'bg-brand-danger-bg text-brand-danger'
-                  }`}
-                >
+                <StatusBadge tone={branch.is_active ? 'success' : 'danger'} className="rounded-full">
                   {branch.is_active ? 'Active' : 'Inactive'}
-                </span>
+                </StatusBadge>
               </div>
               <div className="mb-4 grid grid-cols-3 gap-2 text-center">
                 <div>
-                  <strong className="block text-brand-gold">{money(summary.revenue)}</strong>
+                  <strong className={`block text-brand-gold ${moneyClass}`}>{money(summary.revenue)}</strong>
                   <small className="text-[10px] text-brand-subtle">Today</small>
                 </div>
                 <div>
@@ -149,6 +155,7 @@ function ManagerBranches() {
           )
         })}
       </div>
+      )}
       {form && (
         <div className="fixed inset-0 z-[5] grid place-items-center bg-[#202426aa]">
           <form

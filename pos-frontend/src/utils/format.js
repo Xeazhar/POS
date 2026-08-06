@@ -1,7 +1,17 @@
 export const PESO = '\u20B1'
 
-export const money = (value) =>
-  `${PESO}${Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+/** Use with money displays: className={MONEY_CLASS} (alias of ui moneyClass). */
+export const MONEY_CLASS = 'tabular-nums'
+
+/** Unicode minus for negatives: −₱1.00 (not ASCII hyphen / locale minus). */
+export const money = (value) => {
+  const n = Number(value || 0)
+  const abs = Math.abs(n).toLocaleString('en-PH', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+  return n < 0 ? `\u2212${PESO}${abs}` : `${PESO}${abs}`
+}
 
 /** Whole-peso label for quick-cash buttons (no decimals). */
 export const pesoWhole = (value) =>

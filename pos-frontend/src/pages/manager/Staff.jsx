@@ -3,10 +3,13 @@ import { FiEye, FiEyeOff } from 'react-icons/fi'
 import {
   Field,
   PageHeader,
+  PageSkeleton,
   PrimaryButton,
   SecondaryButton,
   SelectField,
   TableCard,
+  StatusBadge,
+  tableRowClass,
 } from '../../components/ui'
 import {
   createStaffAccount,
@@ -79,6 +82,7 @@ function ManagerStaff() {
   const [error, setError] = useState('')
   const [reveal, setReveal] = useState(null)
   const [showPin, setShowPin] = useState(false)
+  const [loading, setLoading] = useState(true)
 
   const reload = async () => {
     if (!hasSupabase) {
@@ -94,6 +98,7 @@ function ManagerStaff() {
       ])
       setBranches([{ id: 'demo-main-branch', name: 'Bayombong Branch #001' }])
       setRoles(fallbackRoles)
+      setLoading(false)
       return
     }
     const [people, branchRows, roleRows] = await Promise.all([
@@ -104,14 +109,19 @@ function ManagerStaff() {
     setStaff(people)
     setBranches(branchRows)
     setRoles(roleRows.length ? roleRows : fallbackRoles)
+    setLoading(false)
   }
 
   useEffect(() => {
     let active = true
+    setLoading(true)
     Promise.resolve()
       .then(() => reload())
       .catch((err) => {
-        if (active) setError(err.message)
+        if (active) {
+          setError(err.message)
+          setLoading(false)
+        }
       })
     return () => {
       active = false
@@ -119,6 +129,10 @@ function ManagerStaff() {
   }, [])
 
   const pinMode = form && usesPinLogin(form.role)
+
+  if (loading && !staff.length) {
+    return <PageSkeleton variant="table" />
+  }
 
   return (
     <div>
@@ -156,7 +170,7 @@ function ManagerStaff() {
         {staff.map((person) => (
           <div
             key={person.id}
-            className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)_0.8fr_0.7fr_0.7fr] items-center gap-3 border-t border-brand-softline px-5 py-3 text-xs max-[700px]:grid-cols-[minmax(0,1fr)_auto] max-[700px]:items-start max-[700px]:px-3"
+            className={`grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)_0.8fr_0.7fr_0.7fr] items-center gap-3 px-5 py-3 text-xs max-[700px]:grid-cols-[minmax(0,1fr)_auto] max-[700px]:items-start max-[700px]:px-3 ${tableRowClass}`}
           >
             <div className="min-w-0">
               <strong className="block truncate text-brand-ink">{person.full_name}</strong>
@@ -173,10 +187,10 @@ function ManagerStaff() {
             </div>
             <span className="truncate max-[700px]:hidden">{person.branches?.name || '—'}</span>
             <span className="max-[700px]:hidden">{person.roles?.label || person.role}</span>
-            <span
-              className={`max-[700px]:hidden ${person.is_active ? 'text-brand-success' : 'text-brand-danger'}`}
-            >
-              {person.is_active ? 'Active' : 'Inactive'}
+            <span className="max-[700px]:hidden">
+              <StatusBadge tone={person.is_active ? 'success' : 'danger'}>
+                {person.is_active ? 'Active' : 'Inactive'}
+              </StatusBadge>
             </span>
             <div className="flex justify-end gap-2 max-[700px]:flex-col max-[700px]:items-end">
               {usesPinLogin(person.role) && (

@@ -956,6 +956,30 @@ create table if not exists branch_devices (
   primary key (branch_id, device_key)
 );
 
+alter table branch_presence enable row level security;
+alter table branch_devices enable row level security;
+
+drop policy if exists "read branch presence" on branch_presence;
+create policy "read branch presence" on branch_presence for select to authenticated
+  using (branch_id = public.current_staff_branch() or public.is_manager());
+
+drop policy if exists "upsert branch presence" on branch_presence;
+create policy "upsert branch presence" on branch_presence for insert to authenticated
+  with check (branch_id = public.current_staff_branch() or public.is_manager());
+drop policy if exists "update branch presence" on branch_presence;
+create policy "update branch presence" on branch_presence for update to authenticated
+  using (branch_id = public.current_staff_branch() or public.is_manager())
+  with check (branch_id = public.current_staff_branch() or public.is_manager());
+
+drop policy if exists "read branch devices" on branch_devices;
+create policy "read branch devices" on branch_devices for select to authenticated
+  using (branch_id = public.current_staff_branch() or public.is_manager());
+
+drop policy if exists "write branch devices" on branch_devices;
+create policy "write branch devices" on branch_devices for all to authenticated
+  using (branch_id = public.current_staff_branch() or public.is_manager())
+  with check (branch_id = public.current_staff_branch() or public.is_manager());
+
 -- ---------------------------------------------------------------------------
 -- 9. PIN lockout (Auth hardening) — see migrate_pin_security_hardening.sql
 -- ---------------------------------------------------------------------------

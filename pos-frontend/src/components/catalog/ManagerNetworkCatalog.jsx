@@ -7,13 +7,16 @@ import {
   Modal,
   ModalActions,
   PageHeader,
+  PageSkeleton,
   Pager,
   PrimaryButton,
   SearchBox,
   SecondaryButton,
   SelectField,
   StatusOverlay,
+  SkeletonRows,
   TableCard,
+  tableRowClass,
 } from '../ui'
 import {
   commitCatalogImport,
@@ -72,19 +75,26 @@ export default function ManagerNetworkCatalog() {
 
   const [preview, setPreview] = useState(null)
   const [importProgress, setImportProgress] = useState(null)
+  const [loading, setLoading] = useState(true)
 
   const isRestaurant = branchType === 'restaurant'
 
   const reload = async () => {
     if (!hasSupabase) {
       setCatalog([])
+      setLoading(false)
       return
     }
     setCatalog(await fetchCatalogProducts({ branchType }))
+    setLoading(false)
   }
 
   useEffect(() => {
-    reload().catch((err) => setError(err.message))
+    setLoading(true)
+    reload().catch((err) => {
+      setError(err.message)
+      setLoading(false)
+    })
   }, [branchType])
 
   useEffect(() => {
@@ -287,6 +297,10 @@ export default function ManagerNetworkCatalog() {
     } finally {
       setBusy(false)
     }
+  }
+
+  if (loading && !catalog.length) {
+    return <PageSkeleton variant="table" />
   }
 
   return (
@@ -518,8 +532,15 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
               </tr>
             </thead>
             <tbody>
-              {pageRows.map((row) => (
-                <tr key={row.id} className="border-t border-brand-softline">
+              {loading ? (
+                <tr>
+                  <td colSpan={6} className="p-0">
+                    <SkeletonRows rows={8} cols={5} />
+                  </td>
+                </tr>
+              ) : (
+              pageRows.map((row) => (
+                <tr key={row.id} className={tableRowClass}>
                   <td className="px-5 py-3">
                     <strong className="block text-brand-ink">{row.name}</strong>
                     <small className="text-[10px] text-brand-subtle">{row.barcode || '—'}</small>
@@ -565,10 +586,11 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                     </div>
                   </td>
                 </tr>
-              ))}
+              ))
+              )}
             </tbody>
           </table>
-          {filtered.length === 0 && (
+          {!loading && filtered.length === 0 && (
             <div className="px-5 py-8 text-xs text-brand-subtle">
               No {isRestaurant ? 'restaurant' : 'retail'} catalog items yet. Add one to get started.
             </div>

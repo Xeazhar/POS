@@ -6,7 +6,12 @@ import {
   PrimaryButton,
   SecondaryButton,
   SelectField,
+  Skeleton,
+  SkeletonRows,
   StatusOverlay,
+  moneyClass,
+  tableHeadClass,
+  tableRowClass,
 } from '../../components/ui'
 import {
   fetchAllStaff,
@@ -626,7 +631,19 @@ function ManagerReports() {
       </div>
 
       <div className="border border-[#c8ccc4] bg-white">
-        {isTerminal ? (
+        {busy ? (
+          <div className="p-3" role="status" aria-label="Loading">
+            {isTerminal ? (
+              <div className="space-y-2">
+                <Skeleton className="h-3 w-40" />
+                <Skeleton className="h-3 w-56" />
+                <Skeleton className="mt-2 h-48 w-full" />
+              </div>
+            ) : (
+              <SkeletonRows rows={8} cols={5} />
+            )}
+          </div>
+        ) : isTerminal ? (
           !preview ? (
             <div className="p-3 text-xs text-[#888]">Run to preview receipt layout.</div>
           ) : (
@@ -640,7 +657,7 @@ function ManagerReports() {
           <div className="max-h-[70vh] overflow-auto">
             <table className="min-w-full border-collapse text-left text-xs">
               <thead>
-                <tr className="border-b border-[#ccc] bg-[#eee]">
+                <tr className={`${tableHeadClass} border-b border-brand-dark`}>
                   {Object.keys(rows[0]).map((key) => (
                     <th key={key} className="px-2 py-1.5 font-bold whitespace-nowrap">
                       {key}
@@ -650,10 +667,10 @@ function ManagerReports() {
               </thead>
               <tbody>
                 {rows.map((row, index) => (
-                  <tr key={index} className="border-b border-[#ddd]">
-                    {Object.entries(row).map(([key, value]) => (
-                      <td key={key} className="px-2 py-1.5 whitespace-nowrap">
-                        {typeof value === 'number' &&
+                  <tr key={index} className={tableRowClass}>
+                    {Object.entries(row).map(([key, value]) => {
+                      const isMoney =
+                        typeof value === 'number' &&
                         (key.includes('price') ||
                           key.includes('sales') ||
                           key.includes('total') ||
@@ -662,10 +679,12 @@ function ManagerReports() {
                           key === 'gross_sales' ||
                           key === 'net_sales' ||
                           key === 'void_total')
-                          ? money(value)
-                          : String(value ?? '')}
-                      </td>
-                    ))}
+                      return (
+                        <td key={key} className={`px-2 py-1.5 whitespace-nowrap ${isMoney ? moneyClass : ''}`}>
+                          {isMoney ? money(value) : String(value ?? '')}
+                        </td>
+                      )
+                    })}
                   </tr>
                 ))}
               </tbody>

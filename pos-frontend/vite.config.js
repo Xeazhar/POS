@@ -70,4 +70,21 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('xlsx')) return 'vendor-xlsx'
+          if (id.includes('@supabase')) return 'vendor-supabase'
+          if (id.includes('dexie')) return 'vendor-dexie'
+          if (id.includes('react-icons')) return 'vendor-icons'
+          if (id.includes('react-router')) return 'vendor-router'
+          if (id.includes('zustand')) return 'vendor-zustand'
+          if (id.includes('react-dom') || id.includes('/react/')) return 'vendor-react'
+          return undefined
+        },
+      },
+    },
+  },
 })

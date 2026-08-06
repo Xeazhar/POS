@@ -432,35 +432,63 @@ export function clearDeviceSessionId() {
   }
 }
 
+const BOOTSTRAP_PRODUCT_COLS =
+  'id, branch_id, name, sku, barcode, category_id, menu_kind, pricing_mode, price, unit_cost, budget_price, low_stock_threshold, available_today, discount_eligible, product_no, created_at, categories(name)'
+const BOOTSTRAP_TX_COLS =
+  'id, or_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, discount_amount, discount_type, discount_id_note, transaction_items(id)'
+const BOOTSTRAP_MOVE_COLS =
+  'id, created_at, product_id, movement_type, quantity_in, quantity_out, quantity_on_hand_after, old_price, new_price, detail, branch_id, products(name)'
+const BOOTSTRAP_DAY_END_COLS =
+  'id, business_date, recorded_cash, cash_on_hand, variance, expected_cash, note, status, closed_at, submitted_at, approved_at, reopened_at, reopen_reason, day_report, staff_id, branch_id, staff!staff_id(full_name)'
+const BOOTSTRAP_DAY_END_COLS_LEGACY =
+  'id, business_date, recorded_cash, cash_on_hand, variance, note, status, closed_at, staff_id, branch_id, staff!staff_id(full_name)'
+
 export async function bootstrapBranchData(branchId) {
-  const [productsRes, inventoryRes, txRes, moveRes, dayRes, catsRes, branchRes] = await Promise.all([
+  const [productsRes, inventoryRes, txRes, moveRes, dayResInitial, catsRes, branchRes] = await Promise.all([
     supabase
       .from('products')
-      .select('*, categories(name)')
+      .select(BOOTSTRAP_PRODUCT_COLS)
       .eq('branch_id', branchId)
       .eq('is_active', true)
       .order('name'),
-    supabase.from('branch_inventory').select('*').eq('branch_id', branchId),
+    supabase
+      .from('branch_inventory')
+      .select('product_id, quantity_on_hand, updated_at')
+      .eq('branch_id', branchId),
     supabase
       .from('transactions')
-      .select('*, transaction_items(id)')
+      .select(BOOTSTRAP_TX_COLS)
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
       .limit(200),
     supabase
       .from('stock_movements')
-      .select('*, products(name)')
+      .select(BOOTSTRAP_MOVE_COLS)
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
       .limit(500),
     supabase
       .from('day_ends')
-      .select('*, staff!staff_id(full_name)')
+      .select(BOOTSTRAP_DAY_END_COLS)
       .eq('branch_id', branchId)
       .order('business_date', { ascending: false }),
-    supabase.from('categories').select('*').order('name'),
+    supabase.from('categories').select('id, name').order('name'),
     supabase.from('branches').select('id, day_open_hour').eq('id', branchId).maybeSingle(),
   ])
+
+  let dayRes = dayResInitial
+  if (
+    dayRes.error &&
+    /expected_cash|submitted_at|approved_at|reopened_at|reopen_reason|day_report|schema cache|column/i.test(
+      String(dayRes.error.message || ''),
+    )
+  ) {
+    dayRes = await supabase
+      .from('day_ends')
+      .select(BOOTSTRAP_DAY_END_COLS_LEGACY)
+      .eq('branch_id', branchId)
+      .order('business_date', { ascending: false })
+  }
 
   for (const res of [productsRes, inventoryRes, txRes, moveRes, dayRes, catsRes, branchRes]) {
     if (res.error) throw res.error
@@ -589,6 +617,13 @@ export async function commitCatalogImport({
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]
     const values = line.values || {}
+    const price = Number(values.price)
+    if (!Number.isFinite(price) || price < 0) {
+      throw new Error(`Catalog import rejected: invalid price on row ${i + 1} (${values.sku || values.name || 'item'}).`)
+    }
+    if (!String(values.name || '').trim() || !String(values.sku || '').trim()) {
+      throw new Error(`Catalog import rejected: missing name/SKU on row ${i + 1}.`)
+    }
     await createCatalogProduct({
       ...values,
       branchType: preview?.restaurant || branchType === 'restaurant' ? 'restaurant' : 'retail',
@@ -845,7 +880,9 @@ export async function recordPriceChange({ branchId, productId, staffId, oldPrice
 export async function fetchPriceHistory(productId, branchId) {
   let query = supabase
     .from('stock_movements')
-    .select('*')
+    .select(
+      'id, created_at, product_id, movement_type, quantity_in, quantity_out, quantity_on_hand_after, old_price, new_price, detail, branch_id',
+    )
     .eq('product_id', productId)
     .eq('movement_type', 'price_change')
     .order('created_at', { ascending: false })
@@ -886,7 +923,7 @@ function isDuplicateClientIdError(error) {
 async function loadTransactionByClientId(branchId, clientId) {
   const { data, error } = await supabase
     .from('transactions')
-    .select('*')
+    .select(BOOTSTRAP_TX_COLS)
     .eq('branch_id', branchId)
     .eq('client_id', clientId)
     .maybeSingle()
@@ -1271,9 +1308,13 @@ export async function reopenDayEnd({ id, staffId, reason }) {
   return data
 }
 
+const BRANCH_LIST_COLS =
+  'id, name, address, is_active, sort_order, day_open_hour, branch_type, device_settings, vat_rate'
+
 export async function fetchBranches() {
-  const { data, error } = await supabase.from('branches').select('*').order('sort_order').order('name')
+  const { data, error } = await supabase.from('branches').select(BRANCH_LIST_COLS).order('sort_order').order('name')
   if (error) {
+    // Older schemas may lack sort_order / device_settings / vat_rate — fall back broadly.
     const fallback = await supabase.from('branches').select('*').order('name')
     if (fallback.error) throw error
     return fallback.data || []
@@ -1368,8 +1409,14 @@ export async function fetchBranchTelemetry(branchIds = []) {
   if (!ids.length) return { presence: {}, devices: {} }
 
   const [presenceRes, devicesRes] = await Promise.all([
-    supabase.from('branch_presence').select('*').in('branch_id', ids),
-    supabase.from('branch_devices').select('*').in('branch_id', ids),
+    supabase
+      .from('branch_presence')
+      .select('branch_id, staff_id, last_seen_at, is_online, updated_at')
+      .in('branch_id', ids),
+    supabase
+      .from('branch_devices')
+      .select('branch_id, device_key, state, detail, updated_at')
+      .in('branch_id', ids),
   ])
 
   if (presenceRes.error) console.warn('branch_presence', presenceRes.error.message)
@@ -1412,7 +1459,7 @@ export function deviceSummary(deviceList = []) {
 }
 
 export async function fetchRoles() {
-  const { data, error } = await supabase.from('roles').select('*').order('sort_order')
+  const { data, error } = await supabase.from('roles').select('name, label, sort_order').order('sort_order')
   if (error) throw error
   return data || []
 }
@@ -1521,11 +1568,22 @@ export async function saveBranch(payload) {
 }
 
 export async function fetchAllStaff() {
-  const { data, error } = await supabase
-    .from('staff')
-    .select('*, branches(name), roles(label)')
-    .order('full_name')
-  if (error) throw error
+  const selectFull =
+    'id, branch_id, full_name, role, login_code, is_active, permissions, created_at, branches(name), roles(label)'
+  const { data, error } = await supabase.from('staff').select(selectFull).order('full_name')
+  if (error) {
+    // Older DBs may lack permissions / roles join
+    if (/permissions|roles|login_code|schema cache|column/i.test(String(error.message || ''))) {
+      const fallback = await supabase
+        .from('staff')
+        .select('id, branch_id, full_name, role, is_active, created_at, branches(name)')
+        .order('full_name')
+      if (fallback.error) throw error
+      return fallback.data || []
+    }
+    throw error
+  }
+  // Never return login_pin in list payloads — reveal only via revealStaffPin.
   return data || []
 }
 
@@ -1703,13 +1761,30 @@ export async function clockOut(shiftId) {
 export async function fetchOpenShift(staffId) {
   const { data, error } = await supabase
     .from('staff_shifts')
-    .select('*')
+    .select('id, branch_id, staff_id, clock_in, clock_out, shift_period')
     .eq('staff_id', staffId)
     .is('clock_out', null)
     .order('clock_in', { ascending: false })
     .limit(1)
     .maybeSingle()
   if (error) {
+    if (isMissingColumnError(error, 'shift_period') || /shift_period|schema cache|column/i.test(String(error.message || ''))) {
+      const fallback = await supabase
+        .from('staff_shifts')
+        .select('id, branch_id, staff_id, clock_in, clock_out')
+        .eq('staff_id', staffId)
+        .is('clock_out', null)
+        .order('clock_in', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (fallback.error) {
+        if (isMissingColumnError(fallback.error, 'staff_shifts') || /staff_shifts|schema cache/i.test(String(fallback.error.message || ''))) {
+          return null
+        }
+        throw fallback.error
+      }
+      return fallback.data
+    }
     if (isMissingColumnError(error, 'staff_shifts') || /staff_shifts|schema cache/i.test(String(error.message || ''))) {
       return null
     }
@@ -1760,75 +1835,273 @@ export async function fetchStaffShifts({ branchId = null, start = null, end = nu
   }))
 }
 
-export async function addPettyCash({ branchId, staffId, amount, reason, businessDate }) {
-  const { data, error } = await supabase
-    .from('petty_cash')
-    .insert({
-      branch_id: branchId,
-      staff_id: staffId,
-      amount: Number(amount),
-      reason: reason || '',
-      business_date: businessDate,
-    })
-    .select('*')
-    .single()
+/** Cash drawer ledger (change fund · pickups · petty paid-outs). Renamed from petty_cash. */
+export const CASH_DRAWER_TABLE = 'cash_drawer_entries'
+const CASH_DRAWER_LEGACY_TABLE = 'petty_cash'
+const CASH_DRAWER_COLS =
+  'id, branch_id, staff_id, amount, reason, business_date, created_at, kind, status, receipt_ref, shift_id, requested_by, approved_by, approved_at, confirmed_by, confirmed_at, reject_reason'
+
+function isMissingCashDrawerTable(error) {
+  return /cash_drawer_entries|petty_cash|Could not find the table|relation .* does not exist|schema cache/i.test(
+    String(error?.message || error || ''),
+  )
+}
+
+/** Prefer cash_drawer_entries; fall back to legacy petty_cash until migration is applied. */
+async function withCashDrawerTable(run) {
+  const primary = await run(CASH_DRAWER_TABLE)
+  if (primary?.error && isMissingCashDrawerTable(primary.error)) {
+    return run(CASH_DRAWER_LEGACY_TABLE)
+  }
+  return primary
+}
+
+export async function addPettyCash({
+  branchId,
+  staffId,
+  amount,
+  reason,
+  businessDate,
+  kind = 'paid_out',
+  status = 'approved',
+  receiptRef = null,
+  shiftId = null,
+  requestedBy = null,
+  approvedBy = null,
+  confirmedBy = null,
+}) {
+  const resolvedKind =
+    kind ||
+    (/^\[CHANGE FUND\]/i.test(reason || '')
+      ? 'change_fund'
+      : /^\[PICKUP\]/i.test(reason || '')
+        ? 'pickup'
+        : 'paid_out')
+  const payload = {
+    branch_id: branchId,
+    staff_id: staffId,
+    amount: Number(amount),
+    reason: reason || '',
+    business_date: businessDate,
+    kind: resolvedKind,
+    status,
+    receipt_ref: receiptRef || null,
+    shift_id: shiftId || null,
+    requested_by: requestedBy || staffId || null,
+    approved_by: approvedBy || (status === 'approved' || status === 'recorded' ? staffId : null),
+    approved_at:
+      status === 'approved' || status === 'recorded' ? new Date().toISOString() : null,
+    confirmed_by: confirmedBy || null,
+    confirmed_at: confirmedBy ? new Date().toISOString() : null,
+  }
+  let { data, error } = await withCashDrawerTable((table) =>
+    supabase.from(table).insert(payload).select('*').single(),
+  )
+  if (error && /kind|status|receipt_ref|shift_id|schema cache|column/i.test(String(error.message || ''))) {
+    // Older schema without workflow columns
+    ;({ data, error } = await withCashDrawerTable((table) =>
+      supabase
+        .from(table)
+        .insert({
+          branch_id: branchId,
+          staff_id: staffId,
+          amount: Number(amount),
+          reason: reason || '',
+          business_date: businessDate,
+        })
+        .select('*')
+        .single(),
+    ))
+  }
   if (error) throw error
-  return data
+  return mapPettyCashRow(data)
+}
+
+function mapPettyCashRow(row) {
+  if (!row) return null
+  const reason = String(row.reason || '')
+  const kind =
+    row.kind ||
+    (/^\[CHANGE FUND\]/i.test(reason)
+      ? 'change_fund'
+      : /^\[PICKUP\]/i.test(reason)
+        ? 'pickup'
+        : 'paid_out')
+  const status =
+    row.status ||
+    (kind === 'paid_out' ? 'approved' : 'recorded')
+  return {
+    id: row.id,
+    branchId: row.branch_id,
+    staffId: row.staff_id,
+    amount: Number(row.amount || 0),
+    reason,
+    kind,
+    status,
+    receiptRef: row.receipt_ref || '',
+    shiftId: row.shift_id || null,
+    requestedBy: row.requested_by || row.staff_id || null,
+    approvedBy: row.approved_by || null,
+    approvedAt: row.approved_at || null,
+    confirmedBy: row.confirmed_by || null,
+    confirmedAt: row.confirmed_at || null,
+    rejectReason: row.reject_reason || '',
+    businessDate: row.business_date,
+    createdAt: row.created_at,
+  }
+}
+
+/** Opening float at clock-in — cashier enters amount (no separate supervisor PIN step). */
+export async function recordChangeFund({
+  branchId,
+  staffId,
+  shiftId,
+  amount,
+  note,
+  confirmedBy,
+  businessDate,
+}) {
+  return addPettyCash({
+    branchId,
+    staffId,
+    amount,
+    reason: `[CHANGE FUND] ${note || 'Opening float'}`.trim(),
+    businessDate,
+    kind: 'change_fund',
+    status: 'recorded',
+    shiftId,
+    requestedBy: staffId,
+    confirmedBy,
+  })
+}
+
+/** Staff requests petty cash (paid-out) — awaits supervisor/manager approval. */
+export async function requestPettyCash({
+  branchId,
+  staffId,
+  amount,
+  reason,
+  receiptRef,
+  businessDate,
+}) {
+  const why = String(reason || '').trim()
+  if (!why) throw new Error('A reason is required for petty cash requests.')
+  return addPettyCash({
+    branchId,
+    staffId,
+    amount,
+    reason: why,
+    receiptRef: String(receiptRef || '').trim() || null,
+    businessDate,
+    kind: 'paid_out',
+    status: 'pending',
+    requestedBy: staffId,
+  })
+}
+
+export async function approvePettyCash({ id, approvedBy }) {
+  const { data, error } = await withCashDrawerTable((table) =>
+    supabase
+      .from(table)
+      .update({
+        status: 'approved',
+        approved_by: approvedBy,
+        approved_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .eq('status', 'pending')
+      .select('*')
+      .single(),
+  )
+  if (error) throw error
+  return mapPettyCashRow(data)
+}
+
+export async function rejectPettyCash({ id, approvedBy, reason = '' }) {
+  const { data, error } = await withCashDrawerTable((table) =>
+    supabase
+      .from(table)
+      .update({
+        status: 'rejected',
+        approved_by: approvedBy,
+        approved_at: new Date().toISOString(),
+        reject_reason: reason || null,
+      })
+      .eq('id', id)
+      .eq('status', 'pending')
+      .select('*')
+      .single(),
+  )
+  if (error) throw error
+  return mapPettyCashRow(data)
 }
 
 export async function fetchPettyCash(branchId, businessDate) {
-  const { data, error } = await supabase
-    .from('petty_cash')
-    .select('*')
-    .eq('branch_id', branchId)
-    .eq('business_date', businessDate)
-    .order('created_at', { ascending: false })
+  const { data, error } = await withCashDrawerTable((table) =>
+    supabase
+      .from(table)
+      .select(CASH_DRAWER_COLS)
+      .eq('branch_id', branchId)
+      .eq('business_date', businessDate)
+      .order('created_at', { ascending: false }),
+  )
   if (error) {
-    if (/petty_cash|schema cache/i.test(String(error.message || ''))) return []
+    if (isMissingCashDrawerTable(error)) return []
+    // Older schemas without kind/status columns
+    if (/kind|status|receipt_ref|schema cache|column/i.test(String(error.message || ''))) {
+      const fallback = await withCashDrawerTable((table) =>
+        supabase
+          .from(table)
+          .select('id, branch_id, staff_id, amount, reason, business_date, created_at')
+          .eq('branch_id', branchId)
+          .eq('business_date', businessDate)
+          .order('created_at', { ascending: false }),
+      )
+      if (fallback.error) {
+        if (isMissingCashDrawerTable(fallback.error)) return []
+        throw fallback.error
+      }
+      return (fallback.data || []).map(mapPettyCashRow)
+    }
     throw error
   }
-  return data || []
+  return (data || []).map(mapPettyCashRow)
 }
 
 export async function fetchPettyCashTimeline(branchId, { startDate, endDate } = {}) {
-  let query = supabase
-    .from('petty_cash')
-    .select('*')
-    .eq('branch_id', branchId)
-    .order('created_at', { ascending: false })
+  const runQuery = (cols) =>
+    withCashDrawerTable((table) => {
+      let query = supabase
+        .from(table)
+        .select(cols)
+        .eq('branch_id', branchId)
+        .order('created_at', { ascending: false })
+      if (startDate) query = query.gte('business_date', startDate)
+      if (endDate) query = query.lte('business_date', endDate)
+      return query
+    })
 
-  if (startDate) query = query.gte('business_date', startDate)
-  if (endDate) query = query.lte('business_date', endDate)
-
-  const { data, error } = await query
+  let { data, error } = await runQuery(CASH_DRAWER_COLS)
+  if (error && /kind|status|receipt_ref|schema cache|column/i.test(String(error.message || ''))) {
+    ;({ data, error } = await runQuery('id, branch_id, staff_id, amount, reason, business_date, created_at'))
+  }
   if (error) {
-    if (/petty_cash|schema cache/i.test(String(error.message || ''))) return []
+    if (isMissingCashDrawerTable(error)) return []
     throw error
   }
 
-  const rows = data || []
-  const staffNames = await staffNameById(rows.map((row) => row.staff_id))
-  return rows.map((row) => {
-    const reason = String(row.reason || '')
-    const kind =
-      /^\[CHANGE FUND\]/i.test(reason)
-        ? 'change_fund'
-        : /^\[PICKUP\]/i.test(reason)
-          ? 'pickup'
-          : 'paid_out'
-
-    return {
-      id: row.id,
-      branchId: row.branch_id,
-      staffId: row.staff_id,
-      staffName: staffNames[row.staff_id] || 'Staff',
-      amount: Number(row.amount || 0),
-      reason,
-      kind,
-      businessDate: row.business_date,
-      createdAt: row.created_at,
-    }
-  })
+  const rows = (data || []).map(mapPettyCashRow)
+  const staffNames = await staffNameById([
+    ...rows.map((row) => row.staffId),
+    ...rows.map((row) => row.approvedBy),
+    ...rows.map((row) => row.confirmedBy),
+  ])
+  return rows.map((row) => ({
+    ...row,
+    staffName: staffNames[row.staffId] || 'Staff',
+    approvedByName: row.approvedBy ? staffNames[row.approvedBy] || 'Staff' : null,
+    confirmedByName: row.confirmedBy ? staffNames[row.confirmedBy] || 'Staff' : null,
+  }))
 }
 
 export async function branchSummary(branchId, { days = 1 } = {}) {
@@ -2140,9 +2413,21 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
 
   let branch = null
   if (branchId) {
-    const { data, error } = await supabase.from('branches').select('*').eq('id', branchId).maybeSingle()
-    if (error) throw error
-    branch = data
+    const { data, error } = await supabase
+      .from('branches')
+      .select(
+        'id, name, address, business_name, tin, serial_number, or_prefix, terminal_id, receipt_footer_official, receipt_footer_thanks, receipt_footer_contact, receipt_footer_tagline, contact_phone, vat_rate, branch_type',
+      )
+      .eq('id', branchId)
+      .maybeSingle()
+    if (error) {
+      // Older schemas may lack receipt footer / fiscal columns
+      const fallback = await supabase.from('branches').select('*').eq('id', branchId).maybeSingle()
+      if (fallback.error) throw error
+      branch = fallback.data
+    } else {
+      branch = data
+    }
   }
 
   let txnQuery = supabase
@@ -2196,17 +2481,19 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
   let pettyCash = []
   if (branchId) {
     try {
-      const { data: pettyRows, error: pettyErr } = await supabase
-        .from('petty_cash')
-        .select('*')
-        .eq('branch_id', branchId)
-        .gte('business_date', start)
-        .lte('business_date', end)
-        .order('created_at', { ascending: false })
+      const { data: pettyRows, error: pettyErr } = await withCashDrawerTable((table) =>
+        supabase
+          .from(table)
+          .select(CASH_DRAWER_COLS)
+          .eq('branch_id', branchId)
+          .gte('business_date', start)
+          .lte('business_date', end)
+          .order('created_at', { ascending: false }),
+      )
       if (pettyErr) {
         pettyCash = await fetchPettyCash(branchId, start).catch(() => [])
       } else {
-        pettyCash = pettyRows || []
+        pettyCash = (pettyRows || []).map(mapPettyCashRow)
       }
     } catch {
       pettyCash = []
@@ -2217,7 +2504,7 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
   if (branchId) {
     const { data } = await supabase
       .from('day_ends')
-      .select('*')
+      .select(BOOTSTRAP_DAY_END_COLS)
       .eq('branch_id', branchId)
       .eq('business_date', start)
       .maybeSingle()
@@ -2280,7 +2567,7 @@ export async function fetchFiscalBackup({ start, end, branchId }) {
 
   let dayQuery = supabase
     .from('day_ends')
-    .select('*')
+    .select(BOOTSTRAP_DAY_END_COLS)
     .gte('business_date', start)
     .lte('business_date', end)
   if (branchId) dayQuery = dayQuery.eq('branch_id', branchId)
@@ -2401,6 +2688,19 @@ export async function commitInventoryImport({
   for (let index = 0; index < preview.lines.length; index += 1) {
     const line = preview.lines[index]
     const values = line.values
+    const price = Number(values?.price)
+    if (!Number.isFinite(price) || price < 0) {
+      throw new Error(`Import rejected: invalid price on row ${index + 1} (${values?.sku || values?.name || 'item'}).`)
+    }
+    if (values?.stock != null && values.stock !== '') {
+      const stock = Number(values.stock)
+      if (!Number.isFinite(stock) || stock < 0) {
+        throw new Error(`Import rejected: invalid stock on row ${index + 1} (${values?.sku || values?.name || 'item'}).`)
+      }
+    }
+    if (!String(values?.name || '').trim() || !String(values?.sku || '').trim()) {
+      throw new Error(`Import rejected: missing name/SKU on row ${index + 1}.`)
+    }
     const categoryId = await ensureCategoryId(values.category)
     let productId = line.existing?.id
     const barcode =
@@ -2718,6 +3018,123 @@ export async function rejectStopPromo({ id, staffId }) {
   return data
 }
 
+/**
+ * Promo performance: receipts + discounted line items sold under a promo name.
+ * discount_type on transactions stores the promo event name.
+ */
+export async function fetchPromoSalesStats({
+  branchId,
+  promoName,
+  startsAt = null,
+  endsAt = null,
+} = {}) {
+  if (!branchId || !promoName) {
+    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+  }
+
+  let txnQ = supabase
+    .from('transactions')
+    .select(
+      'id, or_number, total_amount, discount_amount, discount_type, created_at, status, staff_id, refunded_amount',
+    )
+    .eq('branch_id', branchId)
+    .eq('discount_type', promoName)
+    .neq('status', 'voided')
+    .order('created_at', { ascending: false })
+    .limit(500)
+
+  if (startsAt) txnQ = txnQ.gte('created_at', new Date(startsAt).toISOString())
+  if (endsAt) txnQ = txnQ.lte('created_at', new Date(endsAt).toISOString())
+
+  const { data: txns, error: txnErr } = await txnQ
+  if (txnErr) {
+    if (/discount_type|discount_amount|schema cache|column/i.test(String(txnErr.message || ''))) {
+      return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+    }
+    throw txnErr
+  }
+
+  const rows = txns || []
+  const receiptCount = rows.length
+  const discountTotal = Number(
+    rows.reduce((sum, r) => sum + Number(r.discount_amount || 0), 0).toFixed(2),
+  )
+  const saleTotal = Number(rows.reduce((sum, r) => sum + Number(r.total_amount || 0), 0).toFixed(2))
+  const txnIds = rows.map((r) => r.id)
+  const staffNames = await staffNameById(rows.map((r) => r.staff_id))
+  const receipts = rows.map((r) => {
+    const created = r.created_at ? new Date(r.created_at) : null
+    return {
+      id: r.id,
+      orNumber: r.or_number || null,
+      total: Number(r.total_amount || 0),
+      discountAmount: Number(r.discount_amount || 0),
+      refundedAmount: Number(r.refunded_amount || 0),
+      cashier: staffNames[r.staff_id] || 'Staff',
+      createdAt: r.created_at || null,
+      time:
+        created && !Number.isNaN(created.getTime())
+          ? created.toLocaleString([], {
+              month: 'short',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+            })
+          : '—',
+    }
+  })
+  if (!txnIds.length) {
+    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+  }
+
+  const { data: lines, error: lineErr } = await supabase
+    .from('transaction_items')
+    .select('quantity, unit_price, line_total, discount_amount, products(id, name, sku, pricing_mode)')
+    .in('transaction_id', txnIds)
+    .gt('discount_amount', 0)
+
+  if (lineErr) {
+    return { receiptCount, discountTotal, saleTotal, items: [], receipts }
+  }
+
+  const byProduct = {}
+  for (const line of lines || []) {
+    const productId = line.products?.id || line.product_id || 'unknown'
+    const key = productId
+    if (!byProduct[key]) {
+      byProduct[key] = {
+        productId,
+        name: line.products?.name || 'Product',
+        sku: line.products?.sku || '',
+        pricingMode: line.products?.pricing_mode === 'per_kg' ? 'kg' : 'pc',
+        qty: 0,
+        gross: 0,
+        discount: 0,
+        net: 0,
+      }
+    }
+    const qty = Number(line.quantity || 0)
+    const gross = Number(line.line_total || 0)
+    const discount = Number(line.discount_amount || 0)
+    byProduct[key].qty += qty
+    byProduct[key].gross += gross
+    byProduct[key].discount += discount
+    byProduct[key].net += Math.max(0, gross - discount)
+  }
+
+  const items = Object.values(byProduct)
+    .map((row) => ({
+      ...row,
+      qty: Number(row.qty.toFixed(3)),
+      gross: Number(row.gross.toFixed(2)),
+      discount: Number(row.discount.toFixed(2)),
+      net: Number(row.net.toFixed(2)),
+    }))
+    .sort((a, b) => b.discount - a.discount)
+
+  return { receiptCount, discountTotal, saleTotal, items, receipts }
+}
+
 export async function createPromoRule({ promoEventId, ruleType, discountPct, productIds, buyQty = 1, getQty = 1 }) {
   const { data: rule, error: ruleError } = await supabase
     .from('promo_rules')
@@ -2791,8 +3208,182 @@ export async function fetchPromoEventsForBranch(branchId) {
   return data || []
 }
 
+/** Manager overview: live promos on every branch (no branch filter). */
+export async function fetchActivePromosAcrossBranches() {
+  const branchRows = await fetchBranches().catch(() => [])
+  const branchNameById = Object.fromEntries((branchRows || []).map((b) => [b.id, b.name]))
+
+  const mapRow = (row) => ({
+    id: row.id,
+    name: row.name,
+    status: row.status || (row.is_active ? 'active' : 'inactive'),
+    is_active: Boolean(row.is_active),
+    starts_at: row.starts_at,
+    ends_at: row.ends_at,
+    created_at: row.created_at,
+    branch_id: row.branch_id,
+    branchName: branchNameById[row.branch_id] || row.branches?.name || 'Branch',
+    stop_reason: row.stop_reason || null,
+  })
+
+  const isLive = (row) => {
+    const status = String(row.status || '').toLowerCase()
+    if (status === 'active' || status === 'stop_pending') return true
+    // Legacy rows before dual-control status column
+    if (!status && row.is_active) return true
+    if (row.is_active && status === 'active') return true
+    return false
+  }
+
+  // Simple filter first (avoids brittle nested .or() PostgREST syntax)
+  let { data, error } = await supabase
+    .from('promo_events')
+    .select('id,name,is_active,status,starts_at,ends_at,created_at,branch_id,stop_reason')
+    .in('status', ['active', 'stop_pending'])
+    .order('created_at', { ascending: false })
+    .limit(500)
+
+  if (error) {
+    // Column missing or filter unsupported — pull a wider set and filter in JS
+    const wide = await supabase
+      .from('promo_events')
+      .select('id,name,is_active,status,starts_at,ends_at,created_at,branch_id,stop_reason')
+      .order('created_at', { ascending: false })
+      .limit(500)
+
+    if (wide.error) {
+      const legacy = await supabase
+        .from('promo_events')
+        .select('id,name,is_active,starts_at,ends_at,created_at,branch_id')
+        .eq('is_active', true)
+        .order('created_at', { ascending: false })
+        .limit(500)
+      if (legacy.error) throw error
+      return (legacy.data || []).map(mapRow)
+    }
+
+    data = (wide.data || []).filter(isLive)
+  } else {
+    // Also pick up legacy is_active rows that may not have status=active
+    const { data: legacyActive } = await supabase
+      .from('promo_events')
+      .select('id,name,is_active,status,starts_at,ends_at,created_at,branch_id,stop_reason')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(500)
+
+    const byId = new Map()
+    for (const row of data || []) byId.set(row.id, row)
+    for (const row of legacyActive || []) {
+      if (isLive(row) && !byId.has(row.id)) byId.set(row.id, row)
+    }
+    data = [...byId.values()]
+  }
+
+  return (data || [])
+    .filter(isLive)
+    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    .map(mapRow)
+}
+
 export async function deletePromoEvent(promoEventId) {
   const { data, error } = await supabase.from('promo_events').delete().eq('id', promoEventId).select('id').maybeSingle()
   if (error) throw error
   return data
+}
+
+/**
+ * Pending approval inbox for Shell notifications.
+ * Managers: submitted day-ends + promo pending/stop + petty cash pending.
+ * Supervisors: submitted day-ends + petty cash pending on their branch.
+ */
+export async function fetchPendingApprovals({ role, branchId } = {}) {
+  if (!hasSupabase) return []
+  const manager = role === 'manager' || role === 'admin' || role === 'master'
+  const supervisor = role === 'supervisor'
+  if (!manager && !supervisor) return []
+
+  const items = []
+
+  // Day-end awaiting approve/close
+  let dayQ = supabase
+    .from('day_ends')
+    .select('id, business_date, status, submitted_at, branch_id, branches(name)')
+    .eq('status', 'submitted')
+    .order('submitted_at', { ascending: false })
+    .limit(30)
+  if (!manager && branchId) dayQ = dayQ.eq('branch_id', branchId)
+  const { data: dayRows, error: dayErr } = await dayQ
+  if (!dayErr) {
+    for (const row of dayRows || []) {
+      const branchName = row.branches?.name || 'Branch'
+      items.push({
+        id: `day-${row.id}`,
+        kind: 'day_end_submitted',
+        title: 'Day end awaiting approval',
+        detail: `${branchName} · ${row.business_date || 'today'}`,
+        href: manager ? `/manager/branches/${row.branch_id}` : '/day-end',
+        createdAt: row.submitted_at || null,
+        priority: 1,
+      })
+    }
+  }
+
+  // Petty cash requests awaiting approve
+  const { data: pettyRows, error: pettyErr } = await withCashDrawerTable((table) => {
+    let q = supabase
+      .from(table)
+      .select('id, amount, reason, created_at, branch_id, branches(name)')
+      .eq('status', 'pending')
+      .eq('kind', 'paid_out')
+      .order('created_at', { ascending: false })
+      .limit(40)
+    if (!manager && branchId) q = q.eq('branch_id', branchId)
+    return q
+  })
+  if (!pettyErr) {
+    for (const row of pettyRows || []) {
+      const branchName = row.branches?.name || 'Branch'
+      items.push({
+        id: `petty-${row.id}`,
+        kind: 'petty_pending',
+        title: 'Petty cash request',
+        detail: `${branchName} · ₱${Number(row.amount || 0).toFixed(2)} · ${row.reason || 'No reason'}`,
+        href: manager ? `/manager/branches/${row.branch_id}` : '/day-end',
+        createdAt: row.created_at || null,
+        priority: 2,
+      })
+    }
+  }
+
+  // Promo dual-control — managers only
+  if (manager) {
+    const { data: promoRows, error: promoErr } = await supabase
+      .from('promo_events')
+      .select('id, name, status, created_at, updated_at, branch_id, branches(name)')
+      .in('status', ['pending', 'stop_pending'])
+      .order('created_at', { ascending: false })
+      .limit(40)
+    if (!promoErr) {
+      for (const row of promoRows || []) {
+        const branchName = row.branches?.name || 'Branch'
+        const stop = row.status === 'stop_pending'
+        items.push({
+          id: `promo-${row.id}-${row.status}`,
+          kind: stop ? 'promo_stop_pending' : 'promo_pending',
+          title: stop ? 'Promo stop requested' : 'Promo awaiting approval',
+          detail: `${row.name || 'Promo'} · ${branchName}`,
+          href: '/manager/promos',
+          createdAt: row.updated_at || row.created_at || null,
+          priority: stop ? 3 : 4,
+        })
+      }
+    }
+  }
+
+  items.sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority - b.priority
+    return String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+  })
+  return items
 }

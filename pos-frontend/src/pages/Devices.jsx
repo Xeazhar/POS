@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { FiBluetooth, FiHardDrive, FiPrinter } from 'react-icons/fi'
-import { Eyebrow, PageHeader, PrimaryButton, TableCard } from '../components/ui'
+import { Eyebrow, PageHeader, PrimaryButton, SkeletonRows, StatusBadge, TableCard, tableRowClass } from '../components/ui'
 import { cashDrawer, getAllDeviceStatuses, isDeviceEnabled, normalizeDeviceSettings } from '../devices'
 import { hasSupabase, reportBranchDevices } from '../lib/api'
 import { useAuthStore } from '../stores/posStore'
@@ -19,19 +19,25 @@ function Devices() {
   const [error, setError] = useState('')
   const [drawerMsg, setDrawerMsg] = useState('')
   const [drawerBusy, setDrawerBusy] = useState(false)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     let active = true
+    setLoading(true)
     getAllDeviceStatuses(settings)
       .then(async (rows) => {
         if (!active) return
         setDevices(rows)
+        setLoading(false)
         if (hasSupabase && user?.branchId) {
           await reportBranchDevices(user.branchId, rows)
         }
       })
       .catch((err) => {
-        if (active) setError(err.message)
+        if (active) {
+          setError(err.message)
+          setLoading(false)
+        }
       })
     return () => {
       active = false
@@ -86,14 +92,17 @@ function Devices() {
           </PrimaryButton>
         </div>
         <div className="grid gap-0">
-          {devices.map((device) => {
+          {loading ? (
+            <SkeletonRows rows={3} cols={3} />
+          ) : (
+          devices.map((device) => {
             const Icon = ICONS[device.id] || FiHardDrive
             const enabled = device.enabled === true && isDeviceEnabled(settings, device.id)
             const connected = enabled && device.state === 'connected'
             return (
               <div
                 key={device.id}
-                className="flex items-center justify-between gap-4 border-t border-brand-softline px-5 py-4 first:border-t-0"
+                className={`flex items-center justify-between gap-4 px-5 py-4 first:border-t-0 ${tableRowClass}`}
               >
                 <div className="flex items-center gap-3">
                   <span
@@ -114,20 +123,16 @@ function Devices() {
                     </small>
                   </div>
                 </div>
-                <span
-                  className={`rounded-md px-2.5 py-1 text-[11px] font-bold ${
-                    !enabled
-                      ? 'bg-[#eceee9] text-brand-muted'
-                      : connected
-                        ? 'bg-[#e7f3ea] text-[#2f6b3c]'
-                        : 'bg-[#eceee9] text-brand-muted'
-                  }`}
+                <StatusBadge
+                  tone={!enabled ? 'neutral' : connected ? 'success' : 'neutral'}
+                  className="min-w-0 rounded-md px-2.5 py-1 text-[11px]"
                 >
                   {!enabled ? 'Off' : connected ? 'Connected' : 'Not Connected'}
-                </span>
+                </StatusBadge>
               </div>
             )
-          })}
+          })
+          )}
         </div>
       </TableCard>
     </div>

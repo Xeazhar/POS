@@ -393,7 +393,7 @@ Cart soft nudge after ~8 PM or last 2h before openHour+14h
 
 ### Cash accountability timeline
 
-`DayEnd.jsx` records three types of drawer/accountability entries into `petty_cash`:
+`DayEnd.jsx` records three types of drawer/accountability entries into `cash_drawer_entries` (formerly `petty_cash`):
 - `"[CHANGE FUND] ..."` → opening float
 - `"[PICKUP] ..."` → cash pickup / safe drop
 - plain reason text → paid-out / petty cash
@@ -403,7 +403,8 @@ Manager tracking lives in:
   - reads `fetchPettyCashTimeline(branchId, { startDate, endDate })`
   - renders time, type, amount, cashier/staff, and note/reason
 - `src/lib/api.js`
-  - maps `petty_cash` rows into normalized timeline entries with `kind`, `staffName`, `createdAt`
+  - maps `cash_drawer_entries` rows into normalized timeline entries with `kind`, `staffName`, `createdAt`
+  - falls back to legacy `petty_cash` table name until `migrate_rename_petty_cash_to_cash_drawer_entries.sql` is applied
 
 ---
 

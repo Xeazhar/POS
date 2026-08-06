@@ -7,9 +7,16 @@ import {
   Modal,
   ModalActions,
   PageHeader,
+  PageSkeleton,
   SearchBox,
   SecondaryButton,
+  SkeletonRows,
+  StatusBadge,
   TableCard,
+  moneyClass,
+  statusLabelFromTxn,
+  statusToneFromTxn,
+  tableRowClass,
 } from '../components/ui'
 import {
   fetchBranches,
@@ -19,11 +26,12 @@ import {
 } from '../lib/api'
 import { isDeviceEnabled, receiptPrinter } from '../devices'
 import { getLocalTransactionDetail } from '../offline'
-import { useAuthStore, useInventoryStore } from '../stores/posStore'
+import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { formatSupportError } from '../utils/errors'
 import { isBusinessDayLocked, money, qty, today } from '../utils/format'
 import { buildReceipt } from '../utils/receipt'
 import { isSupervisorOrAbove } from '../utils/roles'
+import { discountSourceLabel, isPromoDiscountType } from '../utils/promo'
 import { detailFromLocalTxn, isUuid } from '../utils/transactionDetail'
 
 function txnSortTime(item) {
@@ -48,6 +56,7 @@ function Transactions() {
   const transactions = useInventoryStore((state) => state.transactions)
   const dayEnds = useInventoryStore((state) => state.dayEnds)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
+  const productsLoading = useProductStore((state) => state.loading)
   const voidTransaction = useInventoryStore((state) => state.voidTransaction)
   const refundTransactionItems = useInventoryStore((state) => state.refundTransactionItems)
   const user = useAuthStore((state) => state.user)
@@ -56,6 +65,7 @@ function Transactions() {
   const [dateValue, setDateValue] = useState(today(dayOpenHour))
   const [statusFilter, setStatusFilter] = useState('all')
   const [payFilter, setPayFilter] = useState('all')
+  const [discountFilter, setDiscountFilter] = useState('all') // all | promo | pwd | none
   const [sortBy, setSortBy] = useState('newest')
   const [refunding, setRefunding] = useState(null) // txn summary or detail
   const [refundMode, setRefundMode] = useState(null) // 'full' | 'items' | null
@@ -78,11 +88,16 @@ function Transactions() {
       // Cashiers only see current business-day transactions.
       if (user?.role === 'cashier' && item.date !== cashierDay) return false
       if (q) {
-        const hay = `${item.id} ${item.orNumber || ''} ${item.cashier || ''} ${item.time || ''} ${item.paymentMethod || ''} ${item.paymentReference || ''}`.toLowerCase()
+        const hay = `${item.id} ${item.orNumber || ''} ${item.cashier || ''} ${item.time || ''} ${item.paymentMethod || ''} ${item.paymentReference || ''} ${item.discountType || ''}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       if (statusFilter !== 'all' && item.status !== statusFilter) return false
       if (payFilter !== 'all' && (item.paymentMethod || 'cash') !== payFilter) return false
+      if (discountFilter === 'promo' && !isPromoDiscountType(item.discountType)) return false
+      if (discountFilter === 'pwd' && String(item.discountType || '').toLowerCase() !== 'pwd' && String(item.discountType || '').toLowerCase() !== 'senior') {
+        return false
+      }
+      if (discountFilter === 'none' && Number(item.discountAmount || 0) > 0) return false
       if (dateFilter === 'today' && item.date !== today(dayOpenHour)) return false
       if (dateFilter === 'date' && dateValue && item.date !== dateValue) return false
       return true
@@ -95,7 +110,7 @@ function Transactions() {
       return txnSortTime(b) - txnSortTime(a)
     })
     return rows
-  }, [transactions, query, statusFilter, payFilter, dateFilter, dateValue, sortBy, dayOpenHour, user?.role, cashierDay])
+  }, [transactions, query, statusFilter, payFilter, discountFilter, dateFilter, dateValue, sortBy, dayOpenHour, user?.role, cashierDay])
 
   const openDetail = async (item) => {
     setError('')
@@ -143,6 +158,7 @@ function Transactions() {
     setDateValue(today(dayOpenHour))
     setStatusFilter('all')
     setPayFilter('all')
+    setDiscountFilter('all')
     setSortBy('newest')
   }
 
@@ -248,9 +264,13 @@ function Transactions() {
     }
   }
 
+  if (productsLoading && !transactions.length) {
+    return <PageSkeleton variant="table" />
+  }
+
   return (
     <div>
-      <PageHeader eyebrow="AUDIT TRAIL" title="Transactions">
+      <PageHeader eyebrow="RECEIPTS & VOIDS" title="Transactions">
         <span className="text-xs text-[#797e7b]">
           {list.length} shown · {transactions.length} total
         </span>
@@ -306,6 +326,19 @@ function Transactions() {
           </select>
         </label>
         <label className="grid gap-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+          Discount
+          <select
+            className={filterSelectClass}
+            value={discountFilter}
+            onChange={(e) => setDiscountFilter(e.target.value)}
+          >
+            <option value="all">All</option>
+            <option value="promo">Promo sales</option>
+            <option value="pwd">PWD / Senior</option>
+            <option value="none">No discount</option>
+          </select>
+        </label>
+        <label className="grid gap-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
           Sort
           <select className={filterSelectClass} value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
             <option value="newest">Newest first</option>
@@ -330,23 +363,41 @@ function Transactions() {
           <span className="text-center max-[700px]:hidden">Status</span>
           <span className="max-[700px]:hidden">Action</span>
         </div>
-        {list.map((item) => (
+        {productsLoading ? (
+          <SkeletonRows rows={8} cols={5} />
+        ) : (
+        list.map((item) => (
           <div
             key={item.id}
             role="button"
             tabIndex={0}
-            className="tap-row grid cursor-pointer grid-cols-[1.1fr_1.2fr_1fr_0.7fr_0.5fr_0.8fr_0.7fr_0.5fr] items-center gap-3 border-t border-brand-softline px-5 py-[17px] text-xs text-brand-slate hover:bg-[#fafaf7] active:bg-[#f0f1ec] max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr]"
+            className={`tap-row grid cursor-pointer grid-cols-[1.1fr_1.2fr_1fr_0.7fr_0.5fr_0.8fr_0.7fr_0.5fr] items-center gap-3 px-5 py-[17px] text-xs text-brand-slate max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr] ${tableRowClass}`}
             onClick={() => openDetail(item)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') openDetail(item)
             }}
           >
-            <strong className="text-brand-ink">{item.orNumber || item.id.slice(0, 8)}</strong>
+            <strong className="text-brand-ink">
+              {item.orNumber || item.id.slice(0, 8)}
+              {Number(item.discountAmount || 0) > 0 && (
+                <span
+                  className={`mt-0.5 block truncate text-[10px] font-bold ${
+                    isPromoDiscountType(item.discountType) ? 'text-brand-danger' : 'text-brand-warn'
+                  }`}
+                  title={discountSourceLabel(item.discountType) || 'Discount'}
+                >
+                  {isPromoDiscountType(item.discountType)
+                    ? `Promo · ${discountSourceLabel(item.discountType)}`
+                    : discountSourceLabel(item.discountType) || 'Discount'}{' '}
+                  −{money(item.discountAmount)}
+                </span>
+              )}
+            </strong>
             <span>{item.time}</span>
             <span>{item.cashier}</span>
             <span className="max-[700px]:hidden">{PAY_LABEL[item.paymentMethod || 'cash'] || 'Cash'}</span>
-            <span className="text-right tabular-nums max-[700px]:hidden">{Number(item.items).toFixed(0)}</span>
-            <strong className="text-right tabular-nums text-brand-ink max-[700px]:hidden">
+            <span className={`text-right max-[700px]:hidden ${moneyClass}`}>{Number(item.items).toFixed(0)}</span>
+            <strong className={`text-right text-brand-ink max-[700px]:hidden ${moneyClass}`}>
               {money(item.netTotal ?? item.total)}
               {Number(item.refundedAmount || 0) > 0 && item.status !== 'Voided' && (
                 <span className="mt-0.5 block text-[10px] font-normal text-brand-danger">
@@ -355,21 +406,7 @@ function Transactions() {
               )}
             </strong>
             <span className="justify-self-center max-[700px]:hidden">
-              <span
-                className={`inline-block min-w-[62px] rounded-[20px] px-2 py-[5px] text-center text-[10px] ${
-                  item.status === 'Voided'
-                    ? 'bg-brand-danger-bg text-brand-danger'
-                    : Number(item.refundedAmount || 0) > 0
-                      ? 'bg-[#f5efe6] text-[#8a6a3b]'
-                      : 'bg-brand-success-bg text-brand-success-text'
-                }`}
-              >
-                {item.status === 'Voided'
-                  ? 'Voided'
-                  : Number(item.refundedAmount || 0) > 0
-                    ? 'Partial'
-                    : item.status}
-              </span>
+              <StatusBadge tone={statusToneFromTxn(item)}>{statusLabelFromTxn(item)}</StatusBadge>
             </span>
             <button
               type="button"
@@ -390,8 +427,9 @@ function Transactions() {
               Refund
             </button>
           </div>
-        ))}
-        {list.length === 0 && (
+        ))
+        )}
+        {!productsLoading && list.length === 0 && (
           <div className="px-5 py-8 text-xs text-brand-subtle">No transactions match these filters.</div>
         )}
       </TableCard>
