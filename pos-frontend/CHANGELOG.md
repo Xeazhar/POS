@@ -11,6 +11,24 @@ computation, OR numbering).
 
 ---
 
+## 1.1.1 — 2026-08-08
+
+### Changed
+
+- **Pages no longer blank out when you change a filter.** Switching the period on the
+  manager Overview or a Branch dashboard used to replace the whole screen with grey
+  loading boxes even though the previous numbers were still on screen. The figures now
+  stay put and a small "Updating…" marks them as refreshing.
+- **Faster page loads.** The spreadsheet library (~410KB — the largest single download in
+  the app) no longer loads with Manager Data, Reports, or Inventory. It is fetched only
+  when you actually pick a file to import or export one.
+- **Recent receipts is tidier.** Discount and VAT-exempt markers were stacking under the
+  receipt number and making every discounted row three lines tall. They are now small
+  inline tags, and the status chip is sized to its text instead of floating in an
+  oversized pill. Full detail is still one click away in the receipt.
+
+---
+
 ## 1.1.0 — 2026-08-08
 
 ### Fixed — critical

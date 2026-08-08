@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import * as XLSX from 'xlsx'
 import {
   Field,
   PageHeader,
@@ -44,6 +43,17 @@ import {
   reportCounters,
 } from '../../utils/terminalReports'
 
+/**
+ * xlsx is ~410KB — the single largest chunk in the app. It is only needed the moment
+ * someone actually picks a spreadsheet or exports one, which most sessions never do,
+ * so it is loaded on demand instead of riding along with this page's bundle.
+ */
+let xlsxPromise = null
+function loadXlsx() {
+  if (!xlsxPromise) xlsxPromise = import('xlsx')
+  return xlsxPromise
+}
+
 const TERMINAL_IDS = new Set(['x-read', 'z-read', 'cashier', 'department', 'plu'])
 
 const REPORTS = [
@@ -64,7 +74,8 @@ const REPORTS = [
   { id: 'fiscal-backup', group: 'Fiscal', title: 'Fiscal Data Backup' },
 ]
 
-function exportRows(rows, name) {
+async function exportRows(rows, name) {
+  const XLSX = await loadXlsx()
   const book = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(rows), 'Report')
   XLSX.writeFile(book, `${name}.csv`)
@@ -619,7 +630,7 @@ function ManagerReports() {
               compact
               type="button"
               disabled={!rows.length || selected === 'fiscal-backup'}
-              onClick={() => exportRows(rows, `${selected}-${filters.start}-${filters.end}`)}
+              onClick={() => void exportRows(rows, `${selected}-${filters.start}-${filters.end}`)}
             >
               CSV
             </SecondaryButton>

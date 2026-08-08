@@ -125,14 +125,24 @@ function ManagerOverview() {
   const periodLabel = PERIODS.find((p) => p.id === period)?.label || 'Week'
   const hasRestaurant = branches.some((b) => b.branch_type === 'restaurant')
 
-  if (loading) {
+  // Skeleton only when there is genuinely nothing to show. Switching period used to flip
+  // `loading` and blank the entire dashboard back to grey boxes even though the previous
+  // numbers were still perfectly good — that reads as slow even when the fetch is fast.
+  // Now the old figures stay put and a quiet "Updating…" marks them as in-flight.
+  const hasAnyData = branches.length > 0
+  if (loading && !hasAnyData) {
     return <PageSkeleton variant="dashboard" />
   }
 
   return (
     <div>
       <PageHeader eyebrow="ALL BRANCHES" title={greetingFor(user)}>
-        <div className="flex flex-wrap gap-1.5 max-[700px]:w-full">
+        <div className="flex flex-wrap items-center gap-1.5 max-[700px]:w-full">
+          {loading && (
+            <span className="mr-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+              Updating…
+            </span>
+          )}
           {PERIODS.map((item) => (
             <button
               key={item.id}

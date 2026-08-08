@@ -188,10 +188,16 @@ const STATUS_TONES = {
 }
 
 /** Status pill — tones: success | warn | danger | neutral (brand tokens). */
-export function StatusBadge({ tone = 'neutral', children, className = '' }) {
+export function StatusBadge({ tone = 'neutral', compact = false, children, className = '' }) {
+  // `compact` for dense table rows: the default pill's min-width + tall padding makes a
+  // short label like "Paid" float in an oversized lozenge and sit taller than the row's
+  // other cells. Compact sizes to its text and matches the row's line height.
+  const shape = compact
+    ? 'rounded-[4px] px-1.5 py-0.5 text-[10px] leading-[1.4]'
+    : 'min-w-[62px] rounded-[20px] px-2 py-[5px] text-center text-[10px]'
   return (
     <span
-      className={`inline-block min-w-[62px] rounded-[20px] px-2 py-[5px] text-center text-[10px] font-bold ${
+      className={`inline-block font-bold whitespace-nowrap ${shape} ${
         STATUS_TONES[tone] || STATUS_TONES.neutral
       } ${className}`}
     >

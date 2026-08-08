@@ -407,7 +407,9 @@ function ManagerBranchDashboard() {
     ? previousDayRestockReport(data.dayEnds || [], todayKey)
     : null
 
-  if (loading) {
+  // First load only — see the same note in manager/Overview.jsx. Changing period or
+  // re-entering the page kept the data cached but still flashed a full skeleton over it.
+  if (loading && !branch) {
     return <PageSkeleton variant="dashboard" />
   }
 
@@ -519,36 +521,45 @@ function ManagerBranchDashboard() {
                 if (event.key === 'Enter' || event.key === ' ') openTxnDetail(item)
               }}
             >
-              <span className="text-[11px] text-brand-slate">{item.time || item.date || '—'}</span>
-              <strong className="truncate text-brand-ink">
-                {item.orNumber || item.id.slice(0, 8)}
+              <span className="self-center text-[11px] text-brand-slate">{item.time || item.date || '—'}</span>
+              {/* Tags sit inline on one line rather than stacking under the OR number —
+                  three stacked blocks made every discounted row three times taller and
+                  turned the list into a wall. Full detail is still in the row's modal. */}
+              <span className="flex min-w-0 items-center gap-1.5 self-center">
+                <strong className="truncate text-brand-ink">
+                  {item.orNumber || item.id.slice(0, 8)}
+                </strong>
                 {Number(item.discountAmount || 0) > 0 && (
                   <span
-                    className={`mt-0.5 block truncate text-[10px] font-bold ${
-                      isPromoDiscountType(item.discountType) ? 'text-brand-danger' : 'text-brand-warn'
+                    className={`shrink-0 rounded-[3px] px-1 py-px text-[9px] font-bold ${
+                      isPromoDiscountType(item.discountType)
+                        ? 'bg-brand-danger-bg text-brand-danger'
+                        : 'bg-brand-warn-bg text-brand-warn'
                     }`}
+                    title={discountSourceLabel(item.discountType) || 'Discount'}
                   >
-                    {isPromoDiscountType(item.discountType)
-                      ? `Promo · ${discountSourceLabel(item.discountType)}`
-                      : discountSourceLabel(item.discountType) || 'Discount'}
+                    {isPromoDiscountType(item.discountType) ? 'PROMO' : 'DISC'}
                   </span>
                 )}
                 {Number(item.vatExemptSales || 0) > 0 && (
-                  <span className="mt-0.5 block truncate text-[10px] font-bold text-brand-success">
-                    VAT-exempt
+                  <span
+                    className="shrink-0 rounded-[3px] bg-brand-success-bg px-1 py-px text-[9px] font-bold text-brand-success-text"
+                    title="VAT-exempt (SC/PWD)"
+                  >
+                    EX
                   </span>
                 )}
-              </strong>
-              <span className="truncate max-[900px]:hidden">{item.cashier}</span>
-              <span className={moneyClass}>
+              </span>
+              <span className="self-center truncate max-[900px]:hidden">{item.cashier}</span>
+              <span className={`self-center ${moneyClass}`}>
                 {money(item.netTotal ?? item.total)}
                 {Number(item.refundedAmount || 0) > 0 && item.status !== 'Voided' && (
-                  <span className="mt-0.5 block text-[10px] text-brand-danger">
+                  <span className="ml-1 text-[10px] text-brand-danger">
                     −{money(item.refundedAmount)}
                   </span>
                 )}
               </span>
-              <StatusBadge tone={statusToneFromTxn(item)} className="justify-self-start">
+              <StatusBadge compact tone={statusToneFromTxn(item)} className="justify-self-start self-center">
                 {statusLabelFromTxn(item)}
               </StatusBadge>
             </div>

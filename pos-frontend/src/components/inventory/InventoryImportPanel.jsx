@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { FiUpload } from 'react-icons/fi'
-import * as XLSX from 'xlsx'
 import {
   ErrorBanner,
   PrimaryButton,
@@ -23,6 +22,17 @@ import {
 } from '../../utils/inventoryImport'
 import { formatSupportError } from '../../utils/errors'
 import { money, qty } from '../../utils/format'
+
+/**
+ * xlsx is ~410KB — the single largest chunk in the app. It is only needed the moment
+ * someone actually picks a spreadsheet or exports one, which most sessions never do,
+ * so it is loaded on demand instead of riding along with this page's bundle.
+ */
+let xlsxPromise = null
+function loadXlsx() {
+  if (!xlsxPromise) xlsxPromise = import('xlsx')
+  return xlsxPromise
+}
 
 /**
  * CSV/XLSX restock import for supervisors on Inventory.
@@ -49,6 +59,7 @@ export default function InventoryImportPanel({ products, onDone }) {
     setBusy(true)
     try {
       const buf = await file.arrayBuffer()
+      const XLSX = await loadXlsx()
       const wb = XLSX.read(buf, { type: 'array' })
       const sheet = wb.Sheets[wb.SheetNames[0]]
       const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' })
