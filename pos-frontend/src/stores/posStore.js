@@ -339,6 +339,19 @@ export const useProductStore = create((set, get) => ({
   products: offlineDemo ? seedProducts : [],
   loading: false,
   setProducts: (products) => set({ products }),
+  // Live-refresh merge (see src/offline/realtime.js): replaces the set with fresh
+  // server data, but keeps display-only fields the lighter refetch doesn't carry
+  // (e.g. lastMovementAt) by borrowing them from the previous entry.
+  mergeProducts: (freshProducts) =>
+    set((state) => {
+      const prevById = new Map(state.products.map((p) => [p.id, p]))
+      return {
+        products: freshProducts.map((p) => {
+          const prev = prevById.get(p.id)
+          return prev ? { ...p, lastMovementAt: p.lastMovementAt ?? prev.lastMovementAt } : p
+        }),
+      }
+    }),
   setAvailableToday: (productId, availableToday) =>
     set((state) => ({
       products: state.products.map((p) =>
@@ -696,6 +709,10 @@ export const useInventoryStore = create((set, get) => ({
       paymentReference,
       vatAmount: payload.vatAmount || 0,
       vatableSales: payload.vatableSales || 0,
+      vatExemptSales: payload.vatExemptSales || 0,
+      zeroRatedSales: payload.zeroRatedSales || 0,
+      scPwdDiscount: payload.scPwdDiscount || 0,
+      vatRateApplied: payload.vatRateApplied ?? 0.12,
       discountAmount: payload.discountAmount || 0,
       discountType: payload.discountType || null,
       discountIdNote: payload.discountIdNote || null,
@@ -727,6 +744,8 @@ export const useInventoryStore = create((set, get) => ({
             priceTier: item.priceTier || 'regular',
             discountEligible: item.discountEligible === true,
             discountAmount: Number(item.discountAmount ?? 0),
+            vatCategory: item.vatCategory || 'vatable',
+            promoName: item.promoName || null,
           })),
           total: payload.total,
           tendered: payload.tendered,
@@ -736,6 +755,10 @@ export const useInventoryStore = create((set, get) => ({
           paymentReference,
           vatAmount: payload.vatAmount || 0,
           vatableSales: payload.vatableSales || 0,
+          vatExemptSales: payload.vatExemptSales || 0,
+          zeroRatedSales: payload.zeroRatedSales || 0,
+          scPwdDiscount: payload.scPwdDiscount || 0,
+          vatRateApplied: payload.vatRateApplied ?? 0.12,
           discountAmount: payload.discountAmount || 0,
           discountType: payload.discountType || null,
           discountIdNote: payload.discountIdNote || null,

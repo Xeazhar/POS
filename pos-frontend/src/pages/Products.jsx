@@ -44,6 +44,7 @@ const emptyForm = {
   price: '',
   budgetPrice: '',
   stock: '',
+  discountEligible: false,
 }
 
 function Products() {
@@ -127,6 +128,7 @@ function Products() {
       price: String(product.price),
       budgetPrice: product.budgetPrice != null ? String(product.budgetPrice) : '',
       stock: String(product.stock ?? ''),
+      discountEligible: product.discountEligible === true,
     })
   }
 
@@ -176,6 +178,7 @@ function Products() {
         isRestaurant && form.budgetPrice !== '' ? Number(form.budgetPrice) : null,
       stock: Number(form.stock),
       lowStockAt: previous?.lowStockAt ?? 5,
+      discountEligible: form.discountEligible === true,
     }
     try {
       await updateProduct(selected, values)
@@ -472,7 +475,7 @@ function Products() {
         {!pageLoading && !productsLoading && list.length === 0 && (
           <div className="border-t border-brand-softline px-5 py-6 text-xs text-brand-subtle">No products found.</div>
         )}
-        {!pageLoading && !productsLoading && list.length > 0 && (
+        {!pageLoading && !productsLoading && pageCount > 1 && (
           <Pager
             page={pageIndex + 1}
             pageCount={pageCount}
@@ -681,6 +684,14 @@ function Products() {
                     onChange={(e) => setField('stock', e.target.value)}
                   />
                 )}
+                <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
+                  <input
+                    type="checkbox"
+                    checked={form.discountEligible === true}
+                    onChange={(e) => setForm((prev) => ({ ...prev, discountEligible: e.target.checked }))}
+                  />
+                  Discountable (PWD / Senior 20% applies to this item)
+                </label>
                 <div className="mt-3 flex justify-end gap-2">
                   <SecondaryButton compact type="button" onClick={() => setEditing(false)}>
                     Cancel

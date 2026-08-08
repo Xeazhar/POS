@@ -19,6 +19,7 @@ import {
   tableRowClass,
 } from '../ui'
 import {
+  cascadeDiscountEligibleToBranches,
   commitCatalogImport,
   createCatalogProduct,
   fetchCatalogProducts,
@@ -72,6 +73,8 @@ export default function ManagerNetworkCatalog() {
   const [priceValue, setPriceValue] = useState('')
   const [discountEdit, setDiscountEdit] = useState(null)
   const [discountValue, setDiscountValue] = useState(false)
+  const [selectedIds, setSelectedIds] = useState([])
+  const [bulkProgress, setBulkProgress] = useState(null)
 
   const [preview, setPreview] = useState(null)
   const [importProgress, setImportProgress] = useState(null)
@@ -290,11 +293,44 @@ export default function ManagerNetworkCatalog() {
         ...discountEdit,
         discountEligible: discountValue === true,
       })
+      // Also push to branches that already adopted this item — otherwise this only sets the
+      // default for future adoptions and PWD/Senior keeps not applying on already-live products.
+      // SKU is passed so the cascade can also reach branch rows whose catalog_product_id
+      // was never populated (imported products, supervisor-created products).
+      await cascadeDiscountEligibleToBranches(discountEdit.id, discountValue === true, discountEdit.sku)
       setDiscountEdit(null)
       await reload()
     } catch (err) {
       setError(formatSupportError(err, 'CAT04'))
     } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * Set Discountable on many catalog items at once, cascading each to branches.
+   * Sequential rather than Promise.all: this fans out to a second UPDATE per item, and a
+   * burst of those against Supabase is a good way to get rate-limited halfway through and
+   * leave the catalog half-flipped. Progress is surfaced so a long run doesn't look hung.
+   */
+  const bulkSetDiscountable = async (next) => {
+    const targets = catalog.filter((row) => selectedIds.includes(row.id))
+    if (!targets.length) return
+    setBusy(true)
+    setError('')
+    try {
+      for (let i = 0; i < targets.length; i += 1) {
+        const row = targets[i]
+        setBulkProgress({ done: i, total: targets.length })
+        await updateCatalogProduct(row.id, { ...row, discountEligible: next })
+        await cascadeDiscountEligibleToBranches(row.id, next, row.sku)
+      }
+      setSelectedIds([])
+      await reload()
+    } catch (err) {
+      setError(formatSupportError(err, 'CAT04'))
+    } finally {
+      setBulkProgress(null)
       setBusy(false)
     }
   }
@@ -481,7 +517,11 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                 {isRestaurant ? 'Restaurant catalog' : 'Retail catalog'}
               </h2>
               <p className="m-0 mt-1 text-[11px] text-brand-subtle">
-                {filtered.length} shown · {catalog.length} total
+                {filtered.length} shown · {catalog.length} total · this is the shared template new
+                branches adopt from. "Edit discountable" also pushes to branches that already
+                adopted the item. Other edits (price, name, etc.) only set the default for
+                future adoptions — use that branch's Catalog page to change those on an
+                already-adopted item.
               </p>
             </div>
             <SearchBox
@@ -492,6 +532,30 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
               onChange={(e) => setQuery(e.target.value.replace(/[<>]/g, ''))}
             />
           </div>
+          {selectedIds.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-brand-gold/40 bg-brand-gold/10 px-3 py-2">
+              <span className="text-xs font-bold text-brand-ink">
+                {selectedIds.length} selected
+                {bulkProgress ? ` · updating ${bulkProgress.done + 1}/${bulkProgress.total}…` : ''}
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <PrimaryButton compact type="button" disabled={busy} onClick={() => bulkSetDiscountable(true)}>
+                  Set discountable
+                </PrimaryButton>
+                <SecondaryButton compact type="button" disabled={busy} onClick={() => bulkSetDiscountable(false)}>
+                  Set not discountable
+                </SecondaryButton>
+                <button
+                  type="button"
+                  className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline"
+                  disabled={busy}
+                  onClick={() => setSelectedIds([])}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             <SelectField
               label="Category"
@@ -523,10 +587,26 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
           <table className="min-w-full text-left text-xs">
             <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
               <tr>
+                <th className="w-8 px-5 py-3">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all on this page"
+                    checked={pageRows.length > 0 && pageRows.every((r) => selectedIds.includes(r.id))}
+                    onChange={(e) => {
+                      const next = new Set(selectedIds)
+                      // Page-scoped, matching what the user can actually see and verify.
+                      if (e.target.checked) pageRows.forEach((r) => next.add(r.id))
+                      else pageRows.forEach((r) => next.delete(r.id))
+                      setSelectedIds([...next])
+                    }}
+                  />
+                </th>
                 <th className="px-5 py-3">Product</th>
                 <th className="px-5 py-3">SKU</th>
+                <th className="px-5 py-3 max-[700px]:hidden">Barcode</th>
                 <th className="px-5 py-3 max-[700px]:hidden">Category</th>
                 <th className="px-5 py-3 max-[700px]:hidden">{isRestaurant ? 'Kind' : 'Mode'}</th>
+                <th className="px-5 py-3 text-center">Discountable</th>
                 <th className="px-5 py-3 text-right">Price</th>
                 <th className="px-5 py-3 text-right">Action</th>
               </tr>
@@ -534,7 +614,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="p-0">
+                  <td colSpan={8} className="p-0">
                     <SkeletonRows rows={8} cols={5} />
                   </td>
                 </tr>
@@ -542,16 +622,37 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
               pageRows.map((row) => (
                 <tr key={row.id} className={tableRowClass}>
                   <td className="px-5 py-3">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${row.name}`}
+                      checked={selectedIds.includes(row.id)}
+                      onChange={(e) => {
+                        const next = new Set(selectedIds)
+                        if (e.target.checked) next.add(row.id)
+                        else next.delete(row.id)
+                        setSelectedIds([...next])
+                      }}
+                    />
+                  </td>
+                  <td className="px-5 py-3">
                     <strong className="block text-brand-ink">{row.name}</strong>
-                    <small className="text-[10px] text-brand-subtle">{row.barcode || '—'}</small>
-                    <div className="text-[10px] text-brand-subtle">
-                      Discountable: {row.discountEligible ? 'Yes' : 'No'}
-                    </div>
                   </td>
                   <td className="px-5 py-3">{row.sku}</td>
+                  <td className="px-5 py-3 max-[700px]:hidden">{row.barcode || '—'}</td>
                   <td className="px-5 py-3 max-[700px]:hidden">{row.category || '—'}</td>
                   <td className="px-5 py-3 max-[700px]:hidden">
                     {isRestaurant ? row.menuKind || '—' : row.pricingMode}
+                  </td>
+                  <td className="px-5 py-3 text-center">
+                    <span
+                      className={`rounded-full px-2 py-1 text-[10px] font-bold ${
+                        row.discountEligible
+                          ? 'bg-brand-success-bg text-brand-success-text'
+                          : 'bg-[#eceee9] text-brand-subtle'
+                      }`}
+                    >
+                      {row.discountEligible ? 'Yes' : 'No'}
+                    </span>
                   </td>
                   <td className="px-5 py-3 text-right tabular-nums font-bold text-brand-ink">
                     {money(row.price)}
@@ -596,12 +697,15 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
             </div>
           )}
         </div>
-        <Pager
-          page={pageIndex}
-          pageCount={pageCount}
-          onPrev={() => setPage((p) => Math.max(0, p - 1))}
-          onNext={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-        />
+        {pageCount > 1 && (
+          <Pager
+            page={pageIndex + 1}
+            pageCount={pageCount}
+            total={filtered.length}
+            onPrev={() => setPage((p) => Math.max(0, p - 1))}
+            onNext={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+          />
+        )}
       </TableCard>
 
       {showAdd && (

@@ -169,6 +169,25 @@ When changing behavior, the usual path is:
 
 ---
 
+## Offline lock-screen unlock (security-sensitive)
+
+The lock screen must open during a blackout or ISP outage, so the manager password check
+runs **entirely on-device** — no Supabase call. That forces a verifier onto the machine, and
+a verifier on a shop-floor terminal has to be assumed stolen. Two independent defences:
+
+| Layer | File | Stops |
+|---|---|---|
+| PBKDF2-HMAC-SHA256, 210k iterations, 16-byte per-device salt, constant-time compare | `src/utils/unlockVerifier.js` | offline brute-force of a lifted IndexedDB — ~20 guesses/sec/core vs ~1e9/sec against the old unsalted SHA-256 |
+| Persisted failed-attempt backoff — 3 free, then 5s doubling to a 5-min cap | `src/offline/session.js` (`recordUnlockFailure`) | guessing at an unattended terminal (~291 tries/day max). IndexedDB-backed, so a page reload or power cycle can't reset it |
+
+Verifiers expire after 30 days (`VERIFIER_MAX_AGE_MS`) and need a real sign-in again, which
+bounds how long a walked-off device keeps something worth attacking. Legacy v1 records
+(unsalted SHA-256) still verify **once** and are then transparently rewritten as v2 — a
+terminal that happens to be offline during the upgrade must not get locked out.
+
+**Never** reintroduce a fast hash here, and never store the password itself. PBKDF2 buys
+time proportional to password strength; it is not a substitute for one.
+
 ## Route Gates and Permissions
 
 Main permission files:
@@ -296,6 +315,115 @@ receipt.js → printer device (if enabled)
 
 **Cart width:** `POS.jsx` grid `minmax(…)` + `Cart.jsx` sticky footer classes.
 
+**OR number at print time:** the real OR number is allocated server-side (`allocate_or_number`
+RPC, inside `api.completeSale`) — offline-first means the receipt is built and printed
+*immediately* off the local optimistic transaction, before that RPC has necessarily run. Until
+a real number comes back, `transaction.orNumber` is `null`/absent; `buildReceipt` (`receipt.js`)
+detects that and prints `OR No: PENDING (assigns on sync)` rather than falling back to
+`transaction.id`, which is only the local client id (`txn_<uuid>`) — printing that raw id as if
+it were the OR number was a real bug (very long, looked official, wasn't).
+
+---
+
+## VAT + SC/PWD (BIR compliance)
+
+Prices are always VAT-inclusive shelf prices; VAT is backed out of the total, never added
+on top. **Rate is flat 12% nationwide** (`VAT_RATE_DEFAULT` in `src/utils/vat.js`) — not
+branch-configurable; `Cart.jsx` no longer reads a per-branch rate, and `manager/Branches.jsx`
+has no VAT-rate field. (`branches.vat_rate` still exists in the DB as unused legacy plumbing —
+left alone rather than a destructive column drop.)
+
+**The rule — one discount, VAT-exclusive base (RA 9994 / RA 10754).** Read the block at the
+top of `src/utils/vat.js` before touching any pricing code:
+
+```
+base = MIN(regular price, active promo price)     ← VAT-INCLUSIVE
+
+SC/PWD presented and line eligible:               otherwise:
+  vatExclusive  = base / 1.12                       net  = base
+  scPwdDiscount = vatExclusive × 0.20               line is VATable
+  net           = vatExclusive − scPwdDiscount
+  line is VAT-EXEMPT (no output VAT at all)
+```
+
+Two failure modes this is written to prevent:
+- **Stacking.** A promo does *not* produce its own deduction followed by a second 20% off
+  the regular price. Its only role is to lower the base the single 20% comes from. On a
+  ₱112 item with a 10% promo the answer is **₱72.00** (base 100.80 → /1.12 = 90.00 → −20%),
+  never ₱78.40 (112 − 11.20 − 22.40). Promos and SC/PWD are no longer mutually exclusive —
+  the old code discarded the promo entirely when SC/PWD was selected, which overcharged.
+- **Forgetting the VAT strip.** 20% of `base/1.12`, not 20% of `base`. Pass
+  `vatRegistered: false` for a non-VAT-registered store and the strip is skipped
+  (`vatExclusive === base`).
+
+Promo discounts have no BIR receipt line — a promo price *is* the selling price, so it's
+netted into the sales figures. The SC/PWD 20% **is** a mandated "Less:" disclosure and is
+surfaced separately. `vatExemptedAmount` (output VAT not charged due to the exemption) is
+returned for BIR reporting.
+
+VAT/exempt breakdown is surfaced everywhere a transaction's money is shown: the checkout
+panel walks each discounted line through regular → promo base → VAT-exclusive → 20% → net,
+with a VAT-exempt tag, then totals promo discount / SC/PWD discount / VAT exempted / net.
+The printed receipt marks exempt lines `VAT-EXEMPT`.
+
+**Never re-derive a net line as `gross − discountAmount`.** On an exempt line the VAT strip
+is part of the reduction but is *not* a discount, so that subtraction is wrong. Use
+`lineBreakdown[i].netAmount` (Cart) / `line.netLineTotal` + `line.netUnitPrice` (receipt).
+
+VAT/exempt breakdown is surfaced everywhere a transaction's money is shown: the POS checkout
+preview, the printed receipt, and `TransactionDetailModal.jsx` (shared by staff
+`Transactions.jsx` and manager `BranchDashboard.jsx` — same component, same fields, both get
+it automatically). The manager "Recent receipts" panel additionally tags a row `VAT-exempt`
+when `vatExemptSales > 0`.
+
+```
+Cart.jsx pricing useMemo
+  │ per line: regularAmount (VAT-incl), promoDiscountAmount, vatExempt flag
+  │ NOTE: promos are computed ALWAYS, including on SC/PWD sales — they set the base
+  ▼
+utils/vat.js computeVatBreakdown()      ← single source of truth, pure/testable
+  │ returns { vatableSales, vatAmount, vatExemptSales, zeroRatedSales,
+  │           scPwdDiscount, discountAmount, totalSales, amountDue, lineBreakdown }
+  ├─► POS checkout preview (Cart.jsx)
+  ├─► addTransaction → QUEUE_TYPES.COMPLETE_SALE → api.completeSale()
+  │     writes transactions.{vat_amount, vatable_sales, vat_exempt_sales,
+  │     zero_rated_sales, sc_pwd_discount, vat_rate_applied} + per-line
+  │     transaction_items.vat_category — frozen at sale time, never recomputed
+  │     from "current" rates later (sale immutability)
+  └─► receipt.js buildReceipt()/receiptToHtml() — full BIR breakdown, always
+        shown even at ₱0 (VATable/Exempt/Zero-Rated/VAT/Total Sales/Less:
+        SC/PWD Discount/TOTAL AMOUNT DUE)
+```
+
+| Piece | File |
+|-------|------|
+| Calculation (pure) | `src/utils/vat.js` `computeVatBreakdown()` |
+| Checkout wiring | `src/components/pos/Cart.jsx` `pricing` useMemo |
+| Persistence | `src/stores/posStore.js` `addTransaction` → `src/lib/api.js` `completeSale()` |
+| Receipt | `src/utils/receipt.js` |
+| BIR X/Z/Cashier reports | `src/utils/terminalReports.js` (`taxable`, `nonTaxable`, `seniorDisc`) |
+| Schema | `supabase/migrate_vat_breakdown.sql` |
+
+**Rounding:** every aggregate (`vatableSales`, `vatAmount`, `vatExemptSales`, `scPwdDiscount`)
+is derived by rounding the *summed* full-precision total once, not by summing pre-rounded
+per-line pieces — this guarantees `vatableSales + vatAmount` exactly equals the rounded
+vatable gross on multi-item carts. Per-line `discount_amount` (stored on `transaction_items`,
+shown on cart/receipt) is still individually rounded, same as any other stored currency line.
+
+**Server trust model:** `completeSale()` writes client-computed VAT figures as-is — same trust
+model the app already has for `total_amount`/`discount_amount`, consistent with the
+offline-first architecture (re-deriving the whole pricing engine — promos, kg pricing, ulam
+combos — in Postgres would be a much larger, separate undertaking). A `not valid` CHECK
+constraint on `transactions` (`transactions_vat_breakdown_sane_check`) catches gross
+mismatches on new rows only — it does not retroactively validate historical rows, since
+sale records are immutable and columns didn't exist for older ones.
+
+**Historical data note:** `vat_exempt_sales`/`zero_rated_sales`/`sc_pwd_discount` default to 0
+on rows written before `migrate_vat_breakdown.sql`. Their `vatable_sales`/`vat_amount` already
+account for the full sale (the pre-fix formula treated everything as vatable), so nothing is
+missing financially — reports run over date ranges spanning the migration just won't show the
+correct VATable/Exempt split for the older portion.
+
 ---
 
 ## Products / inventory / import (movement)
@@ -314,6 +442,29 @@ Staff Inventory /inventory
         └── Products.jsx (edit, stock adjust, restaurant “today” toggles)
                → useProductStore.updateProduct / addMovement
 ```
+
+**`catalog_products` (network template) vs. `products` (a branch's live item) are different
+tables, edited by different UI:** `manager/Data.jsx` in manager mode (`ManagerNetworkCatalog`)
+edits `catalog_products` via `api.updateCatalogProduct` — this only changes the default a
+*future* adoption gets, never an already-adopted branch product. To change something on a
+branch's already-adopted item (price, stock, **discount eligibility**), use that branch's own
+page: `Products.jsx` (manager/supervisor edit form) or `manager/Data.jsx` in supervisor mode
+(`SupervisorCatalogAdopt`, inline "Discountable" toggle) — both call `api.updateProductRow`
+against `products`. Mixing these up is exactly how "I turned on Discountable but PWD/Senior
+still won't apply" happens — the product's `discount_eligible` never actually changed on the
+branch's real row. `updateProductRow` only includes `discount_eligible` in its update payload
+when the caller explicitly passes it, so a partial edit (e.g. stock-only) never silently clears
+it — keep that guard if you add more optional fields to that function.
+
+**Exception — Discountable cascades from the network catalog too:** managers' actual workflow
+for this specific toggle is the `/manager/data` network catalog page (`ManagerNetworkCatalog`),
+not the branch-level pages above. Its "Discountable" save (`saveDiscount()`) calls
+`api.cascadeDiscountEligibleToBranches(catalogProductId, discountEligible)`, which updates
+`discount_eligible` on every already-adopted `products` row matched via
+`products.catalog_product_id` — so unlike every other catalog field (price, name, etc., which
+stay template-only / future-adoption-only), Discountable *does* propagate immediately to live
+branch products from that page. **Still reportedly not enabling PWD/Senior in the cart even
+after this fix** — see Backlog below, not yet root-caused.
 
 | Feature | Files |
 |---------|--------|
@@ -460,6 +611,81 @@ Online again → connectivity watcher → syncEngine
 
 ---
 
+## Realtime / live updates
+
+Separate from the offline sync queue above — this is one-way, server → open tab, "something
+changed, go refetch." It does **not** replace the queue/pull logic that reconciles IndexedDB
+with Postgres while offline; it's for the case where the app is already online and a manager
+edits something a cashier is currently looking at (price, promo, an approval request) and
+that needs to show up **immediately**, not after the next 60s poll or page reload.
+
+```
+Postgres row changes (products, promo_events/rules, day_ends, cash_drawer_entries, …)
+   │ (only if migrate_enable_realtime.sql has been run — see below)
+   ▼
+Supabase Realtime (postgres_changes), RLS-gated same as a normal SELECT
+   │
+   ▼
+src/offline/realtime.js  subscribeTable / subscribeMany  →  debounce()  →  refetch
+   ├─► useLiveData (src/hooks/useLiveData.js) — the layered wrapper pages should use
+   │     ├─► POS.jsx: promo_events/promo_rules/promo_rule_products → reload activePromos
+   │     └─► POS.jsx: products/branch_inventory → useProductStore.mergeProducts
+   └─► RequestNotifications.jsx: day_ends/cash_drawer_entries(+petty_cash)/promo_events
+         (manager: unfiltered; supervisor: own branch only) → reload the approval-inbox badge
+```
+
+**`useLiveData` is the front door — don't hand-roll a subscription in a page.** It layers four
+independent freshness signals so no single failure leaves a tab stale, which is exactly what
+kept happening before:
+
+| Layer | Covers |
+|---|---|
+| realtime subscription | the fast path (sub-second) |
+| `visibilitychange` / `focus` | events missed while the tab was hidden or the socket was dead — postgres_changes does **not** replay a gap |
+| `online` event | network came back |
+| interval poll (5 min default) | last resort when all of the above failed |
+
+`subscribeTable` also watches the channel status callback: on `CHANNEL_ERROR` / `TIMED_OUT` /
+`CLOSED` it rebuilds the channel with backoff (1s → 2s → 5s → 10s → 30s, capped), and a
+successful `SUBSCRIBED` triggers one refetch — because whatever changed while we were
+disconnected was never delivered. Status transitions log to the console in dev (`[realtime]`).
+
+**Deploy staleness (`useAppVersion`, `/version.json`)**: a counter terminal can stay open for
+days, so it keeps running the bundle it loaded — including bundles predating a fix someone is
+testing. The service worker doesn't solve this (`skipWaiting` swaps assets on the *next*
+navigation, which for a never-navigated SPA tab never comes). `versionJsonPlugin` in
+`vite.config.js` emits `/version.json` per build; `src/hooks/useAppVersion.js` reads it on load,
+then re-reads every 60s and on focus. A difference shows the "Update available" banner in
+`Shell.jsx`. It auto-reloads **only** when nothing would be lost (empty cart, no pending sync
+queue, no open logout prompt) — otherwise it waits for a tap, because reloading mid-sale would
+throw away the cashier's cart.
+
+**Required SQL migration:** `migrate_enable_realtime.sql` — adds the relevant tables to the
+`supabase_realtime` publication. Safe to re-run; a table not yet in the publication just means
+its channel silently never fires (not an error) — callers always do one immediate fetch on
+mount regardless, so the feature degrades to "fresh on load, no live push" rather than failing.
+
+**Fallback intervals still exist** (POS promos: 5 min, notifications: 5 min) purely as a safety
+net in case a realtime subscription silently drops — they are not the primary update path
+anymore, so don't be alarmed that they're slower than before; realtime is what's actually
+carrying live updates now.
+
+**Why debounced, not per-row:** a manager adding a promo plus several rules fires several
+inserts in a row — `debounce()` (400ms) coalesces that burst into one trailing refetch instead
+of one per row change.
+
+| Piece | File |
+|-------|------|
+| Subscribe/backoff/debounce helpers | `src/offline/realtime.js` |
+| Layered freshness hook (use this) | `src/hooks/useLiveData.js` |
+| Deploy-staleness watchdog | `src/hooks/useAppVersion.js` + `versionJsonPlugin` in `vite.config.js` |
+| Update banner | `src/components/shared/Shell.jsx` |
+| Products live refresh | `src/lib/api.js` `fetchBranchProducts()`, `useProductStore.mergeProducts` (`src/stores/posStore.js`) |
+| Wiring | `src/pages/POS.jsx`, `src/components/shared/RequestNotifications.jsx` |
+| Schema | `supabase/migrate_enable_realtime.sql` |
+
+---
+
 ## Shared utilities
 
 | Need | File |
@@ -485,6 +711,15 @@ Online again → connectivity watcher → syncEngine
 | Import batches (managers + branch staff write) | `migrate_import_batches.sql`, `migrate_import_batches_branch_staff.sql` |
 | Ulam / restaurant | `migrate_ulam_ordering.sql` |
 | Devices / presence | `migrate_device_settings.sql`, `migrate_branch_presence.sql` |
+| Petty cash rename | `migrate_rename_petty_cash_to_cash_drawer_entries.sql` |
+| Manager cross-branch approve | `migrate_manager_can_approve_any_branch.sql` |
+| PIN lockout hardening | `migrate_pin_security_hardening.sql` |
+| Per-line discount tracking | `migrate_discountable_transaction_items.sql` |
+| Hot-table perf indexes | `migrate_perf_indexes_hot_tables.sql` (run each `CREATE INDEX CONCURRENTLY` statement individually — cannot run inside a transaction block) |
+| Multiple concurrent promos + per-line attribution | `migrate_promo_multi_active.sql`, `migrate_promo_line_attribution.sql` |
+| Promo auto-expire | `migrate_promo_auto_expire.sql` |
+| VAT breakdown (BIR) | `migrate_vat_breakdown.sql` |
+| Realtime (live POS/notification updates) | `migrate_enable_realtime.sql` |
 
 Run migrations in the Supabase SQL editor; respect comments about order / dependencies.
 
@@ -563,49 +798,137 @@ Product name in UI/docs: **CalePOS**.
 - **Manager tab UI:** `src/pages/manager/Promos.jsx` (create event + create rules)
   - Managers must select a branch first; promos never apply to all branches
   - Supervisors are locked to their assigned branch (UI + RLS)
+  - Several promos can be live on one branch at once — see **Multiple concurrent promos** below;
+    this is the current behavior, not the old single-active-promo model.
 - **Active promo fetch in POS:** `src/pages/POS.jsx`
-  - `useEffect` calls `fetchActivePromoEventWithRules(branchId)`
-  - `Cart` receives `promoRules` + `promoLabel`
+  - `useEffect` calls `fetchActivePromoEventsWithRules(branchId)` (plural — returns **all** live
+    events); `fetchActivePromoEventWithRules` (singular) still exists only as a back-compat
+    wrapper around the first result.
+  - `Cart` receives `promoRules` (flattened across all live events, each tagged `eventName`) —
+    it no longer takes a single `promoLabel` prop; it derives its own label from
+    `computePromoDiscounts`' `appliedEventNames`.
+  - Ended promos self-heal via `expireEndedPromos()` (calls RPC `expire_ended_promos`) run at the
+    top of the promo fetch — no cron needed, see **Promo auto-expire** below.
 - **Promo discount engine:** `src/components/pos/Cart.jsx`
   - `pricing = useMemo(...)`
   - applies promo discounts only when PWD/Senior is *not* selected
+  - highest discount per line wins across all live rules/events — offers never stack on one line
 
 ---
 
 ## Backlog for external AI (Gemini / ChatGPT)
 
+### Important: nothing in this whole multi-session conversation has been committed
+`git log` stops at `b9b8629 Fixed bugs in manager approval` — every fix described in this
+file (multi-promo, VAT, realtime, the Discountable cascade, the Cart live-eligibility check,
+the `updateProductRow` guard, this session's product-refresh fallback + Promo-sales-panel
+removal) is **still only sitting uncommitted in the working tree**. If PWD/Senior "still isn't
+enabling" was tested against a deployed build or a since-restarted dev server, that build
+predates all of it. **Before doing further root-cause work on the discount bug, confirm the
+user is testing against this actual working tree** (`npm run dev` freshly started here, or a
+build/deploy made *after* these changes) — otherwise every fix below will keep looking broken
+no matter how correct the code is.
+
+### ROOT-CAUSED #2: PostgREST silently truncated product reads at 1000 rows
+`bootstrapBranchData`, `fetchBranchProducts`, and `fetchCatalogProducts` had no `.range()`
+pagination. Supabase's `db-max-rows` (1000 by default) caps the response **and returns no
+error** — so any branch past 1000 products silently lost everything after the 1000th by
+name. Those products never reached `useProductStore`, so `Cart.jsx`'s eligibility lookup
+(`productById.get(item.id)`) missed them and fell back to the stale flag frozen on the cart
+line at add-time. Net effect: a product reads "Discountable: Yes" in the catalog and still
+refuses PWD/Senior at the counter. Same cap explains items missing from Manager → Data.
+
+Fixed with `fetchAllRows(build)` in `api.js` — pages via `.range()` until a short page comes
+back. **Any new query that can return an unbounded set must use it**; a bare `.select()` is
+a silent truncation waiting to happen.
+
+Also fixed in `writeProductRow`: the missing-column fallback deleted `unit_cost` and
+`discount_eligible` **as a pair**, so a schema missing `unit_cost` stripped the discount flag
+from every product write while still reporting success. Each column is now dropped only when
+the server actually names it.
+
+`Cart.jsx` `pricing.eligibilityDebug` explains per line why PWD/Senior can't apply —
+`not in this branch's catalog — re-sync` (a sync/data problem) vs `not marked discountable`
+(a flag problem). These are completely different failures and guessing between them has
+cost real debugging time.
+
+### ROOT-CAUSED #1: Discountable not reaching POS (`products.catalog_product_id` was NULL)
+The cascade matched on `products.catalog_product_id`, but that column was only ever written
+in **one** place — `createProduct`'s best-effort mirror into `catalog_products` — and that
+path has two holes:
+
+1. Writing `catalog_products` requires `is_manager()`. A **supervisor** adding a product hits
+   RLS, the insert fails inside a `try/catch` that only `console.warn`s, and the row is left
+   with a NULL link.
+2. **The bulk importer never set the column at all**, so every imported product has a NULL link.
+
+Products *adopted* from the catalog were fine (`adopt_catalog_products` sets it), which is
+exactly why some products discounted correctly and others never did. Fixed three ways:
+- `cascadeDiscountEligibleToBranches(catalogProductId, eligible, sku)` now takes the SKU and
+  runs a second pass over `catalog_product_id is null` rows matched by SKU
+  (`.ilike`, case-insensitive), **backfilling the link** as it goes so each row needs the
+  fallback only once.
+- `migrate_backfill_catalog_links.sql` — creates missing catalog rows, links every unlinked
+  product by SKU, and adds a `before insert or update of sku` trigger so the link can never
+  go missing again regardless of code path or role. Reports what's still unlinked.
+- Bulk multi-select in `ManagerNetworkCatalog` for setting Discountable on many items at once.
+
+### DONE in this pass (do not re-implement)
+- **Layered live-update system** — `useLiveData` hook + hardened `subscribeTable` (status
+  callback, exponential-backoff resubscribe, refetch-on-reconnect) + `useAppVersion` deploy
+  watchdog with `/version.json`. See the "Realtime / live updates" section above.
+- **One-discount SC/PWD + VAT model** — promo now sets the base instead of being discarded
+  when SC/PWD is applied; full per-line audit trail in checkout. See "VAT + SC/PWD" above.
+- **Promo rename** — `manager/Promos.jsx` Rename action (live-promo row + history row) via
+  `updatePromoEventDetails({ promoEventId, name })`. That function is now a true partial
+  update: fields are written only when explicitly passed (`undefined` = leave alone, `null`
+  = clear). Before this, a rename-only call would have nulled `starts_at`/`ends_at` and
+  silently un-scheduled a live promo. Renaming does **not** rewrite past
+  `transaction_items.promo_name`, so historical sales stay attributed to the old name.
+- **Live-promo header** — dropped the redundant "Active" badge (everything in that dropdown
+  is live, and the option label already says Active vs Stop pending); Stop / Approve stop /
+  Rename now sit right-aligned on the selector row instead of stacked underneath.
+- **Promo indicator on POS tiles** — turned out to already be fully built (red border/background,
+  "PROMO" badge, event name, strikethrough original price), not missing as an earlier note here
+  claimed. That earlier claim was wrong (written from a stale summary, not verified against the
+  code) — don't trust old backlog notes without checking the file first.
+- **Removed the redundant "Promo sales" card** from `manager/Promos.jsx`'s live-promo column —
+  it duplicated Promo History's per-row "Sales" action (`openPromoTracking` → `trackingEvent`
+  modal, same receipt/discount/net-sales numbers). Deleted the card, its `promoStats`/
+  `promoStatsBusy` state, and the effect that populated it; the page's promo-management column
+  is now full width instead of a 2-col grid with one empty side.
+- **Product live-refresh fallback poll** — `POS.jsx`'s products/branch_inventory realtime effect
+  had no polling fallback (unlike the promo effect's 5-min safety net), so a tab open before
+  `migrate_enable_realtime.sql` is applied (or one that silently drops its channel) would never
+  pick up a manager's edit without a manual reload. Added the same 5-min `setInterval` fallback.
+
 ### DONE in recent pass (do not re-implement)
 - Module access: explicit `permissions[]` wins; routes gated by `RequireModule` only; Staff shows **Custom access** vs **Default access**.
 - Manager cover for supervisor approvals: `SupervisorApprove` has **Approve as manager** when signed-in role is manager/admin/master; SQL `migrate_manager_can_approve_any_branch.sql` lets manager PIN work cross-branch.
 - Sidebar **Refresh** button → `window.location.reload()`.
+- **Multiple concurrent promos** — several promo events can now be live (active/stop_pending) on one branch at once. See below.
+- **Discountable cascade from network catalog** — toggling Discountable on `/manager/data` now also flips `discount_eligible` on every already-adopted branch product (`api.cascadeDiscountEligibleToBranches`), not just the template default. See "Products / inventory / import" section above.
+- **Promo auto-expire** — a promo past its `ends_at` ends itself, no manager action needed. Three layers, because the DB one alone silently did nothing when its migration wasn't applied:
+  1. **Display truth (always correct, zero dependencies):** `promoHasEnded()` / `promoEffectiveStatus()` in `api.js` derive status from the timestamp. Promo History shows `stopped · Promo ended`, and Delete unlocks, the moment the end time passes.
+  2. **Never live:** `fetchActivePromoEventsWithRules` filters ended events out of the live list **regardless of `respectDuration`**. This was the actual bug — `manager/Promos.jsx` passes `respectDuration: false` (so rules can be built on a not-yet-started promo), which was also resurrecting *finished* ones into the Active dropdown. `respectDuration` governs the not-started case only; ended is unconditional.
+  3. **Durable DB sweep:** `expireEndedPromos()` calls RPC `expire_ended_promos()` (`migrate_promo_auto_expire.sql`); if that function isn't deployed it falls back to a direct `UPDATE` on `promo_events` (managers/supervisors have RLS write on their branch — cashiers get denied, which is fine since layers 1–2 already cover them). Runs at the top of `fetchActivePromoEventsWithRules`, `fetchActivePromosAcrossBranches`, and `fetchPromoEventsForBranch`.
+- **`datetime-local` timezone fix** (`manager/Promos.jsx` `localDateTimeValue`) — promo start/end fields were formatted with `toISOString().slice(0,16)`, which is **UTC**: a Manila manager saw and saved times 8 hours off. Now built from local getters. New promos also default `starts_at` to now (fills a blank field only — never overwrites a typed value).
+- **Edit dates on an already-active promo** — `manager/Promos.jsx` Promo History "Modify" button used to be hidden for `active`/`stop_pending` rows; now shown for all statuses (only edits `starts_at`/`ends_at` via `updatePromoEventDetails`, never touches approval state, so no new dual-control needed). Delete stays restricted to non-live statuses.
 
-### TODO — Multiple concurrent promos (NOT started)
-**Current limitation:** one live promo per branch.
-- `fetchActivePromoEventWithRules(branchId)` returns a single active/stop_pending event.
-- Creating/activating a promo typically deactivates others (`is_active = false` on same branch).
-- POS maps `promoByProductId` from one event’s rules.
+### Multiple concurrent promos (DONE)
+**Required SQL migration:** run `pos-frontend/supabase/migrate_promo_multi_active.sql` (drops the one-live-promo-per-branch unique index and stops `approve_promo_event()` from deactivating sibling promos).
 
-**Target behavior:** multiple **active** promo events per branch at once; POS stacks/applies all matching rules; Promos UI lists all live events (not one “Live promo” card).
+- **SQL/RPC:** `migrate_promo_multi_active.sql` — no more single-active constraint or forced deactivation on approve.
+- **API** (`src/lib/api.js`): `fetchActivePromoEventsWithRules(branchId, opts)` returns **all** live events for a branch as `[{ event, rules }]`. `fetchActivePromoEventWithRules(branchId, opts)` is kept as a back-compat wrapper returning just the first one.
+- **Conflict policy** (`src/utils/promo.js` `computePromoDiscounts`): each rule computes its own line-discount contribution in isolation, then the **highest discount per line wins** across all rules/events — offers never stack on one line. The function also returns `linePromoNames` (which event won each line) and `appliedEventNames` (distinct event names actually applied) for attribution.
+- **POS** (`src/pages/POS.jsx`): `activePromos` (array) replaces the old single `activePromo`. Rules from every live event are flattened into one `promoRules` list, each tagged with its own `eventName`, then merged via `buildPromoByProductId` (best % per product wins) for tile pricing/badges.
+- **Cart** (`src/components/pos/Cart.jsx`): no longer takes a single `promoLabel` prop — it derives the discount label itself from `computePromoDiscounts`' `appliedEventNames` (joined, e.g. "Valentines + Payday Sale"), and per-line breakdown rows show the actual promo that won that line via `linePromoNames`.
+- **Promos UI** (`src/pages/manager/Promos.jsx`): `activeEvents` (array, was `active` singular) renders one card per live promo with its own Stop/Approve-stop controls. `managingId` + `managedEvent` track which live event's rules/sales-stats panel is currently shown ("Manage rules" button per card); a fresh pending draft (`workingEvent`) always takes priority for rule-building over an already-live event, so creating promo B while promo A is still live doesn't block adding rules to B.
 
-**Implementation sketch:**
-1. **SQL / RPC**
-   - Stop forcing single active: remove `update … set is_active=false where branch_id=…` on activate (see `approve_promo_event` / create paths in `api.js` + `migrate_promo_dual_control.sql`).
-   - Add `fetch_active_promo_events_with_rules(p_branch_id)` returning **set of** events + rules (or query multiple rows in `api.js`).
-2. **API** (`src/lib/api.js`)
-   - Replace/extend `fetchActivePromoEventWithRules` → `fetchActivePromoEventsWithRules` → array.
-   - Keep backward-compat wrapper returning first event if needed.
-3. **POS** (`src/pages/POS.jsx`)
-   - Load array; merge rules into `promoByProductId` (define conflict policy: best discount wins, or first match, or sum — **pick one and document**).
-4. **Cart** (`src/components/pos/Cart.jsx` + `src/utils/promo.js`)
-   - Accept `promoEvents[]` or flattened `promoRules[]` from multiple events; label may show multiple event names.
-5. **Promos UI** (`src/pages/manager/Promos.jsx`)
-   - Replace single “Live promo” panel with list of active events; allow create without killing others; stop/approve per event.
-6. **Tests / manual**
-   - Two active item_pct events on same SKU → verify chosen conflict policy.
-   - Network overview already lists multiple rows — keep consistent.
-
-### Conflict policy recommendation
-Prefer **best (highest) discount per line** across events; never double-apply two % discounts on the same line unless product explicitly supports stacking later.
+**Mixed-cart reporting fix:** `transactions.discount_type` is still a single text column (joined label like "Promo A + Promo B" when a cart mixes promos) — exact-matching that per promo would undercount mixed carts. Fixed via **per-line attribution**: `migrate_promo_line_attribution.sql` adds `transaction_items.promo_name` (which promo won that specific line, null for PWD/Senior/undiscounted). `src/lib/api.js` `fetchPromoSalesStats` now attributes by that column (prefilters candidate receipts by branch/date/`discount_amount > 0`, then matches lines by `promo_name = promoName`) instead of matching the whole transaction's `discount_type`. `fetchPromoSalesStatsLegacy` (same file) is the pre-migration fallback and is used automatically if the `promo_name` column doesn't exist yet.
+- **Cart** (`Cart.jsx`): tags each checkout line with `promoName` (from `computePromoDiscounts`' `linePromoNames`) before calling `addTransaction`.
+- **Store** (`posStore.js` `addTransaction`): passes `promoName` through to the `QUEUE_TYPES.COMPLETE_SALE` payload.
+- **API** (`api.js` `completeSale`): writes `transaction_items.promo_name`; falls back to omitting the column (like the existing `price_tier` fallback) on old schemas.
 
 ---
 ## Block-level navigation hints (useful for future AI/code-review)

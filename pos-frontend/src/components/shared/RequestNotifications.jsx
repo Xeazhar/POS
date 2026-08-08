@@ -2,11 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FiBell } from 'react-icons/fi'
 import { fetchPendingApprovals, hasSupabase } from '../../lib/api'
+import { debounce, subscribeMany } from '../../offline/realtime'
 import { useAuthStore } from '../../stores/posStore'
 import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { Skeleton } from '../ui'
 
-const POLL_MS = 45_000
+// Realtime keeps the badge current; this is only a slow fallback in case a
+// subscription silently drops (long session, network blip) — not the primary path.
+const POLL_MS = 5 * 60_000
 
 /**
  * Header inbox for important approval requests.
@@ -44,23 +47,34 @@ export default function RequestNotifications() {
   }, [canSee, user])
 
   useEffect(() => {
-    if (!canSee) return undefined
-    // One fetch for the badge; poll only while the inbox is open (not every 45s on every screen).
+    if (!canSee || !hasSupabase || !user) return undefined
     refresh()
-    return undefined
-  }, [canSee, refresh])
-
-  useEffect(() => {
-    if (!canSee || !open) return undefined
-    refresh()
+    const debouncedRefresh = debounce(refresh, 400)
+    // Live: a day-end submission, petty cash request, or promo approval request
+    // updates the badge immediately, whether or not the inbox is open.
+    const subs = [
+      { table: 'day_ends', onChange: debouncedRefresh },
+      { table: 'cash_drawer_entries', onChange: debouncedRefresh },
+      { table: 'petty_cash', onChange: debouncedRefresh }, // legacy table name, harmless if it doesn't exist
+    ]
+    if (manager) subs.push({ table: 'promo_events', onChange: debouncedRefresh })
+    else if (user.branchId) {
+      subs[0] = { table: 'day_ends', filter: `branch_id=eq.${user.branchId}`, onChange: debouncedRefresh }
+      subs[1] = { table: 'cash_drawer_entries', filter: `branch_id=eq.${user.branchId}`, onChange: debouncedRefresh }
+      subs[2] = { table: 'petty_cash', filter: `branch_id=eq.${user.branchId}`, onChange: debouncedRefresh }
+    }
+    const unsubscribe = subscribeMany(subs)
+    // Slow fallback only — see POLL_MS comment above.
     const timer = window.setInterval(refresh, POLL_MS)
     const onFocus = () => refresh()
     window.addEventListener('focus', onFocus)
     return () => {
       window.clearInterval(timer)
       window.removeEventListener('focus', onFocus)
+      debouncedRefresh.cancel()
+      unsubscribe()
     }
-  }, [canSee, open, refresh])
+  }, [canSee, manager, user, refresh])
 
   useEffect(() => {
     if (!open) return undefined

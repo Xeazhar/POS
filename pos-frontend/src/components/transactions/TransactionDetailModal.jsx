@@ -134,6 +134,46 @@ function TransactionDetailModal({
                 <strong>−{money(detail.discountAmount)}</strong>
               </div>
             )}
+            {detail.discountIdNote && (
+              <div className="flex justify-between">
+                <span>SC/PWD ID No.</span>
+                <strong>{detail.discountIdNote}</strong>
+              </div>
+            )}
+            {(detail.vatableSales > 0 || detail.vatExemptSales > 0 || detail.zeroRatedSales > 0) && (
+              <div className="mt-1 mb-1 rounded-md bg-[#fafaf7] px-2.5 py-2 text-[11px]">
+                {detail.vatableSales > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-brand-subtle">VATable Sales</span>
+                    <span>{money(detail.vatableSales)}</span>
+                  </div>
+                )}
+                {detail.vatAmount > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-brand-subtle">VAT (12%)</span>
+                    <span>{money(detail.vatAmount)}</span>
+                  </div>
+                )}
+                {detail.vatExemptSales > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-brand-subtle">VAT-Exempt Sales (SC/PWD)</span>
+                    <span>{money(detail.vatExemptSales)}</span>
+                  </div>
+                )}
+                {detail.zeroRatedSales > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-brand-subtle">Zero-Rated Sales</span>
+                    <span>{money(detail.zeroRatedSales)}</span>
+                  </div>
+                )}
+                {detail.scPwdDiscount > 0 && (
+                  <div className="flex justify-between text-brand-danger">
+                    <span>Less: SC/PWD Discount</span>
+                    <span>−{money(detail.scPwdDiscount)}</span>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex justify-between">
               <span>Original total</span>
               <strong>{money(originalTotal)}</strong>

@@ -58,6 +58,11 @@ function ManagerBranchDashboard() {
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
   const [invPage, setInvPage] = useState(0)
+  const [receiptsPage, setReceiptsPage] = useState(0)
+  const [receiptDateFilter, setReceiptDateFilter] = useState('all') // all | today | date
+  const [receiptDateValue, setReceiptDateValue] = useState('')
+  const [receiptPromoFilter, setReceiptPromoFilter] = useState('all') // all | <promo name> | pwd | none
+  const [dayEndPage, setDayEndPage] = useState(0)
   const [reopening, setReopening] = useState(null)
   const [reopenTarget, setReopenTarget] = useState(null)
   const [reopenReason, setReopenReason] = useState('')
@@ -74,6 +79,11 @@ function ManagerBranchDashboard() {
   useEffect(() => {
     let active = true
     setInvPage(0)
+    setReceiptsPage(0)
+    setReceiptDateFilter('all')
+    setReceiptDateValue('')
+    setReceiptPromoFilter('all')
+    setDayEndPage(0)
     setSelectedProduct(null)
     setLoading(true)
     Promise.resolve()
@@ -302,15 +312,51 @@ function ManagerBranchDashboard() {
     }
   }
 
-  const recentTxns = useMemo(() => {
-    return [...(data.transactions || [])]
-      .sort((a, b) => {
-        const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0
-        const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0
-        return tb - ta
-      })
-      .slice(0, 8)
+  const receiptPromoNames = useMemo(() => {
+    const set = new Set()
+    for (const txn of data.transactions || []) {
+      if (isPromoDiscountType(txn.discountType)) set.add(txn.discountType)
+    }
+    return [...set].sort()
   }, [data.transactions])
+
+  const recentTxns = useMemo(() => {
+    let rows = [...(data.transactions || [])]
+    if (receiptDateFilter === 'today') rows = rows.filter((t) => t.date === todayKey)
+    else if (receiptDateFilter === 'date' && receiptDateValue) rows = rows.filter((t) => t.date === receiptDateValue)
+
+    if (receiptPromoFilter === 'pwd') {
+      rows = rows.filter((t) => ['pwd', 'senior'].includes(String(t.discountType || '').toLowerCase()))
+    } else if (receiptPromoFilter === 'none') {
+      rows = rows.filter((t) => !(Number(t.discountAmount || 0) > 0))
+    } else if (receiptPromoFilter !== 'all') {
+      rows = rows.filter((t) => t.discountType === receiptPromoFilter)
+    }
+
+    return rows.sort((a, b) => {
+      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0
+      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0
+      return tb - ta
+    })
+  }, [data.transactions, receiptDateFilter, receiptDateValue, receiptPromoFilter, todayKey])
+
+  useEffect(() => {
+    setReceiptsPage(0)
+  }, [receiptDateFilter, receiptDateValue, receiptPromoFilter])
+
+  const receiptsPageCount = Math.max(1, Math.ceil(recentTxns.length / PAGE_SIZE))
+  const receiptsPageIndex = Math.min(receiptsPage, receiptsPageCount - 1)
+  const recentTxnsPage = recentTxns.slice(
+    receiptsPageIndex * PAGE_SIZE,
+    receiptsPageIndex * PAGE_SIZE + PAGE_SIZE,
+  )
+
+  const dayEndPageCount = Math.max(1, Math.ceil((data.dayEnds || []).length / PAGE_SIZE))
+  const dayEndPageIndex = Math.min(dayEndPage, dayEndPageCount - 1)
+  const dayEndPageRows = (data.dayEnds || []).slice(
+    dayEndPageIndex * PAGE_SIZE,
+    dayEndPageIndex * PAGE_SIZE + PAGE_SIZE,
+  )
 
   const productMovements = useMemo(() => {
     if (!selectedProduct) return []
@@ -412,7 +458,49 @@ function ManagerBranchDashboard() {
 
       <div className="mb-4 grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
         <TableCard className="max-h-none overflow-hidden">
-          <SectionHeading title="Recent receipts" meta={`${data.transactions.length} loaded`} />
+          <SectionHeading
+            title="Recent receipts"
+            meta={
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                <select
+                  className="h-7 rounded border border-brand-line bg-white px-1.5 text-[10px] font-medium text-brand-ink"
+                  value={receiptDateFilter}
+                  onChange={(e) => setReceiptDateFilter(e.target.value)}
+                  title="Filter by date"
+                >
+                  <option value="all">All dates</option>
+                  <option value="today">Today</option>
+                  <option value="date">Pick date</option>
+                </select>
+                {receiptDateFilter === 'date' && (
+                  <input
+                    type="date"
+                    className="h-7 rounded border border-brand-line bg-white px-1.5 text-[10px] font-medium text-brand-ink"
+                    value={receiptDateValue}
+                    onChange={(e) => setReceiptDateValue(e.target.value)}
+                  />
+                )}
+                <select
+                  className="h-7 rounded border border-brand-line bg-white px-1.5 text-[10px] font-medium text-brand-ink"
+                  value={receiptPromoFilter}
+                  onChange={(e) => setReceiptPromoFilter(e.target.value)}
+                  title="Filter by discount"
+                >
+                  <option value="all">All discounts</option>
+                  {receiptPromoNames.map((name) => (
+                    <option key={name} value={name}>
+                      Promo · {discountSourceLabel(name)}
+                    </option>
+                  ))}
+                  <option value="pwd">PWD / Senior</option>
+                  <option value="none">No discount</option>
+                </select>
+                <span className="pl-1 text-[11px] font-semibold whitespace-nowrap text-brand-muted">
+                  {recentTxns.length} of {data.transactions.length}
+                </span>
+              </div>
+            }
+          />
           <div className="grid grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]">
             <span>Date</span>
             <span>Order</span>
@@ -420,7 +508,7 @@ function ManagerBranchDashboard() {
             <span>Total</span>
             <span>Status</span>
           </div>
-          {recentTxns.map((item) => (
+          {recentTxnsPage.map((item) => (
             <div
               key={item.id}
               role="button"
@@ -445,6 +533,11 @@ function ManagerBranchDashboard() {
                       : discountSourceLabel(item.discountType) || 'Discount'}
                   </span>
                 )}
+                {Number(item.vatExemptSales || 0) > 0 && (
+                  <span className="mt-0.5 block truncate text-[10px] font-bold text-brand-success">
+                    VAT-exempt
+                  </span>
+                )}
               </strong>
               <span className="truncate max-[900px]:hidden">{item.cashier}</span>
               <span className={moneyClass}>
@@ -460,8 +553,20 @@ function ManagerBranchDashboard() {
               </StatusBadge>
             </div>
           ))}
-          {data.transactions.length === 0 && (
-            <div className="px-4 py-6 text-xs text-brand-subtle">No transactions yet.</div>
+          {recentTxns.length === 0 && (
+            <div className="px-4 py-6 text-xs text-brand-subtle">
+              {data.transactions.length === 0 ? 'No transactions yet.' : 'No receipts match these filters.'}
+            </div>
+          )}
+          {receiptsPageCount > 1 && (
+            <Pager
+              page={receiptsPageIndex + 1}
+              pageCount={receiptsPageCount}
+              total={recentTxns.length}
+              label="receipts"
+              onPrev={() => setReceiptsPage((p) => Math.max(0, p - 1))}
+              onNext={() => setReceiptsPage((p) => Math.min(receiptsPageCount - 1, p + 1))}
+            />
           )}
         </TableCard>
 
@@ -509,7 +614,7 @@ function ManagerBranchDashboard() {
             <span className="max-[900px]:hidden">Note</span>
             <span className="text-right"> </span>
           </div>
-          {(data.dayEnds || []).slice(0, 8).map((entry) => (
+          {dayEndPageRows.map((entry) => (
             <div
               key={entry.id}
               className={`grid grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 text-xs max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem] ${tableRowDenseClass}`}
@@ -564,6 +669,16 @@ function ManagerBranchDashboard() {
           ))}
           {(data.dayEnds || []).length === 0 && (
             <div className="px-4 py-6 text-xs text-brand-subtle">No day-end closings yet.</div>
+          )}
+          {dayEndPageCount > 1 && (
+            <Pager
+              page={dayEndPageIndex + 1}
+              pageCount={dayEndPageCount}
+              total={(data.dayEnds || []).length}
+              label="closings"
+              onPrev={() => setDayEndPage((p) => Math.max(0, p - 1))}
+              onNext={() => setDayEndPage((p) => Math.min(dayEndPageCount - 1, p + 1))}
+            />
           )}
         </TableCard>
       </div>
@@ -815,7 +930,7 @@ function ManagerBranchDashboard() {
               : 'No inventory rows yet.'}
           </div>
         )}
-        {data.products.length > 0 && (
+        {invPages > 1 && (
           <Pager
             page={pageIndex + 1}
             pageCount={invPages}

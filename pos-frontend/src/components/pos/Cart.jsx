@@ -1,13 +1,14 @@
-﻿import { useEffect, useMemo, useState } from 'react'
-import { FiMinus, FiPlus, FiTrash2 } from 'react-icons/fi'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import { FiMinus, FiPlus, FiTrash2, FiX } from 'react-icons/fi'
 import { useNavigate } from 'react-router-dom'
 import { isDeviceEnabled, receiptPrinter } from '../../devices'
 import { useIsTouchUi } from '../../hooks/useIsTouchUi'
-import { useAuthStore, useCartStore, useInventoryStore } from '../../stores/posStore'
+import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '../../stores/posStore'
 import { formatSupportError } from '../../utils/errors'
 import { buildReceipt } from '../../utils/receipt'
 import { money, pesoWhole, PESO, qty, today, formatOpenHourLabel } from '../../utils/format'
 import { computePromoDiscounts } from '../../utils/promo'
+import { computeVatBreakdown, VAT_RATE_DEFAULT } from '../../utils/vat'
 import { hasBudgetTier, lineTotal } from '../../utils/ulam'
 import { isSupervisorOrAbove } from '../../utils/roles'
 import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton, StatusOverlay, moneyClass } from '../ui'
@@ -20,13 +21,19 @@ const PAY_METHODS = [
   { id: 'ewallet', label: 'E-wallet' },
 ]
 
+/** Joins distinct promo event names for display (e.g. transaction discount_type, header label). */
+function joinPromoNames(names = []) {
+  if (!names.length) return 'Promo'
+  if (names.length <= 2) return names.join(' + ')
+  return `${names.slice(0, 2).join(' + ')} +${names.length - 2} more`
+}
+
 function Cart({
   tillClosed = false,
   headerActions = null,
   onOverlayChange = null,
   barcodeMode = false,
   promoRules = [],
-  promoLabel = null,
 }) {
   const {
     items,
@@ -39,6 +46,7 @@ function Cart({
     setPriceTier,
     ulamCombo,
   } = useCartStore()
+  const products = useProductStore((state) => state.products)
   const addTransaction = useInventoryStore((state) => state.addTransaction)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const user = useAuthStore((state) => state.user)
@@ -59,47 +67,93 @@ function Cart({
   const navigate = useNavigate()
   const rawSubtotal = total()
   const combo = isRestaurant ? ulamCombo() : null
-  const vatRate = Number(user?.vatRate ?? 0.12)
+  // Flat 12% nationwide (BIR) — not branch-configurable.
+  const vatRate = VAT_RATE_DEFAULT
 
   const pricing = useMemo(() => {
     const isPwdSenior = discountType === 'pwd' || discountType === 'senior'
-    const pwdDiscountPct = isPwdSenior ? 0.2 : 0
 
-    const hasEligibleItems = items.some((item) => item.discountEligible === true)
-    const eligibleTotal = items.reduce((sum, item) => sum + (item.discountEligible === true ? lineTotal(item) : 0), 0)
+    // Eligibility is checked against the *current* catalog, not the flag frozen on the cart
+    // line at add-time — otherwise fixing "Discountable" on a product wouldn't take effect
+    // for an item already sitting in the cart until it's removed and re-added.
+    const productById = new Map(products.map((p) => [p.id, p]))
+    const isEligible = (item) => {
+      const live = productById.get(item.id)
+      return live ? live.discountEligible === true : item.discountEligible === true
+    }
 
-    const pwdLineDiscounts = items.map((item) =>
-      item.discountEligible === true && pwdDiscountPct > 0 ? Number((lineTotal(item) * pwdDiscountPct).toFixed(2)) : 0,
-    )
-    const pwdDiscountAmount = Number(pwdLineDiscounts.reduce((sum, v) => sum + v, 0).toFixed(2))
+    const hasEligibleItems = items.some(isEligible)
+    const eligibleTotal = items.reduce((sum, item) => sum + (isEligible(item) ? lineTotal(item) : 0), 0)
 
-    const promoDiscount = isPwdSenior ? null : computePromoDiscounts(items, promoRules)
-    const appliedDiscountSource =
-      isPwdSenior ? discountType : promoDiscount ? 'promo' : null
+    // Why each line is / isn't eligible, so a "but it says Discountable!" report can be
+    // answered at the counter instead of guessed at. `missing` means the product wasn't in
+    // the branch catalog this tab loaded at all — that's a data/sync problem, not a flag one.
+    const eligibilityDebug = items.map((item) => {
+      const live = productById.get(item.id)
+      if (!live) return { name: item.name, state: 'missing', eligible: item.discountEligible === true }
+      return {
+        name: item.name,
+        state: live.discountEligible === true ? 'eligible' : 'not-flagged',
+        eligible: live.discountEligible === true,
+      }
+    })
 
-    const appliedLineDiscounts = isPwdSenior ? pwdLineDiscounts : promoDiscount?.lineDiscounts || items.map(() => 0)
-    const discountAmount = isPwdSenior ? pwdDiscountAmount : Number(promoDiscount?.promoDiscountAmount || 0)
+    // Promos are computed ALWAYS, including when SC/PWD is selected — but they are not a
+    // second deduction. A promo only lowers the *base* that the single 20% is taken from:
+    //   base = MIN(regular, promo price), then 20% of base/1.12 on eligible lines.
+    // Never subtract promo and SC/PWD from the regular price independently (RA 9994 /
+    // RA 10754 — one discount only). The arithmetic lives in utils/vat.js; read the rule
+    // block at the top of that file before changing anything here.
+    const promoDiscount = computePromoDiscounts(items, promoRules)
+    const linePromoNames = promoDiscount?.linePromoNames || items.map(() => null)
 
-    const afterDiscount = Math.max(0, Number((rawSubtotal - discountAmount).toFixed(2)))
-    const vatableSales = afterDiscount
-    const vatAmount = vatRate > 0 ? Number(((vatableSales * vatRate) / (1 + vatRate)).toFixed(2)) : 0
+    const vat = computeVatBreakdown({
+      vatRate,
+      items: items.map((item, index) => ({
+        regularAmount: lineTotal(item),
+        promoDiscountAmount: promoDiscount?.lineDiscounts[index] || 0,
+        vatExempt: isPwdSenior && isEligible(item),
+      })),
+    })
+    const lineDiscounts = vat.lineBreakdown.map((row) => row.discountAmount)
+    const lineVatCategories = vat.lineBreakdown.map((row) => row.vatCategory)
 
-    const appliedDiscountLabel =
-      appliedDiscountSource === 'promo' ? promoLabel || 'Promo' : discountType || null
+    // Which label heads the discount row. SC/PWD wins the headline when applied, but a
+    // promo can still be feeding the base underneath it — the per-line rows show both.
+    const promoLabel = promoDiscount ? joinPromoNames(promoDiscount.appliedEventNames) : null
+    const appliedDiscountSource = isPwdSenior ? discountType : promoDiscount ? 'promo' : null
+    const appliedDiscountLabel = isPwdSenior
+      ? promoLabel
+        ? `${discountType === 'pwd' ? 'PWD' : 'Senior'} + ${promoLabel}`
+        : discountType
+      : promoLabel
 
     return {
-      discountAmount,
+      discountAmount: vat.discountAmount,
+      scPwdDiscount: vat.scPwdDiscount,
+      promoDiscountAmount: vat.promoDiscountAmount,
+      vatExemptedAmount: vat.vatExemptedAmount,
       discountType: appliedDiscountLabel,
-      afterDiscount,
+      afterDiscount: vat.amountDue,
       eligibleTotal,
       hasEligibleItems,
-      lineDiscounts: appliedLineDiscounts,
+      eligibilityDebug,
+      lineBreakdown: vat.lineBreakdown,
+      lineDiscounts,
+      lineVatCategories,
+      linePromoNames,
+      promoLabel,
       appliedDiscountSource,
-      vatableSales,
-      vatAmount,
-      total: afterDiscount,
+      isPwdSenior,
+      vatRate,
+      vatableSales: vat.vatableSales,
+      vatAmount: vat.vatAmount,
+      vatExemptSales: vat.vatExemptSales,
+      zeroRatedSales: vat.zeroRatedSales,
+      totalSales: vat.totalSales,
+      total: vat.amountDue,
     }
-  }, [items, rawSubtotal, discountType, vatRate, promoRules, promoLabel])
+  }, [items, discountType, vatRate, promoRules, products])
 
   useEffect(() => {
     if ((discountType === 'pwd' || discountType === 'senior') && !pricing.hasEligibleItems) {
@@ -109,32 +163,73 @@ function Cart({
     }
   }, [discountType, pricing.hasEligibleItems])
 
+  /**
+   * Warn when a promo expires out from under a cart that was already priced with it.
+   *
+   * Promos are refetched live (useLiveData in POS.jsx) and auto-expire on their end date,
+   * so a cart sitting open across the cutoff silently reprices upward. Without a notice the
+   * cashier just sees a different total than the one they quoted the customer, mid-sale.
+   */
+  const promoNamesKey = pricing.linePromoNames.filter(Boolean).join('|')
+  const [expiredPromoNotice, setExpiredPromoNotice] = useState(null)
+  const prevPromoNames = useRef(promoNamesKey)
+  useEffect(() => {
+    const before = prevPromoNames.current
+    prevPromoNames.current = promoNamesKey
+    if (!items.length) return
+    const lost = before
+      .split('|')
+      .filter(Boolean)
+      .filter((name) => !promoNamesKey.split('|').includes(name))
+    if (lost.length) setExpiredPromoNotice([...new Set(lost)].join(', '))
+  }, [promoNamesKey, items.length])
+
   const payTotal = pricing.total
+  /**
+   * Full per-line audit trail for the checkout breakdown: regular price → which promo
+   * (if any) set the base → VAT stripped → the single 20% → final line total. Shown so
+   * the cashier can answer "why is this the price?" at the counter, and so a BIR review
+   * can see the computation was done in the mandated order.
+   */
   const discountedItemBreakdown = useMemo(
     () =>
       items
-        .map((item, index) => ({
-          name: item.name,
-          amount: Number(pricing.lineDiscounts[index] || 0),
-          promo:
-            pricing.appliedDiscountSource === 'promo'
-              ? pricing.discountType || promoLabel || 'Promo'
-              : discountType === 'pwd'
-                ? 'PWD'
-                : discountType === 'senior'
-                  ? 'Senior'
-                  : pricing.discountType || null,
-        }))
-        .filter((row) => row.amount > 0),
-    [
-      items,
-      pricing.lineDiscounts,
-      pricing.appliedDiscountSource,
-      pricing.discountType,
-      promoLabel,
-      discountType,
-    ],
+        .map((item, index) => {
+          const line = pricing.lineBreakdown[index] || {}
+          const scPwdLabel = discountType === 'pwd' ? 'PWD' : discountType === 'senior' ? 'Senior' : null
+          return {
+            name: item.name,
+            amount: Number(pricing.lineDiscounts[index] || 0),
+            regularAmount: Number(line.regularAmount || 0),
+            promoDiscountAmount: Number(line.promoDiscountAmount || 0),
+            baseAmount: Number(line.baseAmount || 0),
+            vatExclusiveAmount: Number(line.vatExclusiveAmount || 0),
+            scPwdDiscountAmount: Number(line.scPwdDiscountAmount || 0),
+            netAmount: Number(line.netAmount || 0),
+            isExempt: line.vatCategory === 'exempt',
+            promoName: pricing.linePromoNames[index] || null,
+            // Headline tag for the row: what actually produced this line's discount.
+            promo: line.vatCategory === 'exempt' ? scPwdLabel : pricing.linePromoNames[index] || pricing.promoLabel,
+          }
+        })
+        .filter((row) => row.amount > 0 || row.promoDiscountAmount > 0),
+    [items, pricing.lineBreakdown, pricing.lineDiscounts, pricing.linePromoNames, pricing.promoLabel, discountType],
   )
+  // Net line figures come straight from the VAT engine — never re-derived here as
+  // "price − discount/qty", which silently breaks on exempt lines where the VAT strip
+  // is part of the reduction but is not a discount.
+  const lineNetTotal = (index, item) => Number(pricing.lineBreakdown[index]?.netAmount ?? lineTotal(item))
+  const lineNetUnitPrice = (index, item) => {
+    const units = item.pricingMode === 'kg' ? Number(item.weight || 1) : Number(item.quantity || 1)
+    return Number((lineNetTotal(index, item) / Math.max(1, units)).toFixed(2))
+  }
+  const lineTag = (index) => {
+    const row = pricing.lineBreakdown[index]
+    if (!row) return null
+    if (row.vatCategory === 'exempt') return discountType === 'pwd' ? 'PWD 20%' : 'Senior 20%'
+    return pricing.linePromoNames[index] || pricing.promoLabel || 'Promo'
+  }
+
   const needsCash = paymentMethod === 'cash'
   const canPay =
     !tillClosed &&
@@ -184,13 +279,21 @@ function Cart({
     setPaying(true)
     try {
       const cartItems = items.map((item, index) => {
+        const line = pricing.lineBreakdown[index] || {}
         const discountAmount = pricing.lineDiscounts[index] || 0
         return {
           ...item,
           // For persistence/reporting, treat any discounted line as discount-eligible for that transaction.
           discountEligible: discountAmount > 0,
           discountAmount,
-          netLineTotal: Number((lineTotal(item) - discountAmount).toFixed(2)),
+          vatCategory: pricing.lineVatCategories[index] || 'vatable',
+          // Which specific promo set this line's base price. Recorded even when SC/PWD is
+          // the headline discount, since the promo still determined the base the 20% came
+          // off — without it, Promos → Sales would under-report promo usage on SC/PWD sales.
+          promoName: Number(line.promoDiscountAmount || 0) > 0 ? pricing.linePromoNames[index] || null : null,
+          // Straight from the VAT engine, never re-derived — on an exempt line the VAT
+          // strip is part of the reduction but is not a discount, so gross − discount lies.
+          netLineTotal: Number(line.netAmount ?? lineTotal(item)),
         }
       })
       const cash =
@@ -210,13 +313,19 @@ function Cart({
         paymentReference: paymentMethod === 'ewallet' ? String(paymentReference).trim() : null,
         vatAmount: pricing.vatAmount,
         vatableSales: pricing.vatableSales,
+        vatExemptSales: pricing.vatExemptSales,
+        zeroRatedSales: pricing.zeroRatedSales,
+        scPwdDiscount: pricing.scPwdDiscount,
+        vatRateApplied: pricing.vatRate,
         discountAmount: pricing.discountAmount,
         discountType: pricing.discountType,
         discountIdNote:
           discountType === 'pwd' || discountType === 'senior' ? String(discountIdNote).trim() : null,
       })
       const change = Math.max(0, cash - payTotal)
-      const orLabel = saved?.orNumber || saved?.id || 'Sale'
+      // Real OR number is allocated server-side once the sale syncs — saved.id right after
+      // checkout is only the local client id, not fit to show as an official receipt number.
+      const orLabel = saved?.orNumber || 'PENDING'
       const saleOrderType = isRestaurant ? orderType : undefined
 
       clear()
@@ -242,7 +351,9 @@ function Cart({
         user,
         transaction: {
           ...saved,
-          orNumber: orLabel,
+          // Leave unset (not orLabel's 'PENDING' fallback) so buildReceipt can tell a real
+          // OR number apart from "not assigned yet" and label the receipt accordingly.
+          orNumber: saved?.orNumber || null,
           tendered: cash,
           change,
           total: payTotal,
@@ -254,6 +365,10 @@ function Cart({
           paymentReference: paymentMethod === 'ewallet' ? String(paymentReference).trim() : null,
           vatAmount: pricing.vatAmount,
           vatableSales: pricing.vatableSales,
+          vatExemptSales: pricing.vatExemptSales,
+          zeroRatedSales: pricing.zeroRatedSales,
+          scPwdDiscount: pricing.scPwdDiscount,
+          totalSales: pricing.totalSales,
           discountAmount: pricing.discountAmount,
           discountType: pricing.discountType,
           discountIdNote:
@@ -267,8 +382,10 @@ function Cart({
           unitPrice: item.price,
           lineTotal: lineTotal(item),
           discountAmount: item.discountAmount || 0,
-          netLineTotal: item.netLineTotal || lineTotal(item),
+          netLineTotal: item.netLineTotal ?? lineTotal(item),
           discountEligible: item.discountEligible === true,
+          // Drives the per-line VAT-EXEMPT marker the BIR receipt format requires.
+          vatCategory: item.vatCategory || 'vatable',
           priceTier: item.priceTier,
         })),
       })
@@ -357,7 +474,7 @@ function Cart({
   return (
     <>
       {checkoutOpen && (
-        <Modal wide onClose={() => setCheckoutOpen(false)}>
+        <Modal xl onClose={() => setCheckoutOpen(false)}>
           <Eyebrow>CHECKOUT</Eyebrow>
           <h2 className={`mb-1 pr-8 text-[22px] max-[700px]:text-xl ${moneyClass}`}>{money(payTotal)}</h2>
           <p className="m-0 mb-3 text-xs text-brand-muted">
@@ -365,6 +482,155 @@ function Cart({
             {pricing.discountAmount > 0 ? ` · discount −${money(pricing.discountAmount)}` : ''}
           </p>
 
+          {/* Two columns: everything the cashier READS (what's being bought, why the price
+              is what it is) on the left; everything they ACT ON (payment, discount, cash)
+              on the right. Single-column meant a long breakdown pushed the tender input
+              off-screen and scrolled under the sticky action bar. */}
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,360px)]">
+            <div className="min-w-0">
+              <p className="mb-1.5 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+                Items ({items.length})
+              </p>
+              <div className="mb-3 max-h-[280px] overflow-auto rounded border border-brand-softline">
+                {items.map((item, index) => {
+                  const line = pricing.lineBreakdown[index] || {}
+                  const discounted = lineNetTotal(index, item) < lineTotal(item)
+                  return (
+                    <div
+                      key={`${item.id}-${item.priceTier || 'regular'}-${index}`}
+                      className="flex items-start justify-between gap-3 border-b border-[#f1f1ed] px-2.5 py-2 text-xs last:border-b-0"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <strong className="block truncate text-brand-ink">{item.name}</strong>
+                        <span className="text-[10px] text-brand-subtle">
+                          {item.pricingMode === 'kg'
+                            ? qty(item.weight, 'kg')
+                            : `${Number(item.quantity).toFixed(0)} × ${money(item.price)}`}
+                        </span>
+                        {line.vatCategory === 'exempt' && (
+                          <span className="ml-1 text-[10px] font-bold text-brand-success-text">VAT-exempt</span>
+                        )}
+                      </span>
+                      <span className={`shrink-0 text-right tabular-nums ${moneyClass}`}>
+                        {discounted ? (
+                          <>
+                            <span className="block text-[10px] text-brand-subtle line-through">
+                              {money(lineTotal(item))}
+                            </span>
+                            <span className="font-bold text-brand-danger">
+                              {money(lineNetTotal(index, item))}
+                            </span>
+                          </>
+                        ) : (
+                          money(lineTotal(item))
+                        )}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+
+          {/* One breakdown panel for every discount case — SC/PWD, promo, or both feeding
+              one base. Per line it walks the mandated order: regular → promo base → VAT
+              stripped → single 20% → net, so the cashier can explain any price on the spot. */}
+          {discountedItemBreakdown.length > 0 && (
+            <div className="mb-3 bg-transparent px-0 py-1 text-xs">
+              <div className="flex items-center justify-between text-brand-muted">
+                <span>Original total</span>
+                <strong className={`text-brand-ink ${moneyClass}`}>{money(rawSubtotal)}</strong>
+              </div>
+              {pricing.isPwdSenior && (
+                <div className="flex items-center justify-between text-brand-muted">
+                  <span>Eligible items</span>
+                  <strong className={`text-brand-ink ${moneyClass}`}>{money(pricing.eligibleTotal)}</strong>
+                </div>
+              )}
+              <div className="mt-1 flex items-center justify-between text-brand-muted">
+                <span>Total discount{pricing.discountType ? ` (${pricing.discountType})` : ''}</span>
+                <strong className={`text-brand-danger ${moneyClass}`}>−{money(pricing.discountAmount)}</strong>
+              </div>
+
+              <div className="mt-2 space-y-2 border-t border-[#f1f1ed] pt-2">
+                <div className="text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+                  Per item
+                </div>
+                {discountedItemBreakdown.map((row, idx) => (
+                  <div key={`${row.name}-${idx}`} className="rounded border border-[#f1f1ed] px-2 py-1.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <span className="min-w-0 flex-1 truncate font-bold text-brand-ink">{row.name}</span>
+                      {row.isExempt && (
+                        <span className="shrink-0 rounded bg-brand-success-bg px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-success-text uppercase">
+                          VAT-exempt
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 space-y-0.5 text-[10px] text-brand-muted">
+                      <div className="flex justify-between gap-2">
+                        <span>Regular price</span>
+                        <span className={row.promoDiscountAmount > 0 ? 'text-brand-subtle line-through' : ''}>
+                          {money(row.regularAmount)}
+                        </span>
+                      </div>
+                      {row.promoDiscountAmount > 0 && (
+                        <div className="flex justify-between gap-2">
+                          <span className="min-w-0 truncate">
+                            Promo price{row.promoName ? ` · ${row.promoName}` : ''}
+                            <span className="text-brand-subtle"> (base used)</span>
+                          </span>
+                          <span className="shrink-0 font-bold text-brand-ink">{money(row.baseAmount)}</span>
+                        </div>
+                      )}
+                      {row.isExempt && (
+                        <>
+                          <div className="flex justify-between gap-2">
+                            <span>VAT-exclusive ({(pricing.vatRate * 100).toFixed(0)}% removed)</span>
+                            <span>{money(row.vatExclusiveAmount)}</span>
+                          </div>
+                          <div className="flex justify-between gap-2">
+                            <span>{discountType === 'pwd' ? 'PWD' : 'Senior'} discount 20%</span>
+                            <span className="text-brand-danger">−{money(row.scPwdDiscountAmount)}</span>
+                          </div>
+                        </>
+                      )}
+                      <div className="flex justify-between gap-2 border-t border-[#f1f1ed] pt-0.5 font-bold text-brand-ink">
+                        <span>Line total</span>
+                        <span>{money(row.netAmount)}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Transaction-level totals — BIR reporting, not just customer display. */}
+              <div className="mt-2 space-y-0.5 border-t border-[#f1f1ed] pt-2 text-[11px]">
+                {pricing.promoDiscountAmount > 0 && (
+                  <div className="flex justify-between gap-2 text-brand-muted">
+                    <span>Promo discount given</span>
+                    <span className="text-brand-danger">−{money(pricing.promoDiscountAmount)}</span>
+                  </div>
+                )}
+                {pricing.scPwdDiscount > 0 && (
+                  <div className="flex justify-between gap-2 text-brand-muted">
+                    <span>Total SC/PWD discount</span>
+                    <span className="text-brand-danger">−{money(pricing.scPwdDiscount)}</span>
+                  </div>
+                )}
+                {pricing.vatExemptedAmount > 0 && (
+                  <div className="flex justify-between gap-2 text-brand-muted">
+                    <span>Total VAT exempted</span>
+                    <span>{money(pricing.vatExemptedAmount)}</span>
+                  </div>
+                )}
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="font-bold text-brand-ink">Net total</span>
+                  <strong className={`text-base text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
+                </div>
+              </div>
+            </div>
+          )}
+            </div>
+
+            <div className="min-w-0">
           <p className="mb-1.5 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">Payment</p>
           <div className="mb-3 flex gap-1.5">
             {PAY_METHODS.map((m) => (
@@ -421,103 +687,39 @@ function Cart({
               </button>
             ))}
           </div>
-          {(discountType === 'pwd' || discountType === 'senior') && !pricing.hasEligibleItems && (
-            <p className="m-0 mb-3 text-[11px] text-brand-subtle">
-              No discount-eligible items in this cart.
-            </p>
-          )}
-          {(discountType === 'pwd' || discountType === 'senior') && (
-            <>
-              <div className="mb-3 bg-transparent px-0 py-1 text-xs">
-                <div className="flex items-center justify-between text-brand-muted">
-                  <span>Eligible items</span>
-                  <strong className={`text-brand-ink ${moneyClass}`}>{money(pricing.eligibleTotal)}</strong>
-                </div>
-                <div className="flex items-center justify-between text-brand-muted">
-                  <span>Original total</span>
-                  <strong className={`text-brand-ink ${moneyClass}`}>{money(rawSubtotal)}</strong>
-                </div>
-                <div className="mt-1 flex items-center justify-between text-brand-muted">
-                  <span>Discount ({discountType === 'pwd' ? 'PWD' : 'Senior'} 20%)</span>
-                  <strong className={`text-brand-danger ${moneyClass}`}>−{money(pricing.discountAmount)}</strong>
-                </div>
-                {discountedItemBreakdown.length > 0 && (
-                  <div className="mt-2 px-0 py-1">
-                    <div className="mb-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
-                      Discounted items
-                    </div>
-                    <div className="space-y-1">
-                      {discountedItemBreakdown.map((row, idx) => (
-                        <div key={`${row.name}-${idx}`} className="flex items-center justify-between gap-3 text-[11px] text-brand-muted">
-                          <span className="min-w-0 truncate">
-                            {row.name}
-                            {row.promo ? (
-                              <span className="mt-0.5 block truncate text-[10px] font-bold text-brand-danger">
-                                {row.promo}
-                              </span>
-                            ) : null}
-                          </span>
-                          <strong className={`shrink-0 text-brand-danger ${moneyClass}`}>−{money(row.amount)}</strong>
-                        </div>
-                      ))}
-                    </div>
+          {/* When PWD/Senior can't be applied, say WHY per item. "Not in this branch's
+              catalog" vs "not flagged discountable" are completely different problems and
+              guessing between them has cost real time at the counter. */}
+          {!pricing.hasEligibleItems && items.length > 0 && (
+            <div className="mb-3 rounded border border-brand-softline bg-[#fbfbf9] px-2.5 py-2">
+              <p className="m-0 mb-1 text-[11px] font-bold text-brand-ink">
+                No discount-eligible items in this cart.
+              </p>
+              <div className="space-y-0.5">
+                {pricing.eligibilityDebug.map((row, idx) => (
+                  <div key={`${row.name}-${idx}`} className="flex justify-between gap-2 text-[10px]">
+                    <span className="min-w-0 truncate text-brand-muted">{row.name}</span>
+                    <span className="shrink-0 text-brand-subtle">
+                      {row.state === 'missing'
+                        ? 'not in this branch’s catalog — re-sync'
+                        : 'not marked discountable'}
+                    </span>
                   </div>
-                )}
-                <div className="mt-1 flex items-center justify-between">
-                  <span className="font-bold text-brand-ink">Amount due</span>
-                  <strong className={`text-base text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
-                </div>
-              </div>
-              <label className="mb-3 block text-xs text-brand-muted">
-                ID note
-                <input
-                  className="mt-1 w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
-                  value={discountIdNote}
-                  onChange={(e) => setDiscountIdNote(e.target.value)}
-                  placeholder="ID number"
-                />
-              </label>
-            </>
-          )}
-
-          {pricing.appliedDiscountSource === 'promo' && (
-            <div className="mb-3 bg-transparent px-0 py-1 text-xs">
-              <div className="flex items-center justify-between text-brand-muted">
-                <span>Original total</span>
-                <strong className={`text-brand-ink ${moneyClass}`}>{money(rawSubtotal)}</strong>
-              </div>
-              <div className="mt-1 flex items-center justify-between text-brand-muted">
-                <span>Discount ({pricing.discountType || 'Promo'})</span>
-                <strong className={`text-brand-danger ${moneyClass}`}>−{money(pricing.discountAmount)}</strong>
-              </div>
-              {discountedItemBreakdown.length > 0 && (
-                <div className="mt-2 space-y-1 border-t border-[#f1f1ed] pt-2">
-                  <div className="mb-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
-                    Promo items
-                  </div>
-                  {discountedItemBreakdown.map((row, idx) => (
-                    <div
-                      key={`${row.name}-${idx}`}
-                      className="flex items-center justify-between gap-3 text-[11px] text-brand-muted"
-                    >
-                      <span className="min-w-0 truncate">
-                        {row.name}
-                        {row.promo ? (
-                          <span className="mt-0.5 block truncate text-[10px] font-bold text-brand-danger">
-                            {row.promo}
-                          </span>
-                        ) : null}
-                      </span>
-                      <strong className={`shrink-0 text-brand-danger ${moneyClass}`}>−{money(row.amount)}</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="mt-1 flex items-center justify-between">
-                <span className="font-bold text-brand-ink">Amount due</span>
-                <strong className={`text-base text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
+                ))}
               </div>
             </div>
+          )}
+
+          {(discountType === 'pwd' || discountType === 'senior') && (
+            <label className="mb-3 block text-xs text-brand-muted">
+              ID note
+              <input
+                className="mt-1 w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+                value={discountIdNote}
+                onChange={(e) => setDiscountIdNote(e.target.value)}
+                placeholder="ID number"
+              />
+            </label>
           )}
 
           {needsCash && (
@@ -573,11 +775,16 @@ function Cart({
             </div>
           )}
 
-          {vatRate > 0 && (
-            <p className="m-0 mb-3 text-[11px] text-brand-subtle">
+          {vatRate > 0 && pricing.vatableSales > 0 && (
+            <p className="m-0 mb-1 text-[11px] text-brand-subtle">
               VAT ({(vatRate * 100).toFixed(0)}% incl.) {money(pricing.vatAmount)}
             </p>
           )}
+          {pricing.vatExemptSales > 0 && (
+            <p className="m-0 mb-3 text-[11px] text-brand-subtle">VAT-exempt (SC/PWD) {money(pricing.vatExemptSales)}</p>
+          )}
+            </div>
+          </div>
 
           <ModalActions>
             <SecondaryButton compact type="button" onClick={() => setCheckoutOpen(false)}>
@@ -650,6 +857,27 @@ function Cart({
           </div>
         </div>
         {error && <p className="px-5 pt-2 text-xs text-[#ffb4b4] max-[700px]:px-3.5">{error}</p>}
+        {expiredPromoNotice && (
+          <div
+            role="alert"
+            className="mx-5 mt-2 flex items-start justify-between gap-2 rounded-[6px] border border-brand-warn/40 bg-brand-gold/10 px-2.5 py-2 max-[700px]:mx-3.5"
+          >
+            <p className="m-0 text-[11px] leading-snug text-brand-ink">
+              <strong>Promo ended — {expiredPromoNotice}.</strong>{' '}
+              <span className="text-brand-muted">
+                Items in this cart are back to regular price. Re-quote the total before taking payment.
+              </span>
+            </p>
+            <button
+              type="button"
+              className="shrink-0 border-0 bg-transparent p-0.5 text-sm leading-none text-brand-muted"
+              aria-label="Dismiss promo notice"
+              onClick={() => setExpiredPromoNotice(null)}
+            >
+              <FiX />
+            </button>
+          </div>
+        )}
         {tillClosed && (
           <p className="px-5 pt-2 text-xs text-[#ffb4b4] max-[700px]:px-3.5">
             Till closed — sales unavailable until a manager reopens.
@@ -722,17 +950,20 @@ function Cart({
                           </small>
                           {pricing.lineDiscounts[index] > 0 && (
                             <small className="mt-0.5 block text-[10px] font-bold text-brand-danger">
-                              {pricing.appliedDiscountSource === 'promo'
-                                ? pricing.discountType || 'Promo'
-                                : discountType === 'pwd'
-                                  ? 'PWD'
-                                  : 'Senior'}{' '}
-                              −{money(pricing.lineDiscounts[index])}
+                              {lineTag(index)} −{money(pricing.lineDiscounts[index])}
                             </small>
                           )}
-                          {(discountType === 'pwd' || discountType === 'senior') && !pricing.lineDiscounts[index] && (
-                            <small className="mt-0.5 block text-[10px] text-brand-subtle">Not discount eligible</small>
+                          {pricing.lineBreakdown[index]?.vatCategory === 'exempt' && (
+                            <small className="mt-0.5 block text-[10px] font-bold text-brand-success-text">
+                              VAT-exempt
+                            </small>
                           )}
+                          {(discountType === 'pwd' || discountType === 'senior') &&
+                            pricing.lineBreakdown[index]?.vatCategory !== 'exempt' && (
+                              <small className="mt-0.5 block text-[10px] text-brand-subtle">
+                                Not discount eligible
+                              </small>
+                            )}
                           {showTier && (
                             <div className="mt-1 flex gap-1">
                               {[
@@ -756,26 +987,13 @@ function Cart({
                           )}
                         </div>
                         <span className="text-right tabular-nums text-brand-ink">
-                          {pricing.lineDiscounts[index] > 0 ? (
+                          {lineNetTotal(index, item) < lineTotal(item) ? (
                             <span className="block">
                               <span className="block text-[10px] text-brand-subtle line-through">
                                 {money(item.price)}
                               </span>
                               <span className="font-bold text-brand-danger">
-                                {money(
-                                  Number(
-                                    (
-                                      item.price -
-                                      pricing.lineDiscounts[index] /
-                                        Math.max(
-                                          1,
-                                          item.pricingMode === 'kg'
-                                            ? Number(item.weight || 1)
-                                            : Number(item.quantity || 1),
-                                        )
-                                    ).toFixed(2),
-                                  ),
-                                )}
+                                {money(lineNetUnitPrice(index, item))}
                               </span>
                             </span>
                           ) : (
@@ -804,14 +1022,12 @@ function Cart({
                           </button>
                         </div>
                         <b className="text-right tabular-nums text-brand-ink">
-                          {pricing.lineDiscounts[index] > 0 ? (
+                          {lineNetTotal(index, item) < lineTotal(item) ? (
                             <span className="block">
                               <span className="block text-[10px] font-normal text-brand-subtle line-through">
                                 {money(lineTotal(item))}
                               </span>
-                              <span className="text-brand-danger">
-                                {money(Number((lineTotal(item) - pricing.lineDiscounts[index]).toFixed(2)))}
-                              </span>
+                              <span className="text-brand-danger">{money(lineNetTotal(index, item))}</span>
                             </span>
                           ) : (
                             money(lineTotal(item))
@@ -929,17 +1145,20 @@ function Cart({
                           </small>
                           {pricing.lineDiscounts[index] > 0 && (
                             <small className="mt-0.5 block text-[10px] font-bold text-brand-danger">
-                              {pricing.appliedDiscountSource === 'promo'
-                                ? pricing.discountType || 'Promo'
-                                : discountType === 'pwd'
-                                  ? 'PWD'
-                                  : 'Senior'}{' '}
-                              −{money(pricing.lineDiscounts[index])}
+                              {lineTag(index)} −{money(pricing.lineDiscounts[index])}
                             </small>
                           )}
-                          {(discountType === 'pwd' || discountType === 'senior') && !pricing.lineDiscounts[index] && (
-                            <small className="mt-0.5 block text-[10px] text-brand-subtle">Not discount eligible</small>
+                          {pricing.lineBreakdown[index]?.vatCategory === 'exempt' && (
+                            <small className="mt-0.5 block text-[10px] font-bold text-brand-success-text">
+                              VAT-exempt
+                            </small>
                           )}
+                          {(discountType === 'pwd' || discountType === 'senior') &&
+                            pricing.lineBreakdown[index]?.vatCategory !== 'exempt' && (
+                              <small className="mt-0.5 block text-[10px] text-brand-subtle">
+                                Not discount eligible
+                              </small>
+                            )}
                           {showTier && (
                             <div className="mt-1 flex gap-1">
                               {[
@@ -963,26 +1182,13 @@ function Cart({
                           )}
                         </div>
                         <span className="text-right tabular-nums text-brand-ink">
-                          {pricing.lineDiscounts[index] > 0 ? (
+                          {lineNetTotal(index, item) < lineTotal(item) ? (
                             <span className="block">
                               <span className="block text-[10px] text-brand-subtle line-through">
                                 {money(item.price)}
                               </span>
                               <span className="font-bold text-brand-danger">
-                                {money(
-                                  Number(
-                                    (
-                                      item.price -
-                                      pricing.lineDiscounts[index] /
-                                        Math.max(
-                                          1,
-                                          item.pricingMode === 'kg'
-                                            ? Number(item.weight || 1)
-                                            : Number(item.quantity || 1),
-                                        )
-                                    ).toFixed(2),
-                                  ),
-                                )}
+                                {money(lineNetUnitPrice(index, item))}
                               </span>
                             </span>
                           ) : (
@@ -1011,14 +1217,12 @@ function Cart({
                           </button>
                         </div>
                         <b className="text-right tabular-nums text-brand-ink">
-                          {pricing.lineDiscounts[index] > 0 ? (
+                          {lineNetTotal(index, item) < lineTotal(item) ? (
                             <span className="block">
                               <span className="block text-[10px] font-normal text-brand-subtle line-through">
                                 {money(lineTotal(item))}
                               </span>
-                              <span className="text-brand-danger">
-                                {money(Number((lineTotal(item) - pricing.lineDiscounts[index]).toFixed(2)))}
-                              </span>
+                              <span className="text-brand-danger">{money(lineNetTotal(index, item))}</span>
                             </span>
                           ) : (
                             money(lineTotal(item))

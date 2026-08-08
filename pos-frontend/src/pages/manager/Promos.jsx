@@ -4,7 +4,7 @@ import {
   bootstrapBranchData,
   createAndActivatePromoEvent,
   createPromoRule,
-  fetchActivePromoEventWithRules,
+  fetchActivePromoEventsWithRules,
   fetchPromoRulesForEvent,
   deletePromoRule,
   updatePromoEventDetails,
@@ -20,6 +20,7 @@ import {
   fetchActivePromosAcrossBranches,
   fetchTransactionDetail,
   fetchRefundSummary,
+  promoEffectiveStatus,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
 import { money, qty } from '../../utils/format'
@@ -33,6 +34,7 @@ import {
   ModalActions,
   PageHeader,
   PageSkeleton,
+  Pager,
   PrimaryButton,
   SelectField,
   SecondaryButton,
@@ -40,16 +42,122 @@ import {
   SkeletonRows,
   StatusBadge,
   TableCard,
-  moneyClass,
   tableRowClass,
 } from '../../components/ui'
 import { FiPlus } from 'react-icons/fi'
+
+const HISTORY_PAGE_SIZE = 10
+
+/**
+ * Searchable multi-select product list.
+ *
+ * Replaces one-at-a-time dropdowns: putting a promo on 30 items meant adding 30 separate
+ * rules, one page interaction each. `item_pct` already applies its % to every product on
+ * the rule, so one rule with many products is the same result for a fraction of the work.
+ */
+function ProductMultiSelect({ products, selected, onChange, label, hint }) {
+  const [search, setSearch] = useState('')
+  const term = search.trim().toLowerCase()
+  const visible = term
+    ? products.filter(
+        (p) =>
+          String(p.name || '').toLowerCase().includes(term) ||
+          String(p.sku || '').toLowerCase().includes(term),
+      )
+    : products
+  const selectedSet = new Set(selected)
+  const visibleIds = visible.map((p) => p.id)
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedSet.has(id))
+
+  const toggle = (id, on) => {
+    const next = new Set(selected)
+    if (on) next.add(id)
+    else next.delete(id)
+    onChange([...next])
+  }
+
+  return (
+    <div className="sm:col-span-2">
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-bold text-[#646a66]">
+          {label}
+          {selected.length > 0 && <span className="ml-1 text-brand-subtle">· {selected.length} selected</span>}
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline"
+            onClick={() => {
+              // Scoped to what the search is currently showing, so "select all" after a
+              // search means "all the ones I filtered to", not the whole catalog.
+              const next = new Set(selected)
+              if (allVisibleSelected) visibleIds.forEach((id) => next.delete(id))
+              else visibleIds.forEach((id) => next.add(id))
+              onChange([...next])
+            }}
+          >
+            {allVisibleSelected ? 'Clear shown' : 'Select all shown'}
+          </button>
+          {selected.length > 0 && (
+            <button
+              type="button"
+              className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline"
+              onClick={() => onChange([])}
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+      </div>
+      <input
+        className="mb-2 w-full rounded border border-brand-line bg-white p-2 text-xs text-brand-ink outline-none"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search name or SKU…"
+      />
+      <div className="max-h-[240px] overflow-auto rounded border border-brand-softline bg-white p-2.5">
+        {visible.map((p) => (
+          <label key={p.id} className="flex cursor-pointer items-center justify-between gap-3 py-1.5 text-xs">
+            <span className="min-w-0 truncate">
+              {p.name} <span className="text-brand-subtle">({p.sku})</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={selectedSet.has(p.id)}
+              onChange={(e) => toggle(p.id, e.target.checked)}
+            />
+          </label>
+        ))}
+        {visible.length === 0 && (
+          <div className="py-3 text-center text-[11px] text-brand-subtle">No products match that search.</div>
+        )}
+      </div>
+      {hint && <div className="mt-2 text-[11px] text-brand-subtle">{hint}</div>}
+    </div>
+  )
+}
+
+/**
+ * Format a Date for an <input type="datetime-local"> value.
+ *
+ * Must be built from local getters, not `toISOString().slice(0,16)` — ISO is UTC, so that
+ * shortcut shows a Manila manager a time 8 hours behind what they actually picked, and
+ * saves back a promo that starts 8 hours early.
+ */
+function localDateTimeValue(date) {
+  const d = date instanceof Date ? date : new Date(date)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
 
 /**
  * Manager / Supervisor Promos
  * - Promos are always scoped to one branch (never all branches)
  * - Managers pick the branch first, then manage that branch's promos
- * - Supervisors only see / manage the promo for their assigned branch
+ * - Supervisors only see / manage promos for their assigned branch
+ * - Several promos can be live on the same branch at once; POS applies the
+ *   best discount per line across all of them (no stacking on one line)
  *
  * Promo rules:
  *  - item_pct: applies % off to a selected product (all units)
@@ -57,7 +165,7 @@ import { FiPlus } from 'react-icons/fi'
  *  - bundle_pct: applies % off to all products in the bundle (for matched bundle sets)
  *  - bogo_pct: buy_qty/get_qty (default 1/1). Applies % discount to get units (second unit for B1T1)
  *
- * POS side will fetch `fetchActivePromoEventWithRules(branchId)` and apply discounts automatically.
+ * POS side will fetch `fetchActivePromoEventsWithRules(branchId)` and apply discounts automatically.
  */
 export default function ManagerPromos() {
   const user = useAuthStore((s) => s.user)
@@ -67,7 +175,9 @@ export default function ManagerPromos() {
   const [branchId, setBranchId] = useState('')
   const [products, setProducts] = useState([])
 
-  const [active, setActive] = useState(null)
+  // Several promo events can be live (active/stop_pending) on a branch at once.
+  const [activeEvents, setActiveEvents] = useState([])
+  const [managingId, setManagingId] = useState(null) // which live event's rules are being edited
   const [busy, setBusy] = useState(false)
   const [eventName, setEventName] = useState('')
   const [error, setError] = useState('')
@@ -80,17 +190,19 @@ export default function ManagerPromos() {
   const [productA, setProductA] = useState(null)
   const [productB, setProductB] = useState(null)
   const [bundleSelected, setBundleSelected] = useState([])
+  const [itemSelected, setItemSelected] = useState([])
 
   const [history, setHistory] = useState([])
+  const [historyPage, setHistoryPage] = useState(0)
   const [editingEventId, setEditingEventId] = useState(null)
   const [editStartsAt, setEditStartsAt] = useState('')
   const [editEndsAt, setEditEndsAt] = useState('')
+  const [renameTarget, setRenameTarget] = useState(null) // { id, name } while the rename modal is open
+  const [renameValue, setRenameValue] = useState('')
   const [pendingDelete, setPendingDelete] = useState(null)
   const [workingEvent, setWorkingEvent] = useState(null) // pending event for adding rules
   const [stopReason, setStopReason] = useState('')
-  const [stopModal, setStopModal] = useState(false)
-  const [promoStats, setPromoStats] = useState(null)
-  const [promoStatsBusy, setPromoStatsBusy] = useState(false)
+  const [stopTarget, setStopTarget] = useState(null) // event being stopped, or null when modal closed
   const [historyStats, setHistoryStats] = useState({}) // eventId -> summary
   const [trackingEvent, setTrackingEvent] = useState(null) // { event, stats, busy }
   const [txnDetail, setTxnDetail] = useState(null)
@@ -101,12 +213,21 @@ export default function ManagerPromos() {
   const [pageLoading, setPageLoading] = useState(false)
 
   const selectedBranch = branches.find((b) => b.id === branchId)
+  // The live event currently selected for rule editing / sales stats (defaults to the newest live event).
+  const managedEvent = activeEvents.find((e) => e.event.id === managingId) || activeEvents[0] || null
+  const historyPageCount = Math.max(1, Math.ceil(history.length / HISTORY_PAGE_SIZE))
+  const historyPageIndex = Math.min(historyPage, historyPageCount - 1)
+  const historyPageRows = history.slice(
+    historyPageIndex * HISTORY_PAGE_SIZE,
+    historyPageIndex * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
+  )
   const selectedProductsForRule = useMemo(() => {
-    if (ruleType === 'item_pct' || ruleType === 'bogo_pct') return [productSingle].filter(Boolean)
+    if (ruleType === 'item_pct') return itemSelected
+    if (ruleType === 'bogo_pct') return [productSingle].filter(Boolean)
     if (ruleType === 'pair_pct') return [productA, productB].filter(Boolean)
     if (ruleType === 'bundle_pct') return bundleSelected
     return []
-  }, [ruleType, productSingle, productA, productB, bundleSelected])
+  }, [ruleType, itemSelected, productSingle, productA, productB, bundleSelected])
 
   // Managers: load all branches and require an explicit selection.
   // Supervisors: lock to their assigned branch only.
@@ -141,13 +262,16 @@ export default function ManagerPromos() {
   }, [user, managerView])
 
   useEffect(() => {
-    setActive(null)
+    setActiveEvents([])
+    setManagingId(null)
     setHistory([])
+    setHistoryPage(0)
     setProducts([])
     setProductSingle(null)
     setProductA(null)
     setProductB(null)
     setBundleSelected([])
+    setItemSelected([])
     setEventName('')
     setStartsAt('')
     setEndsAt('')
@@ -156,7 +280,6 @@ export default function ManagerPromos() {
     setEditEndsAt('')
     setPendingDelete(null)
     setWorkingEvent(null)
-    setPromoStats(null)
 
     if (!hasSupabase) return undefined
 
@@ -192,9 +315,10 @@ export default function ManagerPromos() {
         const data = await bootstrapBranchData(branchId)
         if (!alive) return
         setProducts(data.products || [])
-        const next = await fetchActivePromoEventWithRules(branchId, { respectDuration: false })
+        const next = await fetchActivePromoEventsWithRules(branchId, { respectDuration: false })
         if (!alive) return
-        setActive(next)
+        setActiveEvents(next)
+        setManagingId((prev) => (next.some((e) => e.event.id === prev) ? prev : next[0]?.event.id || null))
         const rows = await fetchPromoEventsForBranch(branchId)
         if (alive) setHistory(rows)
       } catch (e) {
@@ -209,43 +333,11 @@ export default function ManagerPromos() {
   }, [branchId, managerView])
 
   useEffect(() => {
-    const isoToLocalValue = (iso) => {
-      if (!iso) return ''
-      const d = new Date(iso)
-      if (Number.isNaN(d.getTime())) return ''
-      // datetime-local expects: YYYY-MM-DDTHH:mm
-      return d.toISOString().slice(0, 16)
-    }
-    setStartsAt(isoToLocalValue(active?.event?.startsAt))
-    setEndsAt(isoToLocalValue(active?.event?.endsAt))
-  }, [active?.event?.startsAt, active?.event?.endsAt])
-
-  useEffect(() => {
-    if (!hasSupabase || !branchId || !active?.event?.name) {
-      setPromoStats(null)
-      return undefined
-    }
-    let alive = true
-    setPromoStatsBusy(true)
-    fetchPromoSalesStats({
-      branchId,
-      promoName: active.event.name,
-      startsAt: active.event.startsAt || null,
-      endsAt: active.event.endsAt || null,
-    })
-      .then((stats) => {
-        if (alive) setPromoStats(stats)
-      })
-      .catch(() => {
-        if (alive) setPromoStats(null)
-      })
-      .finally(() => {
-        if (alive) setPromoStatsBusy(false)
-      })
-    return () => {
-      alive = false
-    }
-  }, [branchId, active?.event?.id, active?.event?.name, active?.event?.startsAt, active?.event?.endsAt])
+    // A new promo almost always starts now — pre-fill it so the manager only has to pick an
+    // end. Only fills a blank field: never clobbers a start the manager already typed, and
+    // never runs again once they have.
+    setStartsAt((prev) => prev || localDateTimeValue(new Date()))
+  }, [branchId])
 
   useEffect(() => {
     // Clear cached Sales summaries when switching branches.
@@ -312,13 +404,15 @@ export default function ManagerPromos() {
 
   const refreshActive = async () => {
     if (!branchId) {
-      setActive(null)
+      setActiveEvents([])
+      setManagingId(null)
       setWorkingEvent(null)
       setHistory([])
       return
     }
-    const next = await fetchActivePromoEventWithRules(branchId, { respectDuration: false })
-    setActive(next)
+    const next = await fetchActivePromoEventsWithRules(branchId, { respectDuration: false })
+    setActiveEvents(next)
+    setManagingId((prev) => (next.some((e) => e.event.id === prev) ? prev : next[0]?.event.id || null))
     const rows = await fetchPromoEventsForBranch(branchId)
     setHistory(rows)
     const pending = (rows || []).find((r) => r.status === 'pending')
@@ -339,9 +433,8 @@ export default function ManagerPromos() {
     }
   }
 
-  const eventForRules = active?.event?.status === 'active' || active?.event?.status === 'stop_pending'
-    ? active
-    : workingEvent
+  // Rule editor targets the pending draft if there is one, else the live event picked in "Manage rules".
+  const eventForRules = workingEvent || managedEvent
 
   const onCreateEvent = async () => {
     if (!branchId) {
@@ -400,19 +493,19 @@ export default function ManagerPromos() {
   }
 
   const onRequestStop = async () => {
-    if (!active?.event?.id || !stopReason.trim()) {
+    if (!stopTarget?.id || !stopReason.trim()) {
       setError(managerView ? 'Enter a reason to stop this promo.' : 'Enter a reason to request stop.')
       return
     }
     setBusy(true)
     setError('')
     try {
-      await requestStopPromo({ id: active.event.id, staffId: user.id, reason: stopReason.trim() })
+      await requestStopPromo({ id: stopTarget.id, staffId: user.id, reason: stopReason.trim() })
       // Managers are the approvers — stop immediately after recording the reason.
       if (managerView) {
-        await approveStopPromo({ id: active.event.id, staffId: user.id })
+        await approveStopPromo({ id: stopTarget.id, staffId: user.id })
       }
-      setStopModal(false)
+      setStopTarget(null)
       setStopReason('')
       await refreshActive()
     } catch (e) {
@@ -462,12 +555,7 @@ export default function ManagerPromos() {
     }
   }
 
-  const isoToLocalValueForEdit = (iso) => {
-    if (!iso) return ''
-    const d = new Date(iso)
-    if (Number.isNaN(d.getTime())) return ''
-    return d.toISOString().slice(0, 16)
-  }
+  const isoToLocalValueForEdit = (iso) => (iso ? localDateTimeValue(iso) : '')
 
   const onDeleteEvent = async (promoEventId) => {
     if (!promoEventId) return
@@ -494,6 +582,33 @@ export default function ManagerPromos() {
     setEditingEventId(null)
     setEditStartsAt('')
     setEditEndsAt('')
+  }
+
+  // Renaming is a typo fix, not a change to what the promo does — it never touches
+  // schedule or approval state, so it needs no dual-control step. Note the name is also
+  // what per-line promo attribution matches on (transaction_items.promo_name), so past
+  // receipts keep the OLD name and stay correctly attributed to it.
+  const onStartRenameEvent = (row) => {
+    if (!row?.id) return
+    setRenameTarget({ id: row.id, name: row.name || '' })
+    setRenameValue(row.name || '')
+  }
+
+  const onSaveRename = async () => {
+    const nextName = renameValue.trim()
+    if (!renameTarget?.id || !nextName) return
+    setBusy(true)
+    setError('')
+    try {
+      await updatePromoEventDetails({ promoEventId: renameTarget.id, name: nextName })
+      setRenameTarget(null)
+      setRenameValue('')
+      await refreshActive()
+    } catch (e) {
+      setError(e?.message || 'Failed to rename promo.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   const openDeleteConfirm = (payload) => {
@@ -565,6 +680,8 @@ export default function ManagerPromos() {
       setProductA(null)
       setProductB(null)
       setBundleSelected([])
+      setItemSelected([])
+    setItemSelected([])
       await refreshActive()
     } catch (e) {
       setError(e?.message || 'Failed to create promo rule.')
@@ -701,34 +818,54 @@ export default function ManagerPromos() {
       <TableCard className="mb-4 max-h-none overflow-visible p-5">
         <div className="grid gap-4 sm:grid-cols-2 sm:items-start">
           <div>
-            <Eyebrow>Live promo</Eyebrow>
-            <h2 className="m-0 text-lg">{active?.event?.name || 'No live promo'}</h2>
+            <Eyebrow>Live promos{activeEvents.length ? ` · ${activeEvents.length}` : ''}</Eyebrow>
             <p className="m-0 mt-1 text-xs text-brand-muted">
               {managerView
-                ? 'Create a promo, add rules, then activate it. Supervisor-submitted promos appear here for your approval.'
+                ? 'Create a promo, add rules, then activate it. Several promos can run at once — Supervisor-submitted promos appear here for your approval.'
                 : 'New promos need manager approval before going live. Stopping also needs manager approval first.'}
             </p>
-            {active?.event?.status === 'stop_pending' && (
-              <p className="mt-2 rounded-md bg-brand-warn-bg px-3 py-2 text-xs text-brand-warn">
-                Stop awaiting manager approval
-                {active.event.stopReason ? `: ${active.event.stopReason}` : ''}
-              </p>
-            )}
-            {active?.event?.status === 'active' && (
+            {!activeEvents.length ? (
+              <p className="m-0 mt-3 text-sm text-brand-ink">No live promo right now.</p>
+            ) : (
               <div className="mt-3">
-                <PrimaryButton compact type="button" disabled={busy} onClick={() => setStopModal(true)}>
-                  {managerView ? 'Stop promo' : 'Request stop'}
-                </PrimaryButton>
-              </div>
-            )}
-            {managerView && active?.event?.status === 'stop_pending' && (
-              <div className="mt-3 flex gap-2">
-                <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveStop(active.event.id)}>
-                  Approve stop
-                </PrimaryButton>
-                <SecondaryButton compact type="button" disabled={busy} onClick={() => onRejectStop(active.event.id)}>
-                  Reject stop
-                </SecondaryButton>
+                <SelectField label="Managing" value={managingId || ''} onChange={(e) => setManagingId(e.target.value)}>
+                  {activeEvents.map((evt) => (
+                    <option key={evt.event.id} value={evt.event.id}>
+                      {evt.event.name} · {evt.event.status === 'stop_pending' ? 'Stop pending' : 'Active'}
+                    </option>
+                  ))}
+                </SelectField>
+
+                {/* No "Active" badge: everything in this dropdown is live by definition, and
+                    the option label already spells out Active vs Stop pending. Actions sit on
+                    the right of the selector row rather than stacked underneath it. */}
+                {managedEvent && (
+                  <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+                    <SecondaryButton compact type="button" disabled={busy} onClick={() => onStartRenameEvent(managedEvent.event)}>
+                      Rename
+                    </SecondaryButton>
+                    {managedEvent.event.status === 'active' && (
+                      <PrimaryButton compact type="button" disabled={busy} onClick={() => setStopTarget(managedEvent.event)}>
+                        {managerView ? 'Stop promo' : 'Request stop'}
+                      </PrimaryButton>
+                    )}
+                    {managerView && managedEvent.event.status === 'stop_pending' && (
+                      <>
+                        <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveStop(managedEvent.event.id)}>
+                          Approve stop
+                        </PrimaryButton>
+                        <SecondaryButton compact type="button" disabled={busy} onClick={() => onRejectStop(managedEvent.event.id)}>
+                          Reject stop
+                        </SecondaryButton>
+                      </>
+                    )}
+                  </div>
+                )}
+                {managedEvent?.event?.status === 'stop_pending' && managedEvent.event.stopReason && (
+                  <p className="mt-1 mb-0 text-[11px] text-brand-warn">
+                    Stop awaiting manager approval: {managedEvent.event.stopReason}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -777,105 +914,7 @@ export default function ManagerPromos() {
         </div>
       </TableCard>
 
-      {active?.event?.name && (
-        <TableCard className="mb-4 max-h-none overflow-hidden">
-          <div className="px-5 pt-4 pb-2">
-            <Eyebrow>PROMO SALES</Eyebrow>
-            <h2 className="m-0 text-lg">{active.event.name}</h2>
-            <p className="m-0 mt-1 text-xs text-brand-muted">
-              Items sold on this promo — quantity, discount given, and net sales.
-            </p>
-          </div>
-          <div className="grid grid-cols-3 gap-2 border-y border-brand-softline bg-white px-5 py-3 text-xs max-[700px]:grid-cols-1">
-            <div>
-              <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Receipts</span>
-              <strong className="text-brand-ink">
-                {promoStatsBusy ? '…' : promoStats?.receiptCount ?? 0}
-              </strong>
-            </div>
-            <div>
-              <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Discount given</span>
-              <strong className="text-brand-danger">
-                {promoStatsBusy ? '…' : `−${money(promoStats?.discountTotal || 0)}`}
-              </strong>
-            </div>
-            <div>
-              <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Net sales</span>
-              <strong className="text-brand-ink">
-                {promoStatsBusy ? '…' : money(promoStats?.saleTotal || 0)}
-              </strong>
-            </div>
-          </div>
-          <div className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-5 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[800px]:grid-cols-[1.2fr_0.7fr_0.9fr]">
-            <span>Item</span>
-            <span className="text-right">Qty sold</span>
-            <span className="text-right max-[800px]:hidden">Gross</span>
-            <span className="text-right">Discount</span>
-            <span className="text-right max-[800px]:hidden">Net</span>
-          </div>
-          {(promoStats?.items || []).map((row) => (
-            <div
-              key={row.productId}
-              className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr_0.9fr] gap-2 border-t border-brand-softline px-5 py-2.5 text-xs max-[800px]:grid-cols-[1.2fr_0.7fr_0.9fr]"
-            >
-              <div className="min-w-0">
-                <strong className="block truncate text-brand-ink">{row.name}</strong>
-                {row.sku ? <span className="text-[10px] text-brand-subtle">{row.sku}</span> : null}
-              </div>
-              <span className="text-right tabular-nums">
-                {qty(row.qty, row.pricingMode === 'kg' ? 'kg' : 'pc')}
-              </span>
-              <span className={`text-right max-[800px]:hidden ${moneyClass}`}>{money(row.gross)}</span>
-              <span className={`text-right text-brand-danger ${moneyClass}`}>−{money(row.discount)}</span>
-              <span className={`text-right max-[800px]:hidden ${moneyClass}`}>{money(row.net)}</span>
-            </div>
-          ))}
-          {!promoStatsBusy && !(promoStats?.items || []).length && (
-            <div className="px-5 py-6 text-xs text-brand-subtle">
-              No discounted items sold under this promo yet.
-            </div>
-          )}
-          {(promoStats?.receipts || []).length > 0 && (
-            <div className="border-t border-brand-softline px-5 py-3">
-              <p className="m-0 mb-2 text-[11px] font-bold text-brand-subtle uppercase tracking-wide">
-                Transactions ({promoStats.receipts.length})
-              </p>
-              <div className="max-h-[220px] overflow-auto rounded border border-brand-softline">
-                <div className="grid grid-cols-[1fr_1fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase">
-                  <span>OR / Time</span>
-                  <span>Cashier</span>
-                  <span className="text-right">Discount</span>
-                  <span className="text-right">Total</span>
-                </div>
-                {promoStats.receipts.map((r) => (
-                  <div
-                    key={r.id}
-                    role="button"
-                    tabIndex={0}
-                    className={`tap-row grid cursor-pointer grid-cols-[1fr_1fr_0.9fr_0.9fr] gap-2 px-3 py-2 text-xs ${tableRowClass}`}
-                    onClick={() => openTxnDetail(r)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') openTxnDetail(r)
-                    }}
-                    title="View transaction detail"
-                  >
-                    <div className="min-w-0">
-                      <strong className="block truncate text-brand-ink">
-                        {r.orNumber || String(r.id).slice(0, 8)}
-                      </strong>
-                      <span className="text-[10px] text-brand-subtle">{r.time}</span>
-                    </div>
-                    <span className="truncate">{r.cashier}</span>
-                    <span className="text-right tabular-nums text-brand-danger">−{money(r.discountAmount)}</span>
-                    <span className="text-right tabular-nums">{money(r.total)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </TableCard>
-      )}
-
+      {/* Most urgent first: a draft waiting on you needs action before anything else here matters. */}
       {workingEvent && (
         <TableCard className="mb-4 max-h-none overflow-visible p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -902,6 +941,180 @@ export default function ManagerPromos() {
         </TableCard>
       )}
 
+      {/*
+        Promo sales/performance lives on the History row's "Sales" action (below) — a
+        separate always-visible stats card for the currently-managed promo duplicated that
+        same data, so it was removed. Rules / Add rule live further below, full width —
+        editing a promo's structure needs room, not a half-width column.
+      */}
+      <TableCard className="mb-4 max-h-none p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="m-0 text-base">Promo history</h2>
+                <p className="m-0 mt-1 text-xs text-brand-subtle">
+                  Past and current events with sales tracking — open Sales to see receipts and items sold.
+                </p>
+              </div>
+            </div>
+
+            {history.length ? (
+              // Full-bleed: negative margin cancels the card's p-5 so the dark header row
+              // reaches both edges instead of floating in a white gutter, and the first/last
+              // cells get that padding back individually so text still lines up with the title.
+              <div className="-mx-5 mt-4 overflow-x-auto overflow-y-visible">
+                <table className="min-w-full text-left text-xs [&_td:first-child]:pl-5 [&_td:last-child]:pr-5 [&_th:first-child]:pl-5 [&_th:last-child]:pr-5">
+                  <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
+                    <tr>
+                      <th className="px-3 py-2.5">Promo name</th>
+                      <th className="px-3 py-2.5">Schedule</th>
+                      <th className="px-3 py-2.5">Status</th>
+                      <th className="px-3 py-2.5 text-right">Promo receipts</th>
+                      <th className="px-3 py-2.5 text-right">Discount given</th>
+                      <th className="px-3 py-2.5 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historyPageRows.map((e) => {
+                      // Effective, not stored: a promo past its end date reads as stopped even
+                      // if the DB sweep hasn't run yet. Keeps the row (and the Delete button
+                      // below) honest the moment the end time passes.
+                      const status = promoEffectiveStatus(e)
+                      const isLive = status === 'active' || status === 'stop_pending'
+                      const endedByClock = isLive !== (e.status === 'active' || e.status === 'stop_pending')
+                      const isEditing = editingEventId === e.id
+                      const stats = historyStats[e.id]
+                      const fmt = (iso) => {
+                        if (!iso) return '—'
+                        const d = new Date(iso)
+                        if (Number.isNaN(d.getTime())) return '—'
+                        return d.toLocaleString([], { month: '2-digit', day: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+                      }
+
+                      return (
+                        <tr key={e.id} className="border-t border-brand-softline">
+                          <td className="px-3 py-3 font-bold text-brand-ink">{e.name}</td>
+                          <td className="px-3 py-3">{fmt(e.starts_at)} → {fmt(e.ends_at)}</td>
+                          <td className="px-3 py-3">
+                            <span className="capitalize">{status}</span>
+                            {endedByClock && (
+                              <span className="mt-0.5 block text-[10px] text-brand-subtle">Promo ended</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums">
+                            {stats ? stats.receiptCount : '—'}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums text-brand-danger">
+                            {stats ? `−${money(stats.discountTotal || 0)}` : '—'}
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <div className="flex flex-wrap items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                className="border-0 bg-transparent text-xs font-bold text-brand-danger underline"
+                                disabled={busy}
+                                onClick={() => openPromoTracking(e)}
+                              >
+                                Sales
+                              </button>
+                            {managerView && e.status === 'pending' && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                                  disabled={busy}
+                                  onClick={() => onApproveCreate(e.id)}
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  type="button"
+                                  className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                                  disabled={busy}
+                                  onClick={() => onRejectCreate(e.id)}
+                                >
+                                  Reject
+                                </button>
+                              </>
+                            )}
+                            {managerView && status === 'stop_pending' && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                                  disabled={busy}
+                                  onClick={() => onApproveStop(e.id)}
+                                >
+                                  Approve stop
+                                </button>
+                                <button
+                                  type="button"
+                                  className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                                  disabled={busy}
+                                  onClick={() => onRejectStop(e.id)}
+                                >
+                                  Reject stop
+                                </button>
+                              </>
+                            )}
+                            {/* Duration can be edited regardless of status — including an already-active
+                                promo — this only ever touches starts_at/ends_at (updatePromoEventDetails),
+                                never approval state, so it doesn't need to go through dual control. */}
+                            <button
+                              type="button"
+                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                              disabled={busy || isEditing}
+                              onClick={() => onStartEditEvent(e)}
+                            >
+                              Modify
+                            </button>
+                            <button
+                              type="button"
+                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                              disabled={busy}
+                              onClick={() => onStartRenameEvent(e)}
+                            >
+                              Rename
+                            </button>
+                            {!isLive && (
+                              <button
+                                type="button"
+                                className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                                disabled={busy}
+                                onClick={() =>
+                                  openDeleteConfirm({
+                                    kind: 'event',
+                                    id: e.id,
+                                    label: e.name,
+                                  })}
+                              >
+                                Delete
+                              </button>
+                            )}
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="mt-4 text-xs text-brand-subtle">No promo events yet.</div>
+            )}
+            {historyPageCount > 1 && (
+              <div className="-mx-5 -mb-5 mt-4">
+                <Pager
+                  page={historyPageIndex + 1}
+                  pageCount={historyPageCount}
+                  total={history.length}
+                  label="events"
+                  onPrev={() => setHistoryPage((p) => Math.max(0, p - 1))}
+                  onNext={() => setHistoryPage((p) => Math.min(historyPageCount - 1, p + 1))}
+                />
+              </div>
+            )}
+      </TableCard>
+
       <TableCard className="mb-4 max-h-none overflow-visible p-5">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -915,14 +1128,15 @@ export default function ManagerPromos() {
         </div>
 
         {eventForRules?.rules?.length ? (
-          <div className="mt-4 overflow-x-auto overflow-y-visible">
-            <table className="min-w-full text-left text-xs">
+          // Full-bleed to the card edges, same treatment as Promo history above.
+          <div className="-mx-5 -mb-5 mt-4 overflow-x-auto overflow-y-visible">
+            <table className="min-w-full text-left text-xs [&_td:first-child]:pl-5 [&_td:last-child]:pr-5 [&_th:first-child]:pl-5 [&_th:last-child]:pr-5">
               <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
                 <tr>
-                  <th className="px-3 py-3">Rule type</th>
-                  <th className="px-3 py-3">Discount %</th>
-                  <th className="px-3 py-3">Products in rule</th>
-                  <th className="px-3 py-3"></th>
+                  <th className="px-3 py-2.5">Rule type</th>
+                  <th className="px-3 py-2.5">Discount %</th>
+                  <th className="px-3 py-2.5">Products in rule</th>
+                  <th className="px-3 py-2.5"></th>
                 </tr>
               </thead>
               <tbody>
@@ -953,7 +1167,7 @@ export default function ManagerPromos() {
                       <button
                         type="button"
                         className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                        disabled={busy || active?.event?.status === 'stop_pending'}
+                        disabled={busy || eventForRules?.event?.status === 'stop_pending'}
                         onClick={() =>
                           openDeleteConfirm({
                             kind: 'rule',
@@ -971,138 +1185,6 @@ export default function ManagerPromos() {
           </div>
         ) : (
           <div className="mt-4 text-xs text-brand-subtle">No rules yet.</div>
-        )}
-      </TableCard>
-
-      <TableCard className="mb-4 max-h-none p-5">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="m-0 text-base">Promo history</h2>
-            <p className="m-0 mt-1 text-xs text-brand-subtle">
-              Past and current events with sales tracking — open Sales to see receipts and items sold.
-            </p>
-          </div>
-        </div>
-
-        {history.length ? (
-          <div className="mt-4 overflow-x-auto overflow-y-visible">
-            <table className="min-w-full text-left text-xs">
-              <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
-                <tr>
-                  <th className="px-3 py-3">Promo name</th>
-                  <th className="px-3 py-3">Schedule</th>
-                  <th className="px-3 py-3">Status</th>
-                  <th className="px-3 py-3 text-right">Promo receipts</th>
-                  <th className="px-3 py-3 text-right">Discount given</th>
-                  <th className="px-3 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((e) => {
-                  const isActive = Boolean(e.is_active)
-                  const isEditing = editingEventId === e.id
-                  const stats = historyStats[e.id]
-                  const fmt = (iso) => {
-                    if (!iso) return '—'
-                    const d = new Date(iso)
-                    if (Number.isNaN(d.getTime())) return '—'
-                    return d.toLocaleString([], { month: '2-digit', day: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
-                  }
-
-                  return (
-                    <tr key={e.id} className="border-t border-brand-softline">
-                      <td className="px-3 py-3 font-bold text-brand-ink">{e.name}</td>
-                      <td className="px-3 py-3">{fmt(e.starts_at)} → {fmt(e.ends_at)}</td>
-                      <td className="px-3 py-3 capitalize">{e.status || (isActive ? 'active' : 'inactive')}</td>
-                      <td className="px-3 py-3 text-right tabular-nums">
-                        {stats ? stats.receiptCount : '—'}
-                      </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-brand-danger">
-                        {stats ? `−${money(stats.discountTotal || 0)}` : '—'}
-                      </td>
-                      <td className="px-3 py-3 text-right">
-                        <div className="flex flex-wrap items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            className="border-0 bg-transparent text-xs font-bold text-brand-danger underline"
-                            disabled={busy}
-                            onClick={() => openPromoTracking(e)}
-                          >
-                            Sales
-                          </button>
-                        {managerView && e.status === 'pending' ? (
-                          <>
-                            <button
-                              type="button"
-                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                              disabled={busy}
-                              onClick={() => onApproveCreate(e.id)}
-                            >
-                              Approve
-                            </button>
-                            <button
-                              type="button"
-                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                              disabled={busy}
-                              onClick={() => onRejectCreate(e.id)}
-                            >
-                              Reject
-                            </button>
-                          </>
-                        ) : managerView && e.status === 'stop_pending' ? (
-                          <>
-                            <button
-                              type="button"
-                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                              disabled={busy}
-                              onClick={() => onApproveStop(e.id)}
-                            >
-                              Approve stop
-                            </button>
-                            <button
-                              type="button"
-                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                              disabled={busy}
-                              onClick={() => onRejectStop(e.id)}
-                            >
-                              Reject stop
-                            </button>
-                          </>
-                        ) : isActive || e.status === 'active' || e.status === 'stop_pending' ? null : (
-                          <>
-                            <button
-                              type="button"
-                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                              disabled={busy || isEditing}
-                              onClick={() => onStartEditEvent(e)}
-                            >
-                              Modify
-                            </button>
-                            <button
-                              type="button"
-                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                              disabled={busy}
-                              onClick={() =>
-                                openDeleteConfirm({
-                                  kind: 'event',
-                                  id: e.id,
-                                  label: e.name,
-                                })}
-                            >
-                              Delete
-                            </button>
-                          </>
-                        )}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="mt-4 text-xs text-brand-subtle">No promo events yet.</div>
         )}
       </TableCard>
 
@@ -1127,7 +1209,20 @@ export default function ManagerPromos() {
             onChange={(e) => setDiscountPct(Number(e.target.value.replace(/[^\d.]/g, '')))}
           />
 
-          {(ruleType === 'item_pct' || ruleType === 'bogo_pct') && (
+          {/* item_pct applies its % to every product on the rule, so one rule covers as
+              many items as you tick — no need for one rule per product. */}
+          {ruleType === 'item_pct' && (
+            <ProductMultiSelect
+              label="Products on this promo"
+              products={products}
+              selected={itemSelected}
+              onChange={setItemSelected}
+              hint="Every ticked product gets this % off. One rule covers them all."
+            />
+          )}
+
+          {/* BOGO stays single: buy/get quantities are counted against one product. */}
+          {ruleType === 'bogo_pct' && (
             <SelectField
               label="Product"
               value={productSingle || ''}
@@ -1161,36 +1256,13 @@ export default function ManagerPromos() {
           )}
 
           {ruleType === 'bundle_pct' && (
-            <div className="sm:col-span-2">
-              <div className="mb-1 text-xs font-bold text-[#646a66]">Select bundle products</div>
-              <div className="max-h-[240px] overflow-auto rounded border border-brand-softline bg-white p-2.5">
-                {products.map((p) => {
-                  const checked = bundleSelected.includes(p.id)
-                  return (
-                    <label key={p.id} className="flex items-center justify-between gap-3 py-1.5 text-xs">
-                      <span className="min-w-0 truncate">
-                        {p.name} <span className="text-brand-subtle">({p.sku})</span>
-                      </span>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) => {
-                          setBundleSelected((prev) => {
-                            const next = new Set(prev)
-                            if (e.target.checked) next.add(p.id)
-                            else next.delete(p.id)
-                            return [...next]
-                          })
-                        }}
-                      />
-                    </label>
-                  )
-                })}
-              </div>
-              {bundleSelected.length < 2 && (
-                <div className="mt-2 text-[11px] text-brand-subtle">Select at least 2 products for a bundle.</div>
-              )}
-            </div>
+            <ProductMultiSelect
+              label="Select bundle products"
+              products={products}
+              selected={bundleSelected}
+              onChange={setBundleSelected}
+              hint={bundleSelected.length < 2 ? 'Select at least 2 products for a bundle.' : null}
+            />
           )}
         </div>
 
@@ -1249,6 +1321,36 @@ export default function ManagerPromos() {
         </Modal>
       )}
 
+      {renameTarget && (
+        <Modal onClose={() => !busy && setRenameTarget(null)}>
+          <Eyebrow>RENAME PROMO</Eyebrow>
+          <h2 className="m-0 text-lg">Fix the promo name</h2>
+          <p className="mt-1 mb-4 text-xs text-brand-muted">
+            Only the name changes — schedule, rules, and approval status stay as they are.
+            Receipts already rung up keep the old name in their sales history.
+          </p>
+          <Field
+            label="Promo name"
+            value={renameValue}
+            onChange={(ev) => setRenameValue(ev.target.value.replace(/[<>]/g, ''))}
+            placeholder="e.g. Valentines"
+          />
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={busy} onClick={() => setRenameTarget(null)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton
+              compact
+              type="button"
+              disabled={busy || !renameValue.trim() || renameValue.trim() === renameTarget.name}
+              onClick={onSaveRename}
+            >
+              {busy ? 'Saving…' : 'Save name'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
       {pendingDelete && (
         <Modal onClose={closeDeleteConfirm}>
           <Eyebrow>CONFIRM DELETE</Eyebrow>
@@ -1271,10 +1373,10 @@ export default function ManagerPromos() {
         </Modal>
       )}
 
-      {stopModal && (
-        <Modal onClose={() => !busy && setStopModal(false)}>
+      {stopTarget && (
+        <Modal onClose={() => !busy && setStopTarget(null)}>
           <Eyebrow>{managerView ? 'STOP PROMO' : 'REQUEST STOP'}</Eyebrow>
-          <h2 className="m-0 mb-2 text-lg">Stop {active?.event?.name}?</h2>
+          <h2 className="m-0 mb-2 text-lg">Stop {stopTarget.name}?</h2>
           <p className="m-0 mb-3 text-xs text-brand-muted">
             {managerView
               ? 'This ends the promo on POS immediately.'
@@ -1287,7 +1389,7 @@ export default function ManagerPromos() {
             placeholder="Why end this promo early?"
           />
           <ModalActions>
-            <SecondaryButton compact type="button" disabled={busy} onClick={() => setStopModal(false)}>
+            <SecondaryButton compact type="button" disabled={busy} onClick={() => setStopTarget(null)}>
               Cancel
             </SecondaryButton>
             <PrimaryButton compact type="button" disabled={busy || !stopReason.trim()} onClick={onRequestStop}>

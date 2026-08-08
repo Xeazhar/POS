@@ -3,10 +3,46 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
+/**
+ * Emit /version.json holding this build's identity, and serve the same shape in dev.
+ *
+ * An already-open tab has no way to know a new bundle was deployed — the PWA service
+ * worker only swaps assets on the *next* navigation, so a POS left open on the counter
+ * can keep running week-old code (and keep missing fixes) indefinitely. The client polls
+ * this file and prompts a refresh when the value changes; see src/hooks/useAppVersion.js.
+ *
+ * Deliberately NOT in public/: a checked-in static file would have to be bumped by hand
+ * and would silently go stale the one time someone forgets.
+ */
+function versionJsonPlugin() {
+  // Build timestamp, not package.json version — the version field rarely changes, and a
+  // deploy that didn't bump it would go undetected by every open tab.
+  const version = new Date().toISOString()
+  return {
+    name: 'calepos-version-json',
+    configureServer(server) {
+      // Dev: same endpoint so the watchdog code path is exercised locally too.
+      server.middlewares.use('/version.json', (_req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify({ version, dev: true }))
+      })
+    },
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: JSON.stringify({ version, builtAt: new Date().toISOString() }),
+      })
+    },
+  }
+}
+
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    versionJsonPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'icons.svg', 'pwa-192.png', 'pwa-512.png'],
@@ -46,6 +82,12 @@ export default defineConfig({
         clientsClaim: true,
         skipWaiting: true,
         runtimeCaching: [
+          {
+            // The staleness probe itself must never be served from cache, or the tab
+            // would compare its own build against a cached copy of its own build.
+            urlPattern: ({ url }) => url.pathname === '/version.json',
+            handler: 'NetworkOnly',
+          },
           {
             urlPattern: ({ request }) => request.mode === 'navigate',
             handler: 'NetworkFirst',

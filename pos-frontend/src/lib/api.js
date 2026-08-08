@@ -3,6 +3,8 @@ import { mapDayReport } from '../utils/dayEndReport'
 import { localDateKey, today } from '../utils/format'
 import { pinAuthEmail } from '../utils/roles'
 import { normalizeMenuKind } from '../utils/ulam'
+import { clearUnlockSecret, loadUnlockSecret, saveUnlockSecret } from '../offline/session'
+import { createVerifier, isVerifierExpired, verifyAgainst } from '../utils/unlockVerifier'
 
 export const hasSupabase = Boolean(supabase)
 export { allowDemoMode }
@@ -39,6 +41,32 @@ function isMissingColumnError(error, column) {
   return msg.includes(column) && (msg.includes('schema cache') || msg.includes('does not exist') || msg.includes('Could not find'))
 }
 
+/**
+ * Read every row of a query, not just the first page.
+ *
+ * PostgREST caps a response at `db-max-rows` (1000 on Supabase by default) and returns the
+ * truncated set WITHOUT an error. A branch past that many products silently lost its tail:
+ * those products never reached useProductStore, so POS couldn't price them, and Cart's
+ * eligibility lookup (`productById.get(item.id)`) missed them and fell back to the stale
+ * flag frozen on the cart line — which is why a product could read "Discountable: Yes" in
+ * the catalog and still refuse PWD/Senior at the counter.
+ *
+ * `build(from, to)` must return a fresh query each call — a PostgREST builder is not reusable.
+ */
+const PAGE_ROWS = 1000
+
+async function fetchAllRows(build) {
+  const out = []
+  for (let from = 0; ; from += PAGE_ROWS) {
+    const { data, error } = await build(from, from + PAGE_ROWS - 1)
+    if (error) return { data: null, error }
+    const rows = data || []
+    out.push(...rows)
+    if (rows.length < PAGE_ROWS) break
+  }
+  return { data: out, error: null }
+}
+
 async function writeProductRow(mode, payload, { id } = {}) {
   const attempt = async (row) => {
     if (mode === 'insert') {
@@ -63,7 +91,15 @@ async function writeProductRow(mode, payload, { id } = {}) {
     delete fallback.available_today
     ;({ data, error } = await attempt(fallback))
   }
-  if (error && (isMissingColumnError(error, 'unit_cost') || isMissingColumnError(error, 'discount_eligible'))) {
+  // Drop ONLY the column the server actually complained about. These used to be removed
+  // as a pair, so a schema missing `unit_cost` silently stripped `discount_eligible` from
+  // every product write too — the save reported success and the discount flag never landed.
+  if (error && isMissingColumnError(error, 'unit_cost')) {
+    const fallback = { ...payload }
+    delete fallback.unit_cost
+    ;({ data, error } = await attempt(fallback))
+  }
+  if (error && isMissingColumnError(error, 'discount_eligible')) {
     const fallback = { ...payload }
     delete fallback.unit_cost
     delete fallback.discount_eligible
@@ -157,6 +193,10 @@ export function mapTransaction(row) {
     paymentReference: row.payment_reference || null,
     vatAmount: row.vat_amount != null ? Number(row.vat_amount) : 0,
     vatableSales: row.vatable_sales != null ? Number(row.vatable_sales) : 0,
+    vatExemptSales: row.vat_exempt_sales != null ? Number(row.vat_exempt_sales) : 0,
+    zeroRatedSales: row.zero_rated_sales != null ? Number(row.zero_rated_sales) : 0,
+    scPwdDiscount: row.sc_pwd_discount != null ? Number(row.sc_pwd_discount) : 0,
+    vatRateApplied: row.vat_rate_applied != null ? Number(row.vat_rate_applied) : null,
     discountAmount: row.discount_amount != null ? Number(row.discount_amount) : 0,
     discountType: row.discount_type || null,
     discountIdNote: row.discount_id_note || null,
@@ -309,29 +349,23 @@ export async function releaseStaffSession(staffId, sessionId) {
 
 const MANAGER_UNLOCK_SESSION_KEY = 'cale-manager-unlock-v1'
 
-async function sha256Text(text) {
-  const data = new TextEncoder().encode(String(text))
-  const hash = await crypto.subtle.digest('SHA-256', data)
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-}
-
 /**
- * Remember password verifier for lock-screen unlock.
- * Session stays signed in — we only compare a local hash (no Auth / no CAPTCHA).
+ * Remember a password verifier for lock-screen unlock.
+ *
+ * Session stays signed in — this only compares locally, so the lock screen keeps working
+ * with no network (blackout, ISP outage). The stored value is a PBKDF2 verifier, never the
+ * password and never a fast hash — see src/utils/unlockVerifier.js for the threat model.
  */
 export async function setManagerUnlockSecret(staffId, password) {
   if (!staffId || password == null || password === '') return
-  const digest = await sha256Text(`${staffId}:${password}`)
+  const record = await createVerifier(staffId, password)
   try {
-    sessionStorage.setItem(MANAGER_UNLOCK_SESSION_KEY, JSON.stringify({ staffId, digest }))
+    sessionStorage.setItem(MANAGER_UNLOCK_SESSION_KEY, JSON.stringify(record))
   } catch {
     /* ignore */
   }
   try {
-    const { saveUnlockSecret } = await import('../offline/session')
-    await saveUnlockSecret(staffId, digest)
+    await saveUnlockSecret(staffId, record)
   } catch {
     /* ignore */
   }
@@ -344,36 +378,32 @@ export async function clearManagerUnlockSecret() {
     /* ignore */
   }
   try {
-    const { clearUnlockSecret } = await import('../offline/session')
     await clearUnlockSecret()
   } catch {
     /* ignore */
   }
 }
 
-async function readUnlockDigest(staffId) {
+/** Load the verifier record (v2 PBKDF2, or a legacy v1 digest pending upgrade). */
+async function readUnlockRecord(staffId) {
   try {
     const raw = sessionStorage.getItem(MANAGER_UNLOCK_SESSION_KEY)
     if (raw) {
       const parsed = JSON.parse(raw)
-      if (parsed?.staffId === staffId && parsed?.digest) return parsed.digest
+      if (parsed?.staffId === staffId && (parsed.hash || parsed.digest)) return parsed
     }
   } catch {
     /* ignore */
   }
   try {
-    const { loadUnlockSecret } = await import('../offline/session')
     const row = await loadUnlockSecret(staffId)
-    if (row?.digest) {
+    if (row?.hash || row?.digest) {
       try {
-        sessionStorage.setItem(
-          MANAGER_UNLOCK_SESSION_KEY,
-          JSON.stringify({ staffId, digest: row.digest }),
-        )
+        sessionStorage.setItem(MANAGER_UNLOCK_SESSION_KEY, JSON.stringify({ staffId, ...row }))
       } catch {
         /* ignore */
       }
-      return row.digest
+      return { staffId, ...row }
     }
   } catch {
     /* ignore */
@@ -381,19 +411,39 @@ async function readUnlockDigest(staffId) {
   return null
 }
 
-/** Lock-screen unlock for managers — local hash only (session stays open). */
+/**
+ * Lock-screen unlock for managers — verified entirely on-device so it works with no
+ * network. Comparison is constant-time PBKDF2; see src/utils/unlockVerifier.js.
+ */
 export async function verifyAccountPassword(_email, password, { staffId = null } = {}) {
   const pwd = String(password || '')
   if (!pwd) throw new Error('Enter your password')
   if (!staffId) throw new Error('No staff session to unlock')
 
-  const expected = await readUnlockDigest(staffId)
-  if (!expected) {
+  const record = await readUnlockRecord(staffId)
+  if (!record) {
     throw new Error('Unlock not available for this session. Sign out and sign in again.')
   }
+  // A verifier that has sat on a device for a month must be refreshed by a real sign-in —
+  // bounds how long a walked-off terminal keeps something worth attacking.
+  if (isVerifierExpired(record)) {
+    await clearManagerUnlockSecret()
+    throw new Error('Unlock expired for security. Sign out and sign in with your password.')
+  }
 
-  const attempt = await sha256Text(`${staffId}:${pwd}`)
-  if (attempt !== expected) throw new Error('Incorrect password')
+  const { ok, needsUpgrade } = await verifyAgainst(record, staffId, pwd)
+  if (!ok) throw new Error('Incorrect password')
+
+  // Correct password + weak/outdated stored form: rewrite it now, while we legitimately
+  // hold the plaintext. This is what retires the old unsalted SHA-256 records without
+  // locking out a terminal that is offline at upgrade time.
+  if (needsUpgrade) {
+    try {
+      await setManagerUnlockSecret(staffId, pwd)
+    } catch {
+      /* non-fatal — unlock already succeeded */
+    }
+  }
   return true
 }
 
@@ -435,6 +485,9 @@ export function clearDeviceSessionId() {
 const BOOTSTRAP_PRODUCT_COLS =
   'id, branch_id, name, sku, barcode, category_id, menu_kind, pricing_mode, price, unit_cost, budget_price, low_stock_threshold, available_today, discount_eligible, product_no, created_at, categories(name)'
 const BOOTSTRAP_TX_COLS =
+  'id, or_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, discount_amount, discount_type, discount_id_note, transaction_items(id)'
+// Pre migrate_vat_breakdown.sql fallback (see bootstrapBranchData / fetchTerminalReportSource).
+const BOOTSTRAP_TX_COLS_LEGACY =
   'id, or_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, discount_amount, discount_type, discount_id_note, transaction_items(id)'
 const BOOTSTRAP_MOVE_COLS =
   'id, created_at, product_id, movement_type, quantity_in, quantity_out, quantity_on_hand_after, old_price, new_price, detail, branch_id, products(name)'
@@ -445,16 +498,24 @@ const BOOTSTRAP_DAY_END_COLS_LEGACY =
 
 export async function bootstrapBranchData(branchId) {
   const [productsRes, inventoryRes, txRes, moveRes, dayResInitial, catsRes, branchRes] = await Promise.all([
-    supabase
-      .from('products')
-      .select(BOOTSTRAP_PRODUCT_COLS)
-      .eq('branch_id', branchId)
-      .eq('is_active', true)
-      .order('name'),
-    supabase
-      .from('branch_inventory')
-      .select('product_id, quantity_on_hand, updated_at')
-      .eq('branch_id', branchId),
+    // Paged: a branch with >1000 products would otherwise be silently truncated.
+    fetchAllRows((from, to) =>
+      supabase
+        .from('products')
+        .select(BOOTSTRAP_PRODUCT_COLS)
+        .eq('branch_id', branchId)
+        .eq('is_active', true)
+        .order('name')
+        .range(from, to),
+    ),
+    fetchAllRows((from, to) =>
+      supabase
+        .from('branch_inventory')
+        .select('product_id, quantity_on_hand, updated_at')
+        .eq('branch_id', branchId)
+        .order('product_id')
+        .range(from, to),
+    ),
     supabase
       .from('transactions')
       .select(BOOTSTRAP_TX_COLS)
@@ -490,11 +551,28 @@ export async function bootstrapBranchData(branchId) {
       .order('business_date', { ascending: false })
   }
 
-  for (const res of [productsRes, inventoryRes, txRes, moveRes, dayRes, catsRes, branchRes]) {
+  let tx = txRes
+  if (
+    tx.error &&
+    /vat_exempt_sales|zero_rated_sales|sc_pwd_discount|vat_rate_applied|schema cache|column/i.test(
+      String(tx.error.message || ''),
+    )
+  ) {
+    // Frontend can deploy ahead of migrate_vat_breakdown.sql being run — degrade instead of
+    // failing the whole bootstrap (POS/inventory/etc. don't depend on these columns existing).
+    tx = await supabase
+      .from('transactions')
+      .select(BOOTSTRAP_TX_COLS_LEGACY)
+      .eq('branch_id', branchId)
+      .order('created_at', { ascending: false })
+      .limit(200)
+  }
+
+  for (const res of [productsRes, inventoryRes, tx, moveRes, dayRes, catsRes, branchRes]) {
     if (res.error) throw res.error
   }
 
-  const staffNames = await staffNameById((txRes.data || []).map((row) => row.staff_id))
+  const staffNames = await staffNameById((tx.data || []).map((row) => row.staff_id))
 
   const stockMap = Object.fromEntries(
     (inventoryRes.data || []).map((row) => [
@@ -517,7 +595,7 @@ export async function bootstrapBranchData(branchId) {
         lastMovementAt: lastMoveMap[row.id] || null,
       }),
     ),
-    transactions: (txRes.data || []).map((row) => mapTransaction(withCashierName(row, staffNames))),
+    transactions: (tx.data || []).map((row) => mapTransaction(withCashierName(row, staffNames))),
     movements: (moveRes.data || []).map(mapMovement),
     dayEnds: (dayRes.data || []).map((row) => mapDayEndRow(row)),
     categories: catsRes.data || [],
@@ -525,24 +603,72 @@ export async function bootstrapBranchData(branchId) {
   }
 }
 
+/**
+ * Lightweight products-only refetch for live updates (see src/offline/realtime.js) —
+ * a manager's price/stock edit should reach an open POS screen without re-pulling
+ * transactions/movements/day-ends too. Same query shape as bootstrapBranchData's
+ * products+stock join, just narrower.
+ */
+export async function fetchBranchProducts(branchId) {
+  const [productsRes, inventoryRes] = await Promise.all([
+    // Paged — see fetchAllRows. Truncation here is what made products vanish from POS.
+    fetchAllRows((from, to) =>
+      supabase
+        .from('products')
+        .select(BOOTSTRAP_PRODUCT_COLS)
+        .eq('branch_id', branchId)
+        .eq('is_active', true)
+        .order('name')
+        .range(from, to),
+    ),
+    fetchAllRows((from, to) =>
+      supabase
+        .from('branch_inventory')
+        .select('product_id, quantity_on_hand, updated_at')
+        .eq('branch_id', branchId)
+        .order('product_id')
+        .range(from, to),
+    ),
+  ])
+  if (productsRes.error) throw productsRes.error
+  if (inventoryRes.error) throw inventoryRes.error
+  const stockMap = Object.fromEntries(
+    (inventoryRes.data || []).map((row) => [
+      row.product_id,
+      { stock: Number(row.quantity_on_hand), updatedAt: row.updated_at },
+    ]),
+  )
+  return (productsRes.data || []).map((row) =>
+    mapProduct(row, stockMap[row.id]?.stock ?? 0, { updatedAt: stockMap[row.id]?.updatedAt }),
+  )
+}
+
 export async function fetchCatalogProducts({ branchType = null } = {}) {
-  let q = supabase
-    .from('catalog_products')
-    .select('*, categories(name)')
-    .eq('is_active', true)
-    .order('name')
-  if (branchType === 'retail' || branchType === 'restaurant') {
-    q = q.eq('branch_type', branchType)
-  }
-  const { data, error } = await q
+  // Paged for the same reason as the branch products query — a network catalog past 1000
+  // items was being cut off, so items simply weren't listed on Manager → Data.
+  const { data, error } = await fetchAllRows((from, to) => {
+    let q = supabase
+      .from('catalog_products')
+      .select('*, categories(name)')
+      .eq('is_active', true)
+      .order('name')
+      .range(from, to)
+    if (branchType === 'retail' || branchType === 'restaurant') {
+      q = q.eq('branch_type', branchType)
+    }
+    return q
+  })
   if (error) {
     // Fallback if branch_type column missing
     if (String(error.message || '').includes('branch_type')) {
-      const fallback = await supabase
-        .from('catalog_products')
-        .select('*, categories(name)')
-        .eq('is_active', true)
-        .order('name')
+      const fallback = await fetchAllRows((from, to) =>
+        supabase
+          .from('catalog_products')
+          .select('*, categories(name)')
+          .eq('is_active', true)
+          .order('name')
+          .range(from, to),
+      )
       if (fallback.error) throw error
       let rows = fallback.data || []
       if (branchType === 'restaurant') {
@@ -662,6 +788,47 @@ export async function updateCatalogProduct(id, values) {
     .single()
   if (error) throw error
   return data
+}
+
+/**
+ * Push a network-catalog "Discountable" edit out to every branch that already adopted this
+ * item (matched via products.catalog_product_id). Without this, toggling Discountable in the
+ * network catalog only set the default for *future* adoptions — an already-adopted product's
+ * live discount_eligible never changed, so PWD/Senior kept not applying on POS. Scoped to just
+ * this one field (not price) so it doesn't silently override branch-specific pricing.
+ */
+export async function cascadeDiscountEligibleToBranches(catalogProductId, discountEligible, sku = null) {
+  const next = discountEligible === true
+
+  // Pass 1: rows properly linked to this catalog item.
+  const { error } = await supabase
+    .from('products')
+    .update({ discount_eligible: next })
+    .eq('catalog_product_id', catalogProductId)
+  if (error) throw error
+
+  // Pass 2: rows that were never linked. `catalog_product_id` is only ever set by
+  // createProduct's best-effort mirror — which silently no-ops for supervisors (writing
+  // catalog_products needs is_manager()) — and is never set at all by the bulk importer.
+  // So a large share of real branch products sit with a NULL link, and pass 1 alone
+  // misses every one of them: the manager flips Discountable, sees it save, and POS
+  // never changes. Match those by SKU instead, then backfill the link so each row only
+  // ever needs this fallback once.
+  const trimmedSku = String(sku || '').trim()
+  if (!trimmedSku) return
+
+  const { data: orphans, error: orphanError } = await supabase
+    .from('products')
+    .select('id')
+    .is('catalog_product_id', null)
+    .ilike('sku', trimmedSku) // ilike without wildcards = case-insensitive equality
+  if (orphanError || !orphans?.length) return
+
+  const ids = orphans.map((row) => row.id)
+  await supabase
+    .from('products')
+    .update({ discount_eligible: next, catalog_product_id: catalogProductId })
+    .in('id', ids)
 }
 
 /** Supervisor: add catalog items to this branch's sellable products + inventory. */
@@ -796,7 +963,9 @@ export async function updateProductRow(id, values, { branchId, staffId, previous
           : null,
       menu_kind: normalizeMenuKind(values.menuKind, values.category),
       low_stock_threshold: values.lowStockAt || 5,
-      discount_eligible: values.discountEligible === true,
+      // Only touch discount_eligible when the caller explicitly set it — a partial
+      // update (e.g. a stock-only adjustment) must not silently clear this flag.
+      ...(values.discountEligible !== undefined ? { discount_eligible: values.discountEligible === true } : {}),
     },
     { id },
   )
@@ -921,12 +1090,25 @@ function isDuplicateClientIdError(error) {
 }
 
 async function loadTransactionByClientId(branchId, clientId) {
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('transactions')
     .select(BOOTSTRAP_TX_COLS)
     .eq('branch_id', branchId)
     .eq('client_id', clientId)
     .maybeSingle()
+  if (
+    error &&
+    /vat_exempt_sales|zero_rated_sales|sc_pwd_discount|vat_rate_applied|schema cache|column/i.test(
+      String(error.message || ''),
+    )
+  ) {
+    ;({ data, error } = await supabase
+      .from('transactions')
+      .select(BOOTSTRAP_TX_COLS_LEGACY)
+      .eq('branch_id', branchId)
+      .eq('client_id', clientId)
+      .maybeSingle())
+  }
   if (error) throw error
   return data
 }
@@ -963,6 +1145,10 @@ export async function completeSale({
   paymentReference = null,
   vatAmount = 0,
   vatableSales = 0,
+  vatExemptSales = 0,
+  zeroRatedSales = 0,
+  scPwdDiscount = 0,
+  vatRateApplied = 0.12,
   discountAmount = 0,
   discountType = null,
   discountIdNote = null,
@@ -1002,6 +1188,10 @@ export async function completeSale({
     payment_reference: paymentMethod === 'ewallet' ? String(paymentReference || '').trim() || null : null,
     vat_amount: Number(vatAmount || 0),
     vatable_sales: Number(vatableSales || 0),
+    vat_exempt_sales: Number(vatExemptSales || 0),
+    zero_rated_sales: Number(zeroRatedSales || 0),
+    sc_pwd_discount: Number(scPwdDiscount || 0),
+    vat_rate_applied: Number(vatRateApplied || 0.12),
     discount_amount: Number(discountAmount || 0),
     discount_type: discountType || null,
     discount_id_note: discountIdNote || null,
@@ -1024,6 +1214,7 @@ export async function completeSale({
       isMissingColumnError(error, 'ulam_combo') ||
       isMissingColumnError(error, 'payment_method') ||
       isMissingColumnError(error, 'vat_amount') ||
+      isMissingColumnError(error, 'vat_exempt_sales') ||
       isMissingColumnError(error, 'discount_amount'))
   ) {
     const fallback = { ...insertRow }
@@ -1033,6 +1224,10 @@ export async function completeSale({
     delete fallback.payment_reference
     delete fallback.vat_amount
     delete fallback.vatable_sales
+    delete fallback.vat_exempt_sales
+    delete fallback.zero_rated_sales
+    delete fallback.sc_pwd_discount
+    delete fallback.vat_rate_applied
     delete fallback.discount_amount
     delete fallback.discount_type
     delete fallback.discount_id_note
@@ -1061,6 +1256,10 @@ export async function completeSale({
       line_total: unit * quantity,
       discount_eligible: item.discountEligible === true,
       discount_amount: Number(item.discountAmount ?? 0),
+      // Which promo event won this line — see migrate_promo_line_attribution.sql.
+      promo_name: item.promoName || null,
+      // 'vatable' | 'exempt' | 'zero_rated', frozen at sale time — see migrate_vat_breakdown.sql.
+      vat_category: item.vatCategory || 'vatable',
     }
     if (isRestaurant) {
       row.price_tier = item.priceTier === 'budget' ? 'budget' : 'regular'
@@ -1070,10 +1269,20 @@ export async function completeSale({
 
   if (!existingLineCount) {
     let { error: itemsError } = await supabase.from('transaction_items').insert(lines)
-    if (itemsError && isMissingColumnError(itemsError, 'price_tier')) {
-      ;({ error: itemsError } = await supabase
-        .from('transaction_items')
-        .insert(lines.map(({ price_tier, ...rest }) => rest)))
+    if (
+      itemsError &&
+      (isMissingColumnError(itemsError, 'price_tier') ||
+        isMissingColumnError(itemsError, 'promo_name') ||
+        isMissingColumnError(itemsError, 'vat_category'))
+    ) {
+      const strippedLines = lines.map((row) => {
+        const rest = { ...row }
+        delete rest.price_tier
+        delete rest.promo_name
+        delete rest.vat_category
+        return rest
+      })
+      ;({ error: itemsError } = await supabase.from('transaction_items').insert(strippedLines))
     }
     if (itemsError) throw itemsError
 
@@ -2227,6 +2436,33 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
     }
   }
 
+  // Network-wide top products / top categories (by revenue) for the same window.
+  const byProductNet = {}
+  const byCategoryNet = {}
+  try {
+    const itemsRes = await supabase
+      .from('transaction_items')
+      .select(
+        'quantity, line_total, product_id, products(name, categories(name)), transactions!inner(created_at, status)',
+      )
+      .gte('transactions.created_at', startIso)
+      .eq('transactions.status', 'completed')
+    if (itemsRes.error) throw itemsRes.error
+    for (const row of itemsRes.data || []) {
+      const revenue = Number(row.line_total || 0)
+      const name = row.products?.name || 'Product'
+      const category = row.products?.categories?.name || 'Other'
+      const key = row.product_id || name
+      if (!byProductNet[key]) byProductNet[key] = { id: key, name, category, revenue: 0, qty: 0 }
+      byProductNet[key].revenue += revenue
+      byProductNet[key].qty += Number(row.quantity || 0)
+      byCategoryNet[category] = (byCategoryNet[category] || 0) + revenue
+    }
+  } catch {
+    // Product/category breakdown is a nice-to-have on this dashboard — a schema
+    // hiccup here shouldn't take down the revenue/branch/payment charts above.
+  }
+
   const todayKey = localKey(new Date())
   txs.forEach((row) => {
     const when = new Date(row.created_at)
@@ -2273,6 +2509,13 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
       { id: 'card', label: 'Card', value: byPay.card },
       { id: 'ewallet', label: 'E-wallet', value: byPay.ewallet },
     ],
+    topProducts: Object.values(byProductNet)
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 8)
+      .map((p) => ({ category: p.name, value: Number(p.revenue.toFixed(2)) })),
+    topCategories: Object.entries(byCategoryNet)
+      .map(([category, value]) => ({ category, value: Number(value.toFixed(2)) }))
+      .sort((a, b) => b.value - a.value),
   }
 }
 
@@ -2433,7 +2676,7 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
   let txnQuery = supabase
     .from('transactions')
     .select(
-      'id, or_number, status, total_amount, refunded_amount, amount_tendered, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, vat_amount, vatable_sales, order_type, void_reason',
+      'id, or_number, status, total_amount, refunded_amount, amount_tendered, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, order_type, void_reason',
     )
     .gte('created_at', `${start}T00:00:00`)
     .lte('created_at', `${end}T23:59:59`)
@@ -2444,7 +2687,7 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
   let { data: transactions, error: txnError } = await txnQuery
   if (
     txnError &&
-    /refunded_amount|payment_method|discount_amount|vat_amount|schema cache|column/i.test(
+    /refunded_amount|payment_method|discount_amount|vat_amount|vat_exempt_sales|schema cache|column/i.test(
       String(txnError.message || ''),
     )
   ) {
@@ -2786,15 +3029,73 @@ export async function revertInventoryImport(batchId, staffId) {
 }
 
 /**
+ * Best-effort sweep: flips any promo_events row past its ends_at from active/stop_pending
+ * to status='stopped' with stop_reason 'Promo ended' — see migrate_promo_auto_expire.sql.
+ * Called at the top of the promo read paths below instead of on a schedule, so it self-heals
+ * on every read without needing pg_cron. Swallows errors so an un-migrated DB (function
+ * missing) degrades to the old behavior (expired promos just stay hidden from POS via the
+ * respectDuration check) rather than breaking the read.
+ */
+async function expireEndedPromos() {
+  try {
+    // supabase-js resolves RPC errors onto { error } rather than rejecting — check both.
+    const { error } = await supabase.rpc('expire_ended_promos')
+    if (!error) return
+    // Function not deployed yet (migrate_promo_auto_expire.sql unapplied). Fall back to a
+    // plain UPDATE: managers/supervisors have RLS write access to their branch's promos, so
+    // the sweep still lands for exactly the people who look at the Promos page. Cashiers get
+    // denied here and that's fine — hasEnded() below already hides expired promos for them.
+    await supabase
+      .from('promo_events')
+      .update({
+        status: 'stopped',
+        is_active: false,
+        stopped_at: new Date().toISOString(),
+        stop_reason: 'Promo ended',
+      })
+      .in('status', ['active', 'stop_pending'])
+      .not('ends_at', 'is', null)
+      .lt('ends_at', new Date().toISOString())
+  } catch {
+    /* ignore — see comment above */
+  }
+}
+
+/**
+ * Has this promo's scheduled end time passed?
+ *
+ * The client must never depend on the DB sweep having run to decide whether a promo is
+ * over: the sweep needs a migration applied, needs write permission, and in any case only
+ * runs when someone happens to read. An ended promo has to read as ended *immediately*,
+ * everywhere, from the timestamp alone — that's what "auto-expire" means to the user.
+ */
+export function promoHasEnded(event) {
+  const endsAt = event?.ends_at ?? event?.endsAt
+  if (!endsAt) return false
+  const end = new Date(endsAt)
+  return !Number.isNaN(end.getTime()) && end < new Date()
+}
+
+/** Display status for a promo row, treating a passed end date as stopped. */
+export function promoEffectiveStatus(event) {
+  const status = event?.status || (event?.is_active ? 'active' : 'inactive')
+  if ((status === 'active' || status === 'stop_pending') && promoHasEnded(event)) return 'stopped'
+  return status
+}
+
+/**
  * Promo (Manager-hosted discounts)
  *
- * Active promo event is selected by:
+ * Live promo events are selected by:
  * - promo_events.branch_id = given branchId
- * - promo_events.is_active = true
+ * - promo_events.status in (active, stop_pending) — several can be live at once
  *
- * Returns: { event, rules } where rules includes ordered product ids.
+ * Returns: [{ event, rules }] where rules includes ordered product ids.
+ * When more than one event is live, POS applies the best discount per line
+ * across all of them (see utils/promo.js computePromoDiscounts).
  */
-export async function fetchActivePromoEventWithRules(branchId, { respectDuration = true } = {}) {
+export async function fetchActivePromoEventsWithRules(branchId, { respectDuration = true } = {}) {
+  await expireEndedPromos()
   // Live on POS: active or stop_pending (still selling until stop approved)
   let query = supabase
     .from('promo_events')
@@ -2804,8 +3105,9 @@ export async function fetchActivePromoEventWithRules(branchId, { respectDuration
   const { data: events, error: eventError } = await query
     .or('status.in.(active,stop_pending),and(is_active.eq.true,status.is.null)')
     .order('created_at', { ascending: false })
-    .limit(5)
+    .limit(20)
 
+  let liveEvents
   if (eventError) {
     // Fallback if status column missing
     const fallback = await supabase
@@ -2813,18 +3115,29 @@ export async function fetchActivePromoEventWithRules(branchId, { respectDuration
       .select('id,name,is_active,starts_at,ends_at')
       .eq('branch_id', branchId)
       .eq('is_active', true)
-      .maybeSingle()
     if (fallback.error) throw eventError
-    if (!fallback.data) return null
-    return loadPromoRulesForEvent(fallback.data, respectDuration)
+    liveEvents = fallback.data || []
+  } else {
+    liveEvents = (events || []).filter(
+      (e) => e.status === 'active' || e.status === 'stop_pending' || (e.is_active && !e.status),
+    )
   }
 
-  const event =
-    (events || []).find((e) => e.status === 'active' || e.status === 'stop_pending') ||
-    (events || []).find((e) => e.is_active) ||
-    null
-  if (!event) return null
-  return loadPromoRulesForEvent(event, respectDuration)
+  // A promo past its end date is never live, whatever the stored status says and whatever
+  // respectDuration asks for. respectDuration only governs the *not yet started* case (so a
+  // manager can still build rules on a scheduled promo) — it was never meant to resurrect a
+  // finished one, and treating it as such is why ended promos kept showing as Active here.
+  liveEvents = liveEvents.filter((e) => !promoHasEnded(e))
+
+  if (!liveEvents.length) return []
+  const loaded = await Promise.all(liveEvents.map((event) => loadPromoRulesForEvent(event, respectDuration)))
+  return loaded.filter(Boolean)
+}
+
+/** Back-compat: first live promo event only. Prefer fetchActivePromoEventsWithRules. */
+export async function fetchActivePromoEventWithRules(branchId, opts = {}) {
+  const events = await fetchActivePromoEventsWithRules(branchId, opts)
+  return events[0] || null
 }
 
 async function loadPromoRulesForEvent(event, respectDuration = true) {
@@ -2954,8 +3267,7 @@ export async function createAndActivatePromoEvent({
 
   let { data, error } = await supabase.from('promo_events').insert(payload).select('id,name,status').single()
   if (error && (isMissingColumnError(error, 'status') || isMissingColumnError(error, 'requested_by'))) {
-    // Legacy: old schema activated immediately
-    await supabase.from('promo_events').update({ is_active: false }).eq('branch_id', branchId)
+    // Legacy: old schema (pre dual-control) activated immediately
     ;({ data, error } = await supabase
       .from('promo_events')
       .insert({
@@ -3018,20 +3330,74 @@ export async function rejectStopPromo({ id, staffId }) {
   return data
 }
 
-/**
- * Promo performance: receipts + discounted line items sold under a promo name.
- * discount_type on transactions stores the promo event name.
- */
-export async function fetchPromoSalesStats({
-  branchId,
-  promoName,
-  startsAt = null,
-  endsAt = null,
-} = {}) {
-  if (!branchId || !promoName) {
-    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+function aggregatePromoItems(lines = []) {
+  const byProduct = {}
+  for (const line of lines) {
+    const productId = line.products?.id || line.product_id || 'unknown'
+    if (!byProduct[productId]) {
+      byProduct[productId] = {
+        productId,
+        name: line.products?.name || 'Product',
+        sku: line.products?.sku || '',
+        pricingMode: line.products?.pricing_mode === 'per_kg' ? 'kg' : 'pc',
+        qty: 0,
+        gross: 0,
+        discount: 0,
+        net: 0,
+      }
+    }
+    const qty = Number(line.quantity || 0)
+    const gross = Number(line.line_total || 0)
+    const discount = Number(line.discount_amount || 0)
+    byProduct[productId].qty += qty
+    byProduct[productId].gross += gross
+    byProduct[productId].discount += discount
+    byProduct[productId].net += Math.max(0, gross - discount)
   }
+  return Object.values(byProduct)
+    .map((row) => ({
+      ...row,
+      qty: Number(row.qty.toFixed(3)),
+      gross: Number(row.gross.toFixed(2)),
+      discount: Number(row.discount.toFixed(2)),
+      net: Number(row.net.toFixed(2)),
+    }))
+    .sort((a, b) => b.discount - a.discount)
+}
 
+async function buildPromoReceipts(rows) {
+  const staffNames = await staffNameById(rows.map((r) => r.staff_id))
+  return rows.map((r) => {
+    const created = r.created_at ? new Date(r.created_at) : null
+    return {
+      id: r.id,
+      orNumber: r.or_number || null,
+      total: Number(r.total_amount || 0),
+      discountAmount: Number(r.discount_amount || 0),
+      refundedAmount: Number(r.refunded_amount || 0),
+      cashier: staffNames[r.staff_id] || 'Staff',
+      createdAt: r.created_at || null,
+      time:
+        created && !Number.isNaN(created.getTime())
+          ? created.toLocaleString([], {
+              month: 'short',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+            })
+          : '—',
+    }
+  })
+}
+
+/**
+ * Legacy path for DBs that haven't run migrate_promo_line_attribution.sql yet:
+ * match by the whole transaction's discount_type. Misses/undercounts carts that
+ * mixed lines from more than one concurrently-live promo (their discount_type is
+ * a joined label like "A + B", not an exact match for either promo's name) —
+ * see fetchPromoSalesStats below for the accurate per-line path.
+ */
+async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt }) {
   let txnQ = supabase
     .from('transactions')
     .select(
@@ -3056,33 +3422,10 @@ export async function fetchPromoSalesStats({
 
   const rows = txns || []
   const receiptCount = rows.length
-  const discountTotal = Number(
-    rows.reduce((sum, r) => sum + Number(r.discount_amount || 0), 0).toFixed(2),
-  )
+  const discountTotal = Number(rows.reduce((sum, r) => sum + Number(r.discount_amount || 0), 0).toFixed(2))
   const saleTotal = Number(rows.reduce((sum, r) => sum + Number(r.total_amount || 0), 0).toFixed(2))
   const txnIds = rows.map((r) => r.id)
-  const staffNames = await staffNameById(rows.map((r) => r.staff_id))
-  const receipts = rows.map((r) => {
-    const created = r.created_at ? new Date(r.created_at) : null
-    return {
-      id: r.id,
-      orNumber: r.or_number || null,
-      total: Number(r.total_amount || 0),
-      discountAmount: Number(r.discount_amount || 0),
-      refundedAmount: Number(r.refunded_amount || 0),
-      cashier: staffNames[r.staff_id] || 'Staff',
-      createdAt: r.created_at || null,
-      time:
-        created && !Number.isNaN(created.getTime())
-          ? created.toLocaleString([], {
-              month: 'short',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-            })
-          : '—',
-    }
-  })
+  const receipts = await buildPromoReceipts(rows)
   if (!txnIds.length) {
     return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
   }
@@ -3092,47 +3435,83 @@ export async function fetchPromoSalesStats({
     .select('quantity, unit_price, line_total, discount_amount, products(id, name, sku, pricing_mode)')
     .in('transaction_id', txnIds)
     .gt('discount_amount', 0)
-
   if (lineErr) {
     return { receiptCount, discountTotal, saleTotal, items: [], receipts }
   }
 
-  const byProduct = {}
-  for (const line of lines || []) {
-    const productId = line.products?.id || line.product_id || 'unknown'
-    const key = productId
-    if (!byProduct[key]) {
-      byProduct[key] = {
-        productId,
-        name: line.products?.name || 'Product',
-        sku: line.products?.sku || '',
-        pricingMode: line.products?.pricing_mode === 'per_kg' ? 'kg' : 'pc',
-        qty: 0,
-        gross: 0,
-        discount: 0,
-        net: 0,
-      }
-    }
-    const qty = Number(line.quantity || 0)
-    const gross = Number(line.line_total || 0)
-    const discount = Number(line.discount_amount || 0)
-    byProduct[key].qty += qty
-    byProduct[key].gross += gross
-    byProduct[key].discount += discount
-    byProduct[key].net += Math.max(0, gross - discount)
+  return { receiptCount, discountTotal, saleTotal, items: aggregatePromoItems(lines || []), receipts }
+}
+
+/**
+ * Promo performance: receipts + discounted line items sold under a promo name.
+ *
+ * Attribution is per-line (transaction_items.promo_name), not by matching the
+ * whole transaction's discount_type — that stays accurate even when a single
+ * cart mixed lines from two different concurrently-live promos, since each
+ * line records exactly which promo discounted it.
+ */
+export async function fetchPromoSalesStats({
+  branchId,
+  promoName,
+  startsAt = null,
+  endsAt = null,
+} = {}) {
+  if (!branchId || !promoName) {
+    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
   }
 
-  const items = Object.values(byProduct)
-    .map((row) => ({
-      ...row,
-      qty: Number(row.qty.toFixed(3)),
-      gross: Number(row.gross.toFixed(2)),
-      discount: Number(row.discount.toFixed(2)),
-      net: Number(row.net.toFixed(2)),
-    }))
-    .sort((a, b) => b.discount - a.discount)
+  // Cheap superset prefilter: any receipt with a discount on this branch/date range.
+  let txnQ = supabase
+    .from('transactions')
+    .select('id, or_number, total_amount, discount_amount, created_at, status, staff_id, refunded_amount')
+    .eq('branch_id', branchId)
+    .gt('discount_amount', 0)
+    .neq('status', 'voided')
+    .order('created_at', { ascending: false })
+    .limit(1000)
 
-  return { receiptCount, discountTotal, saleTotal, items, receipts }
+  if (startsAt) txnQ = txnQ.gte('created_at', new Date(startsAt).toISOString())
+  if (endsAt) txnQ = txnQ.lte('created_at', new Date(endsAt).toISOString())
+
+  const { data: candidateTxns, error: txnErr } = await txnQ
+  if (txnErr) {
+    if (/discount_amount|schema cache|column/i.test(String(txnErr.message || ''))) {
+      return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+    }
+    throw txnErr
+  }
+  const candidates = candidateTxns || []
+  if (!candidates.length) {
+    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+  }
+  const candidateIds = candidates.map((r) => r.id)
+
+  // Exact attribution: which of those receipts had a line this specific promo won.
+  const { data: lines, error: lineErr } = await supabase
+    .from('transaction_items')
+    .select('transaction_id, quantity, unit_price, line_total, discount_amount, promo_name, products(id, name, sku, pricing_mode)')
+    .in('transaction_id', candidateIds)
+    .eq('promo_name', promoName)
+
+  if (lineErr) {
+    if (/promo_name|schema cache|column/i.test(String(lineErr.message || ''))) {
+      return fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt })
+    }
+    throw lineErr
+  }
+
+  const matchedLines = lines || []
+  const matchedTxnIds = new Set(matchedLines.map((l) => l.transaction_id))
+  const matchedTxns = candidates.filter((t) => matchedTxnIds.has(t.id))
+
+  const receiptCount = matchedTxns.length
+  // This promo's own line discounts only — accurate even when the same receipt
+  // also carries lines discounted by a different concurrently-live promo.
+  const discountTotal = Number(matchedLines.reduce((sum, l) => sum + Number(l.discount_amount || 0), 0).toFixed(2))
+  const saleTotal = Number(matchedTxns.reduce((sum, t) => sum + Number(t.total_amount || 0), 0).toFixed(2))
+  const receipts = await buildPromoReceipts(matchedTxns)
+
+  return { receiptCount, discountTotal, saleTotal, items: aggregatePromoItems(matchedLines), receipts }
 }
 
 export async function createPromoRule({ promoEventId, ruleType, discountPct, productIds, buyQty = 1, getQty = 1 }) {
@@ -3165,14 +3544,21 @@ export async function createPromoRule({ promoEventId, ruleType, discountPct, pro
   return rule
 }
 
-export async function updatePromoEventDetails({ promoEventId, name, startsAt = null, endsAt = null }) {
-  const starts_iso = startsAt ? new Date(startsAt).toISOString() : null
-  const ends_iso = endsAt ? new Date(endsAt).toISOString() : null
+/**
+ * Partial update of a promo event's editable details (name and/or schedule).
+ *
+ * Each field is only written when the caller explicitly passes it — `undefined` means
+ * "leave alone", `null` means "clear". Without that guard a rename-only call would null
+ * out starts_at/ends_at and silently un-schedule a live promo. Same convention as
+ * updateProductRow's discount_eligible guard; keep it if you add more optional fields.
+ */
+export async function updatePromoEventDetails({ promoEventId, name, startsAt, endsAt }) {
+  const toIso = (value) => (value ? new Date(value).toISOString() : null)
 
   const payload = {
     ...(typeof name === 'string' ? { name } : {}),
-    starts_at: starts_iso,
-    ends_at: ends_iso,
+    ...(startsAt !== undefined ? { starts_at: toIso(startsAt) } : {}),
+    ...(endsAt !== undefined ? { ends_at: toIso(endsAt) } : {}),
     updated_at: new Date().toISOString(),
   }
 
@@ -3188,6 +3574,7 @@ export async function deletePromoRule(promoRuleId) {
 }
 
 export async function fetchPromoEventsForBranch(branchId) {
+  await expireEndedPromos()
   const { data, error } = await supabase
     .from('promo_events')
     .select(
@@ -3210,6 +3597,7 @@ export async function fetchPromoEventsForBranch(branchId) {
 
 /** Manager overview: live promos on every branch (no branch filter). */
 export async function fetchActivePromosAcrossBranches() {
+  await expireEndedPromos()
   const branchRows = await fetchBranches().catch(() => [])
   const branchNameById = Object.fromEntries((branchRows || []).map((b) => [b.id, b.name]))
 
@@ -3227,6 +3615,8 @@ export async function fetchActivePromosAcrossBranches() {
   })
 
   const isLive = (row) => {
+    // Ended by the clock = not live, regardless of stored status (see promoHasEnded).
+    if (promoHasEnded(row)) return false
     const status = String(row.status || '').toLowerCase()
     if (status === 'active' || status === 'stop_pending') return true
     // Legacy rows before dual-control status column

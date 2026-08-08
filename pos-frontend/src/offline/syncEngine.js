@@ -2,6 +2,7 @@ import * as api from '../lib/api'
 import db, { META_KEYS } from './db'
 import { QUEUE_TYPES } from './queueTypes'
 import {
+  countBlocked,
   countPending,
   hasPendingStockOps,
   listPending,
@@ -172,8 +173,11 @@ export async function pushQueue(branchId = null) {
       pushed += 1
     } catch (err) {
       error = err.message || String(err)
-      await markFailed(item.id, error)
-      break
+      const { blocked } = await markFailed(item.id, error)
+      // Stop on a normal failure so FIFO order is preserved for the retry (stock ops depend
+      // on it). But once an item is quarantined it is out of the queue for good, so keep
+      // draining — otherwise everything behind a permanently-bad op never syncs at all.
+      if (!blocked) break
     }
   }
 
@@ -181,7 +185,12 @@ export async function pushQueue(branchId = null) {
     await db.meta.put({ key: META_KEYS.lastPushAt, value: new Date().toISOString() })
   }
 
-  return { pushed, remaining: await countPending(branchId), error }
+  return {
+    pushed,
+    remaining: await countPending(branchId),
+    blocked: await countBlocked(branchId),
+    error,
+  }
 }
 
 /**
@@ -210,6 +219,7 @@ export async function syncBranch(branchId) {
         status: pushResult.error ? 'error' : 'idle',
         online: true,
         pending: pushResult.remaining,
+        blocked: pushResult.blocked,
         lastError: pushResult.error,
       })
       return data
@@ -230,6 +240,7 @@ export async function getSyncStatus(branchId = null) {
   return {
     online: isOnline(),
     pending: await countPending(branchId),
+    blocked: await countBlocked(branchId),
     lastPullAt: (await db.meta.get(META_KEYS.lastPullAt))?.value || null,
     lastPushAt: (await db.meta.get(META_KEYS.lastPushAt))?.value || null,
   }

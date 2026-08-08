@@ -224,7 +224,14 @@ export function varianceToneClass(variance) {
   return 'text-brand-warn'
 }
 
-export function Modal({ wide = false, layer = false, className = '', onClose, children }) {
+export function Modal({ wide = false, xl = false, layer = false, className = '', onClose, children }) {
+  // `xl` is for content that genuinely needs two columns (checkout). Cramming a long
+  // breakdown into the 460px `wide` column made it scroll under the sticky action bar.
+  const width = xl
+    ? 'sm:w-[min(920px,100%)]'
+    : wide
+      ? 'sm:w-[min(460px,100%)]'
+      : 'sm:w-[min(420px,100%)]'
   return (
     <div
       className={`fixed inset-0 flex items-center justify-center bg-[#202426aa] p-3 max-[700px]:items-end max-[700px]:p-0 max-[700px]:pt-8 ${
@@ -232,9 +239,7 @@ export function Modal({ wide = false, layer = false, className = '', onClose, ch
       }`}
     >
       <div
-        className={`relative flex max-h-full w-full flex-col overflow-hidden rounded-[10px] bg-white max-[700px]:max-h-[min(100%,calc(100dvh-2rem))] max-[700px]:rounded-b-none max-[700px]:rounded-t-[12px] ${
-          wide ? 'sm:w-[min(460px,100%)]' : 'sm:w-[min(420px,100%)]'
-        } ${className}`}
+        className={`relative flex max-h-full w-full flex-col overflow-hidden rounded-[10px] bg-white max-[700px]:max-h-[min(100%,calc(100dvh-2rem))] max-[700px]:rounded-b-none max-[700px]:rounded-t-[12px] ${width} ${className}`}
       >
         {onClose && (
           <button
