@@ -194,7 +194,7 @@ function DayEnd() {
   return (
     <div>
       <PageHeader eyebrow="CASH CONTROL" title="Day end">
-        <span className="text-xs text-[#797e7b]">
+        <span className="text-xs text-brand-n600">
           Business day {date} · opens {formatOpenHourLabel(dayOpenHour)}
         </span>
       </PageHeader>
@@ -553,7 +553,7 @@ function DayEnd() {
         <div className="flex items-center justify-between px-5 pt-4 pb-3">
           <h2 className="m-0 text-lg capitalize">Previous day-end closings</h2>
         </div>
-        <div className="grid grid-cols-[1fr_0.9fr_0.9fr_0.9fr_0.8fr_1fr_1.2fr] gap-3 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[700px]:grid-cols-[minmax(0,1.2fr)_0.9fr_0.9fr] max-[700px]:px-3">
+        <div className="grid grid-cols-[1fr_0.9fr_0.9fr_0.9fr_0.8fr_1fr_1.2fr] gap-3 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[700px]:grid-cols-[minmax(0,1.2fr)_0.9fr_0.9fr] max-[700px]:px-3">
           <span>Date</span>
           <span className="max-[700px]:hidden">Recorded</span>
           <span>On hand</span>
@@ -601,7 +601,7 @@ function DayEnd() {
             report
             {!isRestaurant ? ' and restock list' : ''} will be saved with your counts.
           </p>
-          <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px]">
+          <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-brand-n300 py-3.5 text-[13px]">
             <span>Recorded</span>
             <strong className={`text-right ${moneyClass}`}>{money(recorded)}</strong>
             <span>Petty cash</span>
@@ -642,7 +642,7 @@ function DayEnd() {
             This finalizes the day close. POS stays locked until a manager reopens or the next business
             day begins.
           </p>
-          <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px]">
+          <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-brand-n300 py-3.5 text-[13px]">
             <span>Cash on hand</span>
             <strong className={`text-right ${moneyClass}`}>{money(existing?.cashOnHand ?? 0)}</strong>
             <span>Variance</span>

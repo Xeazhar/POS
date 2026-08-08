@@ -107,7 +107,7 @@ function Devices() {
                 <div className="flex items-center gap-3">
                   <span
                     className={`grid h-10 w-10 place-items-center rounded-lg text-brand-ink ${
-                      enabled ? 'bg-[#f3f4f1]' : 'bg-[#eceee9] opacity-70'
+                      enabled ? 'bg-brand-n100' : 'bg-brand-n200 opacity-70'
                     }`}
                   >
                     <Icon className="text-lg" />

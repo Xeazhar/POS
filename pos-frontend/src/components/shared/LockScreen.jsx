@@ -84,15 +84,15 @@ function LockScreen({ onUnlock, onLogout }) {
           C
         </span>
         <strong className="text-xl tracking-tight">CalePOS</strong>
-        <p className="mt-1 text-sm text-[#a8aeaa]">{user?.branchName || 'Branch'}</p>
+        <p className="mt-1 text-sm text-brand-n500">{user?.branchName || 'Branch'}</p>
       </div>
 
       <div className="mb-8 text-center">
         <div className="text-4xl font-bold tabular-nums text-brand-gold max-[700px]:text-3xl">{timeLabel}</div>
-        <div className="mt-2 text-sm text-[#c8ceca]">{dateLabel}</div>
+        <div className="mt-2 text-sm text-brand-ondark">{dateLabel}</div>
       </div>
 
-      <div className="mb-6 flex items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-xs text-[#d7ddd9]">
+      <div className="mb-6 flex items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-xs text-brand-n400">
         <FiLock />
         Locked · {user?.name || 'Staff'}
       </div>

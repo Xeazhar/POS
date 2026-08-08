@@ -21,12 +21,12 @@ function CashConfirm({
     <Modal wide onClose={cancel}>
       <Eyebrow>CONFIRM {method.toUpperCase()} PAYMENT</Eyebrow>
       <h2 className="mb-3 text-[22px] max-[700px]:text-lg">Complete sale?</h2>
-      <div className="mb-3 max-h-[180px] overflow-auto rounded-md border border-[#e1e3dd] px-3 py-2">
+      <div className="mb-3 max-h-[180px] overflow-auto rounded-md border border-brand-n300 px-3 py-2">
         {items.map((item, index) => {
           const line = calcLineTotal(item)
           return (
             <div
-              className="flex items-start justify-between gap-3 border-t border-[#eceee9] py-2 text-xs first:border-t-0"
+              className="flex items-start justify-between gap-3 border-t border-brand-n200 py-2 text-xs first:border-t-0"
               key={`${item.id}-${index}`}
             >
               <div className="min-w-0">
@@ -44,7 +44,7 @@ function CashConfirm({
           )
         })}
       </div>
-      <div className={`my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px] ${moneyClass}`}>
+      <div className={`my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-brand-n300 py-3.5 text-[13px] ${moneyClass}`}>
         {discountAmount > 0 && (
           <>
             <span>Discount</span>

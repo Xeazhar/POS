@@ -1,3 +1,12 @@
+/**
+ * NOT CURRENTLY RENDERED. The manager Overview now shows payment mix as a horizontal bar
+ * list (SalesMixBar) instead — bar length on a common baseline is far easier to compare
+ * than pie angle, and it matches the Top products / Top categories panels beside it.
+ *
+ * Kept rather than deleted because the component is sound and a pie is still a
+ * reasonable choice somewhere a part-to-whole split is the only thing on the panel.
+ * Delete it if nothing has picked it up by the 1.0 cut.
+ */
 import { money } from '../../utils/format'
 import { SectionHeading, TableCard } from '../ui'
 

@@ -9,6 +9,7 @@ import { sanitizePinInput } from '../utils/pin'
 import { isManagerRole } from '../utils/roles'
 import { staffHomePath } from '../constants/nav'
 import * as api from '../lib/api'
+import { APP_VERSION_LABEL, IS_PRERELEASE } from '../utils/version'
 
 function Login() {
   const configured = hasSupabase || allowDemoMode
@@ -189,14 +190,24 @@ function Login() {
                 {booting ? 'Signing in…' : 'Enter CalePOS'} <span>→</span>
               </PrimaryButton>
             </form>
+            {IS_PRERELEASE && (
+              <div className="mt-4 rounded-[6px] border border-brand-warn/40 bg-brand-warn-bg px-3 py-2 text-center">
+                <strong className="block text-[11px] text-brand-warn">
+                  {APP_VERSION_LABEL} · In development
+                </strong>
+                <span className="mt-0.5 block text-[10px] text-brand-warn">
+                  Testing build — not yet approved for live sales.
+                </span>
+              </div>
+            )}
             <div className="mt-[22px] flex items-center justify-between gap-3">
-              <small className="text-[10px] text-[#969b97]">
+              <small className="text-[10px] text-brand-n600">
                 {hasSupabase ? 'Connected to Supabase' : 'Offline demo store'}
               </small>
               {mode === 'pin' ? (
                 <button
                   type="button"
-                  className="border-0 bg-transparent p-0 text-[10px] text-[#b0b5b1] underline-offset-2 hover:text-[#7a807c] hover:underline"
+                  className="border-0 bg-transparent p-0 text-[10px] text-brand-n500 underline-offset-2 hover:text-brand-n600 hover:underline"
                   onClick={() => {
                     setMode('email')
                     resetCaptcha()
@@ -207,7 +218,7 @@ function Login() {
               ) : (
                 <button
                   type="button"
-                  className="border-0 bg-transparent p-0 text-[10px] text-[#b0b5b1] underline-offset-2 hover:text-[#7a807c] hover:underline"
+                  className="border-0 bg-transparent p-0 text-[10px] text-brand-n500 underline-offset-2 hover:text-brand-n600 hover:underline"
                   onClick={() => {
                     setMode('pin')
                     resetCaptcha()

@@ -143,7 +143,7 @@ export default function RequestNotifications() {
               <button
                 key={item.id}
                 type="button"
-                className="block w-full border-0 border-t border-brand-softline bg-white px-3 py-2.5 text-left hover:bg-[#fafaf7]"
+                className="block w-full border-0 border-t border-brand-softline bg-white px-3 py-2.5 text-left hover:bg-brand-n50"
                 onClick={() => {
                   setOpen(false)
                   navigate(item.href)

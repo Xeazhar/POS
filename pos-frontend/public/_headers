@@ -11,6 +11,18 @@
 /sw.js
   Cache-Control: no-cache, no-store, must-revalidate
 
+# vite-plugin-pwa's registration shim. Cached, it would keep pointing an installed app at
+# a superseded worker, which is the one file that must never go stale.
+/registerSW.js
+  Cache-Control: no-cache, no-store, must-revalidate
+
+# The staleness probe (see versionJsonPlugin in vite.config.js). If an edge or browser
+# cache serves this, every terminal compares its own build against a copy of its own
+# build, concludes it is current, and silently runs old code forever. The client already
+# sends no-store and a cache-busting query; this closes the same door from the server side.
+/version.json
+  Cache-Control: no-cache, no-store, must-revalidate
+
 /manifest.webmanifest
   Cache-Control: no-cache, no-store, must-revalidate
 

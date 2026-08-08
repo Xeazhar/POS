@@ -5,6 +5,7 @@ import { pinAuthEmail } from '../utils/roles'
 import { normalizeMenuKind } from '../utils/ulam'
 import { clearUnlockSecret, loadUnlockSecret, saveUnlockSecret } from '../offline/session'
 import { createVerifier, isVerifierExpired, verifyAgainst } from '../utils/unlockVerifier'
+import { APP_VERSION } from '../utils/version'
 
 export const hasSupabase = Boolean(supabase)
 export { allowDemoMode }
@@ -740,16 +741,30 @@ export async function commitCatalogImport({
   const lines = preview?.lines || []
   const total = lines.length || 1
   let created = 0
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i]
+
+  // Validate the WHOLE file before writing anything. There is no transaction around this
+  // loop, so a bad row discovered at #400 would otherwise leave 399 rows committed with no
+  // way to undo them (unlike inventory import, catalog import has no batch/revert record).
+  // Failing before the first write turns a half-done import into a no-op.
+  lines.forEach((line, i) => {
     const values = line.values || {}
     const price = Number(values.price)
     if (!Number.isFinite(price) || price < 0) {
-      throw new Error(`Catalog import rejected: invalid price on row ${i + 1} (${values.sku || values.name || 'item'}).`)
+      throw new Error(
+        `Catalog import rejected before any changes: invalid price on row ${i + 1} (${values.sku || values.name || 'item'}).`,
+      )
     }
     if (!String(values.name || '').trim() || !String(values.sku || '').trim()) {
-      throw new Error(`Catalog import rejected: missing name/SKU on row ${i + 1}.`)
+      throw new Error(`Catalog import rejected before any changes: missing name/SKU on row ${i + 1}.`)
     }
+  })
+
+  // Resolve categories once rather than per row (see resolveCategoryIds).
+  await resolveCategoryIds(lines.map((l) => l.values?.category))
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    const values = line.values || {}
     await createCatalogProduct({
       ...values,
       branchType: preview?.restaurant || branchType === 'restaurant' ? 'restaurant' : 'retail',
@@ -829,6 +844,67 @@ export async function cascadeDiscountEligibleToBranches(catalogProductId, discou
     .from('products')
     .update({ discount_eligible: next, catalog_product_id: catalogProductId })
     .in('id', ids)
+}
+
+/**
+ * Push every catalog item's Discountable flag down to the branch products linked to it.
+ *
+ * The per-item cascade only runs when someone saves that item. Anything toggled before the
+ * cascade existed — or while a branch row had no catalog link — stays out of sync, showing
+ * "Yes" in the catalog while POS refuses the discount. This reconciles the lot in one go,
+ * which is the same thing migrate_sync_discount_eligible.sql does, exposed as a button so
+ * it does not need a SQL console.
+ *
+ * Only writes rows that actually differ, and only touches discount_eligible.
+ */
+export async function resyncDiscountEligibleToBranches() {
+  const { data: catalogRows, error: catErr } = await fetchAllRows((from, to) =>
+    supabase.from('catalog_products').select('id, sku, discount_eligible').range(from, to),
+  )
+  if (catErr) throw catErr
+
+  const { data: productRows, error: prodErr } = await fetchAllRows((from, to) =>
+    supabase.from('products').select('id, sku, catalog_product_id, discount_eligible').range(from, to),
+  )
+  if (prodErr) throw prodErr
+
+  const byId = new Map((catalogRows || []).map((c) => [c.id, c]))
+  const bySku = new Map(
+    (catalogRows || [])
+      .filter((c) => c.sku)
+      .map((c) => [String(c.sku).trim().toLowerCase(), c]),
+  )
+
+  const toEnable = []
+  const toDisable = []
+  for (const p of productRows || []) {
+    // Prefer the explicit link; fall back to SKU so unlinked rows are still reconciled.
+    const match =
+      (p.catalog_product_id && byId.get(p.catalog_product_id)) ||
+      (p.sku && bySku.get(String(p.sku).trim().toLowerCase()))
+    if (!match) continue
+    const want = match.discount_eligible === true
+    if ((p.discount_eligible === true) === want) continue
+    ;(want ? toEnable : toDisable).push(p.id)
+  }
+
+  // Two bulk updates rather than one per row — this can span thousands of products.
+  for (const [ids, value] of [
+    [toEnable, true],
+    [toDisable, false],
+  ]) {
+    for (let i = 0; i < ids.length; i += 200) {
+      const chunk = ids.slice(i, i + 200)
+      if (!chunk.length) continue
+      const { error } = await supabase
+        .from('products')
+        .update({ discount_eligible: value })
+        .in('id', chunk)
+      if (error) throw error
+    }
+  }
+
+  return { enabled: toEnable.length, disabled: toDisable.length }
 }
 
 /** Supervisor: add catalog items to this branch's sellable products + inventory. */
@@ -1111,6 +1187,28 @@ async function loadTransactionByClientId(branchId, clientId) {
   }
   if (error) throw error
   return data
+}
+
+/**
+ * Business date of the earliest sale on record, for the Reports "All records" range.
+ *
+ * Needed because some reports (BIR Sales Summary) walk the range one day at a time. Using
+ * an arbitrary floor like 2000-01-01 for "all" would spin ~9,500 iterations, each firing a
+ * query — enough to hang the tab and hammer the API. Anchoring to real data keeps "all"
+ * proportional to how long the branch has actually been trading.
+ *
+ * Returns null when the branch has no sales yet.
+ */
+export async function fetchEarliestTransactionDate(branchId = null) {
+  let q = supabase
+    .from('transactions')
+    .select('created_at')
+    .order('created_at', { ascending: true })
+    .limit(1)
+  if (branchId) q = q.eq('branch_id', branchId)
+  const { data, error } = await q.maybeSingle()
+  if (error) throw error
+  return data?.created_at ? localDateKey(data.created_at) : null
 }
 
 export async function adjustStock({ branchId, productId, staffId, action, amount, productName }) {
@@ -1554,7 +1652,7 @@ export async function heartbeatBranch({ branchId, staffId }) {
   const { data, error } = await supabase.rpc('heartbeat_branch', {
     p_branch_id: branchId,
     p_staff_id: staffId || null,
-    p_app_version: import.meta.env.VITE_APP_VERSION || 'web',
+    p_app_version: APP_VERSION,
     p_user_agent: typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 180) : null,
   })
   if (error) {
@@ -2366,6 +2464,63 @@ export async function branchSummary(branchId, { days = 1 } = {}) {
 }
 
 /** period: 'day' | 'week' | 'month' | 'year' */
+/**
+ * Revenue and order count for the current period AND the one immediately before it,
+ * so the dashboard can show "up 12% on last week" rather than a bare number.
+ *
+ * One query, not two: it reads the whole span from the start of the PREVIOUS window to
+ * now and splits it client-side on the boundary. Two round trips would be no more
+ * accurate and twice as slow on a page that already fans out per branch.
+ *
+ * The comparison window always matches the selected period — day vs. yesterday, week vs.
+ * the week before, year vs. last year — because comparing a week against a month is not
+ * a trend, it is a mistake with an arrow drawn on it.
+ *
+ * Branch scoping is left entirely to RLS, exactly as fetchNetworkDashboard does: a
+ * manager's policy already limits them to branches they may see, so no client-side
+ * filter is added that could disagree with it.
+ */
+export async function fetchPeriodComparison(period = 'week') {
+  const days = period === 'day' ? 1 : period === 'week' ? 7 : period === 'month' ? 30 : 365
+  const currentStart = new Date()
+  currentStart.setHours(0, 0, 0, 0)
+  currentStart.setDate(currentStart.getDate() - (days - 1))
+  const previousStart = new Date(currentStart)
+  previousStart.setDate(previousStart.getDate() - days)
+
+  const { data, error } = await fetchAllRows((from, to) =>
+    supabase
+      .from('transactions')
+      .select('total_amount, created_at')
+      .eq('status', 'completed')
+      .gte('created_at', previousStart.toISOString())
+      .order('created_at', { ascending: true })
+      .range(from, to),
+  )
+  if (error) throw error
+
+  const boundary = currentStart.getTime()
+  const current = { revenue: 0, orders: 0 }
+  const previous = { revenue: 0, orders: 0 }
+  ;(data || []).forEach((row) => {
+    const when = new Date(row.created_at).getTime()
+    const bucket = when >= boundary ? current : previous
+    bucket.revenue += Number(row.total_amount) || 0
+    bucket.orders += 1
+  })
+
+  return {
+    period,
+    days,
+    current,
+    previous,
+    // `true` only when the previous window genuinely had activity. A brand-new shop has
+    // no prior period, and 0 → anything is not a percentage — it is a first week. The UI
+    // uses this to show "New" instead of a meaningless +∞.
+    hasPrevious: previous.orders > 0,
+  }
+}
+
 export async function fetchNetworkDashboard(periodOrDays = 'week') {
   const period =
     typeof periodOrDays === 'number'
@@ -2382,26 +2537,28 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
   start.setHours(0, 0, 0, 0)
   start.setDate(start.getDate() - (days - 1))
   const startIso = start.toISOString()
-  const primary = await supabase
-    .from('transactions')
-    .select('total_amount, status, created_at, branch_id, payment_method, branches(name)')
-    .eq('status', 'completed')
-    .gte('created_at', startIso)
-
-  let txs
-  if (primary.error && /payment_method|schema cache/i.test(String(primary.error.message || ''))) {
-    const fallback = await supabase
+  // Paged. Unpaged this stopped at PostgREST's 1000-row cap with no error, which on the
+  // Year view means the whole dashboard — revenue, branch split, payment mix — silently
+  // under-reports by however much got cut off, while still looking like a real figure.
+  const txQuery = (cols) => (from, to) =>
+    supabase
       .from('transactions')
-      .select('total_amount, status, created_at, branch_id, branches(name)')
+      .select(cols)
       .eq('status', 'completed')
       .gte('created_at', startIso)
-    if (fallback.error) throw fallback.error
-    txs = fallback.data || []
-  } else if (primary.error) {
-    throw primary.error
-  } else {
-    txs = primary.data || []
+      .order('created_at', { ascending: true })
+      .range(from, to)
+
+  let { data: txs, error: txError } = await fetchAllRows(
+    txQuery('total_amount, status, created_at, branch_id, payment_method, branches(name)'),
+  )
+  if (txError && /payment_method|schema cache/i.test(String(txError.message || ''))) {
+    ;({ data: txs, error: txError } = await fetchAllRows(
+      txQuery('total_amount, status, created_at, branch_id, branches(name)'),
+    ))
   }
+  if (txError) throw txError
+  txs = txs || []
 
   const localKey = (value) => {
     const d = new Date(value)
@@ -2464,6 +2621,13 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
   }
 
   const todayKey = localKey(new Date())
+  // Order COUNT per bucket, alongside revenue. The line chart's tooltip needs it: ₱8,400
+  // means something quite different from 4 orders than from 90, and revenue alone cannot
+  // distinguish "a quiet day" from "a few big baskets".
+  const ordersByBucket = {}
+  Object.keys(byBucket).forEach((key) => {
+    ordersByBucket[key] = 0
+  })
   txs.forEach((row) => {
     const when = new Date(row.created_at)
     const dayKey = localKey(when)
@@ -2474,7 +2638,10 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
       bucketKey = String(when.getHours()).padStart(2, '0')
     }
     const amount = Number(row.total_amount) || 0
-    if (byBucket[bucketKey] != null) byBucket[bucketKey] += amount
+    if (byBucket[bucketKey] != null) {
+      byBucket[bucketKey] += amount
+      ordersByBucket[bucketKey] += 1
+    }
     const name = row.branches?.name || 'Branch'
     byBranch[name] = (byBranch[name] || 0) + amount
     const method = String(row.payment_method || 'cash').toLowerCase()
@@ -2488,19 +2655,31 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
     period,
     days,
     linePoints: Object.entries(byBucket).map(([label, total]) => {
+      const orders = ordersByBucket[label] || 0
       if (period === 'day') {
         const hour = Number(label)
         const suffix = hour < 12 ? 'AM' : 'PM'
         const display = hour % 12 === 0 ? 12 : hour % 12
-        return { label: `${label}:00`, short: `${display} ${suffix}`, total }
+        return { label: `${label}:00`, short: `${display} ${suffix}`, total, orders, full: `${display}:00 ${suffix}` }
       }
+      const asDate =
+        period === 'year'
+          ? new Date(`${label}-01T00:00:00`)
+          : new Date(`${label}T00:00:00`)
       return {
         label,
         short:
           period === 'year'
-            ? new Date(`${label}-01T00:00:00`).toLocaleDateString([], { month: 'short', year: '2-digit' })
-            : new Date(`${label}T00:00:00`).toLocaleDateString([], { month: 'short', day: 'numeric' }),
+            ? asDate.toLocaleDateString([], { month: 'short', year: '2-digit' })
+            : asDate.toLocaleDateString([], { month: 'short', day: 'numeric' }),
+        // Spelled out for the tooltip — "Mar 4" is fine on a crowded axis but ambiguous
+        // when someone is reading an exact figure off a hover.
+        full:
+          period === 'year'
+            ? asDate.toLocaleDateString([], { month: 'long', year: 'numeric' })
+            : asDate.toLocaleDateString([], { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' }),
         total,
+        orders,
       }
     }),
     branchBars: Object.entries(byBranch).map(([category, value]) => ({ category, value })),
@@ -2519,39 +2698,40 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
   }
 }
 
+/**
+ * Sale lines in range, the source for every line-level report.
+ *
+ * Paged via fetchAllRows because PostgREST caps a response at db-max-rows (1000) and
+ * returns the truncated page with NO error. Unpaged, a report over any busy month would
+ * quietly stop partway and still print a total — the worst possible failure for a document
+ * someone files. Always page anything that can exceed 1000 rows.
+ */
 export async function fetchReportSalesDetail({ start, end, branchId, includeVoided = false }) {
-  let query = supabase
-    .from('transaction_items')
-    .select(
-      '*, products(id, product_no, name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo, payment_method, payment_reference)',
-    )
-    .gte('transactions.created_at', `${start}T00:00:00`)
-    .lte('transactions.created_at', `${end}T23:59:59`)
-  if (!includeVoided) query = query.eq('transactions.status', 'completed')
-  if (branchId) query = query.eq('transactions.branch_id', branchId)
-  const { data, error } = await query
-  if (error) {
-    // Soft-fail older schemas without payment columns
-    if (/payment_method|payment_reference|schema cache/i.test(String(error.message || ''))) {
-      const fallback = await supabase
-        .from('transaction_items')
-        .select(
-          '*, products(id, product_no, name, sku, category_id, categories(name)), transactions!inner(id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo)',
-        )
-        .gte('transactions.created_at', `${start}T00:00:00`)
-        .lte('transactions.created_at', `${end}T23:59:59`)
-      const fb = !includeVoided ? fallback.eq('transactions.status', 'completed') : fallback
-      const scoped = branchId ? fb.eq('transactions.branch_id', branchId) : fb
-      const { data: rows2, error: err2 } = await scoped
-      if (err2) throw err2
-      const staffNames2 = await staffNameById((rows2 || []).map((row) => row.transactions?.staff_id))
-      return (rows2 || []).map((row) => ({
-        ...row,
-        transactions: withCashierName(row.transactions, staffNames2),
-      }))
-    }
-    throw error
+  const PRODUCT_COLS = 'products(id, product_no, name, sku, unit_cost, category_id, categories(name))'
+  const build = (txnCols) => (from, to) => {
+    let q = supabase
+      .from('transaction_items')
+      .select(`*, ${PRODUCT_COLS}, transactions!inner(${txnCols})`)
+      .gte('transactions.created_at', `${start}T00:00:00`)
+      .lte('transactions.created_at', `${end}T23:59:59`)
+      .order('id', { ascending: true })
+      .range(from, to)
+    if (!includeVoided) q = q.eq('transactions.status', 'completed')
+    if (branchId) q = q.eq('transactions.branch_id', branchId)
+    return q
   }
+  const FULL =
+    'id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo, payment_method, payment_reference'
+  let { data, error } = await fetchAllRows(build(FULL))
+  if (error && /payment_method|payment_reference|unit_cost|schema cache|column/i.test(String(error.message || ''))) {
+    // Older schemas without payment / cost columns.
+    ;({ data, error } = await fetchAllRows(
+      build(
+        'id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo',
+      ),
+    ))
+  }
+  if (error) throw error
   const rows = data || []
   const staffNames = await staffNameById(rows.map((row) => row.transactions?.staff_id))
   return rows.map((row) => ({
@@ -2607,23 +2787,52 @@ export async function fetchSaleEvents({ start, end, branchId, eventType, limit =
   return data || []
 }
 
-/** Daily Z/X style reading from transactions (operational; not BIR-accredited). */
+/**
+ * Daily Z/X style reading from transactions (operational; not BIR-accredited).
+ *
+ * The VAT aggregates below are what makes this filable rather than merely informative.
+ * BIR's daily sales breakdown is not one "sales" number — a return needs VATable sales,
+ * output VAT, VAT-exempt sales and zero-rated sales stated separately, because each line
+ * is taxed differently. Summing them back into a single total loses the distinction and
+ * there is no way to recover it afterwards.
+ *
+ * Every figure is read from the columns frozen at time of sale (migrate_vat_breakdown.sql),
+ * never recomputed here: a VAT rate change or a promo edit must not retroactively alter a
+ * reading that has already been filed.
+ */
 export async function fetchDailyReading({ date, branchId }) {
-  let query = supabase
-    .from('transactions')
-    .select('id, or_number, status, total_amount, void_reason, created_at, staff_id')
-    .gte('created_at', `${date}T00:00:00`)
-    .lte('created_at', `${date}T23:59:59`)
-    .order('created_at', { ascending: true })
-  if (branchId) query = query.eq('branch_id', branchId)
-  const { data, error } = await query
+  const VAT_COLS =
+    'id, or_number, status, total_amount, void_reason, created_at, staff_id, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, discount_amount'
+  // Paged: a busy branch can clear 1000 sales in a day, and PostgREST would truncate to
+  // exactly that with no error — producing a day's total that is short by an unknown
+  // amount and looks entirely plausible.
+  const build = (cols) => (from, to) => {
+    let q = supabase
+      .from('transactions')
+      .select(cols)
+      .gte('created_at', `${date}T00:00:00`)
+      .lte('created_at', `${date}T23:59:59`)
+      .order('created_at', { ascending: true })
+      .range(from, to)
+    if (branchId) q = q.eq('branch_id', branchId)
+    return q
+  }
+  let { data, error } = await fetchAllRows(build(VAT_COLS))
+  if (error && /vat_|sc_pwd_discount|discount_amount|schema cache|column/i.test(String(error.message || ''))) {
+    // Pre-migrate_vat_breakdown database: still produce the operational figures rather
+    // than failing the whole report. The VAT columns simply read as zero.
+    ;({ data, error } = await fetchAllRows(
+      build('id, or_number, status, total_amount, void_reason, created_at, staff_id'),
+    ))
+  }
   if (error) throw error
   const rows = data || []
   const staffNames = await staffNameById(rows.map((r) => r.staff_id))
   const completed = rows.filter((r) => r.status === 'completed')
   const voided = rows.filter((r) => r.status === 'voided')
-  const salesTotal = completed.reduce((sum, r) => sum + Number(r.total_amount), 0)
-  const voidTotal = voided.reduce((sum, r) => sum + Number(r.total_amount), 0)
+  const sum = (list, key) => list.reduce((acc, r) => acc + Number(r[key] || 0), 0)
+  const salesTotal = sum(completed, 'total_amount')
+  const voidTotal = sum(voided, 'total_amount')
   const orNumbers = rows.map((r) => r.or_number).filter(Boolean)
   return {
     date,
@@ -2633,6 +2842,16 @@ export async function fetchDailyReading({ date, branchId }) {
     salesTotal,
     voidTotal,
     netSales: salesTotal,
+    // BIR breakdown — all four must be reported separately, never merged.
+    vatableSales: sum(completed, 'vatable_sales'),
+    vatAmount: sum(completed, 'vat_amount'),
+    vatExemptSales: sum(completed, 'vat_exempt_sales'),
+    zeroRatedSales: sum(completed, 'zero_rated_sales'),
+    scPwdDiscount: sum(completed, 'sc_pwd_discount'),
+    discountTotal: sum(completed, 'discount_amount'),
+    // "Gross sales" for BIR is the pre-discount figure: what was rung up before any
+    // deduction. total_amount is already net of discounts, so add them back.
+    grossSales: salesTotal + sum(completed, 'discount_amount'),
     orFrom: orNumbers[0] || null,
     orTo: orNumbers[orNumbers.length - 1] || null,
     rows: rows.map((r) => ({
@@ -2644,6 +2863,271 @@ export async function fetchDailyReading({ date, branchId }) {
       void_reason: r.void_reason,
     })),
   }
+}
+
+/**
+ * Transactions in range with the fiscal columns, paged past PostgREST's 1000-row cap.
+ * Shared source for the SC/PWD, Discount, Tender and Electronic Journal reports so they
+ * can never disagree with each other about what a day contained.
+ */
+async function fetchFiscalTransactions({ start, end, branchId, includeVoided = true }) {
+  const FULL =
+    'id, or_number, status, total_amount, amount_tendered, change_given, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, discount_id_note, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, void_reason, refunded_amount'
+  const build = (cols) => (from, to) => {
+    let q = supabase
+      .from('transactions')
+      .select(cols)
+      .gte('created_at', `${start}T00:00:00`)
+      .lte('created_at', `${end}T23:59:59`)
+      .order('created_at', { ascending: true })
+      .range(from, to)
+    if (branchId) q = q.eq('branch_id', branchId)
+    if (!includeVoided) q = q.eq('status', 'completed')
+    return q
+  }
+  let { data, error } = await fetchAllRows(build(FULL))
+  if (error && /vat_|sc_pwd|discount_|payment_|refunded_amount|schema cache|column/i.test(String(error.message || ''))) {
+    ;({ data, error } = await fetchAllRows(
+      build('id, or_number, status, total_amount, amount_tendered, created_at, staff_id, branch_id, void_reason'),
+    ))
+  }
+  if (error) throw error
+  const rows = data || []
+  const staffNames = await staffNameById(rows.map((r) => r.staff_id))
+  return rows.map((r) => ({ ...r, cashier: staffNames[r.staff_id] || null }))
+}
+
+/**
+ * Senior Citizen / PWD discount register (RA 9994 / RA 10754).
+ *
+ * This is a statutory record, not a convenience: the 20% discount is claimable by the
+ * business as a deduction from gross income, and BIR will only allow it against a register
+ * showing, per sale, the customer's ID number, the VAT-exempt amount, and the discount
+ * given. A total alone is not substantiation.
+ *
+ * Rows with no ID number recorded are still listed — deliberately. Hiding them would make
+ * the register look clean while the exposure (a discount that cannot be substantiated on
+ * audit) stays exactly the same. Seeing them is the point.
+ */
+export async function fetchScPwdReport({ start, end, branchId }) {
+  const rows = await fetchFiscalTransactions({ start, end, branchId, includeVoided: true })
+  return rows
+    .filter((r) => {
+      const type = String(r.discount_type || '').toLowerCase()
+      return Number(r.sc_pwd_discount || 0) > 0 || type.includes('pwd') || type.includes('senior')
+    })
+    .map((r) => ({
+      date: String(r.created_at || '').slice(0, 10),
+      or_number: r.or_number || r.id,
+      discount_type: r.discount_type || '—',
+      id_number: r.discount_id_note || '(NOT RECORDED)',
+      gross_amount: Number(r.total_amount || 0) + Number(r.discount_amount || 0),
+      vat_exempt_sales: Number(r.vat_exempt_sales || 0),
+      sc_pwd_discount: Number(r.sc_pwd_discount || 0),
+      net_amount: Number(r.total_amount || 0),
+      cashier: r.cashier || '—',
+      status: r.status === 'voided' ? 'VOIDED' : 'Completed',
+    }))
+}
+
+/**
+ * Every discount granted in range, of any kind — SC/PWD, promo, manual override.
+ * Separate from the SC/PWD register because the audiences differ: this one answers
+ * "where is margin leaking", the register answers "prove this deduction".
+ */
+export async function fetchDiscountReport({ start, end, branchId }) {
+  const rows = await fetchFiscalTransactions({ start, end, branchId, includeVoided: false })
+  return rows
+    .filter((r) => Number(r.discount_amount || 0) > 0 || Number(r.sc_pwd_discount || 0) > 0)
+    .map((r) => {
+      const scPwd = Number(r.sc_pwd_discount || 0)
+      const total = Number(r.discount_amount || 0)
+      const gross = Number(r.total_amount || 0) + total
+      return {
+        date: String(r.created_at || '').slice(0, 10),
+        or_number: r.or_number || r.id,
+        discount_type: r.discount_type || 'Unlabelled',
+        gross_amount: gross,
+        // Promo and SC/PWD are reported apart: only the SC/PWD half is a statutory
+        // deduction, the promo half is an ordinary price reduction.
+        promo_discount: Number(Math.max(0, total - scPwd).toFixed(2)),
+        sc_pwd_discount: scPwd,
+        total_discount: total,
+        discount_pct: gross > 0 ? Number(((total / gross) * 100).toFixed(2)) : 0,
+        net_amount: Number(r.total_amount || 0),
+        cashier: r.cashier || '—',
+      }
+    })
+}
+
+/**
+ * Tender / payment-method summary — the figure a day's cash count is reconciled against.
+ * Voided sales are excluded; refunds are shown so the drawer maths still balances.
+ */
+export async function fetchTenderSummary({ start, end, branchId }) {
+  const rows = await fetchFiscalTransactions({ start, end, branchId, includeVoided: false })
+  const byMethod = {}
+  rows.forEach((r) => {
+    const method = String(r.payment_method || 'cash').toLowerCase()
+    if (!byMethod[method]) {
+      byMethod[method] = { payment_method: method, transactions: 0, gross_sales: 0, refunds: 0, net_sales: 0 }
+    }
+    const bucket = byMethod[method]
+    bucket.transactions += 1
+    bucket.gross_sales += Number(r.total_amount || 0)
+    bucket.refunds += Number(r.refunded_amount || 0)
+    bucket.net_sales += Number(r.total_amount || 0) - Number(r.refunded_amount || 0)
+  })
+  return Object.values(byMethod)
+    .map((row) => ({
+      ...row,
+      gross_sales: Number(row.gross_sales.toFixed(2)),
+      refunds: Number(row.refunds.toFixed(2)),
+      net_sales: Number(row.net_sales.toFixed(2)),
+    }))
+    .sort((a, b) => b.net_sales - a.net_sales)
+}
+
+/**
+ * Electronic Journal — the chronological, unabridged record of every transaction the
+ * terminal issued, including voids. BIR requires a CRM/POS to keep an EJ and to be able
+ * to produce it on demand; the summarised reports do not satisfy that on their own
+ * because they cannot show a specific sale as it was rung.
+ *
+ * Voided sales are included and labelled rather than dropped — an EJ with the voids
+ * removed is precisely the shape a tampered journal takes, so it would be worthless as
+ * evidence that nothing was removed.
+ */
+export async function fetchElectronicJournal({ start, end, branchId }) {
+  const rows = await fetchFiscalTransactions({ start, end, branchId, includeVoided: true })
+  return rows.map((r) => ({
+    datetime: r.created_at,
+    or_number: r.or_number || r.id,
+    status: r.status === 'voided' ? 'VOIDED' : 'COMPLETED',
+    cashier: r.cashier || '—',
+    payment_method: r.payment_method || 'cash',
+    payment_reference: r.payment_reference || '',
+    gross_amount: Number(r.total_amount || 0) + Number(r.discount_amount || 0),
+    discount_amount: Number(r.discount_amount || 0),
+    discount_type: r.discount_type || '',
+    vatable_sales: Number(r.vatable_sales || 0),
+    vat_amount: Number(r.vat_amount || 0),
+    vat_exempt_sales: Number(r.vat_exempt_sales || 0),
+    zero_rated_sales: Number(r.zero_rated_sales || 0),
+    sc_pwd_discount: Number(r.sc_pwd_discount || 0),
+    total_amount: Number(r.total_amount || 0),
+    amount_tendered: Number(r.amount_tendered || 0),
+    change_given: Number(r.change_given || 0),
+    void_reason: r.void_reason || '',
+  }))
+}
+
+/**
+ * Gross margin by product — revenue less cost of goods sold.
+ *
+ * Cost is read from the product's CURRENT unit_cost, not a cost frozen at sale time,
+ * because the schema has no per-line cost column. That makes this report reliable for
+ * "which lines earn" and unreliable for restating a closed period after a supplier price
+ * change. Stated here so nobody files it as audited COGS; it is a management report.
+ */
+export async function fetchGrossMarginReport({ start, end, branchId }) {
+  const detail = await fetchReportSalesDetail({ start, end, branchId, includeVoided: false })
+  const byProduct = {}
+  detail.forEach((row) => {
+    const product = row.products || {}
+    const key = product.id || row.product_id
+    if (!byProduct[key]) {
+      byProduct[key] = {
+        product: product.name || 'Unknown',
+        sku: product.sku || '',
+        category: product.categories?.name || '—',
+        qty_sold: 0,
+        revenue: 0,
+        cost: 0,
+      }
+    }
+    const qty = Number(row.quantity || 0)
+    byProduct[key].qty_sold += qty
+    byProduct[key].revenue += Number(row.line_total || 0)
+    byProduct[key].cost += Number(product.unit_cost || 0) * qty
+  })
+  return Object.values(byProduct)
+    .map((row) => {
+      const revenue = Number(row.revenue.toFixed(2))
+      const cost = Number(row.cost.toFixed(2))
+      const margin = Number((revenue - cost).toFixed(2))
+      return {
+        ...row,
+        qty_sold: Number(row.qty_sold.toFixed(2)),
+        revenue,
+        cost,
+        margin,
+        margin_pct: revenue > 0 ? Number(((margin / revenue) * 100).toFixed(1)) : 0,
+      }
+    })
+    .sort((a, b) => b.margin - a.margin)
+}
+
+/**
+ * Stock movement ledger — every in/out with the running balance it produced.
+ * The inventory counterpart to the sales audit trail: it is what turns "the count is
+ * wrong" into "the count went wrong here, by this person, on this date".
+ */
+export async function fetchStockMovementReport({ start, end, branchId }) {
+  const build = (from, to) => {
+    let q = supabase
+      .from('stock_movements')
+      .select('*, products(name, sku, categories(name)), staff(full_name), branches(name)')
+      .gte('created_at', `${start}T00:00:00`)
+      .lte('created_at', `${end}T23:59:59`)
+      .order('created_at', { ascending: false })
+      .range(from, to)
+    if (branchId) q = q.eq('branch_id', branchId)
+    return q
+  }
+  const { data, error } = await fetchAllRows(build)
+  if (error) throw error
+  return (data || []).map((row) => ({
+    when: row.created_at,
+    branch: row.branches?.name || '—',
+    product: row.products?.name || '—',
+    sku: row.products?.sku || '',
+    category: row.products?.categories?.name || '—',
+    movement: row.movement_type,
+    qty_in: Number(row.quantity_in || 0),
+    qty_out: Number(row.quantity_out || 0),
+    balance_after: Number(row.quantity_on_hand_after || 0),
+    old_price: row.old_price != null ? Number(row.old_price) : '',
+    new_price: row.new_price != null ? Number(row.new_price) : '',
+    reference: row.reference || '',
+    detail: row.detail || '',
+    staff: row.staff?.full_name || '—',
+  }))
+}
+
+/**
+ * Price change register — every price the branch has changed, and who changed it.
+ * Kept distinct from the general stock ledger because this is the report that answers a
+ * price-tampering question, and it should not require scrolling past thousands of sales.
+ */
+export async function fetchPriceChangeReport({ start, end, branchId }) {
+  const movements = await fetchStockMovementReport({ start, end, branchId })
+  return movements
+    .filter((row) => row.movement === 'price_change' || (row.old_price !== '' && row.new_price !== ''))
+    .map((row) => ({
+      when: row.when,
+      branch: row.branch,
+      product: row.product,
+      sku: row.sku,
+      old_price: row.old_price,
+      new_price: row.new_price,
+      change:
+        row.old_price !== '' && row.new_price !== ''
+          ? Number((Number(row.new_price) - Number(row.old_price)).toFixed(2))
+          : '',
+      changed_by: row.staff,
+      detail: row.detail,
+    }))
 }
 
 /**
@@ -2860,6 +3344,31 @@ async function ensureCategoryId(categoryName) {
   return created.id
 }
 
+/**
+ * Resolve every category an import needs, once, before the row loop starts.
+ *
+ * ensureCategoryId costs 1-2 round trips and was being called per row. An import is
+ * typically a few categories across hundreds of rows, so nearly all of those calls were
+ * re-fetching something already known — roughly a quarter of the import's total requests
+ * for no benefit. One query up front replaces all of them; only genuinely new categories
+ * still cost an insert.
+ */
+async function resolveCategoryIds(names = []) {
+  const wanted = [...new Set(names.map((n) => n || 'Groceries'))]
+  if (!wanted.length) return new Map()
+
+  const { data, error } = await supabase.from('categories').select('id, name').in('name', wanted)
+  if (error) throw error
+
+  const map = new Map((data || []).map((row) => [row.name, row.id]))
+  // Create only what is genuinely missing.
+  for (const name of wanted) {
+    if (map.has(name)) continue
+    map.set(name, await ensureCategoryId(name))
+  }
+  return map
+}
+
 const DUPLICATE_IMPORT_HOURS = 24
 
 export async function findRecentImportByHash(branchId, fileHash, withinHours = DUPLICATE_IMPORT_HOURS) {
@@ -2928,6 +3437,9 @@ export async function commitInventoryImport({
   const itemRows = []
   const total = preview.lines.length || 1
 
+  // Resolve every category the file references in one query, before the loop.
+  const categoryIds = await resolveCategoryIds((preview.lines || []).map((l) => l.values?.category))
+
   for (let index = 0; index < preview.lines.length; index += 1) {
     const line = preview.lines[index]
     const values = line.values
@@ -2944,7 +3456,7 @@ export async function commitInventoryImport({
     if (!String(values?.name || '').trim() || !String(values?.sku || '').trim()) {
       throw new Error(`Import rejected: missing name/SKU on row ${index + 1}.`)
     }
-    const categoryId = await ensureCategoryId(values.category)
+    const categoryId = categoryIds.get(values.category || 'Groceries')
     let productId = line.existing?.id
     const barcode =
       values.barcode ||

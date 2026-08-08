@@ -79,7 +79,7 @@ function ProductMultiSelect({ products, selected, onChange, label, hint }) {
   return (
     <div className="sm:col-span-2">
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs font-bold text-[#646a66]">
+        <span className="text-xs font-bold text-brand-n700">
           {label}
           {selected.length > 0 && <span className="ml-1 text-brand-subtle">· {selected.length} selected</span>}
         </span>
@@ -746,7 +746,7 @@ export default function ManagerPromos() {
                 {networkBusy ? '' : ` · ${networkActive.length} shown`}. Open a row to manage that branch.
               </p>
             </div>
-            <div className="grid grid-cols-[1.2fr_1.3fr_1fr_0.9fr_0.8fr] gap-2 bg-brand-dark px-5 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[1.2fr_1fr_0.8fr]">
+            <div className="grid grid-cols-[1.2fr_1.3fr_1fr_0.9fr_0.8fr] gap-2 bg-brand-dark px-5 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[1.2fr_1fr_0.8fr]">
               <span>Branch</span>
               <span>Promo</span>
               <span className="max-[900px]:hidden">Duration</span>
@@ -795,7 +795,15 @@ export default function ManagerPromos() {
                     <span className="text-brand-slate max-[900px]:hidden">
                       {fmt(row.starts_at)} → {fmt(row.ends_at)}
                     </span>
-                    <StatusBadge tone={row.status === 'stop_pending' ? 'warn' : 'success'}>
+                    {/* justify-self-start: as a direct grid child the badge would otherwise
+                        stretch to the full column and the pill ends up far wider than its
+                        text. `compact` sizes it to the label, matching the status tags
+                        used in the transaction lists. */}
+                    <StatusBadge
+                      compact
+                      className="justify-self-start capitalize"
+                      tone={row.status === 'stop_pending' ? 'warn' : 'success'}
+                    >
                       {row.status === 'stop_pending' ? 'Stop pending' : row.status || 'active'}
                     </StatusBadge>
                     <span className="text-right font-bold text-brand-ink underline">Manage</span>
@@ -963,7 +971,7 @@ export default function ManagerPromos() {
               // cells get that padding back individually so text still lines up with the title.
               <div className="-mx-5 mt-4 overflow-x-auto overflow-y-visible">
                 <table className="min-w-full text-left text-xs [&_td:first-child]:pl-5 [&_td:last-child]:pr-5 [&_th:first-child]:pl-5 [&_th:last-child]:pr-5">
-                  <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
+                  <thead className="bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
                     <tr>
                       <th className="px-3 py-2.5">Promo name</th>
                       <th className="px-3 py-2.5">Schedule</th>
@@ -1131,7 +1139,7 @@ export default function ManagerPromos() {
           // Full-bleed to the card edges, same treatment as Promo history above.
           <div className="-mx-5 -mb-5 mt-4 overflow-x-auto overflow-y-visible">
             <table className="min-w-full text-left text-xs [&_td:first-child]:pl-5 [&_td:last-child]:pr-5 [&_th:first-child]:pl-5 [&_th:last-child]:pr-5">
-              <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
+              <thead className="bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
                 <tr>
                   <th className="px-3 py-2.5">Rule type</th>
                   <th className="px-3 py-2.5">Discount %</th>
@@ -1418,15 +1426,15 @@ export default function ManagerPromos() {
           ) : (
             <>
               <div className="mt-4 grid grid-cols-3 gap-2 text-xs max-[700px]:grid-cols-1">
-                <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                <div className="rounded-md bg-brand-n100 px-3 py-2">
                   <span className="block text-[10px] text-brand-subtle">Receipts</span>
                   <strong>{trackingEvent.stats.receiptCount}</strong>
                 </div>
-                <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                <div className="rounded-md bg-brand-n100 px-3 py-2">
                   <span className="block text-[10px] text-brand-subtle">Discount given</span>
                   <strong className="text-brand-danger">−{money(trackingEvent.stats.discountTotal)}</strong>
                 </div>
-                <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                <div className="rounded-md bg-brand-n100 px-3 py-2">
                   <span className="block text-[10px] text-brand-subtle">Net sales</span>
                   <strong>{money(trackingEvent.stats.saleTotal)}</strong>
                 </div>
@@ -1437,7 +1445,7 @@ export default function ManagerPromos() {
                   Transactions
                 </p>
                 <div className="max-h-[240px] overflow-auto rounded border border-brand-softline">
-                  <div className="grid grid-cols-[1fr_1fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase">
+                  <div className="grid grid-cols-[1fr_1fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
                     <span>OR / Time</span>
                     <span>Cashier</span>
                     <span className="text-right">Discount</span>
@@ -1480,7 +1488,7 @@ export default function ManagerPromos() {
                     Items sold
                   </p>
                   <div className="max-h-[200px] overflow-auto rounded border border-brand-softline">
-                    <div className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase">
+                    <div className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
                       <span>Item</span>
                       <span className="text-right">Qty</span>
                       <span className="text-right">Discount</span>

@@ -1,10 +1,22 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import PaymentMethodPie from '../../components/dashboard/PaymentMethodPie'
 import RevenueChart from '../../components/dashboard/RevenueChart'
 import SalesMixBar from '../../components/dashboard/SalesMixBar'
-import { PageHeader, PageSkeleton, TableCard, moneyClass, tableRowClass } from '../../components/ui'
-import { branchSummary, fetchBranches, fetchNetworkDashboard, hasSupabase } from '../../lib/api'
+import {
+  DeltaBadge,
+  PageHeader,
+  PageSkeleton,
+  TableCard,
+  moneyClass,
+  tableRowClass,
+} from '../../components/ui'
+import {
+  branchSummary,
+  fetchBranches,
+  fetchNetworkDashboard,
+  fetchPeriodComparison,
+  hasSupabase,
+} from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
 import { greetingFor, money } from '../../utils/format'
 
@@ -14,6 +26,24 @@ const PERIODS = [
   { id: 'month', label: 'Month', days: 30 },
   { id: 'year', label: 'Year', days: 365 },
 ]
+
+/** What each period is being compared against, spelled out under the KPI. */
+const COMPARISON_LABEL = {
+  day: 'vs. yesterday',
+  week: 'vs. previous 7 days',
+  month: 'vs. previous 30 days',
+  year: 'vs. previous year',
+}
+
+/**
+ * Payment methods keep their own colours — unlike the ranking panels, these are genuinely
+ * different categories rather than one measure ranked, so colour carries meaning here.
+ */
+const PAYMENT_BAR_CLASS = {
+  Cash: 'bg-brand-success',
+  Card: 'bg-brand-info',
+  'E-wallet': 'bg-brand-gold',
+}
 
 function ManagerOverview() {
   const user = useAuthStore((state) => state.user)
@@ -25,6 +55,7 @@ function ManagerOverview() {
   const [paymentMix, setPaymentMix] = useState([])
   const [topProducts, setTopProducts] = useState([])
   const [topCategories, setTopCategories] = useState([])
+  const [comparison, setComparison] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -75,6 +106,11 @@ function ManagerOverview() {
             { category: 'Drinks', value: 22 },
             { category: 'Groceries', value: 18 },
           ])
+          setComparison({
+            current: { revenue: 86, orders: 2 },
+            previous: { revenue: 74, orders: 2 },
+            hasPrevious: true,
+          })
           setLoading(false)
           return
         }
@@ -87,8 +123,16 @@ function ManagerOverview() {
             next[branch.id] = await branchSummary(branch.id, { days: meta.days })
           }),
         )
-        const charts = await fetchNetworkDashboard(period)
+        // Fetched alongside the charts, not after them — the comparison is one extra
+        // query and serialising it would add a round trip to every period switch.
+        // It must never take the dashboard down: a missing delta badge is a far smaller
+        // problem than a blank page, so a failure here degrades to no badge.
+        const [charts, periodComparison] = await Promise.all([
+          fetchNetworkDashboard(period),
+          fetchPeriodComparison(period).catch(() => null),
+        ])
         if (!active) return
+        setComparison(periodComparison)
         setSummaries(next)
         setLinePoints(charts.linePoints)
         setBranchBars(
@@ -123,16 +167,61 @@ function ManagerOverview() {
   )
 
   const periodLabel = PERIODS.find((p) => p.id === period)?.label || 'Week'
-  const hasRestaurant = branches.some((b) => b.branch_type === 'restaurant')
 
-  if (loading) {
+  // One branch means "Revenue by branch" is a single bar restating the KPI above it.
+  const showBranchPanel = branches.length > 1
+
+  // Payment mix reuses the shared bar list. Zero-value methods are dropped: a shop that
+  // takes no cards should not carry a permanent empty "Card" row implying it does.
+  const paymentMixBars = (paymentMix || [])
+    .map((row) => ({ category: row.label, value: Number(row.value) || 0 }))
+    .filter((row) => row.value > 0)
+    .sort((a, b) => b.value - a.value)
+
+  const comparisonNote = COMPARISON_LABEL[period] || 'vs. previous period'
+  const deltaFor = (key) =>
+    comparison ? (
+      <DeltaBadge
+        current={comparison.current?.[key]}
+        previous={comparison.previous?.[key]}
+        hasPrevious={comparison.hasPrevious}
+      />
+    ) : null
+
+  const kpiCards = [
+    {
+      label: `Revenue - ${periodLabel}`,
+      value: money(totals.revenue),
+      delta: deltaFor('revenue'),
+      note: comparison ? comparisonNote : null,
+    },
+    {
+      label: `Orders - ${periodLabel}`,
+      value: totals.orders,
+      delta: deltaFor('orders'),
+      note: comparison ? comparisonNote : null,
+    },
+    { label: 'Low-stock items', value: totals.lowStock, delta: null, note: null },
+  ]
+
+  // Skeleton only when there is genuinely nothing to show. Switching period used to flip
+  // `loading` and blank the entire dashboard back to grey boxes even though the previous
+  // numbers were still perfectly good — that reads as slow even when the fetch is fast.
+  // Now the old figures stay put and a quiet "Updating…" marks them as in-flight.
+  const hasAnyData = branches.length > 0
+  if (loading && !hasAnyData) {
     return <PageSkeleton variant="dashboard" />
   }
 
   return (
     <div>
       <PageHeader eyebrow="ALL BRANCHES" title={greetingFor(user)}>
-        <div className="flex flex-wrap gap-1.5 max-[700px]:w-full">
+        <div className="flex flex-wrap items-center gap-1.5 max-[700px]:w-full">
+          {loading && (
+            <span className="mr-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+              Updating…
+            </span>
+          )}
           {PERIODS.map((item) => (
             <button
               key={item.id}
@@ -140,7 +229,7 @@ function ManagerOverview() {
               className={`rounded-[5px] border px-3 py-2 text-xs font-bold max-[700px]:flex-1 max-[700px]:px-1.5 max-[700px]:py-1.5 max-[700px]:text-[10px] ${
                 period === item.id
                   ? 'border-brand-dark bg-brand-dark text-white'
-                  : 'border-brand-border bg-white text-[#606662]'
+                  : 'border-brand-border bg-white text-brand-n700'
               }`}
               onClick={() => setPeriod(item.id)}
             >
@@ -152,26 +241,44 @@ function ManagerOverview() {
       {error && (
         <p className="mb-4 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
       )}
-      <div className="mb-4 grid grid-cols-3 gap-3.5 max-[700px]:grid-cols-1">
-        {[
-          [`Revenue - ${periodLabel}`, money(totals.revenue)],
-          [`Orders - ${periodLabel}`, totals.orders],
-          [
-            hasRestaurant ? 'Menu items on today' : 'Low-stock items',
-            hasRestaurant ? totals.menuOn : totals.lowStock,
-          ],
-        ].map(([label, value]) => (
+      {/* KPI row. `Menu items on today` is restaurant-only and this build is focused on
+          retail/meat, so it is not rendered — totals.menuOn and branchSummary's menu
+          counting are left intact so re-enabling it is a one-line change, not a rebuild. */}
+      <div className={`mb-4 grid gap-3.5 max-[700px]:grid-cols-1 ${kpiCards.length === 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>
+        {kpiCards.map(({ label, value, delta, note }) => (
           <div key={label} className="rounded-[10px] bg-brand-dark p-4 text-white">
-            <span className="block text-[11px] text-[#abb1ad]">{label}</span>
-            <strong className={`mt-2 block text-[26px] text-brand-gold ${moneyClass}`}>{value}</strong>
+            <span className="block text-[11px] text-brand-n500">{label}</span>
+            <div className="mt-2 flex flex-wrap items-baseline gap-2">
+              <strong className={`block text-[26px] text-brand-gold ${moneyClass}`}>{value}</strong>
+              {delta}
+            </div>
+            {note && <span className="mt-1 block text-[10px] text-brand-n500">{note}</span>}
           </div>
         ))}
       </div>
 
-      <div className="mb-4 grid grid-cols-[minmax(0,1.4fr)_minmax(200px,0.75fr)_minmax(220px,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
+      {/* Revenue by branch is meaningless with one branch — it is a bar chart of a single
+          bar restating the KPI above it. Dropped from the grid entirely rather than
+          hidden in place, so the remaining panels widen instead of leaving a gap. */}
+      <div
+        className={`mb-4 grid items-stretch gap-3.5 max-[1100px]:grid-cols-1 ${
+          showBranchPanel
+            ? 'grid-cols-[minmax(0,1.4fr)_minmax(200px,0.75fr)_minmax(220px,0.9fr)]'
+            : 'grid-cols-[minmax(0,1.6fr)_minmax(240px,0.9fr)]'
+        }`}
+      >
         <RevenueChart points={linePoints} period={`Network - ${periodLabel}`} />
-        <PaymentMethodPie mix={paymentMix} subtitle={`${periodLabel} · PHP`} />
-        <SalesMixBar mix={branchBars} title="Revenue by branch" subtitle={`${periodLabel} - PHP`} />
+        <SalesMixBar
+          mix={paymentMixBars}
+          title="Payment methods"
+          subtitle={`${periodLabel} · PHP`}
+          showShare
+          barClassFor={(item) => PAYMENT_BAR_CLASS[item.category] || 'bg-brand-gold'}
+          emptyMessage="No payments taken in this period yet."
+        />
+        {showBranchPanel && (
+          <SalesMixBar mix={branchBars} title="Revenue by branch" subtitle={`${periodLabel} - PHP`} />
+        )}
       </div>
 
       <div className="mb-4 grid grid-cols-2 items-stretch gap-3.5 max-[900px]:grid-cols-1">
@@ -188,7 +295,7 @@ function ManagerOverview() {
       </div>
 
       <TableCard>
-        <div className="grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem_4.5rem] items-center gap-3 bg-brand-dark px-5 py-3 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[700px]:grid-cols-[minmax(0,1fr)_4.5rem]">
+        <div className="grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem_4.5rem] items-center gap-3 bg-brand-dark px-5 py-3 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[700px]:grid-cols-[minmax(0,1fr)_4.5rem]">
           <span>Branch</span>
           <span className="max-[700px]:hidden">Type</span>
           <span className="text-right max-[700px]:hidden">Revenue</span>

@@ -18,25 +18,92 @@ import {
   fetchBranches,
   fetchRoles,
   hasSupabase,
+  logAuditEvent,
   revealStaffPin,
   updateStaffRow,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
-import { MODULES, defaultPermissionsFor, usesPinLogin } from '../../utils/roles'
+import {
+  MODULES,
+  assignableRoles,
+  canAssignRole,
+  canEditStaff,
+  defaultPermissionsFor,
+  moduleLabel,
+  permissionDiff,
+  usesPinLogin,
+} from '../../utils/roles'
 
-function samePerms(a, b) {
-  const left = [...(a || [])].map(String).sort()
-  const right = [...(b || [])].map(String).sort()
-  if (left.length !== right.length) return false
-  return left.every((id, i) => id === right[i])
-}
-
-function accessMode(person) {
-  if (!Array.isArray(person.permissions)) return 'default'
-  if (samePerms(person.permissions, defaultPermissionsFor(person.role))) return 'default'
-  return 'custom'
-}
 import { PIN_RULES_HINT, randomComplexPin, sanitizePinInput, validateComplexPin } from '../../utils/pin'
+
+/**
+ * The access badge. Three states, not two.
+ *
+ * "Custom access" used to fire on ANY difference from the role defaults, which made a
+ * perfectly ordinary narrowing — a cashier scoped to POS / Transactions / Day end —
+ * look like exactly the same kind of exception as a cashier handed the Staff module.
+ * Only the second is worth a warning colour, so only the second gets one; the first is
+ * reported as plain information. If the warning fires on routine scoping, people learn
+ * to ignore it, and then it is not a warning any more.
+ */
+function accessBadge(person) {
+  const diff = permissionDiff(person)
+  if (diff.mode === 'default') {
+    return { tone: 'neutral', label: 'Role defaults', sub: 'Role defaults', title: '' }
+  }
+  if (diff.mode === 'restricted') {
+    return {
+      tone: 'neutral',
+      label: `Scoped · ${diff.missing.length} fewer`,
+      sub: 'Narrowed access',
+      title: `Removed from role defaults: ${diff.missing.map(moduleLabel).join(', ')}`,
+    }
+  }
+  return {
+    tone: 'warn',
+    label: `Elevated · +${diff.extra.length}`,
+    sub: 'Above role defaults',
+    title: `Granted beyond role defaults: ${diff.extra.map(moduleLabel).join(', ')}${
+      diff.missing.length ? ` · Removed: ${diff.missing.map(moduleLabel).join(', ')}` : ''
+    }`,
+  }
+}
+
+/**
+ * Record a staff create / change in the audit trail.
+ *
+ * Deliberately records the OLD and NEW role and module list, not just the new one. A row
+ * only ever holds its current value, so "who was made a manager, by whom, and when" is
+ * unanswerable from the table alone — and a change made then reverted leaves no trace at
+ * all. Never logs the PIN itself, only that one was set.
+ */
+async function auditStaffChange({ branchId, actorId, eventType, target, before }) {
+  const roleChanged = before && before.role !== target.role
+  const parts = [target.full_name, `role ${target.role}`]
+  if (roleChanged) parts.push(`(was ${before.role})`)
+  if (before && before.is_active !== target.is_active) {
+    parts.push(target.is_active ? 'reactivated' : 'DEACTIVATED')
+  }
+  if (target.login_pin) parts.push('PIN set')
+  await logAuditEvent({
+    branchId: branchId || null,
+    staffId: actorId || null,
+    eventType,
+    detail: parts.join(' · '),
+    meta: {
+      targetStaffId: target.id || null,
+      role: target.role,
+      previousRole: before?.role ?? null,
+      roleChanged: Boolean(roleChanged),
+      permissions: target.permissions || null,
+      previousPermissions: before?.permissions ?? null,
+      isActive: target.is_active,
+    },
+  }).catch(() => {
+    // Never block a legitimate staff change on the audit write — the change already
+    // succeeded, and throwing here would leave the UI claiming it failed.
+  })
+}
 
 const empty = {
   full_name: '',
@@ -145,6 +212,10 @@ function ManagerStaff() {
   }, [])
 
   const pinMode = form && usesPinLogin(form.role)
+  const allowedRoles = assignableRoles(currentUser)
+  const formDiff = form
+    ? permissionDiff({ role: form.role, permissions: form.permissions })
+    : { mode: 'default', extra: [], missing: [] }
 
   if (loading && !staff.length) {
     return <PageSkeleton variant="table" />
@@ -156,16 +227,19 @@ function ManagerStaff() {
         <PrimaryButton
           compact
           type="button"
+          disabled={!allowedRoles.length}
+          title={allowedRoles.length ? undefined : 'Your role cannot create staff accounts.'}
           onClick={() => {
             setFormError('')
             setShowPin(false)
+            const startRole = allowedRoles.includes('cashier') ? 'cashier' : allowedRoles[0]
             setForm({
               ...empty,
               branch_id: branches[0]?.id || '',
-              role: 'cashier',
+              role: startRole,
               login_code: uniqueStaffCode(staff),
               login_pin: randomComplexPin(10),
-              permissions: defaultPermissionsFor('cashier'),
+              permissions: defaultPermissionsFor(startRole),
             })
           }}
         >
@@ -176,14 +250,21 @@ function ManagerStaff() {
         <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
       )}
       <TableCard>
-        <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)_0.8fr_0.7fr_0.7fr] gap-3 bg-brand-dark px-5 py-3 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[700px]:grid-cols-[minmax(0,1fr)_auto] max-[700px]:px-3">
+        <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)_0.8fr_0.7fr_0.7fr] gap-3 bg-brand-dark px-5 py-3 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[700px]:grid-cols-[minmax(0,1fr)_auto] max-[700px]:px-3">
           <span>Name</span>
           <span className="max-[700px]:hidden">Branch</span>
           <span className="max-[700px]:hidden">Role</span>
           <span className="max-[700px]:hidden">Status</span>
           <span className="text-right max-[700px]:text-left">Action</span>
         </div>
-        {staff.map((person) => (
+        {staff.map((person) => {
+          const badge = accessBadge(person)
+          // Whether THIS manager may touch THIS row. Rendering an Edit button that is
+          // guaranteed to fail is worse than not rendering it — staff learn to ignore
+          // errors, and the refusal is better explained here than as a database message.
+          const editable = canEditStaff(currentUser, person)
+          const isSelf = currentUser?.id === person.id
+          return (
           <div
             key={person.id}
             className={`grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)_0.8fr_0.7fr_0.7fr] items-center gap-3 px-5 py-3 text-xs max-[700px]:grid-cols-[minmax(0,1fr)_auto] max-[700px]:items-start max-[700px]:px-3 ${tableRowClass}`}
@@ -192,10 +273,11 @@ function ManagerStaff() {
               <strong className="block truncate text-brand-ink">{person.full_name}</strong>
               <span className="mt-1 inline-flex items-center gap-1.5">
                 <StatusBadge
-                  tone={accessMode(person) === 'custom' ? 'warn' : 'neutral'}
+                  tone={badge.tone}
                   className="min-w-0 rounded-md px-1.5 py-0.5 text-[9px]"
+                  title={badge.title}
                 >
-                  {accessMode(person) === 'custom' ? 'Custom access' : 'Default access'}
+                  {badge.label}
                 </StatusBadge>
               </span>
               <small className="mt-0.5 hidden text-[10px] leading-snug text-brand-subtle max-[700px]:block">
@@ -212,8 +294,8 @@ function ManagerStaff() {
             <span className="truncate max-[700px]:hidden">{person.branches?.name || '—'}</span>
             <span className="max-[700px]:hidden">
               {person.roles?.label || person.role}
-              <span className="mt-0.5 block text-[10px] text-brand-subtle">
-                {accessMode(person) === 'custom' ? 'Custom modules' : 'Role defaults'}
+              <span className="mt-0.5 block text-[10px] text-brand-subtle" title={badge.title}>
+                {badge.sub}
               </span>
             </span>
             <span className="max-[700px]:hidden">
@@ -222,7 +304,9 @@ function ManagerStaff() {
               </StatusBadge>
             </span>
             <div className="flex justify-end gap-2 max-[700px]:flex-col max-[700px]:items-end">
-              {usesPinLogin(person.role) && (
+              {/* Revealing a PIN is impersonation of that person for every future audit
+                  entry, so it follows the same ceiling as editing them. */}
+              {usesPinLogin(person.role) && editable && (
                 <button
                   type="button"
                   className="border-0 bg-transparent text-xs font-bold text-brand-ink"
@@ -242,42 +326,73 @@ function ManagerStaff() {
                   Reveal PIN
                 </button>
               )}
-              <button
-                type="button"
-                className="border-0 bg-transparent text-right text-xs font-bold text-brand-danger-soft"
-                onClick={() => {
-                setFormError('')
-                setShowPin(false)
-                setForm({
-                  id: person.id,
-                  full_name: person.full_name,
-                  role: person.role,
-                  branch_id: person.branch_id,
-                  is_active: person.is_active,
-                  email: '',
-                  password: '',
-                  login_code: person.login_code || '',
-                  login_pin: '',
-                  permissions: Array.isArray(person.permissions)
-                    ? person.permissions
-                    : defaultPermissionsFor(person.role),
-                })
-              }}
-            >
-              Edit
-            </button>
+              {editable ? (
+                <button
+                  type="button"
+                  className="border-0 bg-transparent text-right text-xs font-bold text-brand-danger-soft"
+                  onClick={() => {
+                    setFormError('')
+                    setShowPin(false)
+                    setForm({
+                      id: person.id,
+                      full_name: person.full_name,
+                      role: person.role,
+                      branch_id: person.branch_id,
+                      is_active: person.is_active,
+                      email: '',
+                      password: '',
+                      login_code: person.login_code || '',
+                      login_pin: '',
+                      permissions: Array.isArray(person.permissions)
+                        ? person.permissions
+                        : defaultPermissionsFor(person.role),
+                    })
+                  }}
+                >
+                  Edit
+                </button>
+              ) : (
+                <span
+                  className="text-right text-[10px] leading-tight text-brand-subtle"
+                  title={
+                    isSelf
+                      ? 'Changing your own role or access must be done by someone else.'
+                      : 'This account is at or above your own role.'
+                  }
+                >
+                  {isSelf ? 'Your account' : 'Locked'}
+                </span>
+              )}
             </div>
           </div>
-        ))}
+          )
+        })}
       </TableCard>
       {form && (
-        <div className="fixed inset-0 z-[5] grid place-items-center overflow-auto bg-[#202426aa] py-8">
+        <div className="fixed inset-0 z-[5] grid place-items-center overflow-auto bg-brand-scrim py-8">
           <form
             className="w-[min(520px,calc(100%-32px))] rounded-[10px] bg-white p-6"
             onSubmit={async (event) => {
               event.preventDefault()
               setFormError('')
               try {
+                // Re-checked on submit, not only when rendering the picker: the role
+                // field can still be driven by a stale form object, and this is the last
+                // point before the write. The database trigger in
+                // migrate_role_assignment_ceiling.sql is the actual control — this only
+                // turns a rejected write into a sentence someone can act on.
+                if (!canAssignRole(currentUser, form.role)) {
+                  throw new Error(
+                    `You cannot assign the ${form.role} role — it is at or above your own (${currentUser?.role || 'unknown'}). · Code SEC01`,
+                  )
+                }
+                if (form.id && !canEditStaff(currentUser, { id: form.id, role: form.role })) {
+                  throw new Error(
+                    currentUser?.id === form.id
+                      ? 'You cannot edit your own account. Ask someone above you to make this change. · Code SEC03'
+                      : 'You cannot edit an account at or above your own role. · Code SEC02',
+                  )
+                }
                 if (usesPinLogin(form.role) && form.login_code) {
                   if (isStaffCodeTaken(staff, form.login_code, form.id || null)) {
                     throw new Error('That staff code is already in use. Each person needs a unique code.')
@@ -291,6 +406,7 @@ function ManagerStaff() {
                   }
                 }
                 if (form.id) {
+                  const before = staff.find((p) => p.id === form.id) || {}
                   const changes = {
                     full_name: form.full_name,
                     role: form.role,
@@ -303,6 +419,13 @@ function ManagerStaff() {
                     if (form.login_pin) changes.loginPin = form.login_pin
                   }
                   await updateStaffRow(form.id, changes)
+                  await auditStaffChange({
+                    branchId: form.branch_id,
+                    actorId: currentUser?.id,
+                    eventType: 'staff_updated',
+                    target: form,
+                    before,
+                  })
                   if (currentUser?.id === form.id && hasSupabase) {
                     const refreshed = await fetchSessionStaff()
                     if (refreshed) {
@@ -333,6 +456,13 @@ function ManagerStaff() {
                       permissions: form.permissions,
                     })
                   }
+                  await auditStaffChange({
+                    branchId: form.branch_id,
+                    actorId: currentUser?.id,
+                    eventType: 'staff_created',
+                    target: form,
+                    before: null,
+                  })
                 }
                 setForm(null)
                 setFormError('')
@@ -389,7 +519,7 @@ function ManagerStaff() {
                     Must be unique — no two staff can share the same code.
                   </p>
                   <div className="flex items-end gap-2">
-                    <label className="relative block min-w-0 flex-1 text-[11px] font-bold text-[#646a66]">
+                    <label className="relative block min-w-0 flex-1 text-[11px] font-bold text-brand-n700">
                       {form.id ? 'New PIN (leave blank to keep)' : 'PIN'}
                       <input
                         className="mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 pr-10 text-[13px] font-normal outline-none"
@@ -404,7 +534,7 @@ function ManagerStaff() {
                       />
                       <button
                         type="button"
-                        className="absolute right-2 bottom-2.5 border-0 bg-transparent p-1 text-[#7a807c] hover:text-brand-ink"
+                        className="absolute right-2 bottom-2.5 border-0 bg-transparent p-1 text-brand-n600 hover:text-brand-ink"
                         aria-label={showPin ? 'Hide PIN' : 'Show PIN'}
                         onClick={() => setShowPin((v) => !v)}
                       >
@@ -459,21 +589,58 @@ function ManagerStaff() {
                   })
                 }}
               >
-                {roles.map((role) => (
-                  <option key={role.name} value={role.name}>
-                    {role.label}
-                  </option>
-                ))}
+                {roles
+                  .filter((role) => allowedRoles.includes(role.name))
+                  .map((role) => (
+                    <option key={role.name} value={role.name}>
+                      {role.label}
+                    </option>
+                  ))}
               </SelectField>
+              <p className="m-0 -mt-1 text-[10px] text-brand-subtle">
+                You can only assign roles below your own ({currentUser?.role || '—'}).
+              </p>
               <fieldset className="rounded-md border border-brand-line p-3">
                 <legend className="px-1 text-[10px] font-bold tracking-wide text-brand-label uppercase">
                   Module access
                 </legend>
+                {/* Says how this differs from the role defaults WHILE it is being set,
+                    rather than leaving someone to wonder later why the row is tagged. */}
+                <div className="mb-2 flex items-start justify-between gap-2">
+                  <span className="text-[10px] leading-snug text-brand-subtle">
+                    {formDiff.mode === 'default'
+                      ? 'Matches the role defaults.'
+                      : formDiff.mode === 'restricted'
+                        ? `Narrower than the role default — ${formDiff.missing.map(moduleLabel).join(', ')} removed.`
+                        : `Above the role default — grants ${formDiff.extra.map(moduleLabel).join(', ')}.`}
+                  </span>
+                  {formDiff.mode !== 'default' && (
+                    <button
+                      type="button"
+                      className="shrink-0 border-0 bg-transparent text-[10px] font-bold text-brand-ink underline underline-offset-2"
+                      title="Reset to role defaults"
+                      onClick={() =>
+                        setForm({ ...form, permissions: defaultPermissionsFor(form.role) })
+                      }
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
                 <div className="grid grid-cols-2 gap-2">
                   {MODULES.map((mod) => {
                     const checked = (form.permissions || []).includes(mod.id)
+                    // Marks access this role would not normally carry, at the moment it
+                    // is granted rather than in a review three months later.
+                    const beyondRole = checked && formDiff.extra.includes(mod.id)
                     return (
-                      <label key={mod.id} className="flex items-center gap-2 text-xs text-brand-ink">
+                      <label
+                        key={mod.id}
+                        className={`flex items-center gap-2 text-xs ${
+                          beyondRole ? 'font-bold text-brand-warn' : 'text-brand-ink'
+                        }`}
+                        title={beyondRole ? 'Beyond this role’s defaults' : undefined}
+                      >
                         <input
                           type="checkbox"
                           checked={checked}
@@ -491,7 +658,7 @@ function ManagerStaff() {
                 </div>
               </fieldset>
               {form.id && (
-                <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
+                <label className="flex items-center gap-2 text-xs font-bold text-brand-n700">
                   <input
                     type="checkbox"
                     checked={form.is_active}
@@ -521,7 +688,7 @@ function ManagerStaff() {
         </div>
       )}
       {reveal && (
-        <div className="fixed inset-0 z-[6] grid place-items-center bg-[#202426aa]">
+        <div className="fixed inset-0 z-[6] grid place-items-center bg-brand-scrim">
           <div className="w-[min(360px,calc(100%-32px))] rounded-[10px] bg-white p-6">
             <h2 className="mb-2 text-lg">PIN for {reveal.name}</h2>
             <p className="text-sm text-brand-muted">

@@ -1,6 +1,87 @@
 @import "tailwindcss";
 
+/*
+  CalePOS design tokens.
+
+  THE NEUTRAL SCALE IS THE IMPORTANT PART. Before it existed the app used ~90 distinct
+  hand-written hex greys — #7a807c, #797e7b, #808581, #7f8782 and so on — colours nobody
+  chose to be different from each other, they just got typed at different times. The
+  result was a UI that looked subtly inconsistent everywhere and could not be restyled at
+  all, because there was no single place to change "the grey".
+
+  Everything neutral now maps to one of these eleven steps. Pick by ROLE:
+
+    n-50 … n-200   surfaces (page tints, hover rows, chips)
+    n-300 / n-400  lines and borders
+    n-500 … n-700  secondary and muted text, icons
+    n-800 / n-900  primary text, dark chrome
+
+  Rules:
+    * New UI uses a token. If none fits, add a step here — do not inline a hex.
+    * Keep the semantic aliases below (ink, muted, line…) pointing at scale steps rather
+      than at their own values, so a palette change is one edit.
+    * Status colours (success / warn / danger) are reserved for state. Never reuse one as
+      a decorative accent, or "red" stops meaning "something is wrong".
+*/
 @theme {
+  /* ── Neutral scale ───────────────────────────────────────────────────── */
+  --color-brand-n50: #fbfbf9;
+  --color-brand-n100: #f7f7f4;
+  --color-brand-n150: #f1f1ed;
+  --color-brand-n200: #eceee9;
+  --color-brand-n300: #e2e3de;
+  --color-brand-n400: #c8ccc4;
+  --color-brand-n500: #a8aeaa;
+  --color-brand-n600: #7a807c;
+  --color-brand-n700: #606662;
+  --color-brand-n800: #4d534f;
+  --color-brand-n900: #202426;
+
+  /* Text on the dark sidebar / table headers — the one neutral that lives on a dark
+     ground, so it is named for that job rather than by scale position. */
+  --color-brand-ondark: #c8ceca;
+  --color-brand-ondark-dim: #8a908c;
+
+  /* Modal / menu scrim. One value everywhere so overlays never stack unevenly. */
+  --color-brand-scrim: #202426aa;
+
+  /* Dark chrome (sidebar, POS keypad). Interactive steps above brand-dark/brand-panel. */
+  --color-brand-dark-inset: #323837;
+  --color-brand-dark-hover: #343938;
+  --color-brand-dark-active: #3a403f;
+
+  /* Sync chip states. Deliberately softer than the status palette: this is ambient
+     status on dark chrome, not an alert competing with a real error.
+     `-ink` variants are the text weight of each; the base is the dot. */
+  --color-brand-sync-ok: #6f9b78;
+  --color-brand-sync-busy: #7a9cc8;
+  --color-brand-sync-warn: #c9a45a;
+  --color-brand-sync-off: #c48978;
+  --color-brand-sync-busy-ink: #5a7fa8;
+  --color-brand-sync-warn-ink: #a8843a;
+  --color-brand-sync-off-ink: #a86a5a;
+  --color-brand-sync-warn-bg: #3a3228;
+  --color-brand-sync-warn-body: #e8d9b8;
+
+  /* Status colours that live on a DARK ground (POS cart, branch chrome). The light-mode
+     danger/success tokens are unreadable there, so these are their dark counterparts —
+     not new meanings, the same meanings at a different weight. */
+  --color-brand-danger-ondark: #ffb4b4;
+  --color-brand-warn-ondark: #f0c9a0;
+
+  /* Faint status surfaces — full-panel tints where *-bg would shout. */
+  --color-brand-danger-tint: #fff8f7;
+  --color-brand-danger-tint-alt: #fdf6f6;
+  --color-brand-danger-line: #e8b4b4;
+  --color-brand-danger-deep: #6a4038;
+  --color-brand-success-tint: #f4faf2;
+  --color-brand-success-line: #9ec99a;
+
+  /* Info — the only non-status accent. Used for neutral callouts that are neither good
+     nor bad, so they don't have to borrow warn's colour and dilute it. */
+  --color-brand-info: #4a5568;
+  --color-brand-info-bg: #eef1f6;
+
   --color-brand-gold: #e9b949;
   --color-brand-dark: #202426;
   --color-brand-panel: #292d2e;
@@ -27,6 +108,10 @@
   --color-brand-danger-soft: #8a3d3d;
   --color-brand-warn: #7a5a14;
   --color-brand-warn-bg: #f7e8c7;
+  /* Quieter warn pair for full-width banners, where warn-bg is too saturated across
+     the whole strip. */
+  --color-brand-warn-surface: #fff8ea;
+  --color-brand-warn-line: #e8d4a8;
   --color-brand-meat: #f7dfaa;
   --color-brand-meat-text: #6a4a10;
   --color-brand-sheet: #9aa19a;

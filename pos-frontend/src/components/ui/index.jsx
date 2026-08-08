@@ -1,4 +1,5 @@
 import { FiX } from 'react-icons/fi'
+import { saleImpactGuidance } from '../../utils/errors'
 
 export function PrimaryButton({ className = '', compact = false, children, ...props }) {
   return (
@@ -18,7 +19,7 @@ export function PrimaryButton({ className = '', compact = false, children, ...pr
 export function SecondaryButton({ className = '', compact = false, children, ...props }) {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-[#d8dbd5] bg-[#f4f5f1] font-bold text-[#4d534f] hover:bg-[#eaebe6] hover:border-[#cfd3cc] active:bg-[#e4e6e0] disabled:cursor-not-allowed disabled:opacity-35 ${
+      className={`inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-brand-n400 bg-brand-n100 font-bold text-brand-n800 hover:bg-brand-n200 hover:border-brand-n400 active:bg-brand-n300 disabled:cursor-not-allowed disabled:opacity-35 ${
         compact
           ? 'h-10 w-auto min-w-0 px-3 text-xs whitespace-nowrap max-[700px]:h-9 max-[700px]:px-2.5 max-[700px]:text-[11px]'
           : 'px-3.5 py-[11px] max-[700px]:px-3 max-[700px]:text-sm'
@@ -32,7 +33,7 @@ export function SecondaryButton({ className = '', compact = false, children, ...
 
 export function Field({ label, className = '', inputClassName = '', ...props }) {
   return (
-    <label className={`block text-[11px] font-bold text-[#646a66] ${className}`}>
+    <label className={`block text-[11px] font-bold text-brand-n700 ${className}`}>
       {label}
       <input
         className={`mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px] font-normal outline-none ${inputClassName}`}
@@ -44,7 +45,7 @@ export function Field({ label, className = '', inputClassName = '', ...props }) 
 
 export function SelectField({ label, className = '', children, ...props }) {
   return (
-    <label className={`block text-[11px] font-bold text-[#646a66] ${className}`}>
+    <label className={`block text-[11px] font-bold text-brand-n700 ${className}`}>
       {label}
       <select
         className="mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px] font-normal outline-none"
@@ -104,11 +105,11 @@ export function PageHeader({ eyebrow, title, children, className = '' }) {
 export function SearchBox({ icon, className = '', ...props }) {
   return (
     <div
-      className={`flex h-10 items-center gap-2.5 rounded-md border border-brand-search-border bg-brand-search px-3 text-[#5f6561] shadow-[0_1px_0_#00000008] ${className}`}
+      className={`flex h-10 items-center gap-2.5 rounded-md border border-brand-search-border bg-brand-search px-3 text-brand-n700 shadow-[0_1px_0_#00000008] ${className}`}
     >
-      <span className="shrink-0 text-[#7a807c]">{icon}</span>
+      <span className="shrink-0 text-brand-n600">{icon}</span>
       <input
-        className="min-w-0 w-full border-0 bg-transparent text-[13px] text-brand-ink outline-none placeholder:text-[#9aa09c]"
+        className="min-w-0 w-full border-0 bg-transparent text-[13px] text-brand-ink outline-none placeholder:text-brand-n500"
         {...props}
       />
     </div>
@@ -128,11 +129,11 @@ export function TableCard({ className = '', children, ...rest }) {
 
 /** Shared column-header look — dark strip so headers don't blend into white rows. */
 export const tableHeadClass =
-  'bg-brand-dark text-[9px] font-bold tracking-[1.2px] text-[#c8ceca] uppercase'
+  'bg-brand-dark text-[9px] font-bold tracking-[1.2px] text-brand-ondark uppercase'
 
 /** Standard table body row — zebra + soft hover. */
 export const tableRowClass =
-  'border-t border-brand-softline even:bg-brand-sheet-alt hover:bg-[#fafaf7] active:bg-[#f0f1ec]'
+  'border-t border-brand-softline even:bg-brand-sheet-alt hover:bg-brand-n50 active:bg-brand-n150'
 
 /** Comfortable padding for list pages (Products, Transactions, DayEnd history). */
 export const tableRowComfortableClass = `${tableRowClass} px-5 py-[17px]`
@@ -184,14 +185,20 @@ const STATUS_TONES = {
   success: 'bg-brand-success-bg text-brand-success-text',
   warn: 'bg-brand-warn-bg text-brand-warn',
   danger: 'bg-brand-danger-bg text-brand-danger',
-  neutral: 'bg-[#eceee9] text-brand-muted',
+  neutral: 'bg-brand-n200 text-brand-muted',
 }
 
 /** Status pill — tones: success | warn | danger | neutral (brand tokens). */
-export function StatusBadge({ tone = 'neutral', children, className = '' }) {
+export function StatusBadge({ tone = 'neutral', compact = false, children, className = '' }) {
+  // `compact` for dense table rows: the default pill's min-width + tall padding makes a
+  // short label like "Paid" float in an oversized lozenge and sit taller than the row's
+  // other cells. Compact sizes to its text and matches the row's line height.
+  const shape = compact
+    ? 'rounded-[4px] px-1.5 py-0.5 text-[10px] leading-[1.4]'
+    : 'min-w-[62px] rounded-[20px] px-2 py-[5px] text-center text-[10px]'
   return (
     <span
-      className={`inline-block min-w-[62px] rounded-[20px] px-2 py-[5px] text-center text-[10px] font-bold ${
+      className={`inline-block font-bold whitespace-nowrap ${shape} ${
         STATUS_TONES[tone] || STATUS_TONES.neutral
       } ${className}`}
     >
@@ -224,6 +231,53 @@ export function varianceToneClass(variance) {
   return 'text-brand-warn'
 }
 
+/**
+ * Period-over-period change badge for a KPI ("+12.4%" against last week).
+ *
+ * Designed to sit on the dark KPI cards, so the tones are the on-dark status colours.
+ *
+ * Two cases deliberately do NOT get a percentage:
+ *   - No prior period at all (a new shop's first week). 0 → 200 is not "+∞%" or "+100%",
+ *     it is simply the first data there has ever been, so it reads "New".
+ *   - Previous period existed but was exactly zero revenue. Same divide-by-zero problem.
+ * Both are shown as neutral, because inventing a number here would put a green arrow on
+ * a shop that has no trend to report.
+ */
+export function DeltaBadge({ current, previous, hasPrevious = true, className = '' }) {
+  const cur = Number(current) || 0
+  const prev = Number(previous) || 0
+  if (!hasPrevious || prev === 0) {
+    return (
+      <span
+        className={`inline-flex items-center rounded-[4px] bg-white/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-n500 ${className}`}
+        title="No comparable earlier period yet"
+      >
+        New
+      </span>
+    )
+  }
+  const pct = ((cur - prev) / Math.abs(prev)) * 100
+  // Round before comparing, so a change of +0.04% is not shown as an upward trend.
+  const rounded = Math.round(pct * 10) / 10
+  const tone =
+    rounded > 0
+      ? 'bg-brand-sync-ok/20 text-brand-sync-ok'
+      : rounded < 0
+        ? 'bg-brand-danger-ondark/15 text-brand-danger-ondark'
+        : 'bg-white/10 text-brand-n500'
+  const arrow = rounded > 0 ? '▲' : rounded < 0 ? '▼' : '—'
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-[4px] px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${tone} ${className}`}
+      title={`vs. previous period (${prev.toLocaleString()})`}
+    >
+      <span aria-hidden>{arrow}</span>
+      {rounded > 0 ? '+' : ''}
+      {rounded}%
+    </span>
+  )
+}
+
 export function Modal({ wide = false, xl = false, layer = false, className = '', onClose, children }) {
   // `xl` is for content that genuinely needs two columns (checkout). Cramming a long
   // breakdown into the 460px `wide` column made it scroll under the sticky action bar.
@@ -234,7 +288,7 @@ export function Modal({ wide = false, xl = false, layer = false, className = '',
       : 'sm:w-[min(420px,100%)]'
   return (
     <div
-      className={`fixed inset-0 flex items-center justify-center bg-[#202426aa] p-3 max-[700px]:items-end max-[700px]:p-0 max-[700px]:pt-8 ${
+      className={`fixed inset-0 flex items-center justify-center bg-brand-scrim p-3 max-[700px]:items-end max-[700px]:p-0 max-[700px]:pt-8 ${
         layer ? 'z-[6]' : 'z-[4]'
       }`}
     >
@@ -245,7 +299,7 @@ export function Modal({ wide = false, xl = false, layer = false, className = '',
           <button
             type="button"
             aria-label="Close"
-            className="absolute top-3 right-3 z-[1] border-0 bg-transparent text-lg text-[#6e7470] transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90"
+            className="absolute top-3 right-3 z-[1] border-0 bg-transparent text-lg text-brand-n700 transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90"
             onClick={onClose}
           >
             <FiX />
@@ -269,13 +323,23 @@ export function ModalActions({ children, className = '' }) {
   )
 }
 
-/** Shows a support code so staff can text/call you with the exact failure. */
+/**
+ * Shows a support code so staff can text/call you with the exact failure — and, when the
+ * failure touched a sale, says outright whether the money went through.
+ *
+ * That second line is the point. Without it a cashier facing a failed payment has two
+ * options and no basis to choose between them: ring it again (and risk double-charging a
+ * customer) or wave the customer off (and lose the sale plus break the OR sequence). The
+ * catalog in utils/errors.js knows which is correct for every code, so it says so instead
+ * of leaving it to nerve.
+ */
 export function ErrorBanner({ error, className = '', onDismiss }) {
   if (!error) return null
   const text = typeof error === 'string' ? error : error.message || String(error)
   const codeMatch = text.match(/\bCode\s+([A-Z]{2,5}\d{2})\b/i) || text.match(/\b([A-Z]{2,5}\d{2})\b/)
   const code = codeMatch?.[1] || null
   const alreadyLabeled = /\bCode\s+[A-Z]{2,5}\d{2}\b/i.test(text)
+  const impact = code ? saleImpactGuidance(code) : ''
   return (
     <div
       className={`mb-3 rounded-md bg-brand-danger-bg px-3 py-2.5 text-xs text-brand-danger ${className}`}
@@ -284,6 +348,11 @@ export function ErrorBanner({ error, className = '', onDismiss }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="m-0 font-medium">{text}</p>
+          {impact && (
+            <p className="m-0 mt-1.5 rounded-[4px] bg-white/60 px-2 py-1.5 text-[11px] leading-snug font-bold text-brand-danger">
+              {impact}
+            </p>
+          )}
           {code && !alreadyLabeled && (
             <p className="m-0 mt-1 text-[11px] text-brand-danger/90">
               Support code <strong className="tracking-wide">{code}</strong> — text or call support with this code.
@@ -320,11 +389,11 @@ export function StatusOverlay({
       : null
 
   return (
-    <div className="fixed inset-0 z-[8] grid place-items-center bg-[#202426aa] p-4">
+    <div className="fixed inset-0 z-[8] grid place-items-center bg-brand-scrim p-4">
       <div className="w-[min(340px,100%)] rounded-[10px] bg-white px-6 py-7 text-center shadow-sm">
         {!done && (
           <div
-            className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-[#e4e6e0] border-t-brand-dark"
+            className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-brand-n300 border-t-brand-dark"
             aria-hidden
           />
         )}
@@ -337,7 +406,7 @@ export function StatusOverlay({
         {message && <p className="mt-2 mb-0 text-xs text-brand-muted">{message}</p>}
         {pct != null && !done && (
           <div className="mt-4">
-            <div className="h-1.5 overflow-hidden rounded-full bg-[#eceee9]">
+            <div className="h-1.5 overflow-hidden rounded-full bg-brand-n200">
               <div
                 className="h-full rounded-full bg-brand-dark transition-[width] duration-200"
                 style={{ width: `${pct}%` }}
@@ -373,7 +442,7 @@ export function Pager({ page, pageCount, total, label = 'items', onPrev, onNext 
   const link =
     'border-0 bg-transparent p-0 text-[11px] font-bold text-brand-ink underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-brand-subtle disabled:no-underline'
   return (
-    <div className="flex items-center justify-between gap-3 border-t border-brand-softline bg-[#f7f7f4] px-4 py-2">
+    <div className="flex items-center justify-between gap-3 border-t border-brand-softline bg-brand-n100 px-4 py-2">
       <span className="text-[11px] text-brand-subtle">
         Page {page} of {pageCount}
         {total != null ? ` · ${total} ${label}` : ''}
@@ -425,7 +494,7 @@ export function ToggleSwitch({
       disabled={disabled || busy}
       onClick={() => onChange?.(!checked)}
       className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-0 p-0.5 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-55 ${
-        checked ? 'bg-brand-success' : 'bg-[#c5cac4]'
+        checked ? 'bg-brand-success' : 'bg-brand-n400'
       } ${className}`}
     >
       <span
@@ -442,7 +511,7 @@ export function Skeleton({ className = '' }) {
   return (
     <div
       aria-hidden
-      className={`animate-pulse rounded-md bg-[#e6e8e3] ${className}`}
+      className={`animate-pulse rounded-md bg-brand-n200 ${className}`}
     />
   )
 }

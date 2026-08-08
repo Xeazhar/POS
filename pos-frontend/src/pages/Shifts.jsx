@@ -171,7 +171,7 @@ function Shifts() {
 
       <TableCard className="max-h-none">
         <div
-          className={`grid gap-2 bg-brand-dark px-4 py-2.5 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase ${
+          className={`grid gap-2 bg-brand-dark px-4 py-2.5 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase ${
             isManager
               ? 'grid-cols-[1.2fr_1.1fr_0.7fr_0.55fr_1fr_1fr_0.7fr_0.7fr]'
               : 'grid-cols-[1.3fr_0.8fr_0.55fr_1fr_1fr_0.7fr_0.7fr]'

@@ -42,7 +42,7 @@ function TransactionDetailModal({
             </p>
           )}
           <div className="mt-4 max-h-[240px] overflow-auto rounded-md border border-brand-softline">
-            <div className="grid grid-cols-[1.4fr_0.6fr_0.7fr_0.7fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase">
+            <div className="grid grid-cols-[1.4fr_0.6fr_0.7fr_0.7fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
               <span>Item</span>
               <span className="text-right">Qty</span>
               <span className="text-right">Price</span>
@@ -94,7 +94,7 @@ function TransactionDetailModal({
           </div>
 
           {hasRefunds && refundLines.length > 0 && (
-            <div className="mt-3 rounded-md border border-brand-softline bg-[#fafaf7] px-3 py-2">
+            <div className="mt-3 rounded-md border border-brand-softline bg-brand-n50 px-3 py-2">
               <p className="m-0 mb-1 text-[10px] font-bold tracking-wide text-brand-label uppercase">
                 Refund history
               </p>
@@ -141,7 +141,7 @@ function TransactionDetailModal({
               </div>
             )}
             {(detail.vatableSales > 0 || detail.vatExemptSales > 0 || detail.zeroRatedSales > 0) && (
-              <div className="mt-1 mb-1 rounded-md bg-[#fafaf7] px-2.5 py-2 text-[11px]">
+              <div className="mt-1 mb-1 rounded-md bg-brand-n50 px-2.5 py-2 text-[11px]">
                 {detail.vatableSales > 0 && (
                   <div className="flex justify-between">
                     <span className="text-brand-subtle">VATable Sales</span>

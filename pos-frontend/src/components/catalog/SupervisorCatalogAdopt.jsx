@@ -303,7 +303,7 @@ export default function SupervisorCatalogAdopt() {
         </div>
         <div className="overflow-auto">
           <table className="min-w-full text-left text-xs">
-            <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
+            <thead className="bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
               <tr>
                 <th className="px-5 py-3">ID</th>
                 <th className="px-5 py-3">Product</th>
@@ -342,7 +342,7 @@ export default function SupervisorCatalogAdopt() {
                       className={`rounded-full px-2 py-1 text-[10px] font-bold disabled:opacity-50 ${
                         product.discountEligible
                           ? 'bg-brand-success-bg text-brand-success-text'
-                          : 'bg-[#eceee9] text-brand-subtle'
+                          : 'bg-brand-n200 text-brand-subtle'
                       }`}
                       disabled={discountBusyId === product.id}
                       onClick={() => toggleDiscountable(product)}
@@ -394,7 +394,7 @@ export default function SupervisorCatalogAdopt() {
             onChange={(e) => setPickerQuery(e.target.value)}
           />
           <div className="max-h-[min(50vh,360px)] overflow-auto rounded border border-brand-softline">
-            <div className="grid grid-cols-[2rem_1.4fr_0.9fr_0.9fr_0.7fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[700px]:grid-cols-[2rem_1fr_0.8fr]">
+            <div className="grid grid-cols-[2rem_1.4fr_0.9fr_0.9fr_0.7fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[700px]:grid-cols-[2rem_1fr_0.8fr]">
               <span />
               <span>Product</span>
               <span className="max-[700px]:hidden">SKU</span>

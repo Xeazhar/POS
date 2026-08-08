@@ -498,7 +498,7 @@ function Cart({
                   return (
                     <div
                       key={`${item.id}-${item.priceTier || 'regular'}-${index}`}
-                      className="flex items-start justify-between gap-3 border-b border-[#f1f1ed] px-2.5 py-2 text-xs last:border-b-0"
+                      className="flex items-start justify-between gap-3 border-b border-brand-n150 px-2.5 py-2 text-xs last:border-b-0"
                     >
                       <span className="min-w-0 flex-1">
                         <strong className="block truncate text-brand-ink">{item.name}</strong>
@@ -550,12 +550,12 @@ function Cart({
                 <strong className={`text-brand-danger ${moneyClass}`}>−{money(pricing.discountAmount)}</strong>
               </div>
 
-              <div className="mt-2 space-y-2 border-t border-[#f1f1ed] pt-2">
+              <div className="mt-2 space-y-2 border-t border-brand-n150 pt-2">
                 <div className="text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
                   Per item
                 </div>
                 {discountedItemBreakdown.map((row, idx) => (
-                  <div key={`${row.name}-${idx}`} className="rounded border border-[#f1f1ed] px-2 py-1.5">
+                  <div key={`${row.name}-${idx}`} className="rounded border border-brand-n150 px-2 py-1.5">
                     <div className="flex items-start justify-between gap-3">
                       <span className="min-w-0 flex-1 truncate font-bold text-brand-ink">{row.name}</span>
                       {row.isExempt && (
@@ -592,7 +592,7 @@ function Cart({
                           </div>
                         </>
                       )}
-                      <div className="flex justify-between gap-2 border-t border-[#f1f1ed] pt-0.5 font-bold text-brand-ink">
+                      <div className="flex justify-between gap-2 border-t border-brand-n150 pt-0.5 font-bold text-brand-ink">
                         <span>Line total</span>
                         <span>{money(row.netAmount)}</span>
                       </div>
@@ -602,7 +602,7 @@ function Cart({
               </div>
 
               {/* Transaction-level totals — BIR reporting, not just customer display. */}
-              <div className="mt-2 space-y-0.5 border-t border-[#f1f1ed] pt-2 text-[11px]">
+              <div className="mt-2 space-y-0.5 border-t border-brand-n150 pt-2 text-[11px]">
                 {pricing.promoDiscountAmount > 0 && (
                   <div className="flex justify-between gap-2 text-brand-muted">
                     <span>Promo discount given</span>
@@ -691,7 +691,7 @@ function Cart({
               catalog" vs "not flagged discountable" are completely different problems and
               guessing between them has cost real time at the counter. */}
           {!pricing.hasEligibleItems && items.length > 0 && (
-            <div className="mb-3 rounded border border-brand-softline bg-[#fbfbf9] px-2.5 py-2">
+            <div className="mb-3 rounded border border-brand-softline bg-brand-n50 px-2.5 py-2">
               <p className="m-0 mb-1 text-[11px] font-bold text-brand-ink">
                 No discount-eligible items in this cart.
               </p>
@@ -848,15 +848,15 @@ function Cart({
       <section className="flex h-full min-h-0 min-w-0 flex-col rounded-[10px] border border-brand-line bg-white text-brand-ink max-[800px]:min-h-[520px] max-[800px]:h-auto">
         <div className="flex shrink-0 items-start justify-between gap-3 border-b border-brand-cart-line px-5 pt-5 pb-4 max-[700px]:px-3.5">
           <div>
-            <Eyebrow className="text-[#a8aeaa]">CURRENT SALE</Eyebrow>
+            <Eyebrow className="text-brand-n500">CURRENT SALE</Eyebrow>
             <h2 className="m-0 text-lg capitalize">Receipt / cart</h2>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {headerActions}
-            <span className="text-xs text-[#797e7b]">{items.length} items</span>
+            <span className="text-xs text-brand-n600">{items.length} items</span>
           </div>
         </div>
-        {error && <p className="px-5 pt-2 text-xs text-[#ffb4b4] max-[700px]:px-3.5">{error}</p>}
+        {error && <p className="px-5 pt-2 text-xs text-brand-danger-ondark max-[700px]:px-3.5">{error}</p>}
         {expiredPromoNotice && (
           <div
             role="alert"
@@ -879,7 +879,7 @@ function Cart({
           </div>
         )}
         {tillClosed && (
-          <p className="px-5 pt-2 text-xs text-[#ffb4b4] max-[700px]:px-3.5">
+          <p className="px-5 pt-2 text-xs text-brand-danger-ondark max-[700px]:px-3.5">
             Till closed — sales unavailable until a manager reopens.
           </p>
         )}
@@ -896,7 +896,7 @@ function Cart({
                 className={`flex-1 rounded-[5px] border px-2 py-2 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   orderType === opt.id
                     ? 'border-brand-gold bg-brand-gold/20 text-brand-gold'
-                    : 'border-brand-cart-border bg-transparent text-[#aab0ac]'
+                    : 'border-brand-cart-border bg-transparent text-brand-n500'
                 }`}
                 onClick={() => {
                   if (tillClosed) return
@@ -911,7 +911,7 @@ function Cart({
         {combo && (
           <p className="mx-5 mt-2 rounded-[5px] border border-brand-gold/40 bg-brand-gold/10 px-2.5 py-1.5 text-[11px] font-bold text-brand-gold max-[700px]:mx-3.5">
             Combo: {combo.label}
-            <span className="ml-1 font-normal text-[#a8aeaa]">(info only — priced per item)</span>
+            <span className="ml-1 font-normal text-brand-n500">(info only — priced per item)</span>
           </p>
         )}
         {/* Barcode scanner mode:
@@ -923,7 +923,7 @@ function Cart({
             <div className="min-h-0 overflow-auto px-5 py-2 max-[1050px]:min-h-[320px] max-[800px]:min-h-[340px] max-[700px]:px-3.5">
               {items.length ? (
                 <div className="overflow-hidden bg-white">
-                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-brand-dark px-3 py-2 text-[10px] font-bold tracking-wide text-[#c8ceca] uppercase">
+                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-brand-dark px-3 py-2 text-[10px] font-bold tracking-wide text-brand-ondark uppercase">
                     <span>Item</span>
                     <span className="text-right">Price</span>
                     <span className="text-center">Qty</span>
@@ -939,7 +939,7 @@ function Cart({
                         : `${Number(item.quantity).toFixed(0)} ${Number(item.quantity) > 1 ? 'pcs' : 'pc'}`
                     return (
                       <div
-                        className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] items-center gap-2 border-t border-[#f1f1ed] px-3 py-2.5 text-xs bg-white"
+                        className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] items-center gap-2 border-t border-brand-n150 px-3 py-2.5 text-xs bg-white"
                         key={`${item.id}-${item.priceTier || 'regular'}-${index}`}
                       >
                         <div className="min-w-0">
@@ -976,7 +976,7 @@ function Cart({
                                   className={`rounded border px-1.5 py-0.5 text-[9px] font-bold ${
                                     (item.priceTier || 'regular') === tier.id
                                       ? 'border-brand-gold bg-brand-gold/25 text-brand-gold'
-                                      : 'border-brand-cart-border text-[#8a908c]'
+                                      : 'border-brand-cart-border text-brand-ondark-dim'
                                   }`}
                                   onClick={() => setPriceTier(index, tier.id)}
                                 >
@@ -1003,7 +1003,7 @@ function Cart({
                         <div className="flex items-center justify-center gap-1">
                           <button
                             type="button"
-                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-[#aab0ac]"
+                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-brand-n500"
                             onClick={() => bumpQty(index, -1)}
                             aria-label="Decrease quantity"
                           >
@@ -1014,7 +1014,7 @@ function Cart({
                           </span>
                           <button
                             type="button"
-                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-[#aab0ac]"
+                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-brand-n500"
                             onClick={() => bumpQty(index, 1)}
                             aria-label="Increase quantity"
                           >
@@ -1046,15 +1046,15 @@ function Cart({
                   })}
                 </div>
               ) : (
-                <div className="mt-[140px] px-2 text-center text-sm leading-[1.8] text-[#bbc0bd]">
+                <div className="mt-[140px] px-2 text-center text-sm leading-[1.8] text-brand-n500">
                   Your cart is ready.
                   <br />
-                  <span className="text-xs text-[#7f8782]">Scan or search to begin.</span>
+                  <span className="text-xs text-brand-n600">Scan or search to begin.</span>
                 </div>
               )}
             </div>
             {/* Sale summary rail (sticky via checkout modal) */}
-            <aside className="flex flex-col gap-3 bg-[#fbfbf9] px-5 py-4 max-[700px]:px-3.5">
+            <aside className="flex flex-col gap-3 bg-brand-n50 px-5 py-4 max-[700px]:px-3.5">
               <div className="bg-white px-3 py-3">
                 <span className="block text-[10px] font-bold tracking-wide text-brand-subtle uppercase">Sale summary</span>
                 <div className="mt-3 flex items-center justify-between text-xs text-brand-muted">
@@ -1071,7 +1071,7 @@ function Cart({
                   </div>
                 )}
                 {pricing.appliedDiscountSource === 'promo' && discountedItemBreakdown.length > 0 && (
-                  <div className="mt-2 space-y-1 border-t border-[#f1f1ed] pt-2">
+                  <div className="mt-2 space-y-1 border-t border-brand-n150 pt-2">
                     {discountedItemBreakdown.map((row, idx) => (
                       <div
                         key={`${row.name}-${idx}`}
@@ -1096,8 +1096,8 @@ function Cart({
                     <strong className="text-brand-ink">{money(pricing.vatAmount)}</strong>
                   </div>
                 )}
-                <div className="mt-3 border-t border-[#f1f1ed] pt-3">
-                  <span className="block text-[11px] text-[#8a908c]">
+                <div className="mt-3 border-t border-brand-n150 pt-3">
+                  <span className="block text-[11px] text-brand-ondark-dim">
                     {items.length} item{items.length === 1 ? '' : 's'}
                   </span>
                   <strong className={`mt-1 block text-2xl text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
@@ -1118,7 +1118,7 @@ function Cart({
             <div className="min-h-0 flex-1 overflow-auto px-5 py-2 max-[1050px]:min-h-[320px] max-[800px]:min-h-[340px] max-[700px]:px-3.5">
               {items.length ? (
                 <div className="overflow-hidden bg-white">
-                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-brand-dark px-3 py-2 text-[10px] font-bold tracking-wide text-[#c8ceca] uppercase">
+                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-brand-dark px-3 py-2 text-[10px] font-bold tracking-wide text-brand-ondark uppercase">
                     <span>Item</span>
                     <span className="text-right">Price</span>
                     <span className="text-center">Qty</span>
@@ -1134,7 +1134,7 @@ function Cart({
                         : `${Number(item.quantity).toFixed(0)} ${Number(item.quantity) > 1 ? 'pcs' : 'pc'}`
                     return (
                       <div
-                        className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] items-center gap-2 border-t border-[#f1f1ed] px-3 py-2.5 text-xs bg-white"
+                        className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] items-center gap-2 border-t border-brand-n150 px-3 py-2.5 text-xs bg-white"
                         key={`${item.id}-${item.priceTier || 'regular'}-${index}`}
                       >
                         <div className="min-w-0">
@@ -1171,7 +1171,7 @@ function Cart({
                                   className={`rounded border px-1.5 py-0.5 text-[9px] font-bold ${
                                     (item.priceTier || 'regular') === tier.id
                                       ? 'border-brand-gold bg-brand-gold/25 text-brand-gold'
-                                      : 'border-brand-cart-border text-[#8a908c]'
+                                      : 'border-brand-cart-border text-brand-ondark-dim'
                                   }`}
                                   onClick={() => setPriceTier(index, tier.id)}
                                 >
@@ -1198,7 +1198,7 @@ function Cart({
                         <div className="flex items-center justify-center gap-1">
                           <button
                             type="button"
-                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-[#aab0ac]"
+                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-brand-n500"
                             onClick={() => bumpQty(index, -1)}
                             aria-label="Decrease quantity"
                           >
@@ -1209,7 +1209,7 @@ function Cart({
                           </span>
                           <button
                             type="button"
-                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-[#aab0ac]"
+                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-brand-n500"
                             onClick={() => bumpQty(index, 1)}
                             aria-label="Increase quantity"
                           >
@@ -1241,10 +1241,10 @@ function Cart({
                   })}
                 </div>
               ) : (
-                <div className="mt-[140px] px-2 text-center text-sm leading-[1.8] text-[#bbc0bd]">
+                <div className="mt-[140px] px-2 text-center text-sm leading-[1.8] text-brand-n500">
                   Your cart is ready.
                   <br />
-                  <span className="text-xs text-[#7f8782]">Select a product to begin.</span>
+                  <span className="text-xs text-brand-n600">Select a product to begin.</span>
                 </div>
               )}
             </div>
@@ -1252,14 +1252,14 @@ function Cart({
             <footer className="shrink-0 border-t border-brand-cart-line bg-white px-5 py-4 max-[700px]:px-3.5">
               <div className="mb-3 flex items-end justify-between gap-3">
                 <div>
-                  <span className="block text-[11px] text-[#8a908c]">
+                  <span className="block text-[11px] text-brand-ondark-dim">
                     {items.length} item{items.length === 1 ? '' : 's'}
                     {pricing.discountAmount > 0 ? ` · −${money(pricing.discountAmount)} disc.` : ''}
                   </span>
                   <strong className={`mt-0.5 block text-xl text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
                 </div>
                 {vatRate > 0 && (
-                  <span className="text-[10px] text-[#6e7470]">VAT incl. {money(pricing.vatAmount)}</span>
+                  <span className="text-[10px] text-brand-n700">VAT incl. {money(pricing.vatAmount)}</span>
                 )}
               </div>
               <PrimaryButton

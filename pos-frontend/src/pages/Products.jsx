@@ -320,7 +320,7 @@ function Products() {
         eyebrow={isRestaurant ? 'CARINDERIA MENU' : 'STOCK CONTROL'}
         title={isRestaurant ? 'Menu / potahe' : 'Inventory'}
       >
-        <span className="text-xs text-[#797e7b]">
+        <span className="text-xs text-brand-n600">
           {products.length} {isRestaurant ? 'items' : 'SKUs'}
         </span>
       </PageHeader>
@@ -378,7 +378,7 @@ function Products() {
         <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
       )}
       <TableCard>
-        <div className={`grid gap-3 border-0 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase ${
+        <div className={`grid gap-3 border-0 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase ${
           isRestaurant
             ? 'grid-cols-[2.5rem_1.5fr_1fr_0.7fr_0.8fr] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr]'
             : 'grid-cols-[2.5rem_1.5fr_0.7fr_0.8fr_0.7fr_0.9fr_0.9fr] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr_0.7fr]'
@@ -441,7 +441,7 @@ function Products() {
                       className={`rounded-full px-2 py-1 text-[10px] font-bold ${
                         product.availableToday !== false
                           ? 'bg-brand-success-bg text-brand-success-text'
-                          : 'bg-[#eceee9] text-brand-subtle'
+                          : 'bg-brand-n200 text-brand-subtle'
                       }`}
                       onClick={async () => {
                         try {
@@ -494,7 +494,7 @@ function Products() {
           >
             <button
               type="button"
-              className="absolute top-[17px] right-[17px] border-0 bg-transparent text-lg text-[#6e7470]"
+              className="absolute top-[17px] right-[17px] border-0 bg-transparent text-lg text-brand-n700"
               onClick={close}
             >
               <FiX />
@@ -684,7 +684,7 @@ function Products() {
                     onChange={(e) => setField('stock', e.target.value)}
                   />
                 )}
-                <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
+                <label className="flex items-center gap-2 text-xs font-bold text-brand-n700">
                   <input
                     type="checkbox"
                     checked={form.discountEligible === true}
@@ -743,7 +743,7 @@ function Products() {
         <Modal wide layer onClose={() => setConfirmSave(false)}>
           <Eyebrow>CONFIRM UPDATE</Eyebrow>
           <h2 className="mb-3 text-[22px]">Save product changes?</h2>
-          <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px]">
+          <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-brand-n300 py-3.5 text-[13px]">
             <span>Name</span>
             <strong className="text-right">{sanitizeText(form.name)}</strong>
             <span>SKU</span>
@@ -771,7 +771,7 @@ function Products() {
               Today&apos;s business day is closed. This manager adjustment will be audited.
             </p>
           )}
-          <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-[#e1e3dd] py-3.5 text-[13px]">
+          <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-brand-n300 py-3.5 text-[13px]">
             <span>Product</span>
             <strong className="text-right">{form.name}</strong>
             <span>Quantity</span>

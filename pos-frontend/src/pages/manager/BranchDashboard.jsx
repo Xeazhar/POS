@@ -407,7 +407,9 @@ function ManagerBranchDashboard() {
     ? previousDayRestockReport(data.dayEnds || [], todayKey)
     : null
 
-  if (loading) {
+  // First load only — see the same note in manager/Overview.jsx. Changing period or
+  // re-entering the page kept the data cached but still flashed a full skeleton over it.
+  if (loading && !branch) {
     return <PageSkeleton variant="dashboard" />
   }
 
@@ -451,7 +453,7 @@ function ManagerBranchDashboard() {
           >
             <span className="block text-[10px] tracking-wide text-white/60 uppercase">{label}</span>
             <strong className={`mt-2 block text-xl max-[700px]:mt-0 max-[700px]:text-lg ${moneyClass}`}>{value}</strong>
-            {hint ? <span className="mt-1 block text-[10px] text-[#f0c9a0]">{hint}</span> : null}
+            {hint ? <span className="mt-1 block text-[10px] text-brand-warn-ondark">{hint}</span> : null}
           </div>
         ))}
       </div>
@@ -501,7 +503,7 @@ function ManagerBranchDashboard() {
               </div>
             }
           />
-          <div className="grid grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]">
+          <div className="grid grid-cols-[0.9fr_1.1fr_1fr_0.7fr_0.7fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[1fr_0.8fr_0.7fr]">
             <span>Date</span>
             <span>Order</span>
             <span className="max-[900px]:hidden">Cashier</span>
@@ -519,36 +521,45 @@ function ManagerBranchDashboard() {
                 if (event.key === 'Enter' || event.key === ' ') openTxnDetail(item)
               }}
             >
-              <span className="text-[11px] text-brand-slate">{item.time || item.date || '—'}</span>
-              <strong className="truncate text-brand-ink">
-                {item.orNumber || item.id.slice(0, 8)}
+              <span className="self-center text-[11px] text-brand-slate">{item.time || item.date || '—'}</span>
+              {/* Tags sit inline on one line rather than stacking under the OR number —
+                  three stacked blocks made every discounted row three times taller and
+                  turned the list into a wall. Full detail is still in the row's modal. */}
+              <span className="flex min-w-0 items-center gap-1.5 self-center">
+                <strong className="truncate text-brand-ink">
+                  {item.orNumber || item.id.slice(0, 8)}
+                </strong>
                 {Number(item.discountAmount || 0) > 0 && (
                   <span
-                    className={`mt-0.5 block truncate text-[10px] font-bold ${
-                      isPromoDiscountType(item.discountType) ? 'text-brand-danger' : 'text-brand-warn'
+                    className={`shrink-0 rounded-[3px] px-1 py-px text-[9px] font-bold ${
+                      isPromoDiscountType(item.discountType)
+                        ? 'bg-brand-danger-bg text-brand-danger'
+                        : 'bg-brand-warn-bg text-brand-warn'
                     }`}
+                    title={discountSourceLabel(item.discountType) || 'Discount'}
                   >
-                    {isPromoDiscountType(item.discountType)
-                      ? `Promo · ${discountSourceLabel(item.discountType)}`
-                      : discountSourceLabel(item.discountType) || 'Discount'}
+                    {isPromoDiscountType(item.discountType) ? 'PROMO' : 'DISC'}
                   </span>
                 )}
                 {Number(item.vatExemptSales || 0) > 0 && (
-                  <span className="mt-0.5 block truncate text-[10px] font-bold text-brand-success">
-                    VAT-exempt
+                  <span
+                    className="shrink-0 rounded-[3px] bg-brand-success-bg px-1 py-px text-[9px] font-bold text-brand-success-text"
+                    title="VAT-exempt (SC/PWD)"
+                  >
+                    EX
                   </span>
                 )}
-              </strong>
-              <span className="truncate max-[900px]:hidden">{item.cashier}</span>
-              <span className={moneyClass}>
+              </span>
+              <span className="self-center truncate max-[900px]:hidden">{item.cashier}</span>
+              <span className={`self-center ${moneyClass}`}>
                 {money(item.netTotal ?? item.total)}
                 {Number(item.refundedAmount || 0) > 0 && item.status !== 'Voided' && (
-                  <span className="mt-0.5 block text-[10px] text-brand-danger">
+                  <span className="ml-1 text-[10px] text-brand-danger">
                     −{money(item.refundedAmount)}
                   </span>
                 )}
               </span>
-              <StatusBadge tone={statusToneFromTxn(item)} className="justify-self-start">
+              <StatusBadge compact tone={statusToneFromTxn(item)} className="justify-self-start self-center">
                 {statusLabelFromTxn(item)}
               </StatusBadge>
             </div>
@@ -605,7 +616,7 @@ function ManagerBranchDashboard() {
               </PrimaryButton>
             </div>
           )}
-          <div className="grid grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem]">
+          <div className="grid grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem]">
             <span>Date</span>
             <span className="text-right max-[900px]:hidden">Expected</span>
             <span className="text-right max-[900px]:hidden">Counted</span>
@@ -689,7 +700,7 @@ function ManagerBranchDashboard() {
           meta={promoSalesToday.length ? `${promoSalesToday.length} promo(s)` : 'None yet'}
           subtitle={`Discounted receipts on ${todayKey} — receipts, discount given, and net sales`}
         />
-        <div className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase">
+        <div className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
           <span>Promo</span>
           <span className="text-right">Receipts</span>
           <span className="text-right">Discount</span>
@@ -719,7 +730,7 @@ function ManagerBranchDashboard() {
             title="Plate mix today"
             subtitle="Sales by menu category (meat, veggie, pancit, etc.)"
           />
-          <div className="grid grid-cols-[1.4fr_1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase">
+          <div className="grid grid-cols-[1.4fr_1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
             <span>Category</span>
             <span className="text-right">Sales</span>
           </div>
@@ -766,7 +777,7 @@ function ManagerBranchDashboard() {
             <strong className="text-brand-ink">{money(cashStats.paidOut)}</strong>
           </div>
         </div>
-        <div className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr_1.1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]">
+        <div className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr_1.1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]">
           <span>Time</span>
           <span>Type</span>
           <span className="text-right">Amount</span>
@@ -872,7 +883,7 @@ function ManagerBranchDashboard() {
           meta={`${data.products.length} ${isRestaurant ? 'items' : 'SKUs'}`}
         />
         <div
-          className={`grid gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase ${
+          className={`grid gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase ${
             isRestaurant ? 'grid-cols-[2.5rem_1.6fr_1fr_0.7fr_0.7fr]' : 'grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr]'
           }`}
         >
@@ -943,7 +954,7 @@ function ManagerBranchDashboard() {
       </TableCard>
 
       {editing && form && (
-        <div className="fixed inset-0 z-[5] grid place-items-center bg-[#202426aa]">
+        <div className="fixed inset-0 z-[5] grid place-items-center bg-brand-scrim">
           <form
             className="w-[min(420px,calc(100%-32px))] rounded-[10px] bg-white p-6"
             onSubmit={async (event) => {
@@ -973,7 +984,7 @@ function ManagerBranchDashboard() {
               <Field label="Machine ID (MIN)" value={form.machine_identification_no || ''} onChange={(e) => setForm({ ...form, machine_identification_no: e.target.value })} />
               <Field label="Serial number" value={form.serial_number || ''} onChange={(e) => setForm({ ...form, serial_number: e.target.value })} />
               <Field label="OR prefix" value={form.or_prefix || 'OR'} onChange={(e) => setForm({ ...form, or_prefix: e.target.value })} />
-              <label className="grid gap-1.5 text-xs font-bold text-[#646a66]">
+              <label className="grid gap-1.5 text-xs font-bold text-brand-n700">
                 Day opens at
                 <select
                   className="h-10 rounded-md border border-brand-line bg-white px-3 text-sm font-medium text-brand-ink"
@@ -991,7 +1002,7 @@ function ManagerBranchDashboard() {
                 After day end, POS stays locked until a manager reopens, or until this time starts the next
                 business day (Asia/Manila).
               </p>
-              <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
+              <label className="flex items-center gap-2 text-xs font-bold text-brand-n700">
                 <input
                   type="checkbox"
                   checked={form.is_active !== false}
@@ -1078,7 +1089,7 @@ function ManagerBranchDashboard() {
           >
             <button
               type="button"
-              className="absolute top-[17px] right-[17px] border-0 bg-transparent text-lg text-[#6e7470]"
+              className="absolute top-[17px] right-[17px] border-0 bg-transparent text-lg text-brand-n700"
               onClick={() => setSelectedProduct(null)}
             >
               <FiX />
@@ -1097,17 +1108,17 @@ function ManagerBranchDashboard() {
             </p>
 
             <div className="mt-4 grid grid-cols-3 gap-2">
-              <div className="rounded-md bg-[#f7f7f4] px-3 py-2.5">
+              <div className="rounded-md bg-brand-n100 px-3 py-2.5">
                 <span className="block text-[10px] text-brand-subtle">On hand</span>
                 <strong className="text-sm text-brand-ink">
                   {qty(selectedProduct.stock, selectedProduct.pricingMode === 'kg' ? 'kg' : 'pc')}
                 </strong>
               </div>
-              <div className="rounded-md bg-[#f7f7f4] px-3 py-2.5">
+              <div className="rounded-md bg-brand-n100 px-3 py-2.5">
                 <span className="block text-[10px] text-brand-subtle">Price</span>
                 <strong className="text-sm text-brand-gold">{money(selectedProduct.price)}</strong>
               </div>
-              <div className="rounded-md bg-[#f7f7f4] px-3 py-2.5">
+              <div className="rounded-md bg-brand-n100 px-3 py-2.5">
                 <span className="block text-[10px] text-brand-subtle">Status</span>
                 <strong
                   className={`text-sm ${

@@ -17,8 +17,8 @@ function WeightModal({ product, close, add }) {
 
       {touchUi ? (
         <>
-          <div className="mt-5 mb-3 flex items-end justify-between rounded-[8px] border border-brand-input bg-[#f7f7f4] px-3.5 py-3">
-            <span className="text-[11px] font-bold text-[#646a66]">Weight (kg)</span>
+          <div className="mt-5 mb-3 flex items-end justify-between rounded-[8px] border border-brand-input bg-brand-n100 px-3.5 py-3">
+            <span className="text-[11px] font-bold text-brand-n700">Weight (kg)</span>
             <strong className="font-mono text-[28px] tracking-tight tabular-nums text-brand-ink">
               {weight === '' ? '0' : weight}
             </strong>
@@ -28,7 +28,7 @@ function WeightModal({ product, close, add }) {
               <button
                 type="button"
                 key={value}
-                className="rounded-[5px] border border-brand-border bg-white px-[11px] py-2 text-xs font-bold text-[#606662] touch-manipulation transition-[transform,background-color,filter] duration-100 hover:bg-[#f4f5f1] active:scale-[0.97] active:bg-[#eceee9]"
+                className="rounded-[5px] border border-brand-border bg-white px-[11px] py-2 text-xs font-bold text-brand-n700 touch-manipulation transition-[transform,background-color,filter] duration-100 hover:bg-brand-n100 active:scale-[0.97] active:bg-brand-n200"
                 onClick={() => setWeight(String(value))}
               >
                 {value} kg
@@ -52,7 +52,7 @@ function WeightModal({ product, close, add }) {
               <button
                 type="button"
                 key={value}
-                className="rounded-[5px] border border-brand-border bg-white px-[11px] py-2 text-xs text-[#606662] transition-[transform,background-color] duration-100 hover:bg-[#f4f5f1] active:scale-[0.97] active:bg-[#eceee9]"
+                className="rounded-[5px] border border-brand-border bg-white px-[11px] py-2 text-xs text-brand-n700 transition-[transform,background-color] duration-100 hover:bg-brand-n100 active:scale-[0.97] active:bg-brand-n200"
                 onClick={() => setWeight(String(value))}
               >
                 {value} kg

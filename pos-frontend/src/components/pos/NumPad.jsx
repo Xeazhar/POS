@@ -72,11 +72,11 @@ function NumPad({
     ? 'border border-brand-cart-border bg-brand-cart-input text-white'
     : 'border border-brand-border bg-white text-brand-ink'
   const specialClass = dark
-    ? 'border border-brand-cart-border bg-[#323837] text-[#d7ddd9]'
-    : 'border border-brand-border bg-[#f0f1ed] text-[#4d534f]'
+    ? 'border border-brand-cart-border bg-brand-dark-inset text-brand-n400'
+    : 'border border-brand-border bg-brand-n150 text-brand-n800'
   const quickClass = dark
-    ? 'border border-brand-cart-border bg-[#323837] text-brand-gold'
-    : 'border border-brand-border bg-[#f7f7f4] text-[#4d534f]'
+    ? 'border border-brand-cart-border bg-brand-dark-inset text-brand-gold'
+    : 'border border-brand-border bg-brand-n100 text-brand-n800'
 
   const press = (key) => {
     if (key === '.' && !allowDecimal) return
