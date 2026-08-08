@@ -183,7 +183,7 @@ export default function InventoryImportPanel({ products, onDone }) {
             </p>
           </div>
           <label
-            className={`inline-flex h-8 cursor-pointer items-center gap-1 rounded-[5px] border border-brand-border bg-white px-2.5 text-[11px] font-bold text-[#4d534f] ${
+            className={`inline-flex h-8 cursor-pointer items-center gap-1 rounded-[5px] border border-brand-border bg-white px-2.5 text-[11px] font-bold text-brand-n800 ${
               busy ? 'pointer-events-none opacity-35' : ''
             }`}
           >
@@ -226,7 +226,7 @@ export default function InventoryImportPanel({ products, onDone }) {
             </a>
           </li>
         </ul>
-        <pre className="mt-3 overflow-auto rounded-md bg-[#f6f6f3] p-3 text-[11px] text-brand-ink">
+        <pre className="mt-3 overflow-auto rounded-md bg-brand-n100 p-3 text-[11px] text-brand-ink">
 {`name,sku,barcode,category,pricingMode,price,stock,discountEligible,lowStockAt
 White Sugar 1kg,GRO-SUG-1,4801000000011,Groceries,pc,65,24,true,5
 Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3`}
@@ -241,7 +241,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3`}
             {preview.skippedCount} skipped
           </p>
           {duplicate && (
-            <div className="mt-3 rounded-md border border-[#e8d4a8] bg-[#fff8ea] px-3 py-3 text-xs text-[#6a5520]">
+            <div className="mt-3 rounded-md border border-brand-warn-line bg-brand-warn-surface px-3 py-3 text-xs text-brand-warn">
               <p className="m-0 font-bold">
                 This file was already imported on {new Date(duplicate.created_at).toLocaleString()}
                 {duplicate.status === 'reverted' ? ' (later reverted)' : ''}.

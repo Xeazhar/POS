@@ -282,7 +282,7 @@ function Transactions() {
   return (
     <div>
       <PageHeader eyebrow="RECEIPTS & VOIDS" title="Transactions">
-        <span className="text-xs text-[#797e7b]">
+        <span className="text-xs text-brand-n600">
           {list.length} shown · {transactions.length} total
         </span>
       </PageHeader>
@@ -364,7 +364,7 @@ function Transactions() {
       </div>
 
       <TableCard>
-        <div className="grid grid-cols-[1.1fr_1.2fr_1fr_0.7fr_0.5fr_0.8fr_0.7fr_0.5fr] gap-3 border-0 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-[#c8ceca] uppercase max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr]">
+        <div className="grid grid-cols-[1.1fr_1.2fr_1fr_0.7fr_0.5fr_0.8fr_0.7fr_0.5fr] gap-3 border-0 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr]">
           <span>OR / Invoice</span>
           <span>Time</span>
           <span>Cashier</span>
@@ -421,7 +421,7 @@ function Transactions() {
             </span>
             <button
               type="button"
-              className="border-0 bg-transparent text-[11px] text-brand-danger-soft disabled:text-[#b8bcba] max-[700px]:hidden"
+              className="border-0 bg-transparent text-[11px] text-brand-danger-soft disabled:text-brand-n500 max-[700px]:hidden"
               disabled={item.status === 'Voided' || isTxnLocked(item)}
               title={
                 isTxnLocked(item)
@@ -508,7 +508,7 @@ function Transactions() {
           <div className="mt-5 grid gap-2">
             <button
               type="button"
-              className="rounded-[5px] border border-brand-border bg-[#f8f8f5] p-[11px] text-left text-[#4d534f]"
+              className="rounded-[5px] border border-brand-border bg-brand-n50 p-[11px] text-left text-brand-n800"
               onClick={() => setRefundMode('full')}
             >
               <strong className="block">Full refund</strong>
@@ -518,7 +518,7 @@ function Transactions() {
             </button>
             <button
               type="button"
-              className="rounded-[5px] border border-brand-border bg-[#f8f8f5] p-[11px] text-left text-[#4d534f]"
+              className="rounded-[5px] border border-brand-border bg-brand-n50 p-[11px] text-left text-brand-n800"
               onClick={() => setRefundMode('items')}
             >
               <strong className="block">Refund selected items</strong>
@@ -591,7 +591,7 @@ function Transactions() {
                 key={reason}
                 type="button"
                 disabled={busy}
-                className="rounded-[5px] border border-brand-border bg-[#f8f8f5] p-[11px] text-left text-[#4d534f] disabled:opacity-50"
+                className="rounded-[5px] border border-brand-border bg-brand-n50 p-[11px] text-left text-brand-n800 disabled:opacity-50"
                 onClick={() => requestRefund(reason)}
               >
                 {reason}
@@ -623,7 +623,7 @@ function Transactions() {
                 key={reason}
                 type="button"
                 disabled={busy}
-                className="rounded-[5px] border border-brand-border bg-[#f8f8f5] p-[11px] text-left text-[#4d534f] disabled:opacity-50"
+                className="rounded-[5px] border border-brand-border bg-brand-n50 p-[11px] text-left text-brand-n800 disabled:opacity-50"
                 onClick={() => requestRefund(reason)}
               >
                 {reason}

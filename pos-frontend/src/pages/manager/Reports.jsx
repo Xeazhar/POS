@@ -17,10 +17,17 @@ import {
   fetchAuditEvents,
   fetchBranches,
   fetchDailyReading,
+  fetchDiscountReport,
+  fetchElectronicJournal,
   fetchFiscalBackup,
+  fetchGrossMarginReport,
   fetchInventoryReport,
+  fetchPriceChangeReport,
   fetchReportSalesDetail,
   fetchSaleEvents,
+  fetchScPwdReport,
+  fetchStockMovementReport,
+  fetchTenderSummary,
   fetchTerminalReportSource,
   fetchEarliestTransactionDate,
   formatProductCode,
@@ -77,21 +84,74 @@ function startOfThisMonth() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
 }
 
+/**
+ * The report catalog. `note` is shown under the picker — it exists so a manager knows
+ * what a document is FOR before filing it, and in particular which reports are statutory
+ * records versus management information. Getting that wrong is how the wrong number ends
+ * up on a return.
+ */
 const REPORTS = [
-  { id: 'x-read', group: 'Terminal', title: 'X-Read' },
-  { id: 'z-read', group: 'Terminal', title: 'Z-Read' },
+  { id: 'x-read', group: 'Terminal', title: 'X-Read', note: 'Mid-shift reading. No reset.' },
+  { id: 'z-read', group: 'Terminal', title: 'Z-Read', note: 'End-of-day reading. Resets the counter.' },
   { id: 'cashier', group: 'Terminal', title: 'Cashier Report' },
   { id: 'department', group: 'Terminal', title: 'Department Report' },
   { id: 'plu', group: 'Terminal', title: 'PLU Report' },
   { id: 'inventory', group: 'Catalog', title: 'Inventory' },
   { id: 'price-listing', group: 'Catalog', title: 'Price Listing' },
+  {
+    id: 'price-changes',
+    group: 'Catalog',
+    title: 'Price Change Register',
+    note: 'Every price edit, and who made it.',
+  },
+  {
+    id: 'stock-movement',
+    group: 'Catalog',
+    title: 'Stock Movement Ledger',
+    note: 'Every stock in/out with the balance it produced.',
+  },
   { id: 'sales-invoice', group: 'Sales', title: 'Sales Per Invoice' },
   { id: 'pos-sales-detail', group: 'Sales', title: 'POS Sales Detail' },
   { id: 'order-status', group: 'Sales', title: 'Order Status' },
   { id: 'salesman', group: 'Sales', title: 'Salesman Listing' },
+  {
+    id: 'tender-summary',
+    group: 'Sales',
+    title: 'Tender / Payment Summary',
+    note: 'Reconcile the drawer and settlements against this.',
+  },
+  {
+    id: 'gross-margin',
+    group: 'Sales',
+    title: 'Gross Margin (COGS)',
+    note: 'Management report — costs are current, not frozen at sale time.',
+  },
   { id: 'void-log', group: 'Audit', title: 'Void / Refund Log' },
   { id: 'audit-trail', group: 'Audit', title: 'Login & Audit Trail' },
-  { id: 'bir-summary', group: 'Fiscal', title: 'BIR Sales Summary' },
+  {
+    id: 'discount-report',
+    group: 'Audit',
+    title: 'Discount Report (all types)',
+    note: 'Every discount granted — promo and statutory, shown apart.',
+  },
+  {
+    id: 'bir-summary',
+    group: 'Fiscal',
+    title: 'BIR Sales Summary',
+    note: 'Daily VATable / VAT / exempt / zero-rated breakdown for filing.',
+  },
+  {
+    id: 'sc-pwd',
+    group: 'Fiscal',
+    title: 'Senior Citizen / PWD Register',
+    note: 'Statutory record substantiating the 20% discount as a tax deduction.',
+  },
+  {
+    id: 'e-journal',
+    group: 'Fiscal',
+    title: 'Electronic Journal (EJ)',
+    note: 'Unabridged chronological record, voids included. Produce on BIR demand.',
+  },
   { id: 'fiscal-backup', group: 'Fiscal', title: 'Fiscal Data Backup' },
 ]
 
@@ -115,6 +175,19 @@ function downloadJson(payload, name) {
 function ensureRows(list, emptyMessage) {
   if (list && list.length) return list
   return [{ result: emptyMessage || 'No records for this date range / branch.' }]
+}
+
+/**
+ * Which numeric columns are pesos, so they get money formatting and tabular figures.
+ *
+ * The exclusions come first and matter more than they look: `discount_pct` and
+ * `margin_pct` both contain "discount"/"margin", and a percentage rendered as ₱12.50 is
+ * a number a manager can act on wrongly. Counts (`sales_count`, `qty_sold`,
+ * `balance_after`) are likewise not money.
+ */
+function isMoneyColumn(key) {
+  if (/_pct$|_count$|_rate$|^qty|_no$|balance_after|transactions/.test(key)) return false
+  return /price|sales|total|amount|cost|vat|discount|margin|revenue|refunds|tendered|change/.test(key)
 }
 
 function ManagerReports() {
@@ -338,32 +411,89 @@ function ManagerReports() {
       return
     }
 
-    if (selected === 'inventory' || selected === 'price-listing') {
+    /**
+     * Price Listing is a PRICE LIST, not a stock report.
+     *
+     * It used to share the Inventory handler, which is why it carried on-hand counts,
+     * unit cost, extended totals and a Low/OK status — none of which belong on a price
+     * list. Two concrete problems came from that:
+     *
+     *   - It leaked COST. A price list is the document you hand to staff, print for the
+     *     shelf, or send to a customer who asks what things cost. Margin should not
+     *     travel with it.
+     *   - The "total" columns went NEGATIVE, which is what prompted this. They were
+     *     unit_price × quantity_on_hand, so any product sitting at negative stock
+     *     produced a negative extended value. That is a real signal — but it is a signal
+     *     about STOCK, and it is meaningless on a price list.
+     *
+     * Negative on-hand is now surfaced where it belongs: the Inventory report flags it
+     * explicitly instead of burying it inside an extended total.
+     */
+    if (selected === 'price-listing') {
       const data = await fetchInventoryReport(branchId)
+      setNote('Current selling prices. No stock or cost figures — safe to print or hand out.')
       setRows(
         ensureRows(
-          data.map((row) => {
-            const qtyOnHand = Number(row.quantity_on_hand || 0)
-            const unitCost = Number(row.products?.unit_cost || 0)
-            const unitPrice = Number(row.products?.price || 0)
-            return {
+          data
+            .map((row) => ({
               product_code: formatProductCode(row.products?.product_no),
               branch: row.branches?.name,
               barcode: row.products?.barcode || '',
               product: row.products?.name,
-              sku: row.products?.sku,
-              category: row.products?.categories?.name,
-              on_hand: qtyOnHand,
-              unit_cost: unitCost,
-              unit_price: unitPrice,
-              total_cost: Number((unitCost * qtyOnHand).toFixed(2)),
-              total_price: Number((unitPrice * qtyOnHand).toFixed(2)),
-              status: qtyOnHand <= Number(row.products?.low_stock_threshold || 0) ? 'Low' : 'OK',
-            }
-          }),
+              sku: row.products?.sku || '',
+              category: row.products?.categories?.name || '—',
+              unit: row.products?.pricing_mode === 'kg' ? 'per kg' : 'per piece',
+              unit_price: Number(row.products?.price || 0),
+              discountable: row.products?.discount_eligible ? 'Yes' : 'No',
+            }))
+            .sort(
+              (a, b) =>
+                String(a.category).localeCompare(String(b.category)) ||
+                String(a.product).localeCompare(String(b.product)),
+            ),
           'No products in catalog for this branch.',
         ),
       )
+      return
+    }
+
+    if (selected === 'inventory') {
+      const data = await fetchInventoryReport(branchId)
+      let negatives = 0
+      const table = data.map((row) => {
+        const qtyOnHand = Number(row.quantity_on_hand || 0)
+        const unitCost = Number(row.products?.unit_cost || 0)
+        const unitPrice = Number(row.products?.price || 0)
+        if (qtyOnHand < 0) negatives += 1
+        return {
+          product_code: formatProductCode(row.products?.product_no),
+          branch: row.branches?.name,
+          barcode: row.products?.barcode || '',
+          product: row.products?.name,
+          sku: row.products?.sku,
+          category: row.products?.categories?.name,
+          on_hand: qtyOnHand,
+          unit_cost: unitCost,
+          unit_price: unitPrice,
+          total_cost: Number((unitCost * qtyOnHand).toFixed(2)),
+          total_price: Number((unitPrice * qtyOnHand).toFixed(2)),
+          // Negative stock is called out by name. It means the POS sold more than the
+          // system thought existed, so the valuation below it is wrong too — that is
+          // worth a word, not a silent minus sign in a total.
+          status:
+            qtyOnHand < 0
+              ? 'NEGATIVE — recount'
+              : qtyOnHand <= Number(row.products?.low_stock_threshold || 0)
+                ? 'Low'
+                : 'OK',
+        }
+      })
+      setNote(
+        negatives > 0
+          ? `${negatives} product(s) show NEGATIVE stock — more was sold than the system had on record. Recount those before trusting the valuation totals.`
+          : 'Stock valuation at current cost and price.',
+      )
+      setRows(ensureRows(table, 'No products in catalog for this branch.'))
       return
     }
 
@@ -414,7 +544,7 @@ function ManagerReports() {
     }
 
     if (selected === 'bir-summary') {
-      // One summary row per day in range
+      // One summary row per day in range.
       const days = []
       const cursor = new Date(`${filters.start}T12:00:00`)
       const end = new Date(`${filters.end}T12:00:00`)
@@ -423,22 +553,114 @@ function ManagerReports() {
         days.push(key)
         cursor.setDate(cursor.getDate() + 1)
       }
-      const readings = []
-      for (const date of days) {
-        const reading = await fetchDailyReading({ date, branchId })
-        readings.push({
+      // Days are fetched in parallel: an "All records" run over a year was 365 sequential
+      // round trips, which is minutes of spinner for a report someone runs monthly.
+      const readings = await Promise.all(days.map((date) => fetchDailyReading({ date, branchId })))
+      const totals = {
+        gross_sales: 0,
+        discounts: 0,
+        net_sales: 0,
+        vatable_sales: 0,
+        vat_amount: 0,
+        vat_exempt_sales: 0,
+        zero_rated_sales: 0,
+        sc_pwd_discount: 0,
+        void_total: 0,
+      }
+      const table = readings.map((reading) => {
+        const row = {
           date: reading.date,
           or_from: reading.orFrom || '—',
           or_to: reading.orTo || '—',
           sales_count: reading.transactionCount,
           void_count: reading.voidCount,
-          gross_sales: reading.salesTotal,
-          void_total: reading.voidTotal,
+          gross_sales: reading.grossSales,
+          discounts: reading.discountTotal,
           net_sales: reading.netSales,
+          // The four BIR categories, each stated on its own. A return needs them apart.
+          vatable_sales: reading.vatableSales,
+          vat_amount: reading.vatAmount,
+          vat_exempt_sales: reading.vatExemptSales,
+          zero_rated_sales: reading.zeroRatedSales,
+          sc_pwd_discount: reading.scPwdDiscount,
+          void_total: reading.voidTotal,
+        }
+        Object.keys(totals).forEach((key) => {
+          totals[key] += Number(row[key] || 0)
+        })
+        return row
+      })
+      // A period total belongs on the document itself — re-adding a column by hand in a
+      // spreadsheet is exactly where a filing error gets introduced.
+      if (table.length > 1) {
+        table.push({
+          date: 'TOTAL',
+          or_from: '',
+          or_to: '',
+          sales_count: table.reduce((n, r) => n + Number(r.sales_count || 0), 0),
+          void_count: table.reduce((n, r) => n + Number(r.void_count || 0), 0),
+          ...Object.fromEntries(
+            Object.entries(totals).map(([key, value]) => [key, Number(value.toFixed(2))]),
+          ),
         })
       }
-      setNote('Operational summary from live sales (per day in range).')
-      setRows(ensureRows(readings, 'No sales data in this range.'))
+      setNote(
+        'Per-day BIR breakdown from live sales. VATable / VAT / VAT-exempt / zero-rated are reported separately, as filed.',
+      )
+      setRows(ensureRows(table, 'No sales data in this range.'))
+      return
+    }
+
+    if (selected === 'sc-pwd') {
+      const data = await fetchScPwdReport({ start: filters.start, end: filters.end, branchId })
+      const missingId = data.filter((r) => r.id_number === '(NOT RECORDED)').length
+      setNote(
+        missingId > 0
+          ? `${missingId} of ${data.length} sale(s) have no ID number recorded — BIR will disallow the deduction on those. Capture the ID at checkout.`
+          : 'Every discounted sale has an ID number on record.',
+      )
+      setRows(ensureRows(data, 'No Senior Citizen / PWD discounts in this range.'))
+      return
+    }
+
+    if (selected === 'discount-report') {
+      const data = await fetchDiscountReport({ start: filters.start, end: filters.end, branchId })
+      setRows(ensureRows(data, 'No discounts granted in this range.'))
+      return
+    }
+
+    if (selected === 'e-journal') {
+      const data = await fetchElectronicJournal({ start: filters.start, end: filters.end, branchId })
+      const voided = data.filter((r) => r.status === 'VOIDED').length
+      setNote(
+        `${data.length} transaction(s), ${voided} voided. Voids are included on purpose — an EJ with them removed proves nothing.`,
+      )
+      setRows(ensureRows(data, 'No transactions in this range.'))
+      return
+    }
+
+    if (selected === 'tender-summary') {
+      const data = await fetchTenderSummary({ start: filters.start, end: filters.end, branchId })
+      setRows(ensureRows(data, 'No completed sales in this range.'))
+      return
+    }
+
+    if (selected === 'gross-margin') {
+      const data = await fetchGrossMarginReport({ start: filters.start, end: filters.end, branchId })
+      setNote('Cost uses each product’s current unit cost, not the cost at time of sale.')
+      setRows(ensureRows(data, 'No sales in this range.'))
+      return
+    }
+
+    if (selected === 'stock-movement') {
+      const data = await fetchStockMovementReport({ start: filters.start, end: filters.end, branchId })
+      setRows(ensureRows(data, 'No stock movements in this range.'))
+      return
+    }
+
+    if (selected === 'price-changes') {
+      const data = await fetchPriceChangeReport({ start: filters.start, end: filters.end, branchId })
+      setRows(ensureRows(data, 'No price changes in this range.'))
       return
     }
 
@@ -601,6 +823,7 @@ function ManagerReports() {
   }
 
   const groups = [...new Set(REPORTS.map((r) => r.group))]
+  const selectedReport = REPORTS.find((r) => r.id === selected)
   const hasOutput = isTerminal ? Boolean(preview) : rows.length > 0
 
   return (
@@ -610,12 +833,12 @@ function ManagerReports() {
       )}
       <PageHeader eyebrow="MANAGER" title="Reports" />
 
-      <div className="mb-3 border border-[#c8ccc4] bg-white p-3">
+      <div className="mb-3 border border-brand-n400 bg-white p-3">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          <label className="block text-[11px] font-bold text-[#555]">
+          <label className="block text-[11px] font-bold text-brand-n800">
             Report
             <select
-              className="mt-1 block w-full border border-[#bbb] bg-white p-2 text-xs"
+              className="mt-1 block w-full border border-brand-n400 bg-white p-2 text-xs"
               value={selected}
               onChange={(e) => {
                 setSelected(e.target.value)
@@ -632,6 +855,11 @@ function ManagerReports() {
                 </optgroup>
               ))}
             </select>
+            {selectedReport?.note && (
+              <span className="mt-1 block text-[10px] leading-snug font-normal text-brand-subtle">
+                {selectedReport.note}
+              </span>
+            )}
           </label>
 
           <div className="col-span-full">
@@ -750,11 +978,11 @@ function ManagerReports() {
           )}
         </div>
 
-        {note && <p className="mt-2 mb-0 text-xs text-[#666]">{note}</p>}
+        {note && <p className="mt-2 mb-0 text-xs text-brand-n700">{note}</p>}
         {error && <p className="mt-2 mb-0 text-xs text-brand-danger">{error}</p>}
       </div>
 
-      <div className="border border-[#c8ccc4] bg-white">
+      <div className="border border-brand-n400 bg-white">
         {busy ? (
           <div className="p-3" role="status" aria-label="Loading">
             {isTerminal ? (
@@ -769,14 +997,14 @@ function ManagerReports() {
           </div>
         ) : isTerminal ? (
           !preview ? (
-            <div className="p-3 text-xs text-[#888]">Run to preview receipt layout.</div>
+            <div className="p-3 text-xs text-brand-n600">Run to preview receipt layout.</div>
           ) : (
-            <pre className="m-0 max-h-[70vh] overflow-auto border-0 bg-[#f7f7f4] p-3 font-mono text-[11px] leading-snug whitespace-pre">
+            <pre className="m-0 max-h-[70vh] overflow-auto border-0 bg-brand-n100 p-3 font-mono text-[11px] leading-snug whitespace-pre">
               {preview}
             </pre>
           )
         ) : rows.length === 0 ? (
-          <div className="p-3 text-xs text-[#888]">Run to preview table.</div>
+          <div className="p-3 text-xs text-brand-n600">Run to preview table.</div>
         ) : (
           <div className="max-h-[70vh] overflow-auto">
             <table className="min-w-full border-collapse text-left text-xs">
@@ -793,16 +1021,7 @@ function ManagerReports() {
                 {rows.map((row, index) => (
                   <tr key={index} className={tableRowClass}>
                     {Object.entries(row).map(([key, value]) => {
-                      const isMoney =
-                        typeof value === 'number' &&
-                        (key.includes('price') ||
-                          key.includes('sales') ||
-                          key.includes('total') ||
-                          key.includes('amount') ||
-                          key.includes('cost') ||
-                          key === 'gross_sales' ||
-                          key === 'net_sales' ||
-                          key === 'void_total')
+                      const isMoney = typeof value === 'number' && isMoneyColumn(key)
                       return (
                         <td key={key} className={`px-2 py-1.5 whitespace-nowrap ${isMoney ? moneyClass : ''}`}>
                           {isMoney ? money(value) : String(value ?? '')}

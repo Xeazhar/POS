@@ -201,13 +201,13 @@ function Login() {
               </div>
             )}
             <div className="mt-[22px] flex items-center justify-between gap-3">
-              <small className="text-[10px] text-[#969b97]">
+              <small className="text-[10px] text-brand-n600">
                 {hasSupabase ? 'Connected to Supabase' : 'Offline demo store'}
               </small>
               {mode === 'pin' ? (
                 <button
                   type="button"
-                  className="border-0 bg-transparent p-0 text-[10px] text-[#b0b5b1] underline-offset-2 hover:text-[#7a807c] hover:underline"
+                  className="border-0 bg-transparent p-0 text-[10px] text-brand-n500 underline-offset-2 hover:text-brand-n600 hover:underline"
                   onClick={() => {
                     setMode('email')
                     resetCaptcha()
@@ -218,7 +218,7 @@ function Login() {
               ) : (
                 <button
                   type="button"
-                  className="border-0 bg-transparent p-0 text-[10px] text-[#b0b5b1] underline-offset-2 hover:text-[#7a807c] hover:underline"
+                  className="border-0 bg-transparent p-0 text-[10px] text-brand-n500 underline-offset-2 hover:text-brand-n600 hover:underline"
                   onClick={() => {
                     setMode('pin')
                     resetCaptcha()

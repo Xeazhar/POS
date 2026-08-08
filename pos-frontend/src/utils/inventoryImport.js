@@ -1,5 +1,42 @@
 import { categoryForMenuKind, normalizeMenuKind } from './ulam'
 
+/**
+ * Guard a spreadsheet before it is parsed.
+ *
+ * xlsx parses entirely in the browser tab that the till runs in, so a large or malformed
+ * file does not fail politely — it blocks the main thread and freezes the POS. Checking
+ * the extension and the size first is cheap and turns a hang into a message.
+ *
+ * Size cap is deliberately generous: a 10MB sheet is roughly 100k catalogue rows, far past
+ * anything a branch imports, while still small enough to parse without stalling.
+ */
+export const MAX_IMPORT_BYTES = 10 * 1024 * 1024
+const ALLOWED_IMPORT_EXT = ['.csv', '.xlsx', '.xls']
+
+export function validateImportFile(file) {
+  if (!file) return { ok: false, message: 'No file selected.' }
+
+  const name = String(file.name || '').toLowerCase()
+  if (!ALLOWED_IMPORT_EXT.some((ext) => name.endsWith(ext))) {
+    return {
+      ok: false,
+      message: `Unsupported file type. Use ${ALLOWED_IMPORT_EXT.join(', ')}.`,
+    }
+  }
+  if (file.size === 0) {
+    return { ok: false, message: 'That file is empty.' }
+  }
+  if (file.size > MAX_IMPORT_BYTES) {
+    const mb = (file.size / 1024 / 1024).toFixed(1)
+    return {
+      ok: false,
+      message: `File is ${mb}MB — the limit is ${MAX_IMPORT_BYTES / 1024 / 1024}MB. Split it into smaller files.`,
+    }
+  }
+  return { ok: true, message: '' }
+}
+
+
 export async function sha256Hex(buffer) {
   const hash = await crypto.subtle.digest('SHA-256', buffer)
   return Array.from(new Uint8Array(hash))

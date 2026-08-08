@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import Shell from './components/shared/Shell'
 import { PageSkeleton } from './components/ui'
+import { useAppVersion } from './hooks/useAppVersion'
 import { useBranchHeartbeat } from './hooks/useBranchHeartbeat'
 import { hasSupabase } from './lib/api'
 import { startConnectivityWatcher } from './offline'
@@ -29,6 +30,23 @@ const ManagerReports = lazy(() => import('./pages/manager/Reports.jsx'))
 
 function PageFallback() {
   return <PageSkeleton variant="table" className="px-1 py-2" />
+}
+
+/**
+ * Keeps the build fresh while nobody is signed in.
+ *
+ * This is the most valuable place in the app to apply an update and the only one that had
+ * no watchdog: the terminal sits on the login screen all night and between shifts, and
+ * Shell — which owns the other watchdog — isn't mounted then. So a shop that never closed
+ * its browser could open on a week-old bundle every morning.
+ *
+ * Signed out there is no cart, no open shift and no unsynced work on screen, so it
+ * reloads on its own without asking. Rendered as a component rather than a hook call in
+ * App so the poll only runs while logged out, instead of duplicating Shell's.
+ */
+function LoggedOutUpdateWatchdog() {
+  useAppVersion({ safeToReload: true, autoReload: true })
+  return null
 }
 
 function firstHomePath(user) {
@@ -241,9 +259,12 @@ function App() {
             </Routes>
           </Shell>
         ) : (
-          <Routes>
-            <Route path="*" element={<Login />} />
-          </Routes>
+          <>
+            <LoggedOutUpdateWatchdog />
+            <Routes>
+              <Route path="*" element={<Login />} />
+            </Routes>
+          </>
         )}
       </Suspense>
     </BrowserRouter>

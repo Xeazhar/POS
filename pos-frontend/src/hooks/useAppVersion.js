@@ -2,22 +2,50 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { hardReload } from '../utils/hardReload'
 
 /**
- * Detect that a newer build has been deployed while this tab stayed open.
+ * Detect that a newer build has been deployed while this tab stayed open, and make sure
+ * the new bundle is actually on the device before we reload onto it.
  *
- * A terminal on the counter can go days without a reload, so it keeps running whatever
- * bundle it loaded on open — including bundles that predate a fix someone is actively
- * testing against. The service worker alone doesn't solve this: `skipWaiting` swaps
- * assets for the *next* navigation, which for a never-navigated SPA tab is never.
+ * WHY THIS IS NOT AUTOMATIC
+ * -------------------------
+ * CalePOS installs as a PWA, so a terminal runs whatever bundle it loaded when the app
+ * was opened — potentially days ago. Three separate things each fail to fix that on
+ * their own:
  *
- * /version.json is emitted per build (see versionJsonPlugin in vite.config.js). We read
- * it once on load to learn "which build am I", then re-read it periodically and whenever
- * the tab is looked at again. A difference means a deploy happened under us.
+ *   1. The service worker's `skipWaiting` swaps assets on the NEXT navigation. A
+ *      single-page app that never navigates never gets one, so "next navigation" is never.
+ *   2. `registration.update()` is only called by the browser on navigation or roughly
+ *      every 24h. Neither is good enough for a shop that needs today's fix today.
+ *   3. A plain `location.reload()` is served by the service worker from cache, so it can
+ *      hand back the identical bundle. (utils/hardReload.js exists for this reason.)
+ *
+ * So we poll /version.json — emitted fresh per build, see versionJsonPlugin in
+ * vite.config.js — and on a change do BOTH halves:
+ *
+ *   a. tell the service worker to fetch and precache the new build, THEN
+ *   b. hard-reload onto it.
+ *
+ * Doing (a) first matters on a POS specifically: it means the new assets are already on
+ * the device when the reload happens, so a terminal on flaky shop wifi cannot get caught
+ * halfway — reloading into a half-downloaded app on a counter mid-trade is worse than
+ * running yesterday's build.
  *
  * Refresh is never forced while work is in progress — reloading mid-sale would drop the
  * cashier's cart. The caller passes `safeToReload`; when that's false we only show the
  * banner and wait for a tap.
  */
 const POLL_MS = 60_000
+
+/** Ask the service worker to go fetch the new build now, rather than on its own schedule. */
+async function primeServiceWorker() {
+  if (typeof navigator === 'undefined' || !navigator.serviceWorker) return
+  try {
+    const registrations = await navigator.serviceWorker.getRegistrations()
+    await Promise.all(registrations.map((registration) => registration.update()))
+  } catch {
+    // A worker that refuses to update must not stop the banner from appearing — the
+    // hard reload path purges caches anyway and will still land on the new build.
+  }
+}
 
 export function useAppVersion({ safeToReload = true, autoReload = true } = {}) {
   const [updateReady, setUpdateReady] = useState(false)
@@ -29,6 +57,8 @@ export function useAppVersion({ safeToReload = true, autoReload = true } = {}) {
 
   const readVersion = useCallback(async () => {
     // Cache-busted + no-store: a cached response would compare the build to itself.
+    // public/_headers sends no-store for this path too, so neither the browser nor the
+    // CDN edge can defeat the check.
     const res = await fetch(`/version.json?t=${Date.now()}`, { cache: 'no-store' })
     if (!res.ok) throw new Error(`version.json ${res.status}`)
     const body = await res.json()
@@ -43,7 +73,12 @@ export function useAppVersion({ safeToReload = true, autoReload = true } = {}) {
         loadedVersion.current = version
         return
       }
-      if (version !== loadedVersion.current) setUpdateReady(true)
+      if (version !== loadedVersion.current) {
+        // Start the download before announcing the update, so that by the time anyone
+        // taps Refresh the new build is usually already cached and the reload is instant.
+        void primeServiceWorker()
+        setUpdateReady(true)
+      }
     } catch {
       // Offline or dev without the endpoint — staying on the current build is correct.
     }
@@ -58,11 +93,18 @@ export function useAppVersion({ safeToReload = true, autoReload = true } = {}) {
     }
     const timer = window.setInterval(check, POLL_MS)
     document.addEventListener('visibilitychange', onVisible)
+    // `focus` as well as `visibilitychange`: an installed PWA brought back from the app
+    // switcher does not always fire a visibility change on every platform, and resuming
+    // the app is exactly the moment we most want to check.
     window.addEventListener('focus', onVisible)
+    // Coming back online after an outage — the poll during the outage failed silently, so
+    // this is the first chance to learn about anything deployed while the shop was dark.
+    window.addEventListener('online', onVisible)
     return () => {
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
+      window.removeEventListener('online', onVisible)
     }
   }, [check])
 

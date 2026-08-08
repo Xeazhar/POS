@@ -290,13 +290,13 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
             className="rounded-[10px] bg-brand-dark p-[14px] text-white max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:gap-3 max-[700px]:p-3.5"
           >
             <div className="min-w-0">
-              <span className="block text-[11px] text-[#abb1ad] max-[700px]:text-[10px]">{label}</span>
-              <small className="mt-1 hidden text-[10px] text-[#abb1ad] max-[700px]:block">{note}</small>
+              <span className="block text-[11px] text-brand-n500 max-[700px]:text-[10px]">{label}</span>
+              <small className="mt-1 hidden text-[10px] text-brand-n500 max-[700px]:block">{note}</small>
             </div>
             <strong className={`mt-2 block text-[28px] text-brand-gold max-[700px]:mt-0 max-[700px]:shrink-0 max-[700px]:text-[22px] ${moneyClass}`}>
               {value}
             </strong>
-            <small className="block text-[11px] text-[#abb1ad] max-[700px]:hidden">{note}</small>
+            <small className="block text-[11px] text-brand-n500 max-[700px]:hidden">{note}</small>
           </div>
         ))}
       </div>
@@ -314,10 +314,10 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
       )}
 
       {isRestaurant && menuOn.length === 0 && products.length > 0 && (
-        <div className="mb-3.5 flex flex-wrap items-center justify-between gap-3 rounded-[10px] border border-[#e8d4a8] bg-[#fff8ea] px-4 py-3 max-[700px]:px-3">
+        <div className="mb-3.5 flex flex-wrap items-center justify-between gap-3 rounded-[10px] border border-brand-warn-line bg-brand-warn-surface px-4 py-3 max-[700px]:px-3">
           <div className="min-w-0">
-            <strong className="block text-sm text-[#6a5520]">Set today&apos;s potahe first</strong>
-            <p className="m-0 mt-1 text-xs text-[#6a5520]">
+            <strong className="block text-sm text-brand-warn">Set today&apos;s potahe first</strong>
+            <p className="m-0 mt-1 text-xs text-brand-warn">
               Mark which ulam / dishes you are serving before taking orders.
             </p>
           </div>

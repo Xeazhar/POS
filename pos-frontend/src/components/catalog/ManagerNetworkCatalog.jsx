@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { FiPlus, FiSearch, FiUpload } from 'react-icons/fi'
+import { FiDollarSign, FiPlus, FiRefreshCw, FiSearch, FiTag, FiUpload, FiX } from 'react-icons/fi'
 import {
   ErrorBanner,
   Field,
@@ -480,7 +480,7 @@ export default function ManagerNetworkCatalog() {
               <FiPlus className="text-sm" /> Add item
             </PrimaryButton>
             <label
-              className={`inline-flex h-8 cursor-pointer items-center gap-1 rounded-[5px] border border-brand-border bg-white px-2.5 text-[11px] font-bold text-[#4d534f] ${
+              className={`inline-flex h-8 cursor-pointer items-center gap-1 rounded-[5px] border border-brand-border bg-white px-2.5 text-[11px] font-bold text-brand-n800 ${
                 busy ? 'pointer-events-none opacity-35' : ''
               }`}
             >
@@ -599,7 +599,7 @@ export default function ManagerNetworkCatalog() {
                 </a>
               </li>
             </ul>
-            <pre className="mt-3 overflow-auto rounded-md bg-[#f6f6f3] p-3 text-[11px] text-brand-ink">
+            <pre className="mt-3 overflow-auto rounded-md bg-brand-n100 p-3 text-[11px] text-brand-ink">
 {`name,sku,barcode,category,pricingMode,price,discountEligible
 White Sugar 1kg,GRO-SUG-1,4801000000011,Groceries,pc,65,true
 Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
@@ -634,82 +634,140 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
           {/* Bulk editing is opt-in: the checkbox column and this bar only exist once a
               mode is chosen, so ordinary browsing of the catalog stays uncluttered. */}
           {!bulkMode ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[11px] text-brand-subtle">Bulk edit:</span>
-              <SecondaryButton compact type="button" onClick={() => setBulkMode('discount')}>
-                Discountable
-              </SecondaryButton>
-              <SecondaryButton compact type="button" onClick={() => setBulkMode('price')}>
-                Prices
-              </SecondaryButton>
-              <button
-                type="button"
-                className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline disabled:opacity-40"
-                disabled={busy}
-                title="Push every catalog Discountable setting down to branch products"
-                onClick={() => void resyncDiscountable()}
-              >
-                {busy ? 'Syncing…' : 'Re-sync discountable to branches'}
-              </button>
-              {resyncNote && <span className="text-[11px] text-brand-subtle">{resyncNote}</span>}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              {/* Segmented pair rather than two loose buttons: they are two options of one
+                  action ("bulk edit what?"), so they read as one control. */}
+              <div className="inline-flex items-center gap-1 rounded-[7px] border border-brand-border bg-brand-n100 p-1">
+                <span className="px-2 text-[10px] font-bold tracking-wide text-brand-n700 uppercase">
+                  Bulk edit
+                </span>
+                {[
+                  { id: 'discount', label: 'Discountable', Icon: FiTag },
+                  { id: 'price', label: 'Prices', Icon: FiDollarSign },
+                ].map(({ id, label, Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-[5px] border border-transparent bg-white px-2.5 text-[11px] font-bold text-brand-ink shadow-[0_1px_0_#00000008] hover:border-brand-border hover:bg-brand-n50"
+                    onClick={() => setBulkMode(id)}
+                  >
+                    <Icon className="shrink-0 text-brand-n600" size={13} />
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {resyncNote && <span className="text-[11px] text-brand-subtle">{resyncNote}</span>}
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-[5px] border border-brand-border bg-white px-2.5 text-[11px] font-bold text-brand-n700 hover:bg-brand-n50 disabled:opacity-40"
+                  disabled={busy}
+                  title="Push every catalog Discountable setting down to branch products"
+                  onClick={() => void resyncDiscountable()}
+                >
+                  <FiRefreshCw className={`shrink-0 ${busy ? 'animate-spin' : ''}`} size={13} />
+                  {busy ? 'Syncing…' : 'Re-sync discountable'}
+                </button>
+              </div>
             </div>
           ) : (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-brand-gold/40 bg-brand-gold/10 px-3 py-2">
-              <span className="text-xs font-bold text-brand-ink">
-                {bulkMode === 'price' ? 'Bulk price edit' : 'Bulk discountable'} ·{' '}
-                {selectedIds.length} selected
-                {bulkProgress ? ` · saving ${bulkProgress.done + 1}/${bulkProgress.total}…` : ''}
-              </span>
-              <div className="flex flex-wrap items-center gap-2">
-                {bulkMode === 'discount' && (
-                  <>
+            <div className="rounded-[8px] border border-brand-gold/50 bg-brand-gold/10 px-3 py-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  {/* The count is the thing that must be unmissable — a bulk action applied
+                      to the wrong number of rows is the whole risk of this mode. */}
+                  <span className="grid h-8 min-w-8 place-items-center rounded-[6px] bg-brand-dark px-2 text-sm font-bold text-brand-gold tabular-nums">
+                    {selectedIds.length}
+                  </span>
+                  <span className="min-w-0">
+                    <strong className="block text-xs text-brand-ink">
+                      {bulkMode === 'price' ? 'Editing prices' : 'Editing discountable'}
+                    </strong>
+                    <span className="block text-[10px] text-brand-n700">
+                      {bulkProgress
+                        ? `Saving ${bulkProgress.done + 1} of ${bulkProgress.total}…`
+                        : selectedIds.length
+                          ? `${selectedIds.length} selected`
+                          : 'Tick the rows you want to change'}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Select-all across the FILTERED set, not just the visible page — the
+                      page checkbox already covers the page, and "all 240 matching" is the
+                      thing someone actually wants after narrowing by category. */}
+                  {selectedIds.length < filtered.length && (
+                    <button
+                      type="button"
+                      className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline underline-offset-2 disabled:opacity-40"
+                      disabled={busy}
+                      onClick={() => setSelectedIds(filtered.map((r) => r.id))}
+                    >
+                      Select all {filtered.length}
+                    </button>
+                  )}
+                  {selectedIds.length > 0 && (
+                    <button
+                      type="button"
+                      className="border-0 bg-transparent text-[11px] font-bold text-brand-n700 underline underline-offset-2 disabled:opacity-40"
+                      disabled={busy}
+                      onClick={() => setSelectedIds([])}
+                    >
+                      Clear
+                    </button>
+                  )}
+                  {bulkMode === 'discount' && (
+                    <>
+                      <PrimaryButton
+                        compact
+                        type="button"
+                        disabled={busy || !selectedIds.length}
+                        onClick={() => bulkSetDiscountable(true)}
+                      >
+                        Discountable
+                      </PrimaryButton>
+                      <SecondaryButton
+                        compact
+                        type="button"
+                        disabled={busy || !selectedIds.length}
+                        onClick={() => bulkSetDiscountable(false)}
+                      >
+                        Not discountable
+                      </SecondaryButton>
+                    </>
+                  )}
+                  {bulkMode === 'price' && (
                     <PrimaryButton
                       compact
                       type="button"
                       disabled={busy || !selectedIds.length}
-                      onClick={() => bulkSetDiscountable(true)}
+                      onClick={() => {
+                        // Seed each row's input with its current price so the editor opens
+                        // showing today's values, not blanks.
+                        const drafts = {}
+                        catalog
+                          .filter((r) => selectedIds.includes(r.id))
+                          .forEach((r) => {
+                            drafts[r.id] = String(r.price ?? '')
+                          })
+                        setPriceDrafts(drafts)
+                        setShowPriceEditor(true)
+                      }}
                     >
-                      Set discountable
+                      Edit {selectedIds.length || ''} price{selectedIds.length === 1 ? '' : 's'}
                     </PrimaryButton>
-                    <SecondaryButton
-                      compact
-                      type="button"
-                      disabled={busy || !selectedIds.length}
-                      onClick={() => bulkSetDiscountable(false)}
-                    >
-                      Set not discountable
-                    </SecondaryButton>
-                  </>
-                )}
-                {bulkMode === 'price' && (
-                  <PrimaryButton
-                    compact
+                  )}
+                  <button
                     type="button"
-                    disabled={busy || !selectedIds.length}
-                    onClick={() => {
-                      // Seed each row's input with its current price so the editor opens
-                      // showing today's values, not blanks.
-                      const drafts = {}
-                      catalog
-                        .filter((r) => selectedIds.includes(r.id))
-                        .forEach((r) => {
-                          drafts[r.id] = String(r.price ?? '')
-                        })
-                      setPriceDrafts(drafts)
-                      setShowPriceEditor(true)
-                    }}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-[5px] border-0 bg-transparent text-brand-n700 hover:bg-brand-gold/20 hover:text-brand-ink disabled:opacity-40"
+                    disabled={busy}
+                    title="Exit bulk edit"
+                    aria-label="Exit bulk edit"
+                    onClick={exitBulk}
                   >
-                    Edit {selectedIds.length || ''} price{selectedIds.length === 1 ? '' : 's'}
-                  </PrimaryButton>
-                )}
-                <button
-                  type="button"
-                  className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline"
-                  disabled={busy}
-                  onClick={exitBulk}
-                >
-                  Done
-                </button>
+                    <FiX size={16} />
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -762,7 +820,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
 
         <div className="overflow-auto">
           <table className="min-w-full text-left text-xs">
-            <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
+            <thead className="bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
               <tr>
                 {bulkMode && (
                   <th className="w-8 px-5 py-3">
@@ -829,7 +887,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                       className={`rounded-full px-2 py-1 text-[10px] font-bold ${
                         row.discountEligible
                           ? 'bg-brand-success-bg text-brand-success-text'
-                          : 'bg-[#eceee9] text-brand-subtle'
+                          : 'bg-brand-n200 text-brand-subtle'
                       }`}
                     >
                       {row.discountEligible ? 'Yes' : 'No'}
@@ -987,7 +1045,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                 placeholder="Optional"
               />
             )}
-            <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
+            <label className="flex items-center gap-2 text-xs font-bold text-brand-n700">
               <input
                 type="checkbox"
                 checked={form.discountEligible === true}
@@ -1043,7 +1101,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
           </p>
           <div className="max-h-[52vh] overflow-auto rounded border border-brand-softline">
             <table className="min-w-full text-left text-xs">
-              <thead className="sticky top-0 bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
+              <thead className="sticky top-0 bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
                 <tr>
                   <th className="px-3 py-2">Product</th>
                   <th className="px-3 py-2">SKU</th>
@@ -1104,7 +1162,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
             {discountEdit.name} · {discountEdit.sku}
           </p>
           <div className="mt-4">
-            <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
+            <label className="flex items-center gap-2 text-xs font-bold text-brand-n700">
               <input
                 type="checkbox"
                 checked={discountValue === true}

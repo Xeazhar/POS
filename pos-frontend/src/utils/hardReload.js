@@ -19,6 +19,8 @@
  *    because the SW serves the cached shell.
  */
 
+import { markIntentionalReload } from '../offline/sessionLifecycle'
+
 /** Clear Cache Storage only. Returns how many caches were removed. */
 async function purgeAssetCaches() {
   if (typeof caches === 'undefined') return 0
@@ -50,6 +52,12 @@ async function refreshServiceWorkers() {
  * @param {boolean} options.online  when false, skips the cache purge (see SAFETY above)
  */
 export async function hardReload({ online = true } = {}) {
+  // MUST come first, and must happen even if the cache work below throws: without it the
+  // reload is mistaken for "the browser was closed and reopened", which signs the user out,
+  // clears their offline unlock verifier, and strands an open shift. See
+  // offline/sessionLifecycle.js consumeBrowserClosedFlag.
+  markIntentionalReload()
+
   try {
     if (online) {
       await purgeAssetCaches()
@@ -59,11 +67,14 @@ export async function hardReload({ online = true } = {}) {
     // Whatever happens, still reload — a stuck Refresh button is worse than a stale cache.
     console.warn('[hardReload] cache/SW refresh failed, reloading anyway', err)
   }
-  // Cache-busted URL so even the HTML document itself is re-fetched rather than served
-  // from the browser's own back/forward cache.
-  const url = new URL(window.location.href)
-  url.searchParams.set('_r', Date.now().toString(36))
-  window.location.replace(url.toString())
+
+  // location.reload(), not replace() with a cache-busting query. Two reasons:
+  //   - it reports navigation type 'reload', which is the session-lifecycle check's own
+  //     second line of defence if the flag above ever fails to stick;
+  //   - it leaves the URL clean instead of accumulating ?_r= on every refresh.
+  // The freshness the query param bought is already covered: the service worker is what
+  // serves stale assets here, and its caches were just purged.
+  window.location.reload()
 }
 
 export default hardReload

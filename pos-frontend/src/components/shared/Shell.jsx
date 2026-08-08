@@ -76,17 +76,17 @@ function syncCopy({ online, pending, status, lastError }) {
 }
 
 const toneDot = {
-  ok: 'bg-[#6f9b78]',
-  sync: 'bg-[#7a9cc8] animate-pulse',
-  warn: 'bg-[#c9a45a]',
-  off: 'bg-[#c48978]',
+  ok: 'bg-brand-sync-ok',
+  sync: 'bg-brand-sync-busy animate-pulse',
+  warn: 'bg-brand-sync-warn',
+  off: 'bg-brand-sync-off',
 }
 
 const toneText = {
-  ok: 'text-[#6f9b78]',
-  sync: 'text-[#5a7fa8]',
-  warn: 'text-[#a8843a]',
-  off: 'text-[#a86a5a]',
+  ok: 'text-brand-sync-ok',
+  sync: 'text-brand-sync-busy-ink',
+  warn: 'text-brand-sync-warn-ink',
+  off: 'text-brand-sync-off-ink',
 }
 
 function Shell({ children }) {
@@ -300,7 +300,7 @@ function Shell({ children }) {
           `mb-2 grid w-full justify-items-center gap-1.5 overflow-hidden rounded-lg px-1 py-3 text-[10px] leading-tight no-underline transition-[background-color,color,transform] duration-100 max-[700px]:mb-0 max-[700px]:flex max-[700px]:items-center max-[700px]:justify-start max-[700px]:gap-3 max-[700px]:px-3 max-[700px]:py-3 max-[700px]:text-xs ${
             isActive
               ? 'bg-brand-gold text-brand-dark'
-              : 'text-[#9da4a1] hover:bg-[#343938] hover:text-[#d5dbd7] active:scale-[0.96] active:bg-[#3a403f]'
+              : 'text-brand-n500 hover:bg-brand-dark-hover hover:text-brand-n400 active:scale-[0.96] active:bg-brand-dark-active'
           }`
         }
       >
@@ -460,7 +460,7 @@ function Shell({ children }) {
         <div className="fixed inset-0 z-[20] hidden max-[700px]:block">
           <button
             type="button"
-            className="absolute inset-0 border-0 bg-[#202426aa]"
+            className="absolute inset-0 border-0 bg-brand-scrim"
             aria-label="Close menu"
             onClick={() => setMenuOpen(false)}
           />
@@ -485,12 +485,12 @@ function Shell({ children }) {
       <div className="flex h-[calc(100vh-62px)]">
         <aside className="flex w-[88px] flex-col overflow-hidden bg-brand-panel px-3 py-[25px] max-[700px]:hidden">
           {isManager && (
-            <div className="mb-3 text-center text-[9px] tracking-wide text-[#7c827f] uppercase">
+            <div className="mb-3 text-center text-[9px] tracking-wide text-brand-n600 uppercase">
               Manager
             </div>
           )}
           {user?.role === 'supervisor' && (
-            <div className="mb-3 text-center text-[9px] tracking-wide text-[#7c827f] uppercase">
+            <div className="mb-3 text-center text-[9px] tracking-wide text-brand-n600 uppercase">
               Supervisor
             </div>
           )}
@@ -500,7 +500,7 @@ function Shell({ children }) {
 
           <button
             type="button"
-            className="mt-2 flex w-full flex-col items-center gap-1 rounded-lg border-0 bg-transparent px-1 py-2 text-[#a8aeaa] hover:bg-white/5 hover:text-white"
+            className="mt-2 flex w-full flex-col items-center gap-1 rounded-lg border-0 bg-transparent px-1 py-2 text-brand-n500 hover:bg-white/5 hover:text-white"
             title="Refresh — clears cached app files and loads the newest version"
             onClick={() => void hardReload({ online })}
           >
@@ -510,7 +510,7 @@ function Shell({ children }) {
 
           <button
             type="button"
-            className="mt-1 flex w-full flex-col items-center gap-1 rounded-lg border-0 bg-transparent px-1 py-2 text-[#a8aeaa] hover:bg-white/5 hover:text-white"
+            className="mt-1 flex w-full flex-col items-center gap-1 rounded-lg border-0 bg-transparent px-1 py-2 text-brand-n500 hover:bg-white/5 hover:text-white"
             title="Lock screen"
             onClick={() => lockScreen()}
           >
@@ -520,7 +520,7 @@ function Shell({ children }) {
 
           <div
             className={`mt-1 shrink-0 rounded-lg px-1.5 py-2.5 text-center ${
-              sync.isError ? 'bg-[#3a3228] ring-1 ring-[#c9a45a]/40' : 'bg-brand-panel'
+              sync.isError ? 'bg-brand-sync-warn-bg ring-1 ring-brand-sync-warn/40' : 'bg-brand-panel'
             }`}
           >
             <span className={`mx-auto mb-1 block h-1.5 w-1.5 rounded-full ${toneDot[sync.tone]}`} />
@@ -529,13 +529,13 @@ function Shell({ children }) {
             </strong>
             <span
               className={`mt-0.5 block text-[8px] leading-snug break-words ${
-                sync.isError ? 'text-[#e8d9b8]' : 'text-[#8a908c]'
+                sync.isError ? 'text-brand-sync-warn-body' : 'text-brand-ondark-dim'
               }`}
             >
               {sync.detail}
             </span>
             {sync.hint ? (
-              <span className="mt-1 block text-[8px] leading-snug text-[#c9a45a] break-words">
+              <span className="mt-1 block text-[8px] leading-snug text-brand-sync-warn break-words">
                 {sync.hint}
               </span>
             ) : null}
@@ -543,7 +543,7 @@ function Shell({ children }) {
           {/* Always visible so a support call can start with "what version are you on?"
               instead of a guess. Title carries the build timestamp for the same reason. */}
           <div
-            className="mt-2 text-center text-[9px] tracking-wide text-[#6e7470] select-text"
+            className="mt-2 text-center text-[9px] tracking-wide text-brand-n700 select-text"
             title={buildStamp()}
           >
             {APP_VERSION_LABEL}
@@ -622,20 +622,20 @@ function Shell({ children }) {
           {showSyncBanner && (
             <div
               role="alert"
-              className="mb-3 flex shrink-0 items-start gap-3 rounded-[10px] border border-[#e8d4a8] bg-[#fff8ea] px-3.5 py-3 text-left"
+              className="mb-3 flex shrink-0 items-start gap-3 rounded-[10px] border border-brand-warn-line bg-brand-warn-surface px-3.5 py-3 text-left"
             >
               <div className="min-w-0 flex-1">
-                <strong className="block text-sm text-[#6a5520]">{sync.label}</strong>
-                <p className="m-0 mt-1 text-xs leading-snug text-[#6a5520] break-words">{sync.detail}</p>
+                <strong className="block text-sm text-brand-warn">{sync.label}</strong>
+                <p className="m-0 mt-1 text-xs leading-snug text-brand-warn break-words">{sync.detail}</p>
                 {sync.hint ? (
-                  <p className="m-0 mt-1.5 text-xs font-semibold leading-snug text-[#6a5520] break-words">
+                  <p className="m-0 mt-1.5 text-xs font-semibold leading-snug text-brand-warn break-words">
                     {sync.hint}
                   </p>
                 ) : null}
               </div>
               <button
                 type="button"
-                className="shrink-0 border-0 bg-transparent p-1 text-base leading-none text-[#6a5520]"
+                className="shrink-0 border-0 bg-transparent p-1 text-base leading-none text-brand-warn"
                 aria-label="Dismiss sync message"
                 onClick={() => setSyncBannerDismissed(true)}
               >

@@ -155,7 +155,7 @@ function ManagerBranches() {
       </div>
       )}
       {form && (
-        <div className="fixed inset-0 z-[5] grid place-items-center bg-[#202426aa]">
+        <div className="fixed inset-0 z-[5] grid place-items-center bg-brand-scrim">
           <form
             className="w-[min(420px,calc(100%-32px))] rounded-[10px] bg-white p-6"
             onSubmit={async (event) => {
@@ -196,7 +196,7 @@ function ManagerBranches() {
                 <option value="retail">Retail / grocery</option>
                 <option value="restaurant">Restaurant / carinderia</option>
               </SelectField>
-              <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
+              <label className="flex items-center gap-2 text-xs font-bold text-brand-n700">
                 <input
                   type="checkbox"
                   checked={form.is_active !== false}

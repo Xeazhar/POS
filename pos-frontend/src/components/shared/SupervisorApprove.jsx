@@ -45,7 +45,7 @@ function SupervisorApprove({
       <p className="mb-4 text-[13px] text-brand-muted">{detail}</p>
 
       {managerCanApprove && (
-        <div className="mb-4 rounded-md border border-brand-line bg-[#f7f7f4] px-3 py-3">
+        <div className="mb-4 rounded-md border border-brand-line bg-brand-n100 px-3 py-3">
           <p className="m-0 text-[12px] text-brand-muted">
             You’re signed in as <strong className="text-brand-ink">{user?.name || 'manager'}</strong>. You can approve
             for this branch if no supervisor is available.

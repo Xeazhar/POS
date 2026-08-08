@@ -231,7 +231,7 @@ function POS() {
           <span className="text-xs text-brand-subtle">Business day {bizDate}</span>
         </PageHeader>
         <div
-          className="grid min-h-0 flex-1 place-items-center rounded-[10px] border border-brand-danger/25 bg-[#fff8f7] px-6 py-10"
+          className="grid min-h-0 flex-1 place-items-center rounded-[10px] border border-brand-danger/25 bg-brand-danger-tint px-6 py-10"
           role="status"
           aria-live="polite"
         >
@@ -243,7 +243,7 @@ function POS() {
                   ? 'Day end submitted'
                   : 'Till is closed'}
             </strong>
-            <p className="m-0 mt-2 text-sm leading-relaxed text-[#6a4038]">
+            <p className="m-0 mt-2 text-sm leading-relaxed text-brand-danger-deep">
               {dayFullyClosed
                 ? `No sales until a manager reopens the till, or automatically at ${formatOpenHourLabel(dayOpenHour)} for the next business day.`
                 : daySubmitted
@@ -286,7 +286,7 @@ function POS() {
           ) : (
             <button
               type="button"
-              className="rounded-[5px] border border-brand-border bg-white px-3 py-2 text-xs font-bold text-[#606662] max-[700px]:w-full max-[700px]:px-2.5 max-[700px]:text-[11px]"
+              className="rounded-[5px] border border-brand-border bg-white px-3 py-2 text-xs font-bold text-brand-n700 max-[700px]:w-full max-[700px]:px-2.5 max-[700px]:text-[11px]"
               onClick={() => setManageMenu(true)}
             >
               Edit potahe
@@ -300,7 +300,7 @@ function POS() {
         </p>
       )}
       {isRestaurant && manageMenu && (
-        <div className="mb-3 rounded-md border border-brand-dark/15 bg-[#f4f5f1] px-4 py-3">
+        <div className="mb-3 rounded-md border border-brand-dark/15 bg-brand-n100 px-4 py-3">
           <strong className="block text-sm text-brand-ink">What are you serving today?</strong>
           <p className="m-0 mt-1 text-xs text-brand-muted">
             Tap a dish to toggle <span className="font-bold text-brand-success">Serving</span> or{' '}
@@ -369,7 +369,7 @@ function POS() {
                   className={`shrink-0 rounded-[5px] border px-3 py-2 text-xs font-bold ${
                     inquiryMode
                       ? 'border-brand-dark bg-brand-dark text-white'
-                      : 'border-brand-border bg-white text-[#606662]'
+                      : 'border-brand-border bg-white text-brand-n700'
                   }`}
                   onClick={() => setInquiryMode((v) => !v)}
                   title="Look up item details without adding to cart"
@@ -388,7 +388,7 @@ function POS() {
                     className={`shrink-0 rounded-[5px] border px-[11px] py-2 text-xs whitespace-nowrap transition-[background-color,border-color,transform,filter] duration-100 disabled:cursor-not-allowed ${
                       category === item
                         ? 'border-brand-dark bg-brand-dark text-white'
-                        : 'border-brand-border bg-white text-[#606662] hover:border-[#b8bcb5] hover:bg-[#f4f5f1] active:bg-[#eceee9]'
+                        : 'border-brand-border bg-white text-brand-n700 hover:border-brand-n500 hover:bg-brand-n100 active:bg-brand-n200'
                     }`}
                     onClick={() => setCategory(item)}
                   >
@@ -409,11 +409,11 @@ function POS() {
               )
             ) : (
               <div className="min-h-0 rounded border border-brand-softline">
-                <div className="border-b border-brand-softline bg-[#f7f7f4] px-3 py-2 text-[11px] text-brand-subtle">
+                <div className="border-b border-brand-softline bg-brand-n100 px-3 py-2 text-[11px] text-brand-subtle">
                   Scanner results
                 </div>
                 <table className="min-w-full text-left text-xs">
-                  <thead className="sticky top-0 bg-brand-dark text-[10px] tracking-wide text-[#c8ceca] uppercase">
+                  <thead className="sticky top-0 bg-brand-dark text-[10px] tracking-wide text-brand-ondark uppercase">
                     <tr>
                       <th className="px-3 py-2">SKU</th>
                       <th className="px-3 py-2">Barcode</th>
@@ -430,7 +430,7 @@ function POS() {
                       return (
                       <tr
                         key={product.id}
-                        className="cursor-pointer border-t border-brand-softline hover:bg-[#fafaf7]"
+                        className="cursor-pointer border-t border-brand-softline hover:bg-brand-n50"
                         onClick={() => select(product)}
                       >
                         <td className="px-3 py-2 font-mono text-[11px]">{product.sku || '—'}</td>
@@ -496,15 +496,15 @@ function POS() {
                       className={`tap-target flex min-h-[168px] w-full flex-col items-start rounded-[8px] border p-4 text-left transition-[border-color,box-shadow,transform,filter,opacity,background-color] duration-150 disabled:cursor-not-allowed ${
                         manageMenu && isRestaurant
                           ? offToday
-                            ? `border-[#e8b4b4] bg-[#fdf6f6] ${flashing ? 'scale-[0.98]' : ''}`
-                            : `border-[#9ec99a] bg-[#f4faf2] shadow-[inset_0_0_0_1px_#9ec99a55] ${
+                            ? `border-brand-danger-line bg-brand-danger-tint-alt ${flashing ? 'scale-[0.98]' : ''}`
+                            : `border-brand-success-line bg-brand-success-tint shadow-[inset_0_0_0_1px_#9ec99a55] ${
                                 flashing ? 'scale-[0.98]' : ''
                               }`
                           : offToday && manageMenu
-                            ? 'border-[#e8e9e3] bg-[#f3f3f0] opacity-55'
+                            ? 'border-brand-n200 bg-brand-n100 opacity-55'
                             : promoInfo
-                              ? 'border-brand-danger/40 bg-[#fff8f7] hover:border-brand-danger hover:shadow-[0_2px_8px_#00000012] active:border-brand-danger'
-                              : 'border-[#e8e9e3] bg-[#fbfbf9] hover:border-brand-gold hover:shadow-[0_2px_8px_#00000012] active:border-brand-gold'
+                              ? 'border-brand-danger/40 bg-brand-danger-tint hover:border-brand-danger hover:shadow-[0_2px_8px_#00000012] active:border-brand-danger'
+                              : 'border-brand-n200 bg-brand-n50 hover:border-brand-gold hover:shadow-[0_2px_8px_#00000012] active:border-brand-gold'
                       }`}
                       onClick={async () => {
                         if (manageMenu && isRestaurant) {
@@ -542,7 +542,7 @@ function POS() {
                             product.menuKind === 'veggie'
                               ? 'bg-brand-success-bg text-brand-success-text'
                               : product.menuKind === 'drink' || product.menuKind === 'rice'
-                                ? 'bg-[#eef1f6] text-[#4a5568]'
+                                ? 'bg-brand-info-bg text-brand-info'
                                 : 'bg-brand-meat text-brand-meat-text'
                           }`}
                         >
@@ -557,10 +557,10 @@ function POS() {
                           {promoInfo.eventName}
                         </span>
                       )}
-                      <span className={`mt-1.5 text-[12px] text-[#808581] ${moneyClass}`}>
+                      <span className={`mt-1.5 text-[12px] text-brand-n600 ${moneyClass}`}>
                         {salePrice != null ? (
                           <>
-                            <span className="mr-1.5 text-[#a8aeaa] line-through">{money(product.price)}</span>
+                            <span className="mr-1.5 text-brand-n500 line-through">{money(product.price)}</span>
                             <span className="font-bold text-brand-danger">{money(salePrice)}</span>
                           </>
                         ) : (
@@ -704,7 +704,7 @@ function POS() {
           {String(search || '').trim() ? (
             <div className="-mx-5 max-h-[50vh] overflow-auto border-t border-brand-softline max-[700px]:-mx-4">
               <table className="min-w-full text-left text-xs">
-                <thead className="sticky top-0 bg-brand-dark text-[10px] tracking-wide text-[#c8ceca] uppercase">
+                <thead className="sticky top-0 bg-brand-dark text-[10px] tracking-wide text-brand-ondark uppercase">
                   <tr>
                     <th className="px-3 py-2">SKU</th>
                     <th className="px-3 py-2">Barcode</th>
@@ -721,7 +721,7 @@ function POS() {
                     return (
                     <tr
                       key={product.id}
-                      className="cursor-pointer border-t border-brand-softline hover:bg-[#fafaf7]"
+                      className="cursor-pointer border-t border-brand-softline hover:bg-brand-n50"
                       onClick={() => {
                         select(product)
                         setSearchPopupOpen(false)
@@ -770,7 +770,7 @@ function POS() {
               )}
             </div>
           ) : (
-            <p className="m-0 rounded-md border border-brand-softline bg-[#f7f7f4] px-3 py-4 text-center text-xs text-brand-subtle">
+            <p className="m-0 rounded-md border border-brand-softline bg-brand-n100 px-3 py-4 text-center text-xs text-brand-subtle">
               Scan barcode or type item name, SKU, or barcode.
             </p>
           )}
@@ -848,7 +848,7 @@ function POS() {
                   </p>
                 )}
                 <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
-                  <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                  <div className="rounded-md bg-brand-n100 px-3 py-2">
                     <span className="block text-[10px] text-brand-subtle">
                       {salePrice != null ? 'Promo price' : 'Price'}
                     </span>
@@ -861,7 +861,7 @@ function POS() {
                       <strong>{money(inquiryProduct.price)}</strong>
                     )}
                   </div>
-                  <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                  <div className="rounded-md bg-brand-n100 px-3 py-2">
                     <span className="block text-[10px] text-brand-subtle">On hand</span>
                     <strong>
                       {inquiryProduct.pricingMode === 'kg'
@@ -869,11 +869,11 @@ function POS() {
                         : `${Number(inquiryProduct.stock || 0).toFixed(0)} pc`}
                     </strong>
                   </div>
-                  <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                  <div className="rounded-md bg-brand-n100 px-3 py-2">
                     <span className="block text-[10px] text-brand-subtle">Category</span>
                     <strong>{inquiryProduct.category || '—'}</strong>
                   </div>
-                  <div className="rounded-md bg-[#f7f7f4] px-3 py-2">
+                  <div className="rounded-md bg-brand-n100 px-3 py-2">
                     <span className="block text-[10px] text-brand-subtle">Mode</span>
                     <strong>{inquiryProduct.pricingMode === 'kg' ? 'Weighed' : 'Piece'}</strong>
                   </div>
