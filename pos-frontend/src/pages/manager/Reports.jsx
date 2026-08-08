@@ -22,12 +22,14 @@ import {
   fetchReportSalesDetail,
   fetchSaleEvents,
   fetchTerminalReportSource,
+  fetchEarliestTransactionDate,
   formatProductCode,
   hasSupabase,
   logAuditEvent,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
 import { money, today } from '../../utils/format'
+import { formatSupportError } from '../../utils/errors'
 import {
   buildTerminalReportData,
   downloadText,
@@ -55,6 +57,25 @@ function loadXlsx() {
 }
 
 const TERMINAL_IDS = new Set(['x-read', 'z-read', 'cashier', 'department', 'plu'])
+
+/**
+ * X-Read and Z-Read are register readings for one trading period — a Z-Read is by
+ * definition the end-of-day reset. Running either "for all time" is not a bigger version
+ * of the same document, it is a meaningless one, so the All-records preset is refused for
+ * them rather than quietly producing a number nobody should file.
+ */
+const NO_ALL_RANGE = new Set(['x-read', 'z-read'])
+
+function isoDaysAgo(n) {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  return d.toISOString().slice(0, 10)
+}
+
+function startOfThisMonth() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
 
 const REPORTS = [
   { id: 'x-read', group: 'Terminal', title: 'X-Read' },
@@ -107,6 +128,8 @@ function ManagerReports() {
     branchId: '',
     staffId: '',
   })
+  const [rangeMode, setRangeMode] = useState('today')
+  const [rangeNote, setRangeNote] = useState('')
   const [preview, setPreview] = useState('')
   const [termData, setTermData] = useState(null)
   const [rows, setRows] = useState([])
@@ -144,6 +167,51 @@ function ManagerReports() {
 
   const branchName =
     branches.find((b) => b.id === filters.branchId)?.name || (filters.branchId ? 'Branch' : 'All branches')
+
+
+  /**
+   * Date-range presets, including "All records" which anchors the start to the branch's
+   * first-ever sale (see api.fetchEarliestTransactionDate) rather than an arbitrary floor —
+   * a floor would make day-walking reports iterate thousands of empty days.
+   */
+  const applyRange = async (mode) => {
+    setError('')
+    setRangeNote('')
+    if (mode === 'all' && NO_ALL_RANGE.has(selected)) {
+      setError('X-Read and Z-Read cover a single trading period — pick a date range instead.')
+      return
+    }
+    setRangeMode(mode)
+    if (mode === 'today') {
+      setFilters((f) => ({ ...f, start: today(), end: today() }))
+      return
+    }
+    if (mode === '7d') {
+      setFilters((f) => ({ ...f, start: isoDaysAgo(6), end: today() }))
+      return
+    }
+    if (mode === 'month') {
+      setFilters((f) => ({ ...f, start: startOfThisMonth(), end: today() }))
+      return
+    }
+    if (mode === 'all') {
+      setBusy(true)
+      try {
+        const earliest = await fetchEarliestTransactionDate(filters.branchId || null)
+        if (!earliest) {
+          setRangeNote('No sales on record yet.')
+          setFilters((f) => ({ ...f, start: today(), end: today() }))
+          return
+        }
+        setFilters((f) => ({ ...f, start: earliest, end: today() }))
+        setRangeNote(`All records — first sale ${earliest} to today.`)
+      } catch (err) {
+        setError(formatSupportError(err, 'DATA01'))
+      } finally {
+        setBusy(false)
+      }
+    }
+  }
 
   const runTerminal = async () => {
     if (!filters.branchId) {
@@ -566,17 +634,62 @@ function ManagerReports() {
             </select>
           </label>
 
+          <div className="col-span-full">
+            <span className="mb-1 block text-xs font-bold text-brand-muted">Range</span>
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { id: 'today', label: 'Today' },
+                { id: '7d', label: 'Last 7 days' },
+                { id: 'month', label: 'This month' },
+                { id: 'all', label: 'All records' },
+              ].map((r) => {
+                const blocked = r.id === 'all' && NO_ALL_RANGE.has(selected)
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    disabled={busy || blocked}
+                    title={
+                      blocked
+                        ? 'X-Read and Z-Read cover a single trading period'
+                        : r.id === 'all'
+                          ? 'Every record from the first sale to today'
+                          : undefined
+                    }
+                    className={`rounded-[5px] border px-2.5 py-1.5 text-[11px] font-bold disabled:cursor-not-allowed disabled:opacity-40 ${
+                      rangeMode === r.id
+                        ? 'border-brand-dark bg-brand-dark text-white'
+                        : 'border-brand-border bg-white text-brand-ink'
+                    }`}
+                    onClick={() => void applyRange(r.id)}
+                  >
+                    {r.label}
+                  </button>
+                )
+              })}
+            </div>
+            {rangeNote && <p className="m-0 mt-1.5 text-[11px] text-brand-subtle">{rangeNote}</p>}
+          </div>
+
           <Field
             label="From"
             type="date"
             value={filters.start}
-            onChange={(e) => setFilters({ ...filters, start: e.target.value })}
+            onChange={(e) => {
+              setRangeMode('custom')
+              setRangeNote('')
+              setFilters({ ...filters, start: e.target.value })
+            }}
           />
           <Field
             label="To"
             type="date"
             value={filters.end}
-            onChange={(e) => setFilters({ ...filters, end: e.target.value })}
+            onChange={(e) => {
+              setRangeMode('custom')
+              setRangeNote('')
+              setFilters({ ...filters, end: e.target.value })
+            }}
           />
           <SelectField
             label="Branch"

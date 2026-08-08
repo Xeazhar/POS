@@ -17,6 +17,21 @@ computation, OR numbering).
 
 ---
 
+## 0.3.0 — 2026-08-08
+
+### Added
+
+- **Reports can now cover all records, not just a date range.** New Range buttons —
+  Today, Last 7 days, This month, **All records** — sit above the From/To dates. "All
+  records" runs from the branch's very first sale up to today, so you can export a
+  complete history without knowing when trading started. Typing your own dates still
+  works and switches the range back to Custom.
+- X-Read and Z-Read deliberately refuse "All records": each is a reading for one trading
+  period (a Z-Read *is* the end-of-day reset), so an all-time version would be a number
+  nobody should file. Use a date range for those.
+
+---
+
 ## 0.2.1 — 2026-08-08
 
 ### Changed

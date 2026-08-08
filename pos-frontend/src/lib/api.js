@@ -1114,6 +1114,28 @@ async function loadTransactionByClientId(branchId, clientId) {
   return data
 }
 
+/**
+ * Business date of the earliest sale on record, for the Reports "All records" range.
+ *
+ * Needed because some reports (BIR Sales Summary) walk the range one day at a time. Using
+ * an arbitrary floor like 2000-01-01 for "all" would spin ~9,500 iterations, each firing a
+ * query — enough to hang the tab and hammer the API. Anchoring to real data keeps "all"
+ * proportional to how long the branch has actually been trading.
+ *
+ * Returns null when the branch has no sales yet.
+ */
+export async function fetchEarliestTransactionDate(branchId = null) {
+  let q = supabase
+    .from('transactions')
+    .select('created_at')
+    .order('created_at', { ascending: true })
+    .limit(1)
+  if (branchId) q = q.eq('branch_id', branchId)
+  const { data, error } = await q.maybeSingle()
+  if (error) throw error
+  return data?.created_at ? localDateKey(data.created_at) : null
+}
+
 export async function adjustStock({ branchId, productId, staffId, action, amount, productName }) {
   const type = action.toLowerCase()
   const quantityIn = type === 'restock' ? amount : 0
