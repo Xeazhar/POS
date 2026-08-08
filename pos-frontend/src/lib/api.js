@@ -5,6 +5,7 @@ import { pinAuthEmail } from '../utils/roles'
 import { normalizeMenuKind } from '../utils/ulam'
 import { clearUnlockSecret, loadUnlockSecret, saveUnlockSecret } from '../offline/session'
 import { createVerifier, isVerifierExpired, verifyAgainst } from '../utils/unlockVerifier'
+import { APP_VERSION } from '../utils/version'
 
 export const hasSupabase = Boolean(supabase)
 export { allowDemoMode }
@@ -1554,7 +1555,7 @@ export async function heartbeatBranch({ branchId, staffId }) {
   const { data, error } = await supabase.rpc('heartbeat_branch', {
     p_branch_id: branchId,
     p_staff_id: staffId || null,
-    p_app_version: import.meta.env.VITE_APP_VERSION || 'web',
+    p_app_version: APP_VERSION,
     p_user_agent: typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 180) : null,
   })
   if (error) {

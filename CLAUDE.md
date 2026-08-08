@@ -53,6 +53,31 @@ Rule of thumb enforced throughout the codebase: UI/pages never call Supabase dir
 
 **Auth session**: Supabase auth token lives in `sessionStorage` only (not `localStorage`), plus a "browser closed" flag so closing the tab forces re-login while a reload does not — see `src/lib/supabase.js` and `src/offline/sessionLifecycle.js`. Don't reintroduce localStorage-persisted auth tokens.
 
+## Versioning (required on every commit)
+
+`pos-frontend/package.json` `version` is the **single source of truth**. `vite.config.js`
+bakes it into the bundle (`__APP_VERSION__`), `src/utils/version.js` exposes it, the Shell
+sidebar shows it as `vX.Y.Z`, and `audit_events.app_version` records it. Never hardcode a
+version anywhere else — `VITE_APP_VERSION` exists only as a build-time override.
+
+**Every commit that changes app behaviour must bump the version and add a `CHANGELOG.md`
+entry**, in the same commit as the change:
+
+- **MAJOR** — staff need retraining, or fiscal output changes (receipt format, tax
+  computation, OR numbering). These need a heads-up before deploy.
+- **MINOR** — new capability, existing behaviour unchanged.
+- **PATCH** — bug fix, copy, styling.
+
+Docs-only, comment-only, or refactor-with-no-behaviour-change commits don't need a bump.
+
+Write CHANGELOG entries for the person running the store, not for a developer: what changed
+for them and what they must do differently. Call out anything that changes what a customer
+pays or what prints on a receipt — explicitly, not buried in a list.
+
+Distinct from `/version.json`, which carries a per-**build** token used to detect a deploy
+under an open tab (`src/hooks/useAppVersion.js`). Two deploys of the same release are still
+different bundles, so that token must stay build-based, not semver-based.
+
 ## Notable non-obvious conventions
 
 - `cash_drawer_entries` is the current table name for what used to be `petty_cash`; `src/lib/api.js` falls back to the legacy name until `migrate_rename_petty_cash_to_cash_drawer_entries.sql` has been applied to a given environment — check both when touching cash-drawer/petty-cash code.

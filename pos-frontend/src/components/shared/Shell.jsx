@@ -16,6 +16,7 @@ import { useSyncStore } from '../../stores/syncStore'
 import { formatSyncError } from '../../utils/errors'
 import { isManagerRole, usesPinLogin } from '../../utils/roles'
 import { businessDate } from '../../utils/format'
+import { APP_VERSION_LABEL, buildStamp } from '../../utils/version'
 import { decimalOnly } from '../../utils/validate'
 import { Eyebrow, Field, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
 import Clock from './Clock'
@@ -537,6 +538,14 @@ function Shell({ children }) {
                 {sync.hint}
               </span>
             ) : null}
+          </div>
+          {/* Always visible so a support call can start with "what version are you on?"
+              instead of a guess. Title carries the build timestamp for the same reason. */}
+          <div
+            className="mt-2 text-center text-[9px] tracking-wide text-[#6e7470] select-text"
+            title={buildStamp()}
+          >
+            {APP_VERSION_LABEL}
           </div>
         </aside>
 

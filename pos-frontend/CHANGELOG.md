@@ -1,0 +1,57 @@
+# Changelog
+
+Versions shown in the app's sidebar (`vX.Y.Z`). Source of truth is `package.json` —
+bump it there and nowhere else; the UI, the bundle, and `audit_events.app_version`
+all read from it.
+
+**MAJOR** — staff need retraining, or fiscal output changes (receipt format, tax
+computation, OR numbering).
+**MINOR** — new capability, existing behaviour unchanged.
+**PATCH** — bug fix, copy, styling.
+
+---
+
+## 1.1.0 — 2026-08-08
+
+### Fixed — critical
+
+- **Sync queue could stall permanently.** One op that could never be pushed blocked every
+  sale queued behind it from ever reaching the server, silently, while the branch kept
+  selling. Failing ops are now quarantined after 5 attempts, the queue drains past them,
+  and a non-dismissible banner reports it (support code `SYNC09`).
+- **Duplicate sales were possible** when two syncs of the same queued sale overlapped —
+  doubled revenue, two OR numbers, doubled stock decrement. Now prevented by a database
+  constraint (`migrate_sale_dedupe_hardening.sql`).
+- **Products past the 1000th were invisible to POS.** Reads were silently truncated, so
+  affected items couldn't be sold correctly and PWD/Senior refused them even when marked
+  discountable. All product/catalog reads now page.
+- **"Discountable" didn't reach the till** for imported and supervisor-created products.
+  Fixed, plus a migration that heals existing rows.
+
+### Fixed — security
+
+- Offline lock-screen password verifier hardened (PBKDF2, 210k iterations, per-device
+  salt) and failed attempts now throttle with a backoff that survives a reload.
+
+### Added
+
+- **BIR VAT and SC/PWD engine (RA 9994 / RA 10754).** One discount computed on a
+  VAT-exclusive base; promos lower that base rather than stacking. **Changes what
+  customers pay**: a ₱112 item with a 10% promo plus PWD is now ₱72.00 — the previous
+  behaviour overcharged. Checkout shows a full per-line breakdown and BIR totals.
+- **Multiple concurrent promos** per branch, best discount per line, never stacked.
+  Auto-expiry on the end date, editable name and schedule, multi-select product picker.
+- **Live updates** — manager price/promo/discount edits reach an open POS immediately.
+- **Update banner** when a new version is deployed under an open tab.
+- **Version display** in the sidebar.
+
+### Changed
+
+- Checkout is now two columns; long breakdowns no longer scroll under the buttons.
+- Promo date fields were showing and saving times 8 hours off (UTC vs local).
+
+---
+
+## 1.0.0
+
+Initial release.

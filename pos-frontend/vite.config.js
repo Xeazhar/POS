@@ -1,7 +1,17 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+
+// package.json is the single source of truth for the app version. Deriving it here rather
+// than duplicating it in an env var means the number shown in the UI, the number reported
+// to audit_events, and the number in the shipped bundle can never disagree.
+const pkg = JSON.parse(
+  readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf-8'),
+)
+const APP_VERSION = pkg.version
 
 /**
  * Emit /version.json holding this build's identity, and serve the same shape in dev.
@@ -15,9 +25,13 @@ import { VitePWA } from 'vite-plugin-pwa'
  * and would silently go stale the one time someone forgets.
  */
 function versionJsonPlugin() {
-  // Build timestamp, not package.json version — the version field rarely changes, and a
-  // deploy that didn't bump it would go undetected by every open tab.
-  const version = new Date().toISOString()
+  // Two different things, deliberately:
+  //   appVersion — the human-facing release number (package.json), shown in the UI.
+  //   version    — the staleness token, unique per BUILD. It must be the build timestamp,
+  //                not the semver: two deploys off the same version are still different
+  //                bundles, and an open tab has to notice the second one.
+  const buildId = new Date().toISOString()
+  const body = { version: buildId, appVersion: APP_VERSION, builtAt: buildId }
   return {
     name: 'calepos-version-json',
     configureServer(server) {
@@ -25,20 +39,25 @@ function versionJsonPlugin() {
       server.middlewares.use('/version.json', (_req, res) => {
         res.setHeader('Content-Type', 'application/json')
         res.setHeader('Cache-Control', 'no-store')
-        res.end(JSON.stringify({ version, dev: true }))
+        res.end(JSON.stringify({ ...body, dev: true }))
       })
     },
     generateBundle() {
       this.emitFile({
         type: 'asset',
         fileName: 'version.json',
-        source: JSON.stringify({ version, builtAt: new Date().toISOString() }),
+        source: JSON.stringify(body),
       })
     },
   }
 }
 
 export default defineConfig({
+  define: {
+    // Baked into the bundle at build time — see src/utils/version.js.
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+  },
   plugins: [
     react(),
     tailwindcss(),
