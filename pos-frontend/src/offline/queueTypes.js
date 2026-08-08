@@ -18,6 +18,12 @@ export const QUEUE_STATUS = {
   SYNCING: 'syncing',
   FAILED: 'failed',
   DONE: 'done',
+  /**
+   * Quarantined after MAX_SYNC_ATTEMPTS (see syncQueue.js). Excluded from the push loop so
+   * one unpushable op can't block every sale behind it, but never deleted — it is a fiscal
+   * record that did not reach the server and needs a human to resolve it.
+   */
+  BLOCKED: 'blocked',
 }
 
 const STOCK_AFFECTING = new Set([

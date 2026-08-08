@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { FiSearch } from 'react-icons/fi'
 import Cart from '../components/pos/Cart'
@@ -18,7 +18,8 @@ import {
   moneyClass,
 } from '../components/ui'
 import { isDeviceEnabled } from '../devices'
-import { fetchActivePromoEventWithRules, hasSupabase, updateProductPrice } from '../lib/api'
+import { fetchActivePromoEventsWithRules, fetchBranchProducts, hasSupabase, updateProductPrice } from '../lib/api'
+import { useLiveData } from '../hooks/useLiveData'
 import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import {
   businessDate,
@@ -60,7 +61,7 @@ function POS() {
   const [inquiryProduct, setInquiryProduct] = useState(null)
   const [searchPopupOpen, setSearchPopupOpen] = useState(false)
   const [cartOverlayOpen, setCartOverlayOpen] = useState(false)
-  const [activePromo, setActivePromo] = useState(null)
+  const [activePromos, setActivePromos] = useState([])
   const [searchParams, setSearchParams] = useSearchParams()
   const tillClosed = isTillClosed(dayEnds, dayOpenHour)
   const daySubmitted = isDaySubmitted(dayEnds, dayOpenHour)
@@ -74,13 +75,17 @@ function POS() {
   useEffect(() => {
     if (tillClosed) clearCart()
   }, [tillClosed, clearCart])
-  const promoProductIds = activePromo?.rules?.length
-    ? new Set(activePromo.rules.flatMap((r) => (r.products || []).map((p) => p.productId)).filter(Boolean))
-    : new Set()
-  const promoByProductId = useMemo(
-    () => buildPromoByProductId(activePromo?.rules || [], activePromo?.event?.name || ''),
-    [activePromo],
+  // Flatten every live promo event's rules into one list, each tagged with
+  // its own event name — several promos can be live on a branch at once.
+  const promoRules = useMemo(
+    () =>
+      activePromos.flatMap((p) => (p.rules || []).map((r) => ({ ...r, eventName: p.event?.name || '' }))),
+    [activePromos],
   )
+  const promoProductIds = promoRules.length
+    ? new Set(promoRules.flatMap((r) => (r.products || []).map((p) => p.productId)).filter(Boolean))
+    : new Set()
+  const promoByProductId = useMemo(() => buildPromoByProductId(promoRules), [promoRules])
   const categories = [
     'All',
     ...(promoProductIds.size ? ['Promos'] : []),
@@ -104,28 +109,49 @@ function POS() {
     }
   }, [isRestaurant, searchParams, user?.branchId, bizDate, products.length])
 
-  useEffect(() => {
-    if (!hasSupabase || !user?.branchId) {
-      setActivePromo(null)
-      return undefined
+  const branchId = user?.branchId || ''
+  const liveEnabled = Boolean(hasSupabase && branchId)
+
+  // Live: a manager creating/editing/activating a promo reaches this screen immediately.
+  // promo_rules/promo_rule_products have no branch_id to filter on — cheap enough to
+  // watch unfiltered and let the per-branch refetch do the real filtering.
+  const loadPromos = useCallback(async () => {
+    if (!branchId) {
+      setActivePromos([])
+      return
     }
-    let active = true
-    const load = async () => {
-      try {
-        const next = await fetchActivePromoEventWithRules(user.branchId)
-        if (active) setActivePromo(next)
-      } catch (err) {
-        console.warn('Failed to load active promo', err)
-        if (active) setActivePromo(null)
-      }
+    try {
+      setActivePromos(await fetchActivePromoEventsWithRules(branchId))
+    } catch (err) {
+      console.warn('Failed to load active promos', err)
+      setActivePromos([])
     }
-    void load()
-    const t = window.setInterval(load, 60_000)
-    return () => {
-      active = false
-      window.clearInterval(t)
-    }
-  }, [hasSupabase, user?.branchId])
+  }, [branchId])
+
+  useLiveData({
+    enabled: liveEnabled,
+    fetch: loadPromos,
+    tables: [
+      { table: 'promo_events', filter: `branch_id=eq.${branchId}` },
+      { table: 'promo_rules' },
+      { table: 'promo_rule_products' },
+    ],
+  })
+
+  // Live: a manager's price/stock/discount-eligibility edit reaches this screen immediately.
+  const loadProducts = useCallback(async () => {
+    if (!branchId) return
+    useProductStore.getState().mergeProducts(await fetchBranchProducts(branchId))
+  }, [branchId])
+
+  useLiveData({
+    enabled: liveEnabled,
+    fetch: loadProducts,
+    tables: [
+      { table: 'products', filter: `branch_id=eq.${branchId}` },
+      { table: 'branch_inventory', filter: `branch_id=eq.${branchId}` },
+    ],
+  })
 
   const finishMenuSetup = () => {
     try {
@@ -600,8 +626,7 @@ function POS() {
             tillClosed={tillClosed}
             barcodeMode={barcodeTableMode}
             onOverlayChange={setCartOverlayOpen}
-            promoRules={activePromo?.rules || []}
-            promoLabel={activePromo?.event?.name || null}
+            promoRules={promoRules}
             headerActions={
               barcodeTableMode ? (
                 <>

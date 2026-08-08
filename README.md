@@ -64,7 +64,9 @@ In the Supabase SQL editor, apply in order (if not already applied):
 
 1. `pos-frontend/supabase/schema.sql` (base schema + RLS)
 2. Any `pos-frontend/supabase/migrate_*.sql` files you have not run yet  
-   (day-end till lock, branch open hour, price change history, products per branch, etc.)
+   (day-end till lock, branch open hour, price change history, products per branch, perf indexes on hot tables, multi-active promos + per-line promo attribution, VAT breakdown, realtime, promo auto-expire, etc.)
+   - `migrate_enable_realtime.sql` also requires Realtime to be enabled for the project in the Supabase dashboard (on by default) — it just adds tables to the publication.
+   - `migrate_perf_indexes_hot_tables.sql` uses `CREATE INDEX CONCURRENTLY`, which cannot run inside a transaction block — if your SQL editor wraps the whole file in one, run each `create index` statement individually.
 
 Confirm **Row Level Security** is enabled on all app tables. Never put the **service role** key in the frontend or in Cloudflare Pages env vars for this app — only the **publishable/anon** key.
 

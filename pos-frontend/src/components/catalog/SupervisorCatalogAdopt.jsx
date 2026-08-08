@@ -20,6 +20,7 @@ import {
   bootstrapBranchData,
   fetchCatalogProducts,
   hasSupabase,
+  updateProductRow,
 } from '../../lib/api'
 import { useAuthStore, useProductStore } from '../../stores/posStore'
 import { money, qty } from '../../utils/format'
@@ -48,6 +49,7 @@ export default function SupervisorCatalogAdopt() {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [discountBusyId, setDiscountBusyId] = useState(null)
 
   const [showAdd, setShowAdd] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
@@ -181,6 +183,40 @@ export default function SupervisorCatalogAdopt() {
     }
   }
 
+  // Edits this branch's own product (products table) — not the shared network
+  // catalog template. Toggling "Discountable" in the network catalog only sets
+  // the default for future adoptions, it does not change items already adopted.
+  const toggleDiscountable = async (product) => {
+    setDiscountBusyId(product.id)
+    setError('')
+    const next = !product.discountEligible
+    try {
+      await updateProductRow(
+        product.id,
+        {
+          name: product.name,
+          sku: product.sku,
+          barcode: product.barcode,
+          category: product.category,
+          menuKind: product.menuKind,
+          pricingMode: product.pricingMode,
+          price: product.price,
+          budgetPrice: product.budgetPrice,
+          lowStockAt: product.lowStockAt,
+          discountEligible: next,
+        },
+        { branchId: user.branchId, staffId: user.id, previousPrice: product.price },
+      )
+      const updated = products.map((p) => (p.id === product.id ? { ...p, discountEligible: next } : p))
+      setProducts(updated)
+      setStoreProducts(updated)
+    } catch (err) {
+      setError(formatSupportError(err, 'CAT05'))
+    } finally {
+      setDiscountBusyId(null)
+    }
+  }
+
   if (loading && !products.length) {
     return <PageSkeleton variant="table" />
   }
@@ -272,8 +308,10 @@ export default function SupervisorCatalogAdopt() {
                 <th className="px-5 py-3">ID</th>
                 <th className="px-5 py-3">Product</th>
                 <th className="px-5 py-3">SKU</th>
+                <th className="px-5 py-3 max-[700px]:hidden">Barcode</th>
                 <th className="px-5 py-3 max-[700px]:hidden">Category</th>
                 <th className="px-5 py-3 max-[700px]:hidden">Mode</th>
+                <th className="px-5 py-3 text-center">Discountable</th>
                 <th className="px-5 py-3 text-right">Price</th>
                 <th className="px-5 py-3 text-right">On hand</th>
               </tr>
@@ -281,7 +319,7 @@ export default function SupervisorCatalogAdopt() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="p-0">
+                  <td colSpan={9} className="p-0">
                     <SkeletonRows rows={8} cols={5} />
                   </td>
                 </tr>
@@ -293,14 +331,26 @@ export default function SupervisorCatalogAdopt() {
                   </td>
                   <td className="px-5 py-3">
                     <strong className="block text-brand-ink">{product.name}</strong>
-                    <small className="text-[10px] text-brand-subtle">{product.barcode}</small>
-                    <div className="text-[10px] text-brand-subtle">
-                      Discountable: {product.discountEligible ? 'Yes' : 'No'}
-                    </div>
                   </td>
                   <td className="px-5 py-3">{product.sku}</td>
+                  <td className="px-5 py-3 max-[700px]:hidden">{product.barcode || '—'}</td>
                   <td className="px-5 py-3 max-[700px]:hidden">{product.category}</td>
                   <td className="px-5 py-3 max-[700px]:hidden">{product.pricingMode}</td>
+                  <td className="px-5 py-3 text-center">
+                    <button
+                      type="button"
+                      className={`rounded-full px-2 py-1 text-[10px] font-bold disabled:opacity-50 ${
+                        product.discountEligible
+                          ? 'bg-brand-success-bg text-brand-success-text'
+                          : 'bg-[#eceee9] text-brand-subtle'
+                      }`}
+                      disabled={discountBusyId === product.id}
+                      onClick={() => toggleDiscountable(product)}
+                      title="Toggle PWD/Senior discount eligibility for this branch's product"
+                    >
+                      {discountBusyId === product.id ? '…' : product.discountEligible ? 'Yes' : 'No'}
+                    </button>
+                  </td>
                   <td className="px-5 py-3 text-right tabular-nums font-bold text-brand-ink">
                     {money(product.price)}
                   </td>
@@ -318,7 +368,7 @@ export default function SupervisorCatalogAdopt() {
             </div>
           )}
         </div>
-        {!loading && filtered.length > 0 && (
+        {!loading && pageCount > 1 && (
           <Pager
             page={pageIndex + 1}
             pageCount={pageCount}

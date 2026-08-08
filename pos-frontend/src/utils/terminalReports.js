@@ -165,9 +165,19 @@ export function buildTerminalReportData({
     const vatRow = Number(t.vat_amount ?? t.vatAmount ?? 0)
     return s + (vatRow ? Number((vatRow / 0.12).toFixed(2)) : 0)
   }, 0)
-  const nonTaxable = Math.max(0, Number((dailySales - taxable - vat).toFixed(2)))
+  // VAT-Exempt + Zero-Rated Sales, tracked directly (migrate_vat_breakdown.sql) rather than
+  // guessed as a residual. Rows from before that migration default these to 0 — their exempt
+  // portion (if any) was, under the pre-fix formula, already folded into taxable/vat instead;
+  // this only affects historical report accuracy for date ranges spanning the migration.
+  const exemptSales = completed.reduce((s, t) => s + Number(t.vat_exempt_sales ?? t.vatExemptSales ?? 0), 0)
+  const zeroRatedSales = completed.reduce((s, t) => s + Number(t.zero_rated_sales ?? t.zeroRatedSales ?? 0), 0)
+  const nonTaxable = Number((exemptSales + zeroRatedSales).toFixed(2))
 
   const seniorDisc = completed.reduce((s, t) => {
+    // sc_pwd_discount is the correctly-computed figure (20% of the VAT-exclusive base);
+    // fall back to the old discount_type match for rows from before that column existed.
+    const scPwd = Number(t.sc_pwd_discount ?? t.scPwdDiscount ?? 0)
+    if (scPwd > 0) return s + scPwd
     const typ = t.discount_type || t.discountType
     if (typ === 'senior' || typ === 'pwd') return s + Number(t.discount_amount ?? t.discountAmount ?? 0)
     return s

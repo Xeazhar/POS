@@ -9,7 +9,6 @@ const empty = {
   address: '',
   is_active: true,
   branch_type: 'retail',
-  vat_rate: 0.12,
 }
 
 function ManagerBranches() {
@@ -28,7 +27,6 @@ function ManagerBranches() {
           name: 'Bayombong Branch #001',
           address: 'Bayombong',
           is_active: true,
-          vat_rate: 0.12,
         },
       ])
       setSummaries({ 'demo-main-branch': { revenue: 0, orders: 0, lowStock: 0 } })
@@ -169,7 +167,6 @@ function ManagerBranches() {
                   address: form.address,
                   is_active: form.is_active,
                   branch_type: form.branch_type || 'retail',
-                  vat_rate: form.vat_rate != null ? Number(form.vat_rate) : 0.12,
                 })
                 setForm(null)
                 await reload()
@@ -199,12 +196,6 @@ function ManagerBranches() {
                 <option value="retail">Retail / grocery</option>
                 <option value="restaurant">Restaurant / carinderia</option>
               </SelectField>
-              <Field
-                label="VAT rate (e.g. 0.12)"
-                value={form.vat_rate ?? 0.12}
-                onChange={(e) => setForm({ ...form, vat_rate: e.target.value })}
-                inputMode="decimal"
-              />
               <label className="flex items-center gap-2 text-xs font-bold text-[#646a66]">
                 <input
                   type="checkbox"

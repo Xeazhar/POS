@@ -34,6 +34,7 @@ export const ERROR_CATALOG = {
 
   SYNC01: 'Branch sync failed.',
   SYNC02: 'Could not load branch data.',
+  SYNC09: 'Records could not sync after repeated attempts — saved on this device only.',
 
   DATA01: 'Import failed.',
   DATA02: 'Could not add product.',

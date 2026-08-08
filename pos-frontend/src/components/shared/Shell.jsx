@@ -10,7 +10,8 @@ import {
   heartbeatStaffSession,
   recordChangeFund,
 } from '../../lib/api'
-import { useAuthStore, useInventoryStore } from '../../stores/posStore'
+import { useAppVersion } from '../../hooks/useAppVersion'
+import { useAuthStore, useCartStore, useInventoryStore } from '../../stores/posStore'
 import { useSyncStore } from '../../stores/syncStore'
 import { formatSyncError } from '../../utils/errors'
 import { isManagerRole, usesPinLogin } from '../../utils/roles'
@@ -98,6 +99,7 @@ function Shell({ children }) {
   const pending = useSyncStore((state) => state.pending)
   const status = useSyncStore((state) => state.status)
   const lastError = useSyncStore((state) => state.lastError)
+  const blockedOps = useSyncStore((state) => state.blocked)
   const navigate = useNavigate()
   const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -116,6 +118,12 @@ function Shell({ children }) {
   const isPosPage = location.pathname === '/pos'
   const idleTimerRef = useRef(null)
   const showSyncBanner = sync.isError && lastError && !syncBannerDismissed
+  // A reload mid-sale would throw away the cashier's cart, and unsynced local writes
+  // still need this tab alive to push them — so only auto-refresh when neither is true.
+  const cartItemCount = useCartStore((state) => state.items.length)
+  const { updateReady, reload } = useAppVersion({
+    safeToReload: cartItemCount === 0 && !pending && !logoutPrompt,
+  })
 
   useEffect(() => {
     // New sync error → show banner again
@@ -537,6 +545,58 @@ function Shell({ children }) {
             isPosPage ? 'flex flex-col overflow-hidden' : 'overflow-auto'
           }`}
         >
+          {/* Not dismissible, and deliberately louder than the sync banner: each blocked
+              item is a completed sale that never reached Supabase. Staying quiet about that
+              is how a day's fiscal records go missing without anyone noticing. */}
+          {blockedOps > 0 && (
+            <div
+              role="alert"
+              className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-[10px] border-2 border-brand-danger bg-brand-danger-bg px-3.5 py-3"
+            >
+              <p className="m-0 min-w-0 text-xs leading-snug text-brand-danger">
+                <strong>
+                  {blockedOps} record{blockedOps === 1 ? '' : 's'} could not sync — needs attention.
+                </strong>{' '}
+                <span>
+                  These sales are saved on this device only and are NOT on the server. Do not clear
+                  this browser&apos;s data. Contact support with code SYNC09.
+                </span>
+              </p>
+              <button
+                type="button"
+                className="shrink-0 rounded-[5px] border border-brand-danger bg-white px-2.5 py-1.5 text-[11px] font-bold text-brand-danger"
+                onClick={async () => {
+                  const { retryBlocked } = await import('../../offline/syncQueue')
+                  await retryBlocked(user?.branchId || null)
+                  const { syncBranch } = await import('../../offline')
+                  if (user?.branchId) await syncBranch(user.branchId)
+                  await useSyncStore.getState().refresh(user?.branchId)
+                }}
+              >
+                Retry now
+              </button>
+            </div>
+          )}
+          {updateReady && (
+            <div
+              role="status"
+              className="mb-3 flex shrink-0 items-center justify-between gap-3 rounded-[10px] border border-brand-gold/50 bg-brand-gold/10 px-3.5 py-2.5 text-left"
+            >
+              <p className="m-0 min-w-0 text-xs leading-snug text-brand-ink">
+                <strong>Update available.</strong>{' '}
+                <span className="text-brand-muted">
+                  A newer version of CalePOS has been released — refresh to get it.
+                </span>
+              </p>
+              <button
+                type="button"
+                className="shrink-0 rounded-[5px] border border-brand-dark bg-brand-dark px-2.5 py-1.5 text-[11px] font-bold text-white"
+                onClick={reload}
+              >
+                Refresh now
+              </button>
+            </div>
+          )}
           {showSyncBanner && (
             <div
               role="alert"

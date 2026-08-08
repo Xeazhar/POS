@@ -5,10 +5,12 @@ export const useSyncStore = create((set) => ({
   online: typeof navigator === 'undefined' ? true : navigator.onLine,
   status: 'idle',
   pending: 0,
+  /** Ops quarantined after repeated push failures — real sales that never reached the server. */
+  blocked: 0,
   lastError: null,
   refresh: async (branchId) => {
     const snap = await getSyncStatus(branchId)
-    set({ online: snap.online, pending: snap.pending })
+    set({ online: snap.online, pending: snap.pending, blocked: snap.blocked || 0 })
   },
 }))
 
@@ -21,6 +23,7 @@ export function bindSyncStore() {
       online: state.online ?? useSyncStore.getState().online,
       status: state.status || 'idle',
       pending: state.pending ?? useSyncStore.getState().pending,
+      blocked: state.blocked ?? useSyncStore.getState().blocked,
       lastError: state.lastError ?? null,
     })
   })

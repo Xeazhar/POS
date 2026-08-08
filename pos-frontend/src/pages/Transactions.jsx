@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { FiSearch } from 'react-icons/fi'
 import TransactionDetailModal from '../components/transactions/TransactionDetailModal'
 import SupervisorApprove from '../components/shared/SupervisorApprove'
@@ -8,6 +8,7 @@ import {
   ModalActions,
   PageHeader,
   PageSkeleton,
+  Pager,
   SearchBox,
   SecondaryButton,
   SkeletonRows,
@@ -47,6 +48,7 @@ function txnSortTime(item) {
 }
 
 const PAY_LABEL = { cash: 'Cash', card: 'Card', ewallet: 'E-wallet' }
+const PAGE_SIZE = 10
 const REFUND_REASONS = ['Wrong item', 'Customer changed mind', 'Damaged', 'Other']
 
 const filterSelectClass =
@@ -67,6 +69,7 @@ function Transactions() {
   const [payFilter, setPayFilter] = useState('all')
   const [discountFilter, setDiscountFilter] = useState('all') // all | promo | pwd | none
   const [sortBy, setSortBy] = useState('newest')
+  const [page, setPage] = useState(0)
   const [refunding, setRefunding] = useState(null) // txn summary or detail
   const [refundMode, setRefundMode] = useState(null) // 'full' | 'items' | null
   const [refundLines, setRefundLines] = useState([]) // detail lines with refund qty
@@ -111,6 +114,14 @@ function Transactions() {
     })
     return rows
   }, [transactions, query, statusFilter, payFilter, discountFilter, dateFilter, dateValue, sortBy, dayOpenHour, user?.role, cashierDay])
+
+  useEffect(() => {
+    setPage(0)
+  }, [query, statusFilter, payFilter, discountFilter, dateFilter, dateValue, sortBy])
+
+  const pageCount = Math.max(1, Math.ceil(list.length / PAGE_SIZE))
+  const pageIndex = Math.min(page, pageCount - 1)
+  const pageRows = list.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
 
   const openDetail = async (item) => {
     setError('')
@@ -366,7 +377,7 @@ function Transactions() {
         {productsLoading ? (
           <SkeletonRows rows={8} cols={5} />
         ) : (
-        list.map((item) => (
+        pageRows.map((item) => (
           <div
             key={item.id}
             role="button"
@@ -431,6 +442,16 @@ function Transactions() {
         )}
         {!productsLoading && list.length === 0 && (
           <div className="px-5 py-8 text-xs text-brand-subtle">No transactions match these filters.</div>
+        )}
+        {!productsLoading && pageCount > 1 && (
+          <Pager
+            page={pageIndex + 1}
+            pageCount={pageCount}
+            total={list.length}
+            label="transactions"
+            onPrev={() => setPage((p) => Math.max(0, p - 1))}
+            onNext={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+          />
         )}
       </TableCard>
 

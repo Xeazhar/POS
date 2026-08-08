@@ -40,8 +40,9 @@ export function staffLinksFor(user) {
 
   return base.filter(([path, , , moduleId]) => {
     if (!canAccessModule(user, moduleId)) return false
-    // Managers/master already have Shifts under manager nav
-    if (moduleId === 'shifts' && isManagerRole(user.role)) return false
+    // Managers already get these under the manager nav below (avoid duplicate tabs) —
+    // shifts/promos share a moduleId with their manager-nav counterpart.
+    if ((moduleId === 'shifts' || moduleId === 'manager_promos') && isManagerRole(user.role)) return false
     return true
   })
 }
@@ -57,6 +58,10 @@ export const managerLinks = [
 ]
 
 export function managerLinksFor(user) {
+  // This is the manager-nav section specifically — supervisors reach the same
+  // pages (shifts, promos) through their staff-nav paths (/shifts, /promos)
+  // above, not through /manager/*, even though they share a moduleId.
+  if (!isManagerRole(user?.role)) return []
   return managerLinks.filter(([, , , moduleId]) => canAccessModule(user, moduleId))
 }
 

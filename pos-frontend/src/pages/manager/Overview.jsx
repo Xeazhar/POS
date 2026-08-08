@@ -23,6 +23,8 @@ function ManagerOverview() {
   const [linePoints, setLinePoints] = useState([])
   const [branchBars, setBranchBars] = useState([])
   const [paymentMix, setPaymentMix] = useState([])
+  const [topProducts, setTopProducts] = useState([])
+  const [topCategories, setTopCategories] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -64,6 +66,15 @@ function ManagerOverview() {
             { id: 'card', label: 'Card', value: 22 },
             { id: 'ewallet', label: 'E-wallet', value: 16 },
           ])
+          setTopProducts([
+            { category: 'Bangus (kg)', value: 34 },
+            { category: 'Iced Tea', value: 22 },
+          ])
+          setTopCategories([
+            { category: 'Meat', value: 40 },
+            { category: 'Drinks', value: 22 },
+            { category: 'Groceries', value: 18 },
+          ])
           setLoading(false)
           return
         }
@@ -86,6 +97,8 @@ function ManagerOverview() {
             : rows.map((b) => ({ category: b.name, value: next[b.id]?.revenue || 0 })),
         )
         setPaymentMix(charts.paymentMix || [])
+        setTopProducts(charts.topProducts || [])
+        setTopCategories(charts.topCategories || [])
         setLoading(false)
       })
       .catch((err) => {
@@ -159,6 +172,19 @@ function ManagerOverview() {
         <RevenueChart points={linePoints} period={`Network - ${periodLabel}`} />
         <PaymentMethodPie mix={paymentMix} subtitle={`${periodLabel} · PHP`} />
         <SalesMixBar mix={branchBars} title="Revenue by branch" subtitle={`${periodLabel} - PHP`} />
+      </div>
+
+      <div className="mb-4 grid grid-cols-2 items-stretch gap-3.5 max-[900px]:grid-cols-1">
+        <SalesMixBar
+          mix={topProducts}
+          title="Top products"
+          subtitle={`Network-wide · ${periodLabel} · PHP`}
+        />
+        <SalesMixBar
+          mix={topCategories}
+          title="Top categories"
+          subtitle={`Network-wide · ${periodLabel} · PHP`}
+        />
       </div>
 
       <TableCard>

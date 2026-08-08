@@ -6,7 +6,14 @@ import { money, qty } from './format'
  */
 export function buildReceipt({ branch = {}, transaction = {}, lines = [], user = {} }) {
   const businessName = branch.business_name || branch.name || 'CalePOS Store'
-  const orNumber = transaction.orNumber || transaction.or_number || transaction.id
+  // The real OR number is allocated server-side (allocate_or_number) once the sale reaches
+  // Supabase, which can be moments after this receipt prints (offline-first: local-first
+  // write, sync happens in the background). Until then, transaction.id is only the local
+  // client id (e.g. "txn_83abe93d-…") — show that plainly as pending rather than printing
+  // the raw id as if it were the OR number.
+  const rawOrNumber = transaction.orNumber || transaction.or_number || null
+  const isPendingOr = !rawOrNumber
+  const orNumber = rawOrNumber || 'PENDING'
   return {
     header: {
       businessName,
@@ -18,8 +25,13 @@ export function buildReceipt({ branch = {}, transaction = {}, lines = [], user =
       serialNumber: branch.serial_number || branch.serialNumber || '',
     },
     document: {
-      title: 'OFFICIAL RECEIPT',
+      // EOPT Act (RA 11976) + RR 7-2024: the primary sales document is now an INVOICE, not an
+      // "Official Receipt" — an OR is only a supplementary payment acknowledgment and is no
+      // longer valid proof of sale. Printing "Official Receipt" as the primary document is one
+      // of the most common post-EOPT compliance mistakes.
+      title: 'SALES INVOICE',
       orNumber,
+      isPendingOr,
       dateTime: transaction.createdAt || transaction.time || new Date().toISOString(),
       cashier: transaction.cashier || user.name || 'Staff',
       status: transaction.status || 'Paid',
@@ -29,6 +41,7 @@ export function buildReceipt({ branch = {}, transaction = {}, lines = [], user =
       const amount = line.quantity ?? (line.pricingMode === 'kg' ? line.weight : line.quantity)
       const unitPrice = line.unitPrice ?? line.price
       const lineTotal = line.lineTotal ?? unitPrice * amount
+      const netLineTotal = Number(line.netLineTotal ?? lineTotal)
       return {
         name: line.name,
         sku: line.sku || '',
@@ -37,7 +50,12 @@ export function buildReceipt({ branch = {}, transaction = {}, lines = [], user =
         unitPrice,
         lineTotal,
         discountAmount: Number(line.discountAmount ?? 0),
-        netLineTotal: Number(line.netLineTotal ?? lineTotal),
+        netLineTotal,
+        // Derived from the net line, not unitPrice − discount/qty: on a VAT-exempt
+        // SC/PWD line the VAT strip is part of the reduction but is not a discount,
+        // so the subtraction form prints a unit price that doesn't match the amount.
+        netUnitPrice: Number((netLineTotal / Math.max(1, Number(amount) || 1)).toFixed(2)),
+        vatCategory: line.vatCategory || null,
       }
     }),
     totals: {
@@ -55,12 +73,22 @@ export function buildReceipt({ branch = {}, transaction = {}, lines = [], user =
       })(),
       vatAmount: Number(transaction.vatAmount ?? transaction.vat_amount ?? 0),
       vatableSales: Number(transaction.vatableSales ?? transaction.vatable_sales ?? 0),
+      vatExemptSales: Number(transaction.vatExemptSales ?? transaction.vat_exempt_sales ?? 0),
+      zeroRatedSales: Number(transaction.zeroRatedSales ?? transaction.zero_rated_sales ?? 0),
+      scPwdDiscount: Number(transaction.scPwdDiscount ?? transaction.sc_pwd_discount ?? 0),
+      totalSales: Number(
+        transaction.totalSales ??
+          Number(transaction.vatableSales ?? transaction.vatable_sales ?? 0) +
+            Number(transaction.vatAmount ?? transaction.vat_amount ?? 0) +
+            Number(transaction.vatExemptSales ?? transaction.vat_exempt_sales ?? 0) +
+            Number(transaction.zeroRatedSales ?? transaction.zero_rated_sales ?? 0),
+      ),
       discountAmount: Number(transaction.discountAmount ?? transaction.discount_amount ?? 0),
       discountType: transaction.discountType || transaction.discount_type || null,
       discountIdNote: transaction.discountIdNote || transaction.discount_id_note || null,
     },
     footer: {
-      note: 'This document is computer-generated. Keep for your records.',
+      note: 'This document is system-generated. Keep for your records. POS Software: CalePOS.',
       thankYou: 'Thank you for your purchase.',
     },
   }
@@ -83,22 +111,16 @@ export function receiptToHtml(receipt) {
                 } -${money(line.discountAmount)}</div>`
               : ''
           }
+          ${line.vatCategory === 'exempt' ? '<div class="muted">VAT-EXEMPT</div>' : ''}
         </td>
         <td class="num">${qty(line.qty, line.unit)}</td>
         <td class="num">${
-          line.discountAmount > 0
-            ? `<div class="muted strike">${money(line.unitPrice)}</div>${money(
-                Number(
-                  (
-                    line.unitPrice -
-                    line.discountAmount / Math.max(1, Number(line.qty) || 1)
-                  ).toFixed(2),
-                ),
-              )}`
+          line.netLineTotal < line.lineTotal
+            ? `<div class="muted strike">${money(line.unitPrice)}</div>${money(line.netUnitPrice)}`
             : money(line.unitPrice)
         }</td>
         <td class="num">${
-          line.discountAmount > 0
+          line.netLineTotal < line.lineTotal
             ? `<div class="muted strike">${money(line.lineTotal)}</div>${money(line.netLineTotal)}`
             : money(line.lineTotal)
         }</td>
@@ -135,11 +157,12 @@ export function receiptToHtml(receipt) {
     <div class="center muted">${escapeHtml(h.branchName)}</div>
     <div class="center muted">${escapeHtml(h.address)}</div>
     <div class="center muted">TIN: ${escapeHtml(h.tin || '—')}</div>
+    <div class="center muted" style="font-weight:bold;">VAT REG TIN</div>
     <div class="center muted">Permit: ${escapeHtml(h.birPermitNo || '—')}</div>
     <div class="center muted">MIN: ${escapeHtml(h.machineId || '—')} · SN: ${escapeHtml(h.serialNumber || '—')}</div>
     <div class="rule"></div>
     <div class="center"><strong>${escapeHtml(d.title)}</strong></div>
-    <div>OR No: <strong>${escapeHtml(String(d.orNumber))}</strong></div>
+    <div>Invoice No: <strong>${escapeHtml(String(d.orNumber))}</strong>${d.isPendingOr ? ' <span class="muted">(assigns on sync)</span>' : ''}</div>
     <div>Date: ${escapeHtml(formatReceiptDate(d.dateTime))}</div>
     <div>Cashier: ${escapeHtml(d.cashier)}</div>
     <div>Status: ${escapeHtml(d.status)}${d.voidReason ? ` (${escapeHtml(d.voidReason)})` : ''}</div>
@@ -152,14 +175,19 @@ export function receiptToHtml(receipt) {
     </table>
     <div class="rule"></div>
     <table class="totals">
-      ${t.discountAmount > 0 ? `<tr><td>Discount${t.discountType ? ` (${escapeHtml(t.discountType)})` : ''}</td><td class="num">-${money(t.discountAmount)}</td></tr>` : ''}
-      ${t.vatableSales > 0 ? `<tr><td>VATable Sales</td><td class="num">${money(t.vatableSales)}</td></tr>` : ''}
-      ${t.vatAmount > 0 ? `<tr><td>VAT</td><td class="num">${money(t.vatAmount)}</td></tr>` : ''}
-      <tr><td>TOTAL</td><td class="num"><strong>${money(t.total)}</strong></td></tr>
-      ${t.tendered != null && (transactionPaymentIsCash(t.payment)) ? `<tr><td>Cash</td><td class="num">${money(t.tendered)}</td></tr>` : ''}
+      <tr><td>VATable Sales</td><td class="num">${money(t.vatableSales)}</td></tr>
+      <tr><td>VAT-Exempt Sales</td><td class="num">${money(t.vatExemptSales)}</td></tr>
+      <tr><td>Zero-Rated Sales</td><td class="num">${money(t.zeroRatedSales)}</td></tr>
+      <tr><td>VAT Amount</td><td class="num">${money(t.vatAmount)}</td></tr>
+      <tr><td colspan="2"><div class="rule"></div></td></tr>
+      <tr><td>Total Sales</td><td class="num">${money(t.totalSales)}</td></tr>
+      <tr><td>Less: SC/PWD Discount</td><td class="num">-${money(t.scPwdDiscount)}</td></tr>
+      <tr><td colspan="2"><div class="rule"></div></td></tr>
+      <tr><td>TOTAL AMOUNT DUE</td><td class="num"><strong>${money(t.total)}</strong></td></tr>
+      ${t.tendered != null && (transactionPaymentIsCash(t.payment)) ? `<tr><td>Cash Tendered</td><td class="num">${money(t.tendered)}</td></tr>` : ''}
       ${t.change != null && transactionPaymentIsCash(t.payment) ? `<tr><td>Change</td><td class="num">${money(t.change)}</td></tr>` : ''}
       <tr><td>Payment</td><td class="num">${escapeHtml(t.payment)}</td></tr>
-      ${t.discountIdNote ? `<tr><td>ID</td><td class="num">${escapeHtml(t.discountIdNote)}</td></tr>` : ''}
+      ${t.discountIdNote ? `<tr><td>SC/PWD ID No.</td><td class="num">${escapeHtml(t.discountIdNote)}</td></tr>` : ''}
     </table>
     <div class="rule"></div>
     <div class="center muted">${escapeHtml(receipt.footer.thankYou)}</div>
