@@ -26,8 +26,17 @@ export const APP_VERSION =
 
 export const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : null
 
-/** "v1.2.0" — the form shown in the UI. */
+/** "v0.2.0" — the form shown in the UI. */
 export const APP_VERSION_LABEL = `v${APP_VERSION}`
+
+/**
+ * Pre-release: still in testing, not yet trusted for live trading.
+ *
+ * Derived from the version rather than a separate flag, so it cannot be left switched on
+ * (or off) by mistake — cutting 1.0.0 removes the "in development" markers everywhere by
+ * itself. Standard semver: 0.x means anything may still change.
+ */
+export const IS_PRERELEASE = /^0\./.test(String(APP_VERSION))
 
 /** "v1.2.0 · built 8 Aug 2026, 14:03" — for the About/support tooltip. */
 export function buildStamp() {

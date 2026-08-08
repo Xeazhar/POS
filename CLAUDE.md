@@ -55,6 +55,12 @@ Rule of thumb enforced throughout the codebase: UI/pages never call Supabase dir
 
 ## Versioning (required on every commit)
 
+**The project is pre-1.0 (in testing, not live).** While the version starts with `0.`,
+`IS_PRERELEASE` in `src/utils/version.js` is true and the app shows "In development / Not
+for live sales" on the login screen and in the sidebar. This is derived from the version,
+not a separate flag — cutting `1.0.0` removes both markers automatically. Do not bump to
+1.0.0 until the system is trusted to handle real money.
+
 `pos-frontend/package.json` `version` is the **single source of truth**. `vite.config.js`
 bakes it into the bundle (`__APP_VERSION__`), `src/utils/version.js` exposes it, the Shell
 sidebar shows it as `vX.Y.Z`, and `audit_events.app_version` records it. Never hardcode a

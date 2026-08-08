@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { hardReload } from '../utils/hardReload'
 
 /**
  * Detect that a newer build has been deployed while this tab stayed open.
@@ -65,15 +66,17 @@ export function useAppVersion({ safeToReload = true, autoReload = true } = {}) {
     }
   }, [check])
 
+  // Must be a HARD reload: the service worker would otherwise serve the same cached
+  // bundle back and the banner would reappear forever. See utils/hardReload.js.
   const reload = useCallback(() => {
-    window.location.reload()
+    void hardReload({ online: typeof navigator === 'undefined' ? true : navigator.onLine })
   }, [])
 
   // Auto-reload only when nothing would be lost — otherwise the banner waits for a tap.
   useEffect(() => {
     if (!updateReady || !autoReload || !safeRef.current) return undefined
     const t = window.setTimeout(() => {
-      if (safeRef.current) window.location.reload()
+      if (safeRef.current) void hardReload({ online: navigator.onLine })
     }, 3000)
     return () => window.clearTimeout(t)
   }, [updateReady, autoReload, safeToReload])

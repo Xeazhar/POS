@@ -4,6 +4,12 @@ Versions shown in the app's sidebar (`vX.Y.Z`). Source of truth is `package.json
 bump it there and nowhere else; the UI, the bundle, and `audit_events.app_version`
 all read from it.
 
+**Currently pre-1.0: still in testing, not deployed for live trading.** While the version
+starts with `0.`, the app shows an "In development / Not for live sales" marker on the login
+screen and in the sidebar. Both disappear automatically at `1.0.0` — they key off the
+version number, not a flag anyone has to remember to switch off. Cut `1.0.0` only when the
+system is genuinely trusted to take real money.
+
 **MAJOR** — staff need retraining, or fiscal output changes (receipt format, tax
 computation, OR numbering).
 **MINOR** — new capability, existing behaviour unchanged.
@@ -11,7 +17,7 @@ computation, OR numbering).
 
 ---
 
-## 1.1.1 — 2026-08-08
+## 0.2.1 — 2026-08-08
 
 ### Changed
 
@@ -29,7 +35,7 @@ computation, OR numbering).
 
 ---
 
-## 1.1.0 — 2026-08-08
+## 0.2.0 — 2026-08-08
 
 ### Fixed — critical
 
@@ -70,6 +76,6 @@ computation, OR numbering).
 
 ---
 
-## 1.0.0
+## 0.1.0
 
-Initial release.
+First working build.

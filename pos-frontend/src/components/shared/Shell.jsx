@@ -16,7 +16,8 @@ import { useSyncStore } from '../../stores/syncStore'
 import { formatSyncError } from '../../utils/errors'
 import { isManagerRole, usesPinLogin } from '../../utils/roles'
 import { businessDate } from '../../utils/format'
-import { APP_VERSION_LABEL, buildStamp } from '../../utils/version'
+import { APP_VERSION_LABEL, IS_PRERELEASE, buildStamp } from '../../utils/version'
+import { hardReload } from '../../utils/hardReload'
 import { decimalOnly } from '../../utils/validate'
 import { Eyebrow, Field, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
 import Clock from './Clock'
@@ -500,8 +501,8 @@ function Shell({ children }) {
           <button
             type="button"
             className="mt-2 flex w-full flex-col items-center gap-1 rounded-lg border-0 bg-transparent px-1 py-2 text-[#a8aeaa] hover:bg-white/5 hover:text-white"
-            title="Refresh page"
-            onClick={() => window.location.reload()}
+            title="Refresh — clears cached app files and loads the newest version"
+            onClick={() => void hardReload({ online })}
           >
             <FiRefreshCw className="text-base" />
             <span className="text-[9px] font-bold">Refresh</span>
@@ -547,6 +548,18 @@ function Shell({ children }) {
           >
             {APP_VERSION_LABEL}
           </div>
+          {/* Pre-1.0 = still under test. Deliberately hard to miss: someone must never
+              mistake this for a finished system and trade on it unsupervised. Disappears
+              on its own at 1.0.0 — it keys off the version, not a flag someone must
+              remember to flip. */}
+          {IS_PRERELEASE && (
+            <div className="mt-1 rounded-[4px] bg-brand-warn-bg px-1.5 py-1 text-center text-[8px] leading-tight font-bold tracking-wide text-brand-warn uppercase">
+              In development
+              <span className="mt-0.5 block font-normal normal-case tracking-normal">
+                Not for live sales
+              </span>
+            </div>
+          )}
         </aside>
 
         <section
