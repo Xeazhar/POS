@@ -17,6 +17,29 @@ computation, OR numbering).
 
 ---
 
+## 0.3.1 — 2026-08-08
+
+### Fixed
+
+- **"Discountable" showing Yes in the catalog but refused at the till, again.** The previous
+  repair reconnected products to their catalog entries but never copied the setting itself
+  down, so anything switched on before that fix stayed out of step. Run
+  `migrate_sync_discount_eligible.sql` once to reconcile every item. There is now also a
+  **Re-sync discountable to branches** button on Manager → Data so this never needs a
+  database console again.
+
+### Changed
+
+- **Selection boxes only appear when you ask for them.** Manager → Data now has *Bulk edit:
+  Discountable / Prices* beside the filters. Pick one and the tick-boxes appear; press Done
+  and the table goes back to normal.
+- **Bulk price editing.** Tick the products, press Edit prices, and set each one
+  individually in a single table, then save. Only changed rows are written.
+- More catalog filters: **Discountable** (all / only / not) and, for retail,
+  **Barcode** (all / has / missing) for spotting items that cannot be scanned.
+
+---
+
 ## 0.3.0 — 2026-08-08
 
 ### Added

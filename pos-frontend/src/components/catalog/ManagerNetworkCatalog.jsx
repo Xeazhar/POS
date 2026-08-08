@@ -19,6 +19,7 @@ import {
 } from '../ui'
 import {
   cascadeDiscountEligibleToBranches,
+  resyncDiscountEligibleToBranches,
   commitCatalogImport,
   createCatalogProduct,
   fetchCatalogProducts,
@@ -83,8 +84,16 @@ export default function ManagerNetworkCatalog() {
   const [priceValue, setPriceValue] = useState('')
   const [discountEdit, setDiscountEdit] = useState(null)
   const [discountValue, setDiscountValue] = useState(false)
+  // null = normal browsing (no checkboxes). 'discount' | 'price' = bulk editing.
+  // Checkboxes only exist inside a bulk mode so the table stays clean the rest of the time.
+  const [bulkMode, setBulkMode] = useState(null)
   const [selectedIds, setSelectedIds] = useState([])
   const [bulkProgress, setBulkProgress] = useState(null)
+  const [priceDrafts, setPriceDrafts] = useState({}) // catalogId -> price string
+  const [showPriceEditor, setShowPriceEditor] = useState(false)
+  const [discountFilter, setDiscountFilter] = useState('all')
+  const [resyncNote, setResyncNote] = useState('')
+  const [barcodeFilter, setBarcodeFilter] = useState('all')
 
   const [preview, setPreview] = useState(null)
   const [importProgress, setImportProgress] = useState(null)
@@ -114,12 +123,14 @@ export default function ManagerNetworkCatalog() {
     setPage(0)
     setCategoryFilter('All')
     setModeFilter('all')
+    setDiscountFilter('all')
+    setBarcodeFilter('all')
     setPreview(null)
   }, [branchType])
 
   useEffect(() => {
     setPage(0)
-  }, [query, categoryFilter, modeFilter])
+  }, [query, categoryFilter, modeFilter, discountFilter, barcodeFilter])
 
   const categories = useMemo(
     () => [...new Set(catalog.map((p) => p.category).filter(Boolean))].sort(),
@@ -135,9 +146,13 @@ export default function ManagerNetworkCatalog() {
       }
       if (categoryFilter !== 'All' && row.category !== categoryFilter) return false
       if (!isRestaurant && modeFilter !== 'all' && row.pricingMode !== modeFilter) return false
+      if (discountFilter === 'yes' && row.discountEligible !== true) return false
+      if (discountFilter === 'no' && row.discountEligible === true) return false
+      if (barcodeFilter === 'missing' && String(row.barcode || '').trim()) return false
+      if (barcodeFilter === 'has' && !String(row.barcode || '').trim()) return false
       return true
     })
-  }, [catalog, query, categoryFilter, modeFilter, isRestaurant])
+  }, [catalog, query, categoryFilter, modeFilter, discountFilter, barcodeFilter, isRestaurant])
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const pageIndex = Math.min(page, pageCount - 1)
@@ -346,6 +361,79 @@ export default function ManagerNetworkCatalog() {
     }
   }
 
+  /**
+   * Save the per-product prices typed into the bulk price editor.
+   *
+   * Each row keeps its own value — this is not "set them all to X", which is almost never
+   * what a catalog needs. Only rows whose price actually changed are written, so opening
+   * the editor and saving without edits costs nothing.
+   */
+  const saveBulkPrices = async () => {
+    const targets = catalog.filter((row) => {
+      if (!selectedIds.includes(row.id)) return false
+      const draft = priceDrafts[row.id]
+      if (draft === undefined || draft === '') return false
+      return Number(draft) !== Number(row.price)
+    })
+    const invalid = targets.find((row) => !Number.isFinite(Number(priceDrafts[row.id])) || Number(priceDrafts[row.id]) < 0)
+    if (invalid) {
+      setError(`Enter a valid price for ${invalid.name}.`)
+      return
+    }
+    if (!targets.length) {
+      setShowPriceEditor(false)
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      for (let i = 0; i < targets.length; i += 1) {
+        const row = targets[i]
+        setBulkProgress({ done: i, total: targets.length })
+        await updateCatalogProduct(row.id, { ...row, price: Number(priceDrafts[row.id]) })
+      }
+      setShowPriceEditor(false)
+      setPriceDrafts({})
+      setSelectedIds([])
+      setBulkMode(null)
+      await reload()
+    } catch (err) {
+      setError(formatSupportError(err, 'CAT04'))
+    } finally {
+      setBulkProgress(null)
+      setBusy(false)
+    }
+  }
+
+  /**
+   * Repair pass for items whose catalog flag never reached their branch rows (toggled
+   * before the cascade existed, or while the row had no catalog link).
+   */
+  const resyncDiscountable = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      const { enabled, disabled } = await resyncDiscountEligibleToBranches()
+      setResyncNote(
+        enabled + disabled === 0
+          ? 'All branch products already match the catalog.'
+          : `Synced ${enabled + disabled} product(s) to branches (${enabled} on, ${disabled} off).`,
+      )
+      await reload()
+    } catch (err) {
+      setError(formatSupportError(err, 'CAT07'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const exitBulk = () => {
+    setBulkMode(null)
+    setSelectedIds([])
+    setPriceDrafts({})
+    setShowPriceEditor(false)
+  }
+
   if (loading && !catalog.length) {
     return <PageSkeleton variant="table" />
   }
@@ -543,31 +631,89 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
               onChange={(e) => setQuery(e.target.value.replace(/[<>]/g, ''))}
             />
           </div>
-          {selectedIds.length > 0 && (
+          {/* Bulk editing is opt-in: the checkbox column and this bar only exist once a
+              mode is chosen, so ordinary browsing of the catalog stays uncluttered. */}
+          {!bulkMode ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] text-brand-subtle">Bulk edit:</span>
+              <SecondaryButton compact type="button" onClick={() => setBulkMode('discount')}>
+                Discountable
+              </SecondaryButton>
+              <SecondaryButton compact type="button" onClick={() => setBulkMode('price')}>
+                Prices
+              </SecondaryButton>
+              <button
+                type="button"
+                className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline disabled:opacity-40"
+                disabled={busy}
+                title="Push every catalog Discountable setting down to branch products"
+                onClick={() => void resyncDiscountable()}
+              >
+                {busy ? 'Syncing…' : 'Re-sync discountable to branches'}
+              </button>
+              {resyncNote && <span className="text-[11px] text-brand-subtle">{resyncNote}</span>}
+            </div>
+          ) : (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-brand-gold/40 bg-brand-gold/10 px-3 py-2">
               <span className="text-xs font-bold text-brand-ink">
+                {bulkMode === 'price' ? 'Bulk price edit' : 'Bulk discountable'} ·{' '}
                 {selectedIds.length} selected
-                {bulkProgress ? ` · updating ${bulkProgress.done + 1}/${bulkProgress.total}…` : ''}
+                {bulkProgress ? ` · saving ${bulkProgress.done + 1}/${bulkProgress.total}…` : ''}
               </span>
               <div className="flex flex-wrap items-center gap-2">
-                <PrimaryButton compact type="button" disabled={busy} onClick={() => bulkSetDiscountable(true)}>
-                  Set discountable
-                </PrimaryButton>
-                <SecondaryButton compact type="button" disabled={busy} onClick={() => bulkSetDiscountable(false)}>
-                  Set not discountable
-                </SecondaryButton>
+                {bulkMode === 'discount' && (
+                  <>
+                    <PrimaryButton
+                      compact
+                      type="button"
+                      disabled={busy || !selectedIds.length}
+                      onClick={() => bulkSetDiscountable(true)}
+                    >
+                      Set discountable
+                    </PrimaryButton>
+                    <SecondaryButton
+                      compact
+                      type="button"
+                      disabled={busy || !selectedIds.length}
+                      onClick={() => bulkSetDiscountable(false)}
+                    >
+                      Set not discountable
+                    </SecondaryButton>
+                  </>
+                )}
+                {bulkMode === 'price' && (
+                  <PrimaryButton
+                    compact
+                    type="button"
+                    disabled={busy || !selectedIds.length}
+                    onClick={() => {
+                      // Seed each row's input with its current price so the editor opens
+                      // showing today's values, not blanks.
+                      const drafts = {}
+                      catalog
+                        .filter((r) => selectedIds.includes(r.id))
+                        .forEach((r) => {
+                          drafts[r.id] = String(r.price ?? '')
+                        })
+                      setPriceDrafts(drafts)
+                      setShowPriceEditor(true)
+                    }}
+                  >
+                    Edit {selectedIds.length || ''} price{selectedIds.length === 1 ? '' : 's'}
+                  </PrimaryButton>
+                )}
                 <button
                   type="button"
                   className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline"
                   disabled={busy}
-                  onClick={() => setSelectedIds([])}
+                  onClick={exitBulk}
                 >
-                  Clear
+                  Done
                 </button>
               </div>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <SelectField
               label="Category"
               value={categoryFilter}
@@ -591,6 +737,26 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                 <option value="kg">Per kg</option>
               </SelectField>
             )}
+            <SelectField
+              label="Discountable"
+              value={discountFilter}
+              onChange={(e) => setDiscountFilter(e.target.value)}
+            >
+              <option value="all">All items</option>
+              <option value="yes">Discountable only</option>
+              <option value="no">Not discountable</option>
+            </SelectField>
+            {!isRestaurant && (
+              <SelectField
+                label="Barcode"
+                value={barcodeFilter}
+                onChange={(e) => setBarcodeFilter(e.target.value)}
+              >
+                <option value="all">All items</option>
+                <option value="has">Has barcode</option>
+                <option value="missing">Missing barcode</option>
+              </SelectField>
+            )}
           </div>
         </div>
 
@@ -598,20 +764,22 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
           <table className="min-w-full text-left text-xs">
             <thead className="bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
               <tr>
-                <th className="w-8 px-5 py-3">
-                  <input
-                    type="checkbox"
-                    aria-label="Select all on this page"
-                    checked={pageRows.length > 0 && pageRows.every((r) => selectedIds.includes(r.id))}
-                    onChange={(e) => {
-                      const next = new Set(selectedIds)
-                      // Page-scoped, matching what the user can actually see and verify.
-                      if (e.target.checked) pageRows.forEach((r) => next.add(r.id))
-                      else pageRows.forEach((r) => next.delete(r.id))
-                      setSelectedIds([...next])
-                    }}
-                  />
-                </th>
+                {bulkMode && (
+                  <th className="w-8 px-5 py-3">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all on this page"
+                      checked={pageRows.length > 0 && pageRows.every((r) => selectedIds.includes(r.id))}
+                      onChange={(e) => {
+                        const next = new Set(selectedIds)
+                        // Page-scoped, matching what the user can actually see and verify.
+                        if (e.target.checked) pageRows.forEach((r) => next.add(r.id))
+                        else pageRows.forEach((r) => next.delete(r.id))
+                        setSelectedIds([...next])
+                      }}
+                    />
+                  </th>
+                )}
                 <th className="px-5 py-3">Product</th>
                 <th className="px-5 py-3">SKU</th>
                 <th className="px-5 py-3 max-[700px]:hidden">Barcode</th>
@@ -632,19 +800,21 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
               ) : (
               pageRows.map((row) => (
                 <tr key={row.id} className={tableRowClass}>
-                  <td className="px-5 py-3">
-                    <input
-                      type="checkbox"
-                      aria-label={`Select ${row.name}`}
-                      checked={selectedIds.includes(row.id)}
-                      onChange={(e) => {
-                        const next = new Set(selectedIds)
-                        if (e.target.checked) next.add(row.id)
-                        else next.delete(row.id)
-                        setSelectedIds([...next])
-                      }}
-                    />
-                  </td>
+                  {bulkMode && (
+                    <td className="px-5 py-3">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${row.name}`}
+                        checked={selectedIds.includes(row.id)}
+                        onChange={(e) => {
+                          const next = new Set(selectedIds)
+                          if (e.target.checked) next.add(row.id)
+                          else next.delete(row.id)
+                          setSelectedIds([...next])
+                        }}
+                      />
+                    </td>
+                  )}
                   <td className="px-5 py-3">
                     <strong className="block text-brand-ink">{row.name}</strong>
                   </td>
@@ -858,6 +1028,70 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
             </SecondaryButton>
             <PrimaryButton compact type="button" disabled={busy} onClick={savePrice}>
               {busy ? 'Saving…' : 'Save price'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {showPriceEditor && (
+        <Modal xl onClose={() => !busy && setShowPriceEditor(false)}>
+          <h2 className="m-0 pr-8 text-lg">Edit prices</h2>
+          <p className="mt-1 mb-3 text-xs text-brand-muted">
+            {selectedIds.length} selected · set each price individually, then save. Blank rows
+            are left alone. Catalog prices are the default for <strong>future</strong> adoptions —
+            a branch that already stocks the item keeps its own price.
+          </p>
+          <div className="max-h-[52vh] overflow-auto rounded border border-brand-softline">
+            <table className="min-w-full text-left text-xs">
+              <thead className="sticky top-0 bg-brand-dark text-[9px] tracking-[1px] text-[#c8ceca] uppercase">
+                <tr>
+                  <th className="px-3 py-2">Product</th>
+                  <th className="px-3 py-2">SKU</th>
+                  <th className="px-3 py-2 text-right">Current</th>
+                  <th className="px-3 py-2 text-right">New price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {catalog
+                  .filter((row) => selectedIds.includes(row.id))
+                  .map((row) => {
+                    const draft = priceDrafts[row.id] ?? ''
+                    const changed = draft !== '' && Number(draft) !== Number(row.price)
+                    return (
+                      <tr key={row.id} className="border-t border-brand-softline">
+                        <td className="px-3 py-2 font-bold text-brand-ink">{row.name}</td>
+                        <td className="px-3 py-2 text-brand-subtle">{row.sku}</td>
+                        <td className={`px-3 py-2 text-right ${changed ? 'text-brand-subtle line-through' : ''}`}>
+                          {money(row.price)}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            className={`w-28 rounded border bg-white px-2 py-1 text-right text-brand-ink outline-none ${
+                              changed ? 'border-brand-gold' : 'border-brand-line'
+                            }`}
+                            inputMode="decimal"
+                            value={draft}
+                            onChange={(e) =>
+                              setPriceDrafts((prev) => ({ ...prev, [row.id]: decimalOnly(e.target.value) }))
+                            }
+                          />
+                        </td>
+                      </tr>
+                    )
+                  })}
+              </tbody>
+            </table>
+          </div>
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={busy} onClick={() => setShowPriceEditor(false)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton compact type="button" disabled={busy} onClick={() => void saveBulkPrices()}>
+              {busy
+                ? bulkProgress
+                  ? `Saving ${bulkProgress.done + 1}/${bulkProgress.total}…`
+                  : 'Saving…'
+                : 'Save prices'}
             </PrimaryButton>
           </ModalActions>
         </Modal>

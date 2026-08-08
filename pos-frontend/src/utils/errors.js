@@ -32,6 +32,7 @@ export const ERROR_CATALOG = {
   DEV03: 'Receipt printer is disabled for this branch.',
   DEV04: 'Receipt print failed.',
 
+  CAT07: 'Could not re-sync discountable settings to branches.',
   SYNC01: 'Branch sync failed.',
   SYNC02: 'Could not load branch data.',
   SYNC09: 'Records could not sync after repeated attempts — saved on this device only.',

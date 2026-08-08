@@ -832,6 +832,67 @@ export async function cascadeDiscountEligibleToBranches(catalogProductId, discou
     .in('id', ids)
 }
 
+/**
+ * Push every catalog item's Discountable flag down to the branch products linked to it.
+ *
+ * The per-item cascade only runs when someone saves that item. Anything toggled before the
+ * cascade existed — or while a branch row had no catalog link — stays out of sync, showing
+ * "Yes" in the catalog while POS refuses the discount. This reconciles the lot in one go,
+ * which is the same thing migrate_sync_discount_eligible.sql does, exposed as a button so
+ * it does not need a SQL console.
+ *
+ * Only writes rows that actually differ, and only touches discount_eligible.
+ */
+export async function resyncDiscountEligibleToBranches() {
+  const { data: catalogRows, error: catErr } = await fetchAllRows((from, to) =>
+    supabase.from('catalog_products').select('id, sku, discount_eligible').range(from, to),
+  )
+  if (catErr) throw catErr
+
+  const { data: productRows, error: prodErr } = await fetchAllRows((from, to) =>
+    supabase.from('products').select('id, sku, catalog_product_id, discount_eligible').range(from, to),
+  )
+  if (prodErr) throw prodErr
+
+  const byId = new Map((catalogRows || []).map((c) => [c.id, c]))
+  const bySku = new Map(
+    (catalogRows || [])
+      .filter((c) => c.sku)
+      .map((c) => [String(c.sku).trim().toLowerCase(), c]),
+  )
+
+  const toEnable = []
+  const toDisable = []
+  for (const p of productRows || []) {
+    // Prefer the explicit link; fall back to SKU so unlinked rows are still reconciled.
+    const match =
+      (p.catalog_product_id && byId.get(p.catalog_product_id)) ||
+      (p.sku && bySku.get(String(p.sku).trim().toLowerCase()))
+    if (!match) continue
+    const want = match.discount_eligible === true
+    if ((p.discount_eligible === true) === want) continue
+    ;(want ? toEnable : toDisable).push(p.id)
+  }
+
+  // Two bulk updates rather than one per row — this can span thousands of products.
+  for (const [ids, value] of [
+    [toEnable, true],
+    [toDisable, false],
+  ]) {
+    for (let i = 0; i < ids.length; i += 200) {
+      const chunk = ids.slice(i, i + 200)
+      if (!chunk.length) continue
+      const { error } = await supabase
+        .from('products')
+        .update({ discount_eligible: value })
+        .in('id', chunk)
+      if (error) throw error
+    }
+  }
+
+  return { enabled: toEnable.length, disabled: toDisable.length }
+}
+
 /** Supervisor: add catalog items to this branch's sellable products + inventory. */
 export async function adoptCatalogProducts({ branchId, catalogIds, staffId }) {
   const { data, error } = await supabase.rpc('adopt_catalog_products', {
