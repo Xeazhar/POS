@@ -254,6 +254,14 @@ export const ERROR_CATALOG = {
     cause: 'The requested quantity exceeds quantity_on_hand for this branch.',
     fix: 'Count the shelf and adjust stock, or reduce the quantity.',
   },
+  INV05: {
+    message: 'Could not load the stock movement history.',
+    severity: D,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'The stock_movements read failed. Stock counts themselves are unaffected.',
+    fix: 'Retry, or narrow the date range. Selling and stock adjustments still work.',
+  },
 
   // ── CAT — shared network catalog vs. branch products ─────────────────────
   CAT01: {
@@ -427,6 +435,127 @@ export const ERROR_CATALOG = {
     fix: 'Narrow the date range and retry. Export month by month for long periods.',
   },
 
+  // ── IMP — spreadsheet import ─────────────────────────────────────────────
+  IMP01: {
+    message: 'Could not read that spreadsheet.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause:
+      'The file could not be parsed — wrong format, corrupt, or renamed to .xlsx without actually being one. Nothing was imported.',
+    fix: 'Re-export as .xlsx or .csv from the original program and try again. Keep files under 20MB.',
+  },
+  IMP02: {
+    message: 'Import failed — nothing was saved.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause:
+      'The rows were rejected during validation, so no products were written. The whole file is checked before any row is saved.',
+    fix: 'Fix the row named in the message and import the whole file again.',
+  },
+
+  // ── PETTY — cash drawer / petty cash ─────────────────────────────────────
+  PETTY01: {
+    message: 'Could not save the cash drawer entry.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause:
+      'The cash_drawer_entries write was rejected. On older databases this table is still named petty_cash.',
+    fix: 'Retry. If it keeps failing, apply migrate_rename_petty_cash_to_cash_drawer_entries.sql.',
+  },
+  PETTY02: {
+    message: 'Could not load cash drawer entries.',
+    severity: D,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'The cash drawer history read failed. Recorded entries are unaffected.',
+    fix: 'Retry. The day-end count can still be entered without this list.',
+  },
+  PETTY03: {
+    message: 'Cannot hand over cash without an approval.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause:
+      'Petty cash can only be marked as handed over once a supervisor or manager has approved it, and only once.',
+    fix: 'Get the request approved first, or refresh — it may already be marked as handed over.',
+  },
+
+  // ── SESS — active-session locks (single sign-in per staff) ───────────────
+  SESS01: {
+    message: 'Session tools are not installed on this database yet.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'The admin session functions from migrate_admin_session_release.sql are missing.',
+    fix: 'Run migrate_admin_session_release.sql in the Supabase SQL editor.',
+  },
+  SESS02: {
+    message: 'Only a master account can force someone to sign out.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause:
+      'Forcing a sign-out can eject a cashier mid-sale, so it is restricted to master accounts.',
+    fix: 'Ask a master account to clear the session, or wait 15 minutes for it to expire on its own.',
+  },
+
+  // ── PRICE — till-side price override ─────────────────────────────────────
+  PRICE01: {
+    message: 'Price override failed — the original price still applies.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'The override was rejected, usually because supervisor approval was missing or expired.',
+    fix: 'Get supervisor approval and try again. Check the price on screen before taking payment.',
+  },
+
+  // ── SHIFT — shifts, change fund, cash-out ────────────────────────────────
+  SHIFT01: {
+    message: 'Could not load or save shift records.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'The staff_shifts read or write failed.',
+    fix: 'Retry. If starting a shift will not save, note the time and your change fund on paper and tell a manager.',
+  },
+  SHIFT02: {
+    message: 'This drawer still has an open shift for another cashier.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause:
+      'One drawer holds one shift at a time — otherwise a shortage cannot be traced to whoever was actually holding the cash.',
+    fix: 'The previous cashier cashes out on this terminal. If they have gone, a supervisor counts the drawer and closes their shift.',
+  },
+  SHIFT03: {
+    message: 'Enter the counted cash amount.',
+    severity: W,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'A change fund or ending count was missing, negative, or an adjustment had no reason written.',
+    fix: 'Count the drawer and type the figure. Zero is allowed; blank is not.',
+  },
+  SHIFT04: {
+    message: 'That shift is closed — record an adjustment instead of editing it.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause:
+      'Closed shift figures are frozen, like sales records: the original count has to stay readable for BIR and for any dispute about it.',
+    fix: 'Manager → Shifts: use Adjust on that shift. The old value, the new value and your reason are all kept.',
+  },
+  SHIFT05: {
+    message: 'Only a supervisor or manager can change a shift’s cash figures.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'adjust_shift_cash() refused the caller — either the role is too low or the shift is at another branch.',
+    fix: 'Ask a supervisor at that branch, or a manager.',
+  },
+
   // ── PRINT ────────────────────────────────────────────────────────────────
   PRINT01: {
     message: 'Pop-up blocked — allow pop-ups to print receipts.',
@@ -493,12 +622,27 @@ export function errorInfo(code) {
   return ERROR_CATALOG[code] || ERROR_CATALOG.GEN01
 }
 
+/** True only for codes that actually exist — use before showing a code to staff. */
+export function isKnownErrorCode(code) {
+  return Boolean(ERROR_CATALOG[code])
+}
+
 /**
  * The "what do I do about the money right now" line for a code.
- * Empty for anything that does not touch a sale — silence is better than noise here.
+ *
+ * Resolves ONLY against codes that are actually in the catalog. It must not fall through
+ * to errorInfo()'s GEN01 default, because GEN01's saleImpact is `unknown` — so any
+ * unrecognised code (or any code-shaped token scraped out of a message) would print
+ * "the customer may be charged twice" on a failure that never involved a sale. A cashier
+ * shown that after a failed petty-cash entry has been told something false about money,
+ * which is worse than being told nothing.
+ *
+ * Silence is the right default here. GEN01 raised deliberately still gets its warning.
  */
 export function saleImpactGuidance(code) {
-  return SALE_IMPACT_GUIDANCE[errorInfo(code).saleImpact] || ''
+  const entry = ERROR_CATALOG[code]
+  if (!entry) return ''
+  return SALE_IMPACT_GUIDANCE[entry.saleImpact] || ''
 }
 
 /**

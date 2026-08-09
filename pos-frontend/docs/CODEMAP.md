@@ -15,14 +15,17 @@ Browser (Vite + React)
   │
   ├─ Shell ……………………… src/components/shared/Shell.jsx
   │     sidebar ← navLinksFor(user) ← src/constants/nav.js
-  │     logout → clockOut? → useAuthStore.logout → clear cart
+  │     shift gate → ShiftGate.jsx (useShiftStore)
+  │     logout → plain sign out; the shift stays open and resumes on next login
+  │     ending a shift lives on /day-end (cashier view) → ShiftCashOut.jsx
   │
   ├─ Pages ……………………… src/pages/*
   │     read/write Zustand stores
   │     call src/lib/api.js when online
   │
-  ├─ Zustand stores ……… src/stores/posStore.js (+ syncStore.js)
+  ├─ Zustand stores ……… src/stores/posStore.js (+ syncStore.js, shiftStore.js)
   │     useAuthStore · useCartStore · useProductStore · useInventoryStore
+  │     useShiftStore — the open cash shift for this drawer
   │
   ├─ api.js ………………… thin wrappers over Supabase client
   │     tables · RPC · Auth
@@ -98,11 +101,11 @@ When changing behavior, the usual path is:
 | `/` | `src/pages/Dashboard.jsx` or `src/pages/manager/Overview.jsx` | home depends on role |
 | `/pos` | `src/pages/POS.jsx` | cashiering, barcode mode, inquiry, promos |
 | `/transactions` | `src/pages/Transactions.jsx` | list + detail modal + refund flow |
-| `/inventory` | `src/pages/Products.jsx` | staff inventory/menu operations |
+| `/inventory` | `src/pages/Products.jsx` | staff inventory/menu operations — tabs: stock + **Movement history** |
 | `/data` | `src/pages/manager/Data.jsx` | supervisor branch catalog tools |
-| `/day-end` | `src/pages/DayEnd.jsx` | close day, petty cash, change fund, pickup |
+| `/day-end` | `src/pages/DayEnd.jsx` | **role-split**: cashier → "End shift" (own drawer only); supervisor+ → "Day end" (branch, petty approval queue, submit for closing) |
 | `/settings/devices` | `src/pages/Devices.jsx` | staff device awareness |
-| `/shifts` | `src/pages/Shifts.jsx` | staff/supervisor branch shift view |
+| `/shifts` | `src/pages/manager/Staff.jsx` | **merged Staff page** (supervisor+) — tabs: Staff roster + Shifts log |
 | `/manager/branches` | `src/pages/manager/Branches.jsx` | branch list |
 | `/manager/branches/:branchId` | `src/pages/manager/BranchDashboard.jsx` | manager branch operations dashboard |
 | `/manager/staff` | `src/pages/manager/Staff.jsx` | staff management |
@@ -264,7 +267,10 @@ Offline is a real first-class flow, not just cached reads. Many writes are:
 2. `useAuthStore.login` sets `user` (role, branchId, branchType, permissions, deviceSettings).
 3. Navigate via `staffHomePath(user)` (`nav.js`): cashiers → `/pos` (restaurant may `?menu=1`); others → first allowed nav link.
 4. `App.jsx` wraps authenticated UI in `Shell`; routes gated by `RequireModule` + role wrappers.
-5. Optional clock-in: login may set `pendingClockIn` → modal in `Shell.jsx` → `clockIn` → `staff_shifts`.
+5. Shift gate: `Shell.jsx` calls `useShiftStore.resolve(user)`, which answers from IndexedDB
+   first and refines with the server. `ready` lets work proceed; anything else renders
+   `ShiftGate.jsx` over the app. Login itself no longer decides this — see "Shifts & change
+   fund" below for why.
 
 ### Permissions
 
@@ -275,9 +281,17 @@ Offline is a real first-class flow, not just cached reads. Many writes are:
 
 ### Logout
 
-1. Shell `requestLogout`.
-2. Cashiers/supervisors with open shift → must **End shift & sign out** (`clockOut`).
-3. `useAuthStore.logout` + cart clear so retail/restaurant carts never bleed across sessions.
+1. Shell `requestLogout` → `logout()`. **No prompt, no shift question.**
+2. `useAuthStore.logout` + cart clear so retail/restaurant carts never bleed across sessions.
+   `useShiftStore.forget()` drops the in-memory pointer only — the IndexedDB shift row stays.
+
+**Do not reattach a shift prompt to sign-out.** The shift already survives sign-out, tab
+close, refresh and crash (`useShiftStore.resolve()` resumes it without re-counting the
+float), so the question had exactly one safe answer and trained cashiers to tap through a
+dialog that sometimes offered to close their shift. A shift ends in exactly two ways:
+the cashier ends it from **End shift** (`DayEnd.jsx` cashier view → `ShiftCashOut`), or
+day-end / Z-reading closes the business day. There is deliberately no second entry point
+to cashing out.
 
 ---
 
@@ -395,6 +409,16 @@ utils/vat.js computeVatBreakdown()      ← single source of truth, pure/testabl
         SC/PWD Discount/TOTAL AMOUNT DUE)
 ```
 
+**TIN is two-level.** A Philippine business has ONE TIN; a branch gets a BIR branch code
+appended (`00000` head office, then `00001`…). `company_profile.tin` + `branches.branch_tin_code`
+→ `api.composeTin()`, surfaced as `full_tin` on every row `fetchBranches()` returns, so the
+receipt, the X/Z reading and the settings screen cannot print three different numbers.
+`branches.tin` survives as a per-branch override and as the pre-migration fallback.
+
+`buildReceipt` must be handed the **real branch row** (`fetchBranchFiscalHeader(branchId)`,
+cached). Passing a `{ name, business_name }` stub is what made the POS print `TIN: —`,
+blank permit and blank MIN on every sale for as long as it did.
+
 | Piece | File |
 |-------|------|
 | Calculation (pure) | `src/utils/vat.js` `computeVatBreakdown()` |
@@ -482,23 +506,74 @@ after this fix** — see Backlog below, not yet root-caused.
 
 ---
 
-## Shifts
+## Shifts & change fund (cash accountability)
+
+The unit of cash accountability is the SHIFT, not the day: one branch, one drawer, several
+cashiers a day, and a shortage has to point at whoever was holding the cash.
 
 ```
-Login → optional clockIn → staff_shifts (open)
-POS / work …
-Logout → if open shift → clockOut → then logout
+Start shift  → count change fund → useShiftStore.startShift
+               → local Dexie `shifts` row (clientId) + enqueue OPEN_SHIFT
+               → open_staff_shift() RPC → staff_shifts row (serverId)
 
-Viewing:
-  Supervisor /shifts → fetchStaffShifts({ branchId: own })
-  Manager /manager/shifts → fetchStaffShifts({ branchId: filter or all })
+Selling      → posStore.addTransaction stamps shiftClientId / shiftId
+               → syncEngine swaps clientId for serverId on push
+               → transactions.shift_id
+
+Cash out     → ShiftCashOut → shift_cash_summary() for expected
+               → enqueue CLOSE_SHIFT → close_staff_shift() computes
+                 expected + variance server-side, sets clock_out
+
+Sign out     → shift stays open. Signing back in on the same drawer resumes it and
+               does NOT ask for the change fund again.
 ```
+
+**The resume rule.** `useShiftStore.resolve()` asks: is there an open shift for this
+`staff_id` + `drawer_id`? Yes → resume. No → count in. It is answered from IndexedDB first
+so it works with no network — asking the server would make "cannot reach the server" look
+like "no open shift", and the safe-looking default (ask for the float again) is the wrong
+one: it opens a second shift on a drawer that was already counted.
+
+**Drawer identity** is `src/utils/drawer.js`: a localStorage id that survives sign-out,
+because the drawer does not move when the cashier does. It defaults to the shared `'main'`
+rather than a random per-device id — most shops have one cash box and several devices
+pointed at it, and those must share a drawer identity or two people could count into the
+same till unnoticed. A till with its own cash box gets its own id in Settings → Devices.
+Same cashier on a different drawer is a different pile of cash, so that is gate `moved`
+(supervisor override), never a resume.
+
+| Gate | Meaning | Remedy |
+|------|---------|--------|
+| `ready` | shift open, sell | — |
+| `start` | no shift here | count the change fund |
+| `busy` | another cashier holds this drawer | they cash out, or supervisor closes it |
+| `moved` | this cashier is open on another till | cash out there, or supervisor override |
 
 | Piece | File |
 |-------|------|
-| UI | `src/pages/Shifts.jsx` |
-| API | `api.js` → `clockIn`, `clockOut`, `fetchOpenShift`, `fetchStaffShifts` |
-| Table | `staff_shifts` (in finance/roles migration) |
+| Store | `src/stores/shiftStore.js` |
+| Gate UI | `src/components/shared/ShiftGate.jsx` |
+| Cash-out UI | `src/components/shared/ShiftCashOut.jsx` |
+| Log / adjustments UI | `src/pages/Shifts.jsx` |
+| Drawer identity | `src/utils/drawer.js` |
+| Local store | `src/offline/shifts.js` (Dexie `shifts`, v2) |
+| Queue ops | `OPEN_SHIFT`, `CLOSE_SHIFT` in `queueTypes.js` / `syncEngine.js` |
+| API | `api.js` → `openShift`, `closeShift`, `fetchOpenShift`, `fetchOpenShiftOnDrawer`, `fetchLastClosedShiftOnDrawer`, `fetchShiftCashSummary`, `adjustShiftCash`, `fetchShiftAdjustments`, `fetchStaffShifts` |
+| Tables | `staff_shifts` (+ cash columns), `shift_adjustments`, `transactions.shift_id` |
+| Migration | `migrate_shift_cash_accountability.sql` |
+
+**Closed shifts are frozen** by a trigger. A correction goes through `adjust_shift_cash()`,
+which logs old value, new value, actor and reason to `shift_adjustments` — the same
+immutability principle as sales records, for the same BIR reason.
+
+**`holds_drawer`** separates cashier shifts (count cash, exclusive on the drawer) from
+supervisor floor shifts (no count, no exclusivity). Without it a supervisor clocking in
+would lock the cashier out of the till they are standing at.
+
+**RLS**: a cashier reads only their own shifts; supervisor+ reads the branch. The two facts
+a cashier still needs about someone else's drawer — who holds it, and what the last person
+left in it — come from the narrow definer functions `drawer_holder()` and
+`drawer_last_count()`, which return a name, a time and one figure and nothing else.
 
 ---
 
@@ -522,16 +597,80 @@ Staff Transactions.jsx / Manager BranchDashboard
 | Store | `voidTransaction`, `refundTransactionItems` |
 | SQL | `migrate_refund_sale_items.sql`, `migrate_refund_amount_on_transactions.sql` |
 
+**Never show a refunded sale as one already-netted number.** `total − refunded` next to a
+"−₱150" reads as if the refund is about to come off a second time. List rows and the detail
+modal show the **original total** and the **refunded amount** as two labelled figures.
+`netTotal` is still the right thing for aggregates — just not as a row's headline figure.
+
+### Who approved it (approval attribution)
+
+Approver ids were always persisted; what was missing was the **role** and the display.
+
+| Action | Where the approver lives |
+|---|---|
+| Void / full refund | `transactions.void_approved_by` |
+| Item refund | `sale_refund_lines.approved_by` |
+| Petty cash | `cash_drawer_entries.approved_by` / `confirmed_by` |
+| Shift cash correction | `shift_adjustments.approved_by` |
+| Cart line removal, price override, second-drawer override | `audit_events` via `logApprovalEvent()` — these have no row of their own |
+
+`fetchStaffIdentities(ids)` resolves `{id: {name, role}}` (no PostgREST embed — `transactions`
+FKs `staff` three times, so an embed needs disambiguating at every call site).
+`approverLabel(name, role)` produces the one string every surface shows: `"Ana Cruz · Supervisor"`.
+`SupervisorApprove.onApproved` returns `{ staffId, name, role, via }`.
+
 ---
 
 ## Day end & cash
 
+**One route, two screens.** `DayEnd.jsx` branches on `isSupervisorOrAbove(user.role)`:
+
+| Role | Screen | Sees |
+|---|---|---|
+| cashier | **End shift** | own float → expected → count → variance (via `useShiftStore.cashPosition`), own petty requests, `ShiftCashOut`. No branch totals, no restock, no Submit for closing. |
+| supervisor+ | **Day end** | branch sales, every shift's accountability, restock, petty **approval queue**, Submit for closing (the Z-reading gate). |
+
+The split is a privacy boundary, not cosmetics: the old shared screen rendered "Change fund
+by shift" — every staff member's float and variance — to whoever opened it, so a cashier
+could read a supervisor's drawer. Do not reintroduce a branch-wide figure into the cashier
+view.
+
 ```
 Sales during day → expected cash (sales − voids/refunds ± petty/pickup/float)
-DayEnd.jsx → closeDayEnd RPC → day_ends row
-Till locked until reopen (manager) or next business date (format.js businessDate)
+DayEnd.jsx (supervisor+) → closeDayEnd RPC → day_ends row
+Till locked until reopen (manager, CURRENT business day only) or next business date
 Cart soft nudge after ~8 PM or last 2h before openHour+14h
 ```
+
+**Reopen is current-day only.** `BranchDashboard.jsx` offers Reopen on a closed day-end row
+only while `entry.date === todayKey`; past closings render `Locked` with no override at any
+role. Reopening a passed day would move cash figures under a Z-reading already filed.
+
+### Petty cash: request → approve → fulfil
+
+```
+pending     cashier asked. No money has moved. Anyone may create.
+  ↓ approvePettyCash()      supervisor+ ONLY (role check, no delegation/escalation logic)
+approved    authorised. Money is STILL IN THE DRAWER.
+  ↓ fulfillPettyCash()      anyone on site, including the requester
+fulfilled   cash physically handed over. THIS is the disbursement.
+```
+
+**Only `fulfilled` is deducted from expected cash.** `approved` is a commitment, not a
+disbursement — deducting it made the drawer read short between approval and handover.
+`close_staff_shift()` and `shift_cash_summary()` were rewritten to match
+(`migrate_petty_cash_fulfilment.sql`); leaving them on `'approved'` produces a false
+variance on every cash-out.
+
+Fulfilment without a prior approval is impossible by construction, in two places:
+`fulfillPettyCash` filters `.eq('status', 'approved')`, and the DB holds
+`cash_drawer_entries_fulfil_needs_approval`. The UI is not the boundary.
+
+| Piece | File |
+|---|---|
+| Shared panel (request/approve/fulfil) | `src/components/dayend/PettyCashPanel.jsx` |
+| API | `requestPettyCash`, `approvePettyCash`, `fulfillPettyCash`, `rejectPettyCash` |
+| Migration | `supabase/migrate_petty_cash_fulfilment.sql` |
 
 | Piece | File |
 |-------|------|
@@ -691,6 +830,7 @@ of one per row change.
 | Need | File |
 |------|------|
 | Money, qty, business date, stockTone | `src/utils/format.js` |
+| Which DB this build targets (env badge) | `src/utils/environment.js` |
 | Support error codes | `src/utils/errors.js` |
 | Sanitize / duplicate product checks | `src/utils/validate.js` |
 | Ulam / menu kinds | `src/utils/ulam.js` |
@@ -704,6 +844,7 @@ of one per row change.
 |-------|------|
 | Base schema | `supabase/schema.sql` |
 | PIN, payments, roles, petty, shifts | `migrate_staff_pin_payments_roles_finance.sql` |
+| Per-shift change fund, drawer exclusivity, shift adjustments | `migrate_shift_cash_accountability.sql` |
 | Unique login codes | `migrate_staff_login_code_unique.sql` |
 | PIN auth fix | `migrate_fix_pin_login_auth.sql` |
 | BIR / sale immutability | `migrate_bir_pos_compliance.sql` |
@@ -720,10 +861,28 @@ of one per row change.
 | Promo auto-expire | `migrate_promo_auto_expire.sql` |
 | VAT breakdown (BIR) | `migrate_vat_breakdown.sql` |
 | Realtime (live POS/notification updates) | `migrate_enable_realtime.sql` |
+| Company TIN + per-branch BIR branch code | `migrate_company_tin.sql` |
+| Petty cash `fulfilled` state (+ rewrites `close_staff_shift`/`shift_cash_summary`) | `migrate_petty_cash_fulfilment.sql` |
+| Master force sign-out of a stuck session | `migrate_admin_session_release.sql` |
 
 Run migrations in the Supabase SQL editor; respect comments about order / dependencies.
 
 **RLS pattern:** branch staff → `current_staff_branch()`; managers → `is_manager()` across branches.
+
+**`staff` stores `login_pin` and `auth_secret` in PLAINTEXT.** RLS is row-level, not
+column-level, so any policy letting a role SELECT a staff row lets it read that row's PIN.
+That is why supervisors read the roster through `branch_staff_roster()`
+(`migrate_branch_staff_roster.sql`) — a definer function with an explicit safe column list —
+rather than a widened `read staff` policy. Never "simplify" it into a policy change, and
+never add a secret column to that function's select list.
+
+### Environments (dev vs production)
+
+`src/utils/environment.js` reads `VITE_APP_ENV` and derives the Supabase project ref from
+`VITE_SUPABASE_URL`. Anything not `production` renders a badge in `Shell.jsx` and
+`Login.jsx` naming the database actually being written to. An unset value resolves to
+`development` — the dangerous case must never be the quiet default. Setup instructions:
+`pos-frontend/README.md` → *Environments*.
 
 ---
 
@@ -739,7 +898,11 @@ Run migrations in the Supabase SQL editor; respect comments about order / depend
 | Who can open a page | `roles.js` + `App.jsx` gates |
 | Sidebar links | `nav.js` + `Shell.jsx` |
 | Refund totals | `TransactionDetailModal.jsx` + refund migrations |
-| Day-end cash | `DayEnd.jsx` |
+| Day-end cash | `DayEnd.jsx` (two views — check which role you mean) |
+| Petty cash workflow | `components/dayend/PettyCashPanel.jsx` |
+| Staff roster / shift log / hours | `manager/Staff.jsx` (merged tab) |
+| TIN on receipts / reports | `api.composeTin` + `fetchBranches` `full_tin` |
+| Stuck "already signed in" | `api.fetchActiveSessions` / `forceReleaseStaffSession` |
 | Receipt layout | `receipt.js` |
 | New report | `manager/Reports.jsx` |
 | New table/RPC | `supabase/migrate_*.sql` + `api.js` |

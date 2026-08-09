@@ -1,4 +1,5 @@
 import { Eyebrow, Modal, ModalActions, PageSkeleton, PrimaryButton, SecondaryButton, moneyClass } from '../ui'
+import { approverLabel } from '../../lib/api'
 import { money, qty } from '../../utils/format'
 
 function TransactionDetailModal({
@@ -22,6 +23,7 @@ function TransactionDetailModal({
       : Math.max(0, Number((originalTotal - refundTotal).toFixed(2)))
   const hasRefunds = refundTotal > 0
   const refundLines = refundSummary?.lines || []
+  const voidApprover = approverLabel(detail?.voidApprovedByName, detail?.voidApprovedByRole)
 
   return (
     <Modal wide layer={layer} onClose={onClose}>
@@ -34,11 +36,22 @@ function TransactionDetailModal({
           <p className="m-0 text-xs text-brand-muted">
             {detail.time || detail.date || '—'} · {detail.cashier || 'Staff'} · {detail.status}
             {detail.syncStatus === 'pending' || detail.syncStatus === 'local' ? ' · Pending sync' : ''}
-            {hasRefunds && detail.status !== 'Voided' ? ' · Partial refund' : ''}
+            {hasRefunds && detail.status !== 'Voided' ? ' · Partial Refund' : ''}
           </p>
           {detail.voidReason && (
             <p className="mt-1 text-xs text-brand-danger">
               {detail.status === 'Voided' ? 'Full refund' : 'Note'}: {detail.voidReason}
+            </p>
+          )}
+          {/* Who signed this off. An approval that only records "approved" cannot be
+              audited — the name and the role the approval was given under are the point. */}
+          {(voidApprover || detail.voidedByName) && (
+            <p className="mt-1 text-xs text-brand-muted">
+              {detail.voidedByName ? `Actioned by ${detail.voidedByName}` : null}
+              {detail.voidedByName && voidApprover ? ' · ' : null}
+              {voidApprover ? (
+                <span className="font-bold text-brand-ink">Approved by {voidApprover}</span>
+              ) : null}
             </p>
           )}
           <div className="mt-4 max-h-[240px] overflow-auto rounded-md border border-brand-softline">
@@ -98,22 +111,29 @@ function TransactionDetailModal({
               <p className="m-0 mb-1 text-[10px] font-bold tracking-wide text-brand-label uppercase">
                 Refund history
               </p>
-              {refundLines.map((row) => (
-                <div
-                  key={row.id}
-                  className="flex justify-between gap-2 border-t border-brand-softline py-1.5 text-[11px] first:border-t-0"
-                >
-                  <span className="text-brand-muted">
-                    {row.productName || 'Item'}
-                    {row.quantity ? ` × ${row.quantity}` : ''}
-                    {row.created_at
-                      ? ` · ${new Date(row.created_at).toLocaleString()}`
-                      : ''}
-                    {row.reason ? ` · ${row.reason}` : ''}
-                  </span>
-                  <strong className={`shrink-0 text-brand-danger ${moneyClass}`}>−{money(row.amount)}</strong>
-                </div>
-              ))}
+              {refundLines.map((row) => {
+                const approver = approverLabel(row.approvedByName, row.approvedByRole)
+                return (
+                  <div
+                    key={row.id}
+                    className="flex justify-between gap-2 border-t border-brand-softline py-1.5 text-[11px] first:border-t-0"
+                  >
+                    <span className="min-w-0 text-brand-muted">
+                      {row.productName || 'Item'}
+                      {row.quantity ? ` × ${row.quantity}` : ''}
+                      {row.created_at
+                        ? ` · ${new Date(row.created_at).toLocaleString()}`
+                        : ''}
+                      {row.reason ? ` · ${row.reason}` : ''}
+                      <span className="block text-[10px] text-brand-subtle">
+                        {row.staffName ? `By ${row.staffName}` : 'By staff'}
+                        {approver ? ` · Approved by ${approver}` : ' · No approver recorded'}
+                      </span>
+                    </span>
+                    <strong className={`shrink-0 text-brand-danger ${moneyClass}`}>−{money(row.amount)}</strong>
+                  </div>
+                )
+              })}
             </div>
           )}
 

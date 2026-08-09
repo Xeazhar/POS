@@ -35,21 +35,35 @@ import { hardReload } from '../utils/hardReload'
  */
 const POLL_MS = 60_000
 
-/** Ask the service worker to go fetch the new build now, rather than on its own schedule. */
-async function primeServiceWorker() {
-  if (typeof navigator === 'undefined' || !navigator.serviceWorker) return
-  try {
-    const registrations = await navigator.serviceWorker.getRegistrations()
-    await Promise.all(registrations.map((registration) => registration.update()))
-  } catch {
-    // A worker that refuses to update must not stop the banner from appearing — the
-    // hard reload path purges caches anyway and will still land on the new build.
-  }
+const PRIME_TIMEOUT_MS = 15_000
+
+/**
+ * Ask the service worker to go fetch the new build now, rather than on its own schedule.
+ *
+ * Returns a promise the reload path AWAITS. Firing this and reloading on a fixed timer
+ * regardless is what the precache step was meant to prevent: on the flaky shop wifi this
+ * design exists for, a precache still in flight when the caches are purged lands the
+ * terminal in a half-downloaded app mid-trade. Bounded by a timeout so a worker that never
+ * settles cannot wedge the update permanently — after that we reload anyway, which is the
+ * old behaviour and still better than staying stuck.
+ */
+function primeServiceWorker() {
+  if (typeof navigator === 'undefined' || !navigator.serviceWorker) return Promise.resolve()
+  const update = navigator.serviceWorker
+    .getRegistrations()
+    .then((registrations) => Promise.all(registrations.map((r) => r.update())))
+    .catch(() => {
+      // A worker that refuses to update must not stop the banner appearing — the hard
+      // reload purges caches anyway and will still land on the new build.
+    })
+  const timeout = new Promise((resolve) => setTimeout(resolve, PRIME_TIMEOUT_MS))
+  return Promise.race([update, timeout])
 }
 
 export function useAppVersion({ safeToReload = true, autoReload = true } = {}) {
   const [updateReady, setUpdateReady] = useState(false)
   const loadedVersion = useRef(null)
+  const primingRef = useRef(null)
   const safeRef = useRef(safeToReload)
   useEffect(() => {
     safeRef.current = safeToReload
@@ -76,7 +90,8 @@ export function useAppVersion({ safeToReload = true, autoReload = true } = {}) {
       if (version !== loadedVersion.current) {
         // Start the download before announcing the update, so that by the time anyone
         // taps Refresh the new build is usually already cached and the reload is instant.
-        void primeServiceWorker()
+        // The auto-reload path awaits this same promise rather than racing it.
+        if (!primingRef.current) primingRef.current = primeServiceWorker()
         setUpdateReady(true)
       }
     } catch {
@@ -110,17 +125,27 @@ export function useAppVersion({ safeToReload = true, autoReload = true } = {}) {
 
   // Must be a HARD reload: the service worker would otherwise serve the same cached
   // bundle back and the banner would reappear forever. See utils/hardReload.js.
-  const reload = useCallback(() => {
-    void hardReload({ online: typeof navigator === 'undefined' ? true : navigator.onLine })
+  // Waits for the precache first so we never reload onto a half-downloaded build.
+  const reload = useCallback(async () => {
+    await primingRef.current
+    await hardReload({ online: typeof navigator === 'undefined' ? true : navigator.onLine })
   }, [])
 
   // Auto-reload only when nothing would be lost — otherwise the banner waits for a tap.
   useEffect(() => {
     if (!updateReady || !autoReload || !safeRef.current) return undefined
-    const t = window.setTimeout(() => {
-      if (safeRef.current) void hardReload({ online: navigator.onLine })
+    let cancelled = false
+    const t = window.setTimeout(async () => {
+      // Await the precache rather than assuming 3s was enough for it.
+      await primingRef.current
+      // Re-checked after the await: the wait can be seconds, and a cashier may have
+      // started ringing something up in the meantime. Reloading then would drop it.
+      if (!cancelled && safeRef.current) void hardReload({ online: navigator.onLine })
     }, 3000)
-    return () => window.clearTimeout(t)
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+    }
   }, [updateReady, autoReload, safeToReload])
 
   return { updateReady, reload }

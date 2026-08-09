@@ -21,6 +21,7 @@
    - `migrate_catalog_branch_type.sql` (retail vs restaurant catalog filter)
    - `migrate_rename_petty_cash_to_cash_drawer_entries.sql` (**only this one** for change fund / petty cash / cash drawer — creates `cash_drawer_entries` + columns; do not also run `migrate_cash_accountability_controls.sql`)
    - `migrate_manager_can_approve_any_branch.sql` (managers may PIN-approve any branch; supervisors stay branch-scoped)
+   - `migrate_shift_cash_accountability.sql` (per-shift change fund, one shift per drawer, `transactions.shift_id`, `shift_adjustments`). Needs `migrate_refund_amount_on_transactions.sql` and the cash-drawer migration above first — it checks and refuses rather than half-applying. **Apply outside trading hours:** it enforces one open shift per drawer and clocks out any extra shifts that are already open.
    - `wipe_products_clean_start.sql` (**destructive**) — wipe products + catalog for a fresh import
    - etc.
 
@@ -34,7 +35,8 @@ branches
   ├─ promo_events (status: pending|active|stop_pending|…) → promo_rules → promo_rule_products
   ├─ day_ends
   ├─ import_batches → import_batch_items
-  ├─ cash_drawer_entries (ex petty_cash), staff_shifts
+  ├─ cash_drawer_entries (ex petty_cash) → staff_shifts (change fund, cash-out, variance)
+  │     └─ shift_adjustments (logged corrections to a closed shift)
   ├─ branch_presence, branch_devices
   └─ sale_events, audit_events (BIR / audit)
 

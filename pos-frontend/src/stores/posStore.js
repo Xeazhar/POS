@@ -16,6 +16,7 @@ import { clearAuthSessionStorage, consumeBrowserClosedFlag } from '../offline/se
 import { appError } from '../utils/errors'
 import { isTillClosed, today } from '../utils/format'
 import { detectUlamCombo, effectiveUnitPrice, hasBudgetTier, lineTotal, normalizeMenuKind } from '../utils/ulam'
+import { useShiftStore } from './shiftStore'
 import { useSyncStore } from './syncStore'
 
 const seedProducts = [
@@ -39,7 +40,7 @@ export const useAuthStore = create(persist((set, get) => ({
   user: null,
   booting: true,
   error: '',
-  pendingClockIn: false,
+
   screenLocked: false,
   deviceSessionId: null,
   login: async (emailOrCode, passwordOrPin, { mode = 'email', captchaToken } = {}) => {
@@ -209,7 +210,11 @@ export const useAuthStore = create(persist((set, get) => ({
     api.clearDeviceSessionId()
     await api.clearManagerUnlockSecret()
     setSyncBranchId(null)
-    set({ user: null, pendingClockIn: false, screenLocked: false, deviceSessionId: null })
+    // Drops the in-memory pointer only. The shift record in IndexedDB deliberately
+    // survives sign-out — an open shift outlives the session, which is what stops a
+    // re-login asking the cashier to count the change fund a second time.
+    useShiftStore.getState().forget()
+    set({ user: null, screenLocked: false, deviceSessionId: null })
   },
   logout: async () => {
     const user = get().user
@@ -229,7 +234,11 @@ export const useAuthStore = create(persist((set, get) => ({
     api.clearDeviceSessionId()
     await api.clearManagerUnlockSecret()
     setSyncBranchId(null)
-    set({ user: null, pendingClockIn: false, screenLocked: false, deviceSessionId: null })
+    // Drops the in-memory pointer only. The shift record in IndexedDB deliberately
+    // survives sign-out — an open shift outlives the session, which is what stops a
+    // re-login asking the cashier to count the change fund a second time.
+    useShiftStore.getState().forget()
+    set({ user: null, screenLocked: false, deviceSessionId: null })
   },
 }), { name: 'cale-pos-auth-v4', partialize: (state) => ({ user: api.hasSupabase ? null : state.user }) }))
 
@@ -657,6 +666,10 @@ export const useInventoryStore = create((set, get) => ({
       throw appError('TILL01')
     }
 
+    // Which shift is answerable for this cash. Recorded on the local row too, so an
+    // offline cash-out can total the drawer before the sale has a server id.
+    const activeShift = useShiftStore.getState().shift
+
     // Local-first: apply sale to IndexedDB + memory, then queue / sync
     const productStore = useProductStore.getState()
     const isRestaurant = user?.branchType === 'restaurant'
@@ -716,6 +729,8 @@ export const useInventoryStore = create((set, get) => ({
       discountAmount: payload.discountAmount || 0,
       discountType: payload.discountType || null,
       discountIdNote: payload.discountIdNote || null,
+      shiftClientId: activeShift?.clientId || null,
+      shiftId: activeShift?.serverId || null,
     }
 
     set((state) => ({
@@ -762,6 +777,8 @@ export const useInventoryStore = create((set, get) => ({
           discountAmount: payload.discountAmount || 0,
           discountType: payload.discountType || null,
           discountIdNote: payload.discountIdNote || null,
+          shiftClientId: activeShift?.clientId || null,
+          shiftId: activeShift?.serverId || null,
           localTransactionId: localId,
           clientId: localId,
         },
@@ -789,7 +806,10 @@ export const useInventoryStore = create((set, get) => ({
 
     return localTxn
   },
-  voidTransaction: async (id, reason, approvedBy = null) => {
+  // `approver` is display metadata only ({ name, role }) — the id in `approvedBy` is what
+  // gets persisted. It exists so the row names its approver straight away instead of
+  // waiting for the next server read to resolve the uuid.
+  voidTransaction: async (id, reason, approvedBy = null, approver = null) => {
     const user = useAuthStore.getState().user
     set((state) => ({
       transactions: state.transactions.map((transaction) =>
@@ -800,6 +820,8 @@ export const useInventoryStore = create((set, get) => ({
               voidReason: reason,
               voidedAt: new Date().toISOString(),
               voidApprovedBy: approvedBy || user?.id || null,
+              voidApprovedByName: approver?.name || (approvedBy ? null : user?.name || null),
+              voidApprovedByRole: approver?.role || (approvedBy ? null : user?.role || null),
             }
           : transaction,
       ),
@@ -818,7 +840,7 @@ export const useInventoryStore = create((set, get) => ({
       if (isOnline()) await syncBranch(user.branchId)
     }
   },
-  refundTransactionItems: async (id, { reason, items, approvedBy = null }) => {
+  refundTransactionItems: async (id, { reason, items, approvedBy = null, approver = null }) => {
     const user = useAuthStore.getState().user
     if (!api.hasSupabase || !user?.branchId) {
       throw new Error('Connect Supabase to process refunds.')
@@ -841,6 +863,8 @@ export const useInventoryStore = create((set, get) => ({
                 voidReason: reason || 'Fully refunded',
                 voidedAt: new Date().toISOString(),
                 voidApprovedBy: approvedBy || user.id,
+                voidApprovedByName: approver?.name || (approvedBy ? null : user?.name || null),
+                voidApprovedByRole: approver?.role || (approvedBy ? null : user?.role || null),
                 refundedAmount: Number(transaction.total || 0),
                 netTotal: 0,
               }

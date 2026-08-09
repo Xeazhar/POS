@@ -1,7 +1,15 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Field, PageHeader, PrimaryButton, SecondaryButton, SelectField, SkeletonCards, StatusBadge, TableCard, moneyClass } from '../../components/ui'
-import { branchSummary, fetchBranches, hasSupabase, reorderBranches, saveBranch } from '../../lib/api'
+import {
+  branchSummary,
+  fetchBranches,
+  fetchCompanyProfile,
+  hasSupabase,
+  reorderBranches,
+  saveBranch,
+  saveCompanyProfile,
+} from '../../lib/api'
 import { money } from '../../utils/format'
 
 const empty = {
@@ -17,6 +25,8 @@ function ManagerBranches() {
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
   const [dragId, setDragId] = useState(null)
+  const [company, setCompany] = useState({ business_name: '', tin: '', address: '' })
+  const [companyBusy, setCompanyBusy] = useState(false)
   const [loading, setLoading] = useState(true)
 
   const reload = async () => {
@@ -35,6 +45,14 @@ function ManagerBranches() {
     }
     const rows = await fetchBranches()
     setBranches(rows)
+    const profile = await fetchCompanyProfile({ force: true }).catch(() => null)
+    if (profile) {
+      setCompany({
+        business_name: profile.business_name || '',
+        tin: profile.tin || '',
+        address: profile.address || '',
+      })
+    }
     const next = {}
     await Promise.all(
       rows.map(async (branch) => {
@@ -92,6 +110,62 @@ function ManagerBranches() {
           Add branch
         </PrimaryButton>
       </PageHeader>
+      {/* One TIN for the business. Branches carry a BIR branch code appended to it, set
+          per branch under Branch settings — see migrate_company_tin.sql. */}
+      <TableCard className="mb-4 max-h-none p-5">
+        <h2 className="m-0 mb-1 text-base">Company details</h2>
+        <p className="m-0 mb-3 text-xs text-brand-muted">
+          Shared by every branch. The TIN printed on an invoice is this number plus that
+          branch&apos;s BIR branch code, e.g. <strong>123-456-789-00001</strong>.
+        </p>
+        <div className="grid grid-cols-3 gap-3 max-[900px]:grid-cols-1">
+          <Field
+            label="Registered business name"
+            value={company.business_name || ''}
+            onChange={(e) => setCompany({ ...company, business_name: e.target.value })}
+          />
+          <Field
+            label="Main company TIN"
+            value={company.tin || ''}
+            onChange={(e) => setCompany({ ...company, tin: e.target.value })}
+            placeholder="123-456-789"
+          />
+          <Field
+            label="Registered address"
+            value={company.address || ''}
+            onChange={(e) => setCompany({ ...company, address: e.target.value })}
+          />
+        </div>
+        <div className="mt-3 flex items-center gap-3">
+          <PrimaryButton
+            compact
+            type="button"
+            disabled={companyBusy || !hasSupabase}
+            onClick={async () => {
+              setCompanyBusy(true)
+              setError('')
+              try {
+                await saveCompanyProfile({
+                  businessName: company.business_name || null,
+                  tin: company.tin || null,
+                  address: company.address || null,
+                })
+                await reload()
+              } catch (err) {
+                setError(err.message)
+              } finally {
+                setCompanyBusy(false)
+              }
+            }}
+          >
+            {companyBusy ? 'Saving…' : 'Save company details'}
+          </PrimaryButton>
+          {!hasSupabase && (
+            <span className="text-[11px] text-brand-subtle">Offline demo — not saved.</span>
+          )}
+        </div>
+      </TableCard>
+
       <p className="mb-3 text-[11px] text-brand-subtle">Drag cards to set display order.</p>
       {error && <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>}
       {loading ? (

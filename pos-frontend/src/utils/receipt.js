@@ -19,7 +19,10 @@ export function buildReceipt({ branch = {}, transaction = {}, lines = [], user =
       businessName,
       branchName: branch.name || '',
       address: branch.address || '',
-      tin: branch.tin || '',
+      // Composed company TIN + BIR branch code (see api.composeTin / migrate_company_tin.sql).
+      // `full_tin` is what fetchBranches attaches; `tin` is the pre-migration fallback.
+      tin: branch.full_tin || branch.tin || '',
+      branchTinCode: branch.branch_tin_code || branch.branchTinCode || '',
       birPermitNo: branch.bir_permit_no || branch.birPermitNo || '',
       machineId: branch.machine_identification_no || branch.machineId || '',
       serialNumber: branch.serial_number || branch.serialNumber || '',

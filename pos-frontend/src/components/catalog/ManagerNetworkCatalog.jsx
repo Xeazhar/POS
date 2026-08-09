@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import { FiDollarSign, FiPlus, FiRefreshCw, FiSearch, FiTag, FiUpload, FiX } from 'react-icons/fi'
+import {
+  FiEdit2,
+  FiMoreHorizontal,
+  FiPlus,
+  FiRefreshCw,
+  FiSearch,
+  FiUpload,
+  FiX,
+} from 'react-icons/fi'
 import {
   ErrorBanner,
   Field,
@@ -30,6 +38,7 @@ import {
   buildCatalogImportPreview,
   normalizeSheetRows,
   sha256Hex,
+  validateImportFile,
   validateImportHeaders,
 } from '../../utils/inventoryImport'
 import { money } from '../../utils/format'
@@ -80,17 +89,16 @@ export default function ManagerNetworkCatalog() {
   const [form, setForm] = useState(() => emptyForm('retail'))
   const [formError, setFormError] = useState('')
 
-  const [priceEdit, setPriceEdit] = useState(null)
-  const [priceValue, setPriceValue] = useState('')
-  const [discountEdit, setDiscountEdit] = useState(null)
-  const [discountValue, setDiscountValue] = useState(false)
-  // null = normal browsing (no checkboxes). 'discount' | 'price' = bulk editing.
-  // Checkboxes only exist inside a bulk mode so the table stays clean the rest of the time.
-  const [bulkMode, setBulkMode] = useState(null)
+  // false = normal browsing (no checkboxes). Checkboxes only exist in bulk mode so the
+  // table stays clean the rest of the time.
+  const [bulkMode, setBulkMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState([])
   const [bulkProgress, setBulkProgress] = useState(null)
-  const [priceDrafts, setPriceDrafts] = useState({}) // catalogId -> price string
-  const [showPriceEditor, setShowPriceEditor] = useState(false)
+  // One editor for one row or many. `drafts` is keyed by catalog id and holds every
+  // editable field, not just price — a per-field modal per field does not scale past two.
+  const [editorIds, setEditorIds] = useState(null) // null = closed
+  const [drafts, setDrafts] = useState({})
+  const [rowMenuId, setRowMenuId] = useState(null)
   const [discountFilter, setDiscountFilter] = useState('all')
   const [resyncNote, setResyncNote] = useState('')
   const [barcodeFilter, setBarcodeFilter] = useState('all')
@@ -177,9 +185,16 @@ export default function ManagerNetworkCatalog() {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
-    setBusy(true)
     setError('')
     setPreview(null)
+    // Checked before the file is read — see InventoryImportPanel. xlsx parsing blocks the
+    // main thread, so an oversized or mistyped file must be refused up front.
+    const fileCheck = validateImportFile(file)
+    if (!fileCheck.ok) {
+      setError(fileCheck.message)
+      return
+    }
+    setBusy(true)
     try {
       const buf = await file.arrayBuffer()
       await sha256Hex(buf)
@@ -287,115 +302,138 @@ export default function ManagerNetworkCatalog() {
     }
   }
 
-  const savePrice = async () => {
-    if (!priceEdit) return
-    const next = Number(priceValue)
-    if (Number.isNaN(next) || next < 0) {
-      setError('Enter a valid price.')
-      return
-    }
-    setBusy(true)
-    setError('')
-    try {
-      await updateCatalogProduct(priceEdit.id, {
-        ...priceEdit,
-        price: next,
-      })
-      setPriceEdit(null)
-      await reload()
-    } catch (err) {
-      setError(formatSupportError(err, 'CAT03'))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const saveDiscount = async () => {
-    if (!discountEdit) return
-    setBusy(true)
-    setError('')
-    try {
-      await updateCatalogProduct(discountEdit.id, {
-        ...discountEdit,
-        discountEligible: discountValue === true,
-      })
-      // Also push to branches that already adopted this item — otherwise this only sets the
-      // default for future adoptions and PWD/Senior keeps not applying on already-live products.
-      // SKU is passed so the cascade can also reach branch rows whose catalog_product_id
-      // was never populated (imported products, supervisor-created products).
-      await cascadeDiscountEligibleToBranches(discountEdit.id, discountValue === true, discountEdit.sku)
-      setDiscountEdit(null)
-      await reload()
-    } catch (err) {
-      setError(formatSupportError(err, 'CAT04'))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  /**
-   * Set Discountable on many catalog items at once, cascading each to branches.
-   * Sequential rather than Promise.all: this fans out to a second UPDATE per item, and a
-   * burst of those against Supabase is a good way to get rate-limited halfway through and
-   * leave the catalog half-flipped. Progress is surfaced so a long run doesn't look hung.
-   */
-  const bulkSetDiscountable = async (next) => {
-    const targets = catalog.filter((row) => selectedIds.includes(row.id))
-    if (!targets.length) return
-    setBusy(true)
-    setError('')
-    try {
-      for (let i = 0; i < targets.length; i += 1) {
-        const row = targets[i]
-        setBulkProgress({ done: i, total: targets.length })
-        await updateCatalogProduct(row.id, { ...row, discountEligible: next })
-        await cascadeDiscountEligibleToBranches(row.id, next, row.sku)
+  /** Seed the editor with the rows' current values, so it opens showing today's data. */
+  const openEditor = (ids) => {
+    const rows = catalog.filter((row) => ids.includes(row.id))
+    if (!rows.length) return
+    const next = {}
+    for (const row of rows) {
+      next[row.id] = {
+        name: row.name || '',
+        sku: row.sku || '',
+        barcode: row.barcode || '',
+        category: row.category || '',
+        price: String(row.price ?? ''),
+        budgetPrice: row.budgetPrice != null ? String(row.budgetPrice) : '',
+        discountEligible: row.discountEligible === true,
       }
-      setSelectedIds([])
-      await reload()
-    } catch (err) {
-      setError(formatSupportError(err, 'CAT04'))
-    } finally {
-      setBulkProgress(null)
-      setBusy(false)
     }
+    setDrafts(next)
+    setEditorIds(ids)
+    setRowMenuId(null)
+    setError('')
   }
 
-  /**
-   * Save the per-product prices typed into the bulk price editor.
-   *
-   * Each row keeps its own value — this is not "set them all to X", which is almost never
-   * what a catalog needs. Only rows whose price actually changed are written, so opening
-   * the editor and saving without edits costs nothing.
-   */
-  const saveBulkPrices = async () => {
-    const targets = catalog.filter((row) => {
-      if (!selectedIds.includes(row.id)) return false
-      const draft = priceDrafts[row.id]
-      if (draft === undefined || draft === '') return false
-      return Number(draft) !== Number(row.price)
+  const setDraft = (id, key, value) => {
+    let next = value
+    if (key === 'barcode') next = digitsOnly(value)
+    else if (key === 'price' || key === 'budgetPrice') next = decimalOnly(value)
+    else if (typeof value === 'string') next = value.replace(/[<>]/g, '')
+    setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], [key]: next } }))
+    setError('')
+  }
+
+  /** Apply one field's value to every row in the editor — the point of bulk editing. */
+  const applyToAll = (key, value) => {
+    setDrafts((prev) => {
+      const next = {}
+      for (const id of Object.keys(prev)) next[id] = { ...prev[id], [key]: value }
+      return next
     })
-    const invalid = targets.find((row) => !Number.isFinite(Number(priceDrafts[row.id])) || Number(priceDrafts[row.id]) < 0)
-    if (invalid) {
-      setError(`Enter a valid price for ${invalid.name}.`)
+  }
+
+  /**
+   * Save the editor.
+   *
+   * Sequential, not Promise.all: a Discountable change fans out to a second UPDATE per
+   * item (the branch cascade), and a burst of those against Supabase is a good way to get
+   * rate-limited halfway through and leave the catalog half-flipped. Progress is surfaced
+   * so a long run doesn't look hung.
+   *
+   * Only rows that actually changed are written, so opening the editor and saving without
+   * edits costs nothing. `updateCatalogProduct` replaces the whole row, so each call is
+   * given the full record merged with the draft — a partial payload would blank the
+   * fields it omitted.
+   */
+  const saveEditor = async () => {
+    const ids = editorIds || []
+    const changed = []
+    for (const row of catalog) {
+      if (!ids.includes(row.id)) continue
+      const draft = drafts[row.id]
+      if (!draft) continue
+      if (!String(draft.name || '').trim()) {
+        setError(`Name cannot be empty for ${row.name}.`)
+        return
+      }
+      if (!String(draft.sku || '').trim()) {
+        setError(`SKU cannot be empty for ${draft.name || row.name}.`)
+        return
+      }
+      const price = Number(draft.price)
+      if (draft.price === '' || !Number.isFinite(price) || price < 0) {
+        setError(`Enter a valid price for ${draft.name || row.name}.`)
+        return
+      }
+      const dirty =
+        draft.name !== (row.name || '') ||
+        draft.sku !== (row.sku || '') ||
+        draft.barcode !== (row.barcode || '') ||
+        draft.category !== (row.category || '') ||
+        price !== Number(row.price) ||
+        String(draft.budgetPrice) !== String(row.budgetPrice ?? '') ||
+        draft.discountEligible !== (row.discountEligible === true)
+      if (dirty) changed.push({ row, draft, price })
+    }
+    if (!changed.length) {
+      setEditorIds(null)
       return
     }
-    if (!targets.length) {
-      setShowPriceEditor(false)
-      return
+    // Duplicate SKUs inside the catalog break adoption matching, so catch it before writing.
+    const seen = new Map(
+      catalog.filter((r) => !ids.includes(r.id)).map((r) => [String(r.sku || '').toLowerCase(), r.name]),
+    )
+    for (const { draft } of changed) {
+      const key = String(draft.sku).toLowerCase()
+      if (seen.has(key)) {
+        setError(`SKU ${draft.sku} is already used by ${seen.get(key)}.`)
+        return
+      }
+      seen.set(key, draft.name)
     }
+
     setBusy(true)
     setError('')
     try {
-      for (let i = 0; i < targets.length; i += 1) {
-        const row = targets[i]
-        setBulkProgress({ done: i, total: targets.length })
-        await updateCatalogProduct(row.id, { ...row, price: Number(priceDrafts[row.id]) })
+      for (let i = 0; i < changed.length; i += 1) {
+        const { row, draft, price } = changed[i]
+        setBulkProgress({ done: i, total: changed.length })
+        await updateCatalogProduct(row.id, {
+          ...row,
+          name: draft.name.trim(),
+          sku: draft.sku.trim(),
+          barcode: draft.barcode || null,
+          category: draft.category || row.category,
+          price,
+          budgetPrice: draft.budgetPrice === '' ? null : Number(draft.budgetPrice),
+          discountEligible: draft.discountEligible === true,
+        })
+        // Discountable is the one catalog field that also pushes to branches that already
+        // adopted the item — otherwise this only sets the default for future adoptions and
+        // PWD/Senior keeps not applying on already-live products. SKU is passed so the
+        // cascade also reaches branch rows whose catalog_product_id was never populated.
+        if (draft.discountEligible !== (row.discountEligible === true)) {
+          await cascadeDiscountEligibleToBranches(
+            row.id,
+            draft.discountEligible === true,
+            draft.sku.trim(),
+          )
+        }
       }
-      setShowPriceEditor(false)
-      setPriceDrafts({})
+      setEditorIds(null)
+      setDrafts({})
       setSelectedIds([])
-      setBulkMode(null)
+      setBulkMode(false)
       await reload()
     } catch (err) {
       setError(formatSupportError(err, 'CAT04'))
@@ -413,11 +451,15 @@ export default function ManagerNetworkCatalog() {
     setBusy(true)
     setError('')
     try {
-      const { enabled, disabled } = await resyncDiscountEligibleToBranches()
+      const { enabled, disabled, unlinked } = await resyncDiscountEligibleToBranches()
+      // Unlinked products are reported rather than guessed at. They are branch items with
+      // no catalog link, so there is nothing to sync them against — saying so is honest,
+      // where matching them by SKU would risk changing what a customer pays.
+      const skipped = unlinked ? ` ${unlinked} branch item(s) are not linked to the catalog and were left alone.` : ''
       setResyncNote(
         enabled + disabled === 0
-          ? 'All branch products already match the catalog.'
-          : `Synced ${enabled + disabled} product(s) to branches (${enabled} on, ${disabled} off).`,
+          ? `All linked branch products already match the catalog.${skipped}`
+          : `Synced ${enabled + disabled} product(s) to branches (${enabled} on, ${disabled} off).${skipped}`,
       )
       await reload()
     } catch (err) {
@@ -428,10 +470,10 @@ export default function ManagerNetworkCatalog() {
   }
 
   const exitBulk = () => {
-    setBulkMode(null)
+    setBulkMode(false)
     setSelectedIds([])
-    setPriceDrafts({})
-    setShowPriceEditor(false)
+    setDrafts({})
+    setEditorIds(null)
   }
 
   if (loading && !catalog.length) {
@@ -623,52 +665,32 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                 already-adopted item.
               </p>
             </div>
-            <SearchBox
-              className="w-full sm:w-[260px] sm:shrink-0"
-              icon={<FiSearch />}
-              placeholder="Search name, SKU, barcode"
-              value={query}
-              onChange={(e) => setQuery(e.target.value.replace(/[<>]/g, ''))}
-            />
+           
           </div>
-          {/* Bulk editing is opt-in: the checkbox column and this bar only exist once a
-              mode is chosen, so ordinary browsing of the catalog stays uncluttered. */}
+          {/* Bulk editing is opt-in: the checkbox column and the action bar only exist
+              once it is switched on, so ordinary browsing stays uncluttered. One mode
+              now, not one per field — the editor covers every field. */}
           {!bulkMode ? (
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              {/* Segmented pair rather than two loose buttons: they are two options of one
-                  action ("bulk edit what?"), so they read as one control. */}
-              <div className="inline-flex items-center gap-1 rounded-[7px] border border-brand-border bg-brand-n100 p-1">
-                <span className="px-2 text-[10px] font-bold tracking-wide text-brand-n700 uppercase">
-                  Bulk edit
-                </span>
-                {[
-                  { id: 'discount', label: 'Discountable', Icon: FiTag },
-                  { id: 'price', label: 'Prices', Icon: FiDollarSign },
-                ].map(({ id, label, Icon }) => (
-                  <button
-                    key={id}
-                    type="button"
-                    className="inline-flex h-8 items-center gap-1.5 rounded-[5px] border border-transparent bg-white px-2.5 text-[11px] font-bold text-brand-ink shadow-[0_1px_0_#00000008] hover:border-brand-border hover:bg-brand-n50"
-                    onClick={() => setBulkMode(id)}
-                  >
-                    <Icon className="shrink-0 text-brand-n600" size={13} />
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                {resyncNote && <span className="text-[11px] text-brand-subtle">{resyncNote}</span>}
-                <button
-                  type="button"
-                  className="inline-flex h-8 items-center gap-1.5 rounded-[5px] border border-brand-border bg-white px-2.5 text-[11px] font-bold text-brand-n700 hover:bg-brand-n50 disabled:opacity-40"
-                  disabled={busy}
-                  title="Push every catalog Discountable setting down to branch products"
-                  onClick={() => void resyncDiscountable()}
-                >
-                  <FiRefreshCw className={`shrink-0 ${busy ? 'animate-spin' : ''}`} size={13} />
-                  {busy ? 'Syncing…' : 'Re-sync discountable'}
-                </button>
-              </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <SecondaryButton compact type="button" onClick={() => setBulkMode(true)}>
+                <FiEdit2 className="shrink-0" size={13} />
+                Bulk edit
+              </SecondaryButton>
+              {/* Sync sits with the other catalog-wide tools instead of floating alone on
+                  the far right, and says what it does rather than being a bare icon. */}
+              <SecondaryButton
+                compact
+                type="button"
+                disabled={busy}
+                title="Push every catalog Discountable setting down to branch products"
+                onClick={() => void resyncDiscountable()}
+              >
+                <FiRefreshCw className={`shrink-0 ${busy ? 'animate-spin' : ''}`} size={13} />
+                {busy ? 'Syncing…' : 'Sync discountable to branches'}
+              </SecondaryButton>
+              {resyncNote && (
+                <span className="text-[11px] text-brand-subtle">{resyncNote}</span>
+              )}
             </div>
           ) : (
             <div className="rounded-[8px] border border-brand-gold/50 bg-brand-gold/10 px-3 py-2.5">
@@ -680,9 +702,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                     {selectedIds.length}
                   </span>
                   <span className="min-w-0">
-                    <strong className="block text-xs text-brand-ink">
-                      {bulkMode === 'price' ? 'Editing prices' : 'Editing discountable'}
-                    </strong>
+                    <strong className="block text-xs text-brand-ink">Bulk edit</strong>
                     <span className="block text-[10px] text-brand-n700">
                       {bulkProgress
                         ? `Saving ${bulkProgress.done + 1} of ${bulkProgress.total}…`
@@ -716,47 +736,14 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                       Clear
                     </button>
                   )}
-                  {bulkMode === 'discount' && (
-                    <>
-                      <PrimaryButton
-                        compact
-                        type="button"
-                        disabled={busy || !selectedIds.length}
-                        onClick={() => bulkSetDiscountable(true)}
-                      >
-                        Discountable
-                      </PrimaryButton>
-                      <SecondaryButton
-                        compact
-                        type="button"
-                        disabled={busy || !selectedIds.length}
-                        onClick={() => bulkSetDiscountable(false)}
-                      >
-                        Not discountable
-                      </SecondaryButton>
-                    </>
-                  )}
-                  {bulkMode === 'price' && (
-                    <PrimaryButton
-                      compact
-                      type="button"
-                      disabled={busy || !selectedIds.length}
-                      onClick={() => {
-                        // Seed each row's input with its current price so the editor opens
-                        // showing today's values, not blanks.
-                        const drafts = {}
-                        catalog
-                          .filter((r) => selectedIds.includes(r.id))
-                          .forEach((r) => {
-                            drafts[r.id] = String(r.price ?? '')
-                          })
-                        setPriceDrafts(drafts)
-                        setShowPriceEditor(true)
-                      }}
-                    >
-                      Edit {selectedIds.length || ''} price{selectedIds.length === 1 ? '' : 's'}
-                    </PrimaryButton>
-                  )}
+                  <PrimaryButton
+                    compact
+                    type="button"
+                    disabled={busy || !selectedIds.length}
+                    onClick={() => openEditor(selectedIds)}
+                  >
+                    Edit {selectedIds.length || ''} item{selectedIds.length === 1 ? '' : 's'}
+                  </PrimaryButton>
                   <button
                     type="button"
                     className="inline-flex h-8 w-8 items-center justify-center rounded-[5px] border-0 bg-transparent text-brand-n700 hover:bg-brand-gold/20 hover:text-brand-ink disabled:opacity-40"
@@ -771,7 +758,17 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
               </div>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {/* Search spans two columns and bottom-aligns with the labelled selects beside
+              it — a fixed 260px width inside a grid track fought the grid and left the
+              field sitting short and high against its neighbours. */}
+          <div className="grid grid-cols-2 items-end gap-2 sm:grid-cols-6">
+            <SearchBox
+              className="col-span-2 w-full"
+              icon={<FiSearch />}
+              placeholder="Search name"
+              value={query}
+              onChange={(e) => setQuery(e.target.value.replace(/[<>]/g, ''))}
+            />
             <SelectField
               label="Category"
               value={categoryFilter}
@@ -902,27 +899,59 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                     )}
                   </td>
                   <td className="px-5 py-3 text-right">
-                    <div className="flex flex-col items-end gap-1">
+                    {/* One "⋯" per row instead of a stack of per-field links — the row
+                        editor covers every field, so a second link per field would just
+                        be a second way into the same sheet. */}
+                    <div className="relative inline-block text-left">
                       <button
                         type="button"
-                        className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                        onClick={() => {
-                          setPriceEdit(row)
-                          setPriceValue(String(row.price ?? ''))
-                        }}
+                        aria-haspopup="menu"
+                        aria-expanded={rowMenuId === row.id}
+                        aria-label={`Actions for ${row.name}`}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-[5px] border border-brand-border bg-white text-brand-n700 hover:bg-brand-n50 active:bg-brand-n150"
+                        onClick={() => setRowMenuId(rowMenuId === row.id ? null : row.id)}
                       >
-                        Edit price
+                        <FiMoreHorizontal size={16} />
                       </button>
-                      <button
-                        type="button"
-                        className="border-0 bg-transparent text-[11px] font-bold text-brand-slate underline"
-                        onClick={() => {
-                          setDiscountEdit(row)
-                          setDiscountValue(row.discountEligible === true)
-                        }}
-                      >
-                        Edit discountable
-                      </button>
+                      {rowMenuId === row.id && (
+                        <>
+                          {/* Click-away layer — a menu that only closes via its own items
+                              is a menu people leave open by accident. */}
+                          <button
+                            type="button"
+                            aria-label="Close menu"
+                            className="fixed inset-0 z-10 cursor-default border-0 bg-transparent"
+                            onClick={() => setRowMenuId(null)}
+                          />
+                          <div
+                            role="menu"
+                            className="absolute right-0 z-20 mt-1 w-44 overflow-hidden rounded-[7px] border border-brand-line bg-white py-1 text-left shadow-lg"
+                          >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="block w-full border-0 bg-transparent px-3 py-2 text-left text-xs font-bold text-brand-ink hover:bg-brand-n50"
+                              onClick={() => openEditor([row.id])}
+                            >
+                              Edit item…
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="block w-full border-0 bg-transparent px-3 py-2 text-left text-xs text-brand-n700 hover:bg-brand-n50"
+                              onClick={() => {
+                                setBulkMode(true)
+                                setSelectedIds((prev) =>
+                                  prev.includes(row.id) ? prev : [...prev, row.id],
+                                )
+                                setRowMenuId(null)
+                              }}
+                            >
+                              Add to bulk selection
+                            </button>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -1065,73 +1094,141 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
         </Modal>
       )}
 
-      {priceEdit && (
-        <Modal onClose={() => !busy && setPriceEdit(null)}>
-          <h2 className="m-0 pr-8 text-lg">Update catalog price</h2>
-          <p className="mt-1 text-xs text-brand-muted">
-            {priceEdit.name} · {priceEdit.sku}
-          </p>
-          <div className="mt-4">
-            <Field
-              label="New price (₱)"
-              inputMode="decimal"
-              value={priceValue}
-              onChange={(e) => setPriceValue(decimalOnly(e.target.value))}
-            />
-            <p className="mt-2 text-[11px] text-brand-subtle">Current: {money(priceEdit.price)}</p>
-          </div>
-          <ModalActions>
-            <SecondaryButton compact type="button" disabled={busy} onClick={() => setPriceEdit(null)}>
-              Cancel
-            </SecondaryButton>
-            <PrimaryButton compact type="button" disabled={busy} onClick={savePrice}>
-              {busy ? 'Saving…' : 'Save price'}
-            </PrimaryButton>
-          </ModalActions>
-        </Modal>
-      )}
-
-      {showPriceEditor && (
-        <Modal xl onClose={() => !busy && setShowPriceEditor(false)}>
-          <h2 className="m-0 pr-8 text-lg">Edit prices</h2>
+      {/* One editor, one row or many. Each row keeps its own values — this is not
+          "set them all to X", which is almost never what a catalog needs — but the
+          set-for-all row above the table covers the cases where it is. */}
+      {editorIds && (
+        <Modal xl onClose={() => !busy && setEditorIds(null)}>
+          <h2 className="m-0 pr-8 text-lg">
+            {editorIds.length === 1 ? 'Edit catalog item' : `Edit ${editorIds.length} catalog items`}
+          </h2>
           <p className="mt-1 mb-3 text-xs text-brand-muted">
-            {selectedIds.length} selected · set each price individually, then save. Blank rows
-            are left alone. Catalog prices are the default for <strong>future</strong> adoptions —
-            a branch that already stocks the item keeps its own price.
+            Shared template. <strong>Discountable</strong> also pushes to branches that already
+            adopted the item; every other field here only sets the default for{' '}
+            <strong>future</strong> adoptions — a branch already stocking the item keeps its own
+            name and price.
           </p>
+          {error && (
+            <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">
+              {error}
+            </p>
+          )}
+
+          {editorIds.length > 1 && (
+            <div className="mb-3 flex flex-wrap items-end gap-2 rounded-[7px] border border-brand-softline bg-brand-n50 px-3 py-2.5">
+              <span className="text-[10px] font-bold tracking-wide text-brand-label uppercase">
+                Set for all {editorIds.length}
+              </span>
+              <SelectField
+                label="Category"
+                className="min-w-[150px]"
+                value=""
+                onChange={(e) => e.target.value && applyToAll('category', e.target.value)}
+              >
+                <option value="">Leave as is</option>
+                {categories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </SelectField>
+              <SecondaryButton
+                compact
+                type="button"
+                onClick={() => applyToAll('discountEligible', true)}
+              >
+                All discountable
+              </SecondaryButton>
+              <SecondaryButton
+                compact
+                type="button"
+                onClick={() => applyToAll('discountEligible', false)}
+              >
+                None discountable
+              </SecondaryButton>
+            </div>
+          )}
+
           <div className="max-h-[52vh] overflow-auto rounded border border-brand-softline">
             <table className="min-w-full text-left text-xs">
-              <thead className="sticky top-0 bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
+              <thead className="sticky top-0 z-10 bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
                 <tr>
-                  <th className="px-3 py-2">Product</th>
-                  <th className="px-3 py-2">SKU</th>
-                  <th className="px-3 py-2 text-right">Current</th>
-                  <th className="px-3 py-2 text-right">New price</th>
+                  <th className="px-3 py-2 min-w-[180px]">Name</th>
+                  <th className="px-3 py-2 min-w-[110px]">SKU</th>
+                  <th className="px-3 py-2 min-w-[130px]">Barcode</th>
+                  <th className="px-3 py-2 min-w-[140px]">Category</th>
+                  <th className="px-3 py-2 text-right min-w-[110px]">Price</th>
+                  <th className="px-3 py-2 text-center">Discountable</th>
                 </tr>
               </thead>
               <tbody>
                 {catalog
-                  .filter((row) => selectedIds.includes(row.id))
+                  .filter((row) => editorIds.includes(row.id))
                   .map((row) => {
-                    const draft = priceDrafts[row.id] ?? ''
-                    const changed = draft !== '' && Number(draft) !== Number(row.price)
+                    const draft = drafts[row.id]
+                    if (!draft) return null
+                    const priceChanged =
+                      draft.price !== '' && Number(draft.price) !== Number(row.price)
                     return (
-                      <tr key={row.id} className="border-t border-brand-softline">
-                        <td className="px-3 py-2 font-bold text-brand-ink">{row.name}</td>
-                        <td className="px-3 py-2 text-brand-subtle">{row.sku}</td>
-                        <td className={`px-3 py-2 text-right ${changed ? 'text-brand-subtle line-through' : ''}`}>
-                          {money(row.price)}
+                      <tr key={row.id} className="border-t border-brand-softline align-top">
+                        <td className="px-3 py-2">
+                          <input
+                            className="w-full rounded border border-brand-line bg-white px-2 py-1 text-brand-ink outline-none"
+                            value={draft.name}
+                            aria-label={`Name for ${row.name}`}
+                            onChange={(e) => setDraft(row.id, 'name', e.target.value)}
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            className="w-full rounded border border-brand-line bg-white px-2 py-1 text-brand-ink outline-none"
+                            value={draft.sku}
+                            aria-label={`SKU for ${row.name}`}
+                            onChange={(e) => setDraft(row.id, 'sku', e.target.value)}
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            className="w-full rounded border border-brand-line bg-white px-2 py-1 text-brand-ink outline-none"
+                            inputMode="numeric"
+                            value={draft.barcode}
+                            aria-label={`Barcode for ${row.name}`}
+                            onChange={(e) => setDraft(row.id, 'barcode', e.target.value)}
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          {/* Free text with the existing categories offered — a strict
+                              dropdown would make a new category impossible from here. */}
+                          <input
+                            className="w-full rounded border border-brand-line bg-white px-2 py-1 text-brand-ink outline-none"
+                            list="catalog-category-options"
+                            value={draft.category}
+                            aria-label={`Category for ${row.name}`}
+                            onChange={(e) => setDraft(row.id, 'category', e.target.value)}
+                          />
                         </td>
                         <td className="px-3 py-2 text-right">
                           <input
-                            className={`w-28 rounded border bg-white px-2 py-1 text-right text-brand-ink outline-none ${
-                              changed ? 'border-brand-gold' : 'border-brand-line'
+                            className={`w-24 rounded border bg-white px-2 py-1 text-right text-brand-ink outline-none ${
+                              priceChanged ? 'border-brand-gold' : 'border-brand-line'
                             }`}
                             inputMode="decimal"
-                            value={draft}
-                            onChange={(e) =>
-                              setPriceDrafts((prev) => ({ ...prev, [row.id]: decimalOnly(e.target.value) }))
-                            }
+                            value={draft.price}
+                            aria-label={`Price for ${row.name}`}
+                            onChange={(e) => setDraft(row.id, 'price', e.target.value)}
+                          />
+                          {priceChanged && (
+                            <span className="mt-0.5 block text-[10px] text-brand-subtle line-through">
+                              {money(row.price)}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          <input
+                            type="checkbox"
+                            aria-label={`Discountable for ${row.name}`}
+                            checked={draft.discountEligible === true}
+                            onChange={(e) => setDraft(row.id, 'discountEligible', e.target.checked)}
                           />
                         </td>
                       </tr>
@@ -1140,43 +1237,22 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
               </tbody>
             </table>
           </div>
+          <datalist id="catalog-category-options">
+            {categories.map((cat) => (
+              <option key={cat} value={cat} />
+            ))}
+          </datalist>
+
           <ModalActions>
-            <SecondaryButton compact type="button" disabled={busy} onClick={() => setShowPriceEditor(false)}>
+            <SecondaryButton compact type="button" disabled={busy} onClick={() => setEditorIds(null)}>
               Cancel
             </SecondaryButton>
-            <PrimaryButton compact type="button" disabled={busy} onClick={() => void saveBulkPrices()}>
+            <PrimaryButton compact type="button" disabled={busy} onClick={() => void saveEditor()}>
               {busy
                 ? bulkProgress
                   ? `Saving ${bulkProgress.done + 1}/${bulkProgress.total}…`
                   : 'Saving…'
-                : 'Save prices'}
-            </PrimaryButton>
-          </ModalActions>
-        </Modal>
-      )}
-
-      {discountEdit && (
-        <Modal onClose={() => !busy && setDiscountEdit(null)}>
-          <h2 className="m-0 pr-8 text-lg">Edit discountable</h2>
-          <p className="mt-1 text-xs text-brand-muted">
-            {discountEdit.name} · {discountEdit.sku}
-          </p>
-          <div className="mt-4">
-            <label className="flex items-center gap-2 text-xs font-bold text-brand-n700">
-              <input
-                type="checkbox"
-                checked={discountValue === true}
-                onChange={(e) => setDiscountValue(e.target.checked)}
-              />
-              PWD / Senior discount eligible
-            </label>
-          </div>
-          <ModalActions>
-            <SecondaryButton compact type="button" disabled={busy} onClick={() => setDiscountEdit(null)}>
-              Cancel
-            </SecondaryButton>
-            <PrimaryButton compact type="button" disabled={busy} onClick={saveDiscount}>
-              {busy ? 'Saving…' : 'Save'}
+                : 'Save changes'}
             </PrimaryButton>
           </ModalActions>
         </Modal>

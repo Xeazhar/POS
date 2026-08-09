@@ -2,6 +2,7 @@
 import { FiMinus, FiPlus, FiTrash2, FiX } from 'react-icons/fi'
 import { useNavigate } from 'react-router-dom'
 import { isDeviceEnabled, receiptPrinter } from '../../devices'
+import { fetchBranchFiscalHeader, logApprovalEvent } from '../../lib/api'
 import { useIsTouchUi } from '../../hooks/useIsTouchUi'
 import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '../../stores/posStore'
 import { formatSupportError } from '../../utils/errors'
@@ -343,11 +344,16 @@ function Cart({
         paymentMethod,
       })
 
-      const receipt = buildReceipt({
-        branch: {
+      // Real branch row, not a stub — the stub had no TIN/permit/MIN, so every printed
+      // sale showed "TIN: —". Cached in api, so this is one fetch per session.
+      const branchHeader =
+        (await fetchBranchFiscalHeader(user?.branchId).catch(() => null)) || {
           name: user?.branchName,
           business_name: user?.branchName,
-        },
+        }
+
+      const receipt = buildReceipt({
+        branch: branchHeader,
         user,
         transaction: {
           ...saved,
@@ -839,7 +845,23 @@ function Cart({
           title="Remove cart item"
           detail={`Supervisor PIN required to remove ${items[removeIndex]?.name || 'this item'} from the cart.`}
           onCancel={() => setRemoveIndex(null)}
-          onApproved={() => {
+          onApproved={({ staffId, name, role }) => {
+            // A cart line vanishing has no row of its own to hold an approver, so the
+            // sign-off is written to the audit trail instead of being lost.
+            const removed = items[removeIndex]
+            void logApprovalEvent({
+              branchId: user?.branchId,
+              requestedBy: user?.id,
+              approvedBy: staffId,
+              approverName: name,
+              approverRole: role,
+              action: 'cart_line_remove',
+              detail: `Removed ${removed?.name || 'item'} from cart`,
+              meta: {
+                product_id: removed?.id || null,
+                quantity: removed?.quantity ?? null,
+              },
+            })
             removeItem(removeIndex)
             setRemoveIndex(null)
           }}

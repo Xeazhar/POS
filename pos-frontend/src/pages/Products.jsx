@@ -15,15 +15,17 @@ import {
   SkeletonRows,
   StockBadge,
   TableCard,
+  Tabs,
   UnitBadge,
   moneyClass,
   tableRowClass,
 } from '../components/ui'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
-import { hasSupabase, logAuditEvent, bootstrapBranchData } from '../lib/api'
+import { hasSupabase, logAuditEvent, bootstrapBranchData, fetchBranches } from '../lib/api'
 import { isDayFullyClosed, money, qty, today, formatDate, stockTone } from '../utils/format'
 import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 import InventoryImportPanel from '../components/inventory/InventoryImportPanel'
+import MovementHistoryPanel from '../components/inventory/MovementHistoryPanel'
 import {
   decimalOnly,
   digitsOnly,
@@ -50,11 +52,11 @@ const emptyForm = {
 function Products() {
   const user = useAuthStore((state) => state.user)
   const isRestaurant = user?.branchType === 'restaurant'
-  const products = useProductStore((state) => state.products)
+  const ownProducts = useProductStore((state) => state.products)
   const productsLoading = useProductStore((state) => state.loading)
   const updateProduct = useProductStore((state) => state.updateProduct)
   const toggleAvailableToday = useProductStore((state) => state.toggleAvailableToday)
-  const movements = useInventoryStore((state) => state.movements)
+  const ownMovements = useInventoryStore((state) => state.movements)
   const addMovement = useInventoryStore((state) => state.addMovement)
   const dayEnds = useInventoryStore((state) => state.dayEnds)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
@@ -70,11 +72,27 @@ function Products() {
   const [confirmAdjust, setConfirmAdjust] = useState(null)
   const [adjustReason, setAdjustReason] = useState('')
   const [pageLoading, setPageLoading] = useState(Boolean(hasSupabase && user?.branchId))
+  // 'stock' = the count as it is now; 'movements' = how it got there.
+  const [tab, setTab] = useState('stock')
+  // Managers/masters can look at any branch's stock from this page. Another branch's
+  // catalog is held in local state rather than pushed into useProductStore, because that
+  // store is what the POS sells from — loading Cubao's products into it while standing at
+  // Pasig would put the wrong prices on the till.
+  const canPickBranch = isManagerRole(user?.role)
+  const [branches, setBranches] = useState([])
+  const [viewBranchId, setViewBranchId] = useState(user?.branchId || '')
+  const [remote, setRemote] = useState(null) // { products, movements } for a non-own branch
+  const [remoteLoading, setRemoteLoading] = useState(false)
+  const viewingOwnBranch = !viewBranchId || viewBranchId === user?.branchId
+  const products = viewingOwnBranch ? ownProducts : remote?.products || []
+  const movements = viewingOwnBranch ? ownMovements : remote?.movements || []
 
   const dayClosed = isDayFullyClosed(dayEnds, dayOpenHour)
   const needsAdjustReason = dayClosed && isSupervisorOrAbove(user?.role)
-  const canEditProduct = isManagerRole(user?.role)
-  const canImportStock = isSupervisorOrAbove(user?.role) && !isRestaurant
+  // Edits and stock adjustments always act on the signed-in branch's own rows, so another
+  // branch's inventory is read-only here. Change it from that branch's own page.
+  const canEditProduct = isManagerRole(user?.role) && viewingOwnBranch
+  const canImportStock = isSupervisorOrAbove(user?.role) && !isRestaurant && viewingOwnBranch
 
   const reloadProducts = async () => {
     if (!hasSupabase || !user?.branchId) return
@@ -91,7 +109,7 @@ function Products() {
       setPageLoading(false)
       return
     }
-    if (products.length) {
+    if (ownProducts.length) {
       setPageLoading(false)
       return
     }
@@ -99,6 +117,42 @@ function Products() {
     reloadProducts().finally(() => setPageLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.branchId])
+
+  useEffect(() => {
+    if (!canPickBranch || !hasSupabase) return undefined
+    let active = true
+    fetchBranches()
+      .then((rows) => {
+        if (active) setBranches(rows || [])
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [canPickBranch])
+
+  useEffect(() => {
+    if (viewingOwnBranch) {
+      setRemote(null)
+      return undefined
+    }
+    let active = true
+    setRemoteLoading(true)
+    bootstrapBranchData(viewBranchId)
+      .then((data) => {
+        if (!active) return
+        setRemote({ products: data.products || [], movements: data.movements || [] })
+      })
+      .catch(() => {
+        if (active) setRemote({ products: [], movements: [] })
+      })
+      .finally(() => {
+        if (active) setRemoteLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [viewBranchId, viewingOwnBranch])
 
   useEffect(() => {
     setPage(0)
@@ -310,7 +364,7 @@ function Products() {
   const pageIndex = Math.min(page, pageCount - 1)
   const pageRows = list.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
 
-  if ((pageLoading || productsLoading) && !products.length) {
+  if (((pageLoading || productsLoading) && !products.length) || (remoteLoading && !products.length)) {
     return <PageSkeleton variant="table" />
   }
 
@@ -325,11 +379,31 @@ function Products() {
         </span>
       </PageHeader>
 
+      {canPickBranch && !viewingOwnBranch && (
+        <p className="mb-3 rounded-md bg-brand-warn-bg px-3 py-2 text-xs text-brand-warn">
+          Viewing another branch — read only. Prices and stock are changed from that branch&apos;s
+          own Inventory page.
+        </p>
+      )}
+
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { id: 'stock', label: isRestaurant ? 'Menu' : 'Inventory' },
+          { id: 'movements', label: 'Movement history' },
+        ]}
+      />
+
+      {tab === 'movements' ? (
+        <MovementHistoryPanel branchId={viewBranchId || user?.branchId} products={products} />
+      ) : (
+      <>
       {canImportStock && (
         <InventoryImportPanel products={products} onDone={reloadProducts} />
       )}
 
-      <div className="mb-[18px] flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+      <div className="mt-[18px] mb-[18px] flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
         <SearchBox
           className="w-full max-w-[330px]"
           icon={<FiSearch />}
@@ -337,6 +411,28 @@ function Products() {
           value={query}
           onChange={(event) => setQuery(event.target.value.replace(/[<>]/g, ''))}
         />
+        {canPickBranch && (
+          <SelectField
+            label="Branch"
+            value={viewBranchId}
+            onChange={(e) => {
+              setViewBranchId(e.target.value)
+              setPage(0)
+              close()
+            }}
+            className="w-full max-w-[200px]"
+          >
+            {!branches.some((b) => b.id === user?.branchId) && user?.branchId && (
+              <option value={user.branchId}>My branch</option>
+            )}
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+                {b.id === user?.branchId ? ' (mine)' : ''}
+              </option>
+            ))}
+          </SelectField>
+        )}
         <SelectField
           label="Category"
           value={categoryFilter}
@@ -438,7 +534,8 @@ function Products() {
                   <span className="justify-self-center">
                     <button
                       type="button"
-                      className={`rounded-full px-2 py-1 text-[10px] font-bold ${
+                      disabled={!viewingOwnBranch}
+                      className={`rounded-full px-2 py-1 text-[10px] font-bold disabled:opacity-50 ${
                         product.availableToday !== false
                           ? 'bg-brand-success-bg text-brand-success-text'
                           : 'bg-brand-n200 text-brand-subtle'
@@ -485,6 +582,8 @@ function Products() {
           />
         )}
       </TableCard>
+      </>
+      )}
 
       {selected && !isRestaurant && (
         <div className="fixed inset-0 z-[5] bg-[#20242666]" onClick={close}>
@@ -564,7 +663,14 @@ function Products() {
                   )}
                 </div>
 
-                <form className="mt-5 grid gap-4 border-t border-brand-sheet-head pt-5" onSubmit={requestAdjust}>
+                {/* Stock adjustments write to the signed-in branch's inventory, so they are
+                    hidden while looking at someone else's stock. */}
+                <form
+                  className={`mt-5 grid gap-4 border-t border-brand-sheet-head pt-5 ${
+                    viewingOwnBranch ? '' : 'hidden'
+                  }`}
+                  onSubmit={requestAdjust}
+                >
                   <h3 className="m-0 text-sm">Adjust stock</h3>
                   <SelectField label="Action" name="action" defaultValue="Restock">
                     <option>Restock</option>

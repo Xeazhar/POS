@@ -25,15 +25,18 @@ import {
   varianceToneClass,
 } from '../../components/ui'
 import {
+  approverLabel,
   bootstrapBranchData,
   fetchBranchTelemetry,
   fetchBranches,
   fetchPettyCashTimeline,
   fetchRefundSummary,
+  fetchStaffShifts,
   fetchTransactionDetail,
   hasSupabase,
   approveDayEnd,
   approvePettyCash,
+  fulfillPettyCash,
   rejectPettyCash,
   reopenDayEnd,
   saveBranch,
@@ -48,6 +51,54 @@ import { discountSourceLabel, isPromoDiscountType } from '../../utils/promo'
 import { isUuid } from '../../utils/transactionDetail'
 
 const PAGE_SIZE = 10
+/** How far back the branch Staff table reads the clock-in/out log. */
+const STAFF_LOG_DAYS = 30
+
+function daysAgoKey(days) {
+  const d = new Date()
+  d.setDate(d.getDate() - days)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+function hoursLabel(totalMs) {
+  if (!totalMs || totalMs <= 0) return '—'
+  const mins = Math.round(totalMs / 60000)
+  return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`
+}
+
+/**
+ * One row per person, not per shift. "Who works here and how many hours did they log"
+ * is a roster question; the shift-by-shift cash detail already has its own page.
+ */
+function rollUpStaffHours(rows = []) {
+  const byStaff = new Map()
+  for (const row of rows) {
+    const key = row.staffId || row.staffName || 'unknown'
+    const entry = byStaff.get(key) || {
+      key,
+      name: row.staffName || 'Staff',
+      role: row.staffRole || null,
+      sessions: 0,
+      totalMs: 0,
+      openNow: false,
+      lastIn: null,
+      lastOut: null,
+    }
+    entry.sessions += 1
+    if (!entry.role && row.staffRole) entry.role = row.staffRole
+    const start = row.clockIn ? new Date(row.clockIn).getTime() : NaN
+    const end = row.clockOut ? new Date(row.clockOut).getTime() : NaN
+    // An open shift counts up to now — otherwise today's hours read as zero all day.
+    const stop = Number.isNaN(end) ? Date.now() : end
+    if (!Number.isNaN(start) && stop > start) entry.totalMs += stop - start
+    if (!row.clockOut) entry.openNow = true
+    if (!entry.lastIn && row.clockIn) entry.lastIn = row.clockIn
+    if (!entry.lastOut && row.clockOut) entry.lastOut = row.clockOut
+    byStaff.set(key, entry)
+  }
+  return [...byStaff.values()].sort((a, b) => b.totalMs - a.totalMs)
+}
 
 function ManagerBranchDashboard() {
   const { branchId } = useParams()
@@ -74,6 +125,7 @@ function ManagerBranchDashboard() {
   const [selectedProduct, setSelectedProduct] = useState(null)
   const [deviceBusy, setDeviceBusy] = useState(null)
   const [pettyBusyId, setPettyBusyId] = useState(null)
+  const [staffShifts, setStaffShifts] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -105,9 +157,18 @@ function ManagerBranchDashboard() {
           endDate: businessDate(new Date(), Number(payload.dayOpenHour ?? 7)),
         }).catch(() => [])
         const tel = await fetchBranchTelemetry([branchId])
+        // Staff roster + hours comes from the shift log — the same clock-in/out records
+        // Shifts.jsx reads. STAFF_LOG_DAYS back, so a fortnightly payroll question is
+        // answerable without opening a second page.
+        const shiftRows = await fetchStaffShifts({
+          branchId,
+          start: daysAgoKey(STAFF_LOG_DAYS),
+          end: businessDate(new Date(), Number(payload.dayOpenHour ?? 7)),
+        }).catch(() => [])
         if (active) {
           setData({ ...payload, pettyTimeline })
           setTelemetry({ devices: tel.devices[branchId] || [] })
+          setStaffShifts(shiftRows || [])
           setLoading(false)
         }
       })
@@ -151,10 +212,29 @@ function ManagerBranchDashboard() {
   const todayKey = businessDate(new Date(), openHour)
   const todayTx = data.transactions.filter((item) => item.status === 'Paid' && item.date === todayKey)
   const revenue = todayTx.reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
-  const refundedToday = todayTx.reduce((sum, item) => sum + Number(item.refundedAmount || 0), 0)
+  /**
+   * Money handed back today, across ALL of today's receipts — not just the ones still
+   * marked Paid.
+   *
+   * A fully voided sale is the largest kind of refund there is, and it drops out of
+   * `todayTx` (which filters to status === 'Paid'), so summing over that list reported
+   * a smaller refund figure the more completely a sale was refunded. A void also does not
+   * always write `refunded_amount`, so the whole total counts when it is absent.
+   */
+  const todayAll = data.transactions.filter((item) => item.date === todayKey)
+  const refundedRows = todayAll.filter(
+    (item) => item.status === 'Voided' || Number(item.refundedAmount || 0) > 0,
+  )
+  const refundedToday = refundedRows.reduce((sum, item) => {
+    const refunded = Number(item.refundedAmount || 0)
+    if (item.status === 'Voided') return sum + (refunded || Number(item.total || 0))
+    return sum + refunded
+  }, 0)
+  const refundCountToday = refundedRows.length
   const low = data.products.filter((product) => product.stock <= product.lowStockAt)
   const menuOn = data.products.filter((p) => p.availableToday !== false)
   const menuOff = data.products.filter((p) => p.availableToday === false)
+  const staffRoster = useMemo(() => rollUpStaffHours(staffShifts), [staffShifts])
   const plateMix = useMemo(() => {
     const map = {}
     const comboMap = {}
@@ -369,12 +449,16 @@ function ManagerBranchDashboard() {
       (acc, row) => {
         if (row.kind === 'change_fund') acc.changeFund += Number(row.amount || 0)
         else if (row.kind === 'pickup') acc.pickup += Number(row.amount || 0)
-        else if (row.kind === 'paid_out' && row.status === 'approved') {
+        // Only cash actually handed over has left the drawer. 'approved' is now an
+        // intermediate state where the money is still in the till.
+        else if (row.kind === 'paid_out' && row.status === 'fulfilled') {
           acc.paidOut += Number(row.amount || 0)
+        } else if (row.kind === 'paid_out' && row.status === 'approved') {
+          acc.approvedUnfulfilled += Number(row.amount || 0)
         }
         return acc
       },
-      { changeFund: 0, pickup: 0, paidOut: 0 },
+      { changeFund: 0, pickup: 0, paidOut: 0, approvedUnfulfilled: 0 },
     )
   }, [pettyTimeline])
 
@@ -432,16 +516,25 @@ function ManagerBranchDashboard() {
         <ErrorBanner error={error} onDismiss={() => setError('')} />
       )}
 
-      <div className="mb-4 grid grid-cols-4 gap-3.5 max-[900px]:grid-cols-2 max-[700px]:grid-cols-1">
+      <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-3.5 max-[700px]:grid-cols-1">
         {(isRestaurant
           ? [
-              ['Sales today', money(revenue), refundedToday > 0 ? `−${money(refundedToday)} refunded` : ''],
+              ['Sales today', money(revenue), ''],
+              // Refunds get their own card rather than a footnote under Sales: money going
+              // back out is its own number, and a hint under another figure is not
+              // something anyone scans for.
+              ['Refunded today', money(refundedToday), refundCountToday
+                ? `${refundCountToday} receipt${refundCountToday === 1 ? '' : 's'}`
+                : ''],
               ['Orders today', todayTx.length, ''],
               ['Potahe on menu', menuOn.length, ''],
               ['Off today', menuOff.length, ''],
             ]
           : [
-              ['Revenue today', money(revenue), refundedToday > 0 ? `−${money(refundedToday)} refunded` : ''],
+              ['Revenue today', money(revenue), ''],
+              ['Refunded today', money(refundedToday), refundCountToday
+                ? `${refundCountToday} receipt${refundCountToday === 1 ? '' : 's'}`
+                : ''],
               ['Orders today', todayTx.length, ''],
               ['Low stock', low.length, ''],
               ['Reseko loss', money(shrink), ''],
@@ -550,12 +643,23 @@ function ManagerBranchDashboard() {
                   </span>
                 )}
               </span>
-              <span className="self-center truncate max-[900px]:hidden">{item.cashier}</span>
+              {/* Voided/refunded receipts name their approver right here — the question
+                  "who authorised this" should not need the detail modal to answer. */}
+              <span className="min-w-0 self-center max-[900px]:hidden">
+                <span className="block truncate">{item.cashier}</span>
+                {approverLabel(item.voidApprovedByName, item.voidApprovedByRole) && (
+                  <span className="block truncate text-[10px] text-brand-subtle">
+                    Appr: {approverLabel(item.voidApprovedByName, item.voidApprovedByRole)}
+                  </span>
+                )}
+              </span>
+              {/* Original total, then the refund as its own labelled figure — never a
+                  single already-netted number sitting next to a minus sign. */}
               <span className={`self-center ${moneyClass}`}>
-                {money(item.netTotal ?? item.total)}
+                {money(item.total)}
                 {Number(item.refundedAmount || 0) > 0 && item.status !== 'Voided' && (
-                  <span className="ml-1 text-[10px] text-brand-danger">
-                    −{money(item.refundedAmount)}
+                  <span className="block text-[10px] text-brand-danger">
+                    Refunded {money(item.refundedAmount)}
                   </span>
                 )}
               </span>
@@ -623,7 +727,7 @@ function ManagerBranchDashboard() {
             <span className="text-right">Variance</span>
             <span className="max-[900px]:hidden">Status</span>
             <span className="max-[900px]:hidden">Note</span>
-            <span className="text-right"> </span>
+            <span className="text-right">Action</span>
           </div>
           {dayEndPageRows.map((entry) => (
             <div
@@ -660,7 +764,11 @@ function ManagerBranchDashboard() {
                   >
                     {approving === entry.id ? '…' : 'Approve'}
                   </button>
-                ) : entry.status === 'closed' ? (
+                ) : entry.status === 'closed' && entry.date === todayKey ? (
+                  /* Reopen is only ever offered for the CURRENT business day. Once a new
+                     business day has started, a past closing is permanently locked — no
+                     role, no override. Reopening a passed day would let cash figures move
+                     under a Z-reading that has already been filed. */
                   <button
                     type="button"
                     className="border-0 bg-transparent text-[11px] font-bold whitespace-nowrap text-brand-ink underline disabled:opacity-40"
@@ -672,6 +780,10 @@ function ManagerBranchDashboard() {
                   >
                     Reopen
                   </button>
+                ) : entry.status === 'closed' ? (
+                  <span className="text-[11px] text-brand-subtle" title="Closed days stay locked once a new business day starts">
+                    Locked
+                  </span>
                 ) : (
                   <span className="text-brand-subtle">—</span>
                 )}
@@ -802,7 +914,9 @@ function ManagerBranchDashboard() {
                     ? 'Petty (pending)'
                     : row.status === 'rejected'
                       ? 'Petty (rejected)'
-                      : 'Paid-out'}
+                      : row.status === 'approved'
+                        ? 'Petty (approved, not handed over)'
+                        : 'Paid-out'}
             </strong>
             <span className="text-right tabular-nums">{money(row.amount)}</span>
             <span className="truncate max-[900px]:hidden">{row.staffName}</span>
@@ -852,6 +966,29 @@ function ManagerBranchDashboard() {
                     Approve
                   </PrimaryButton>
                 </span>
+              ) : row.kind === 'paid_out' && row.status === 'approved' ? (
+                /* Fulfilment is not role-gated — whoever is on site hands the cash over,
+                   including the cashier who raised it. The approval already happened. */
+                <PrimaryButton
+                  compact
+                  type="button"
+                  disabled={pettyBusyId === row.id}
+                  title="Confirm the cash has physically left the drawer"
+                  onClick={async () => {
+                    try {
+                      setPettyBusyId(row.id)
+                      setError('')
+                      await fulfillPettyCash({ id: row.id, confirmedBy: user.id })
+                      await reload()
+                    } catch (err) {
+                      setError(formatSupportError(err, 'PETTY03'))
+                    } finally {
+                      setPettyBusyId(null)
+                    }
+                  }}
+                >
+                  Mark handed over
+                </PrimaryButton>
               ) : (
                 <span className="text-brand-subtle max-[900px]:hidden">—</span>
               )}
@@ -865,10 +1002,51 @@ function ManagerBranchDashboard() {
         )}
       </TableCard>
 
+      <TableCard className="mb-4 max-h-none overflow-hidden">
+        <SectionHeading
+          title="Staff"
+          subtitle={`Clock-in / out hours · last ${STAFF_LOG_DAYS} days`}
+          meta={`${staffRoster.length} on the log`}
+        />
+        <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,0.8fr)_5rem_5.5rem_minmax(0,1fr)] items-center gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[minmax(0,1fr)_5.5rem]">
+          <span>Name</span>
+          <span className="max-[900px]:hidden">Role</span>
+          <span className="text-right max-[900px]:hidden">Shifts</span>
+          <span className="text-right">Hours</span>
+          <span className="max-[900px]:hidden">Last in / out</span>
+        </div>
+        {staffRoster.map((row) => (
+          <div
+            key={row.key}
+            className={`grid grid-cols-[minmax(0,1.4fr)_minmax(0,0.8fr)_5rem_5.5rem_minmax(0,1fr)] items-center gap-2 text-xs max-[900px]:grid-cols-[minmax(0,1fr)_5.5rem] ${tableRowDenseClass}`}
+          >
+            <div className="min-w-0">
+              <strong className="block truncate text-brand-ink">{row.name}</strong>
+              <small className="block truncate text-[10px] text-brand-subtle capitalize max-[900px]:block">
+                {row.role || '—'}
+                {row.openNow ? ' · on shift now' : ''}
+              </small>
+            </div>
+            <span className="truncate capitalize max-[900px]:hidden">{row.role || '—'}</span>
+            <span className="text-right tabular-nums max-[900px]:hidden">{row.sessions}</span>
+            <strong className="text-right tabular-nums text-brand-ink">{hoursLabel(row.totalMs)}</strong>
+            <span className="truncate text-brand-slate max-[900px]:hidden">
+              {row.lastIn ? new Date(row.lastIn).toLocaleString() : '—'}
+              {row.lastOut ? ` → ${new Date(row.lastOut).toLocaleTimeString()}` : row.openNow ? ' → open' : ''}
+            </span>
+          </div>
+        ))}
+        {staffRoster.length === 0 && (
+          <div className="px-4 py-6 text-xs text-brand-subtle">
+            No clock-in records for this branch in the last {STAFF_LOG_DAYS} days.
+          </div>
+        )}
+      </TableCard>
+
       {restockEntry && (
         <DayEndReportPanels
           report={restockEntry.dayReport}
-          title="Units sold & restock"
+          title="Sold"
           showRestock
           compact
           alert
@@ -877,7 +1055,7 @@ function ManagerBranchDashboard() {
         />
       )}
 
-      <TableCard className="max-h-none overflow-hidden">
+      <TableCard className="mb-4 max-h-none overflow-hidden">
         <SectionHeading
           title={isRestaurant ? "Today's menu / potahe" : 'Inventory'}
           meta={`${data.products.length} ${isRestaurant ? 'items' : 'SKUs'}`}
@@ -979,7 +1157,44 @@ function ManagerBranchDashboard() {
               <Field label="Branch name" required value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} />
               <Field label="Business name (receipt)" value={form.business_name || ''} onChange={(e) => setForm({ ...form, business_name: e.target.value })} />
               <Field label="Address" value={form.address || ''} onChange={(e) => setForm({ ...form, address: e.target.value })} />
-              <Field label="TIN" value={form.tin || ''} onChange={(e) => setForm({ ...form, tin: e.target.value })} />
+              {/* Two-level TIN: the business has one TIN, each branch has a BIR branch
+                  code appended to it. The main TIN is edited once on Branches, not here,
+                  so two branches cannot end up claiming different company TINs. */}
+              <div className="rounded-md border border-brand-softline bg-brand-n50 px-3 py-2.5">
+                <span className="block text-[10px] font-bold tracking-wide text-brand-label uppercase">
+                  Main company TIN
+                </span>
+                <strong className="block text-sm text-brand-ink">
+                  {branch?.company_tin || 'Not set'}
+                </strong>
+                <span className="mt-0.5 block text-[10px] text-brand-subtle">
+                  {branch?.company_tin
+                    ? 'Shared by every branch. Change it on Manager → Branches.'
+                    : 'Set it on Manager → Branches. Until then this branch prints its own TIN below.'}
+                </span>
+              </div>
+              <Field
+                label="Branch TIN code (BIR branch code)"
+                value={form.branch_tin_code ?? ''}
+                onChange={(e) =>
+                  setForm({ ...form, branch_tin_code: e.target.value.replace(/\D/g, '').slice(0, 5) })
+                }
+                inputMode="numeric"
+                placeholder="00000 for head office, 00001 for the first branch"
+              />
+              <p className="-mt-1 text-[11px] text-brand-muted">
+                Prints on the invoice as{' '}
+                <strong className="text-brand-ink">
+                  {branch?.company_tin
+                    ? `${branch.company_tin}-${(form.branch_tin_code || '00000').padStart(5, '0')}`
+                    : form.tin || '—'}
+                </strong>
+              </p>
+              <Field
+                label="Branch TIN override (only if this branch is registered separately)"
+                value={form.tin || ''}
+                onChange={(e) => setForm({ ...form, tin: e.target.value })}
+              />
               <Field label="BIR permit no." value={form.bir_permit_no || ''} onChange={(e) => setForm({ ...form, bir_permit_no: e.target.value })} />
               <Field label="Machine ID (MIN)" value={form.machine_identification_no || ''} onChange={(e) => setForm({ ...form, machine_identification_no: e.target.value })} />
               <Field label="Serial number" value={form.serial_number || ''} onChange={(e) => setForm({ ...form, serial_number: e.target.value })} />

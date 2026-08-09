@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eyebrow, ErrorBanner, Field, PrimaryButton, Skeleton } from '../components/ui'
 import Turnstile, { useTurnstileSiteKey } from '../components/shared/Turnstile'
@@ -6,10 +6,9 @@ import { allowDemoMode, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { formatSupportError } from '../utils/errors'
 import { sanitizePinInput } from '../utils/pin'
-import { isManagerRole } from '../utils/roles'
 import { staffHomePath } from '../constants/nav'
-import * as api from '../lib/api'
 import { APP_VERSION_LABEL, IS_PRERELEASE } from '../utils/version'
+import { SHOW_ENV_BADGE, environmentLabel } from '../utils/environment'
 
 function Login() {
   const configured = hasSupabase || allowDemoMode
@@ -30,6 +29,25 @@ function Login() {
   const loadBranch = useProductStore((state) => state.loadBranch)
   const navigate = useNavigate()
 
+  /**
+   * Real network state, not build configuration.
+   *
+   * This screen used to print "Connected to Supabase" whenever the env vars existed —
+   * which is a statement about the build, not about whether this terminal can currently
+   * reach anything. A cashier on dead wifi read "Connected" and concluded the problem was
+   * their PIN. Only surfaced when actually offline, because "you are online" is not news.
+   */
+  const [isOffline, setIsOffline] = useState(() => typeof navigator !== 'undefined' && !navigator.onLine)
+  useEffect(() => {
+    const sync = () => setIsOffline(!navigator.onLine)
+    window.addEventListener('online', sync)
+    window.addEventListener('offline', sync)
+    return () => {
+      window.removeEventListener('online', sync)
+      window.removeEventListener('offline', sync)
+    }
+  }, [])
+
   const resetCaptcha = () => {
     setCaptchaToken('')
     setCaptchaKey((k) => k + 1)
@@ -43,19 +61,11 @@ function Login() {
       const data = await loadBranch(user.branchId)
       if (data) hydrate(data)
     }
-    let needsClock = false
-    if (!isManagerRole(user?.role) && hasSupabase && user?.branchId) {
-      try {
-        const open = await api.fetchOpenShift(user.id)
-        needsClock = !open
-      } catch {
-        /* clock-in optional if migration missing */
-      }
-    }
+    // Whether a change fund is needed is decided by the shift store inside Shell, from
+    // local state first. Deciding it here would mean a signed-in cashier with no network
+    // could not be told "your shift is still open" and would be asked to count a drawer
+    // they already counted.
     navigate(staffHomePath(user))
-    if (needsClock) {
-      useAuthStore.setState({ pendingClockIn: true })
-    }
   }
 
   return (
@@ -202,8 +212,22 @@ function Login() {
             )}
             <div className="mt-[22px] flex items-center justify-between gap-3">
               <small className="text-[10px] text-brand-n600">
-                {hasSupabase ? 'Connected to Supabase' : 'Offline demo store'}
+                {!hasSupabase
+                  ? 'Demo mode — no store database connected'
+                  : isOffline
+                    ? 'No network — PIN sign-in still works on this device'
+                    : ''}
               </small>
+              {/* Which database this build talks to, before anyone signs in and starts
+                  entering data into it. */}
+              {SHOW_ENV_BADGE && hasSupabase && (
+                <span
+                  className="rounded-[4px] bg-brand-warn-bg px-2 py-0.5 text-[10px] font-bold tracking-wide text-brand-warn uppercase"
+                  title="Not the live store database"
+                >
+                  {environmentLabel()}
+                </span>
+              )}
               {mode === 'pin' ? (
                 <button
                   type="button"

@@ -25,7 +25,23 @@ const { ERROR_CATALOG, SALE_IMPACT_GUIDANCE } = await import(
   new URL('../src/utils/errors.js', import.meta.url).href
 )
 
-const CODE_PATTERN = /\b(AUTH|TILL|SALE|INV|CAT|DEV|SYNC|DATA|PRINT|SEC|GEN)\d{2}\b/g
+/**
+ * Deliberately generic: ANY uppercase-prefix + two-digit token counts as a support code.
+ *
+ * This used to be an allowlist of known prefixes, which defeated the entire purpose — the
+ * check reported "all clear" while IMP01, IMP02, PETTY01, PETTY02, PRICE01 and SHIFT01
+ * were being shown to staff with no catalog entry behind any of them. A checker that only
+ * looks for codes it already knows about cannot find the ones somebody forgot to add.
+ *
+ * The cost of being generic is occasional false positives from code-shaped identifiers,
+ * which IGNORE below handles by name.
+ */
+const CODE_PATTERN = /\b[A-Z]{2,6}\d{2}\b/g
+
+/** Code-shaped tokens that are not support codes. Keep this list short and justified. */
+const IGNORE = new Set([
+  'XX99', // placeholder in a doc comment describing the code format itself
+])
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir)) {
@@ -44,6 +60,7 @@ function findUsedCodes() {
     text.split('\n').forEach((line, i) => {
       for (const match of line.matchAll(CODE_PATTERN)) {
         const code = match[0]
+        if (IGNORE.has(code)) continue
         if (!used.has(code)) used.set(code, [])
         used.get(code).push(`${relative(root, file).replace(/\\/g, '/')}:${i + 1}`)
       }

@@ -13,10 +13,11 @@ import {
   tableRowClass,
 } from '../../components/ui'
 import {
+  approverLabel,
   fetchAllStaff,
   fetchAuditEvents,
+  fetchBirDailyBreakdown,
   fetchBranches,
-  fetchDailyReading,
   fetchDiscountReport,
   fetchElectronicJournal,
   fetchFiscalBackup,
@@ -498,10 +499,13 @@ function ManagerReports() {
     }
 
     if (selected === 'void-log') {
+      // limit: null — an audit report must cover its whole date range, not the most
+      // recent 500 events within it.
       const events = await fetchSaleEvents({
         start: filters.start,
         end: filters.end,
         branchId,
+        limit: null,
       })
       setRows(
         ensureRows(
@@ -514,6 +518,7 @@ function ManagerReports() {
               amount: Number(e.amount || 0),
               reason: e.reason,
               staff: e.staff?.full_name,
+              approved_by: approverLabel(e.approver_name, e.approver_role) || '—',
               branch: e.branches?.name,
             })),
           'No voids or refunds in this range.',
@@ -527,6 +532,7 @@ function ManagerReports() {
         start: filters.start,
         end: filters.end,
         branchId,
+        limit: null,
       })
       setRows(
         ensureRows(
@@ -544,18 +550,16 @@ function ManagerReports() {
     }
 
     if (selected === 'bir-summary') {
-      // One summary row per day in range.
-      const days = []
-      const cursor = new Date(`${filters.start}T12:00:00`)
-      const end = new Date(`${filters.end}T12:00:00`)
-      while (cursor <= end) {
-        const key = cursor.toISOString().slice(0, 10)
-        days.push(key)
-        cursor.setDate(cursor.getDate() + 1)
-      }
-      // Days are fetched in parallel: an "All records" run over a year was 365 sequential
-      // round trips, which is minutes of spinner for a report someone runs monthly.
-      const readings = await Promise.all(days.map((date) => fetchDailyReading({ date, branchId })))
+      // One ranged query, bucketed per day in api.js. Previously this looped
+      // fetchDailyReading once per day — first sequentially (365 round trips for a year),
+      // then via Promise.all, which just turned that into 365 concurrent paged fetches and
+      // made rate-limiting fail the entire report. With "All records" the range is
+      // unbounded, so neither shape held up.
+      const readings = await fetchBirDailyBreakdown({
+        start: filters.start,
+        end: filters.end,
+        branchId,
+      })
       const totals = {
         gross_sales: 0,
         discounts: 0,
