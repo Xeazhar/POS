@@ -21,6 +21,21 @@ db.version(1).stores({
   deviceSettings: 'id',
 })
 
+/**
+ * v2 — cash shifts.
+ *
+ * Keyed by the device-generated `clientId`, not the server uuid, because a shift can be
+ * opened with no network at all: the cashier counts the drawer, starts selling, and the
+ * server row only exists later. Sales queued in between reference the clientId, and
+ * syncEngine swaps in `serverId` when the open pushes.
+ *
+ * This table is also what makes a re-login offline still find the open shift — the
+ * "do I need a change fund?" question is answered from here, never from a round-trip.
+ */
+db.version(2).stores({
+  shifts: 'clientId, serverId, branchId, staffId, drawerId, status, businessDate',
+})
+
 export const META_KEYS = {
   lastPullAt: 'lastPullAt',
   lastPushAt: 'lastPushAt',

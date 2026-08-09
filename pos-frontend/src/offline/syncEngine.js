@@ -1,6 +1,6 @@
 import * as api from '../lib/api'
 import db, { META_KEYS } from './db'
-import { QUEUE_TYPES } from './queueTypes'
+import { QUEUE_STATUS, QUEUE_TYPES } from './queueTypes'
 import {
   countBlocked,
   countPending,
@@ -18,6 +18,13 @@ import {
   putTransactions,
   readBranchSnapshot,
 } from './repository'
+import {
+  closeLocalShift,
+  markShiftSynced,
+  pruneLocalShifts,
+  putRemoteShifts,
+  resolveShiftServerId,
+} from './shifts'
 
 let syncing = false
 const listeners = new Set()
@@ -75,6 +82,17 @@ export async function pullFromRemote(branchId) {
     updatedAt: new Date().toISOString(),
   })
 
+  // Shifts that are open somewhere on this branch right now. Pulled so a terminal knows
+  // another device already holds a drawer before its cashier counts cash into it —
+  // otherwise the clash only surfaces server-side, after the count.
+  try {
+    const openShifts = await api.fetchOpenShiftsForBranch(branchId)
+    await putRemoteShifts(branchId, openShifts)
+    await pruneLocalShifts(branchId)
+  } catch {
+    /* shift schema not applied yet — the rest of the pull is still valid */
+  }
+
   await db.meta.put({ key: META_KEYS.lastPullAt, value: new Date().toISOString() })
 
   const snapshot = await readBranchSnapshot(branchId)
@@ -86,12 +104,74 @@ export async function pullFromRemote(branchId) {
   }
 }
 
+/**
+ * Server uuid for a shift the payload only knows by its device-generated clientId.
+ *
+ * Normally the OPEN_SHIFT sits ahead of this item in the FIFO queue, so throwing keeps
+ * this item in line until the open lands. Dropping the attribution eagerly would produce
+ * sales belonging to no shift — the accountability gap this feature exists to close.
+ *
+ * The exception is a shift open that is BLOCKED (quarantined after MAX_SYNC_ATTEMPTS).
+ * It is never going to land, and holding completed SALES hostage to it would put fiscal
+ * records at risk to protect a reporting field. In that case the sale is pushed
+ * unattributed — a sale on the server with a missing shift beats a sale that only exists
+ * on one device.
+ */
+async function requireShiftServerId(clientId) {
+  const serverId = await resolveShiftServerId(clientId)
+  if (serverId) return serverId
+  const openOp = await db.syncQueue.where('clientId').equals(clientId).first()
+  if (openOp && openOp.status !== QUEUE_STATUS.BLOCKED) {
+    throw new Error(`Shift ${clientId} has not synced yet — retrying after it does.`)
+  }
+  return null
+}
+
 async function pushOne(item) {
   const { type, payload } = item
   switch (type) {
+    case QUEUE_TYPES.OPEN_SHIFT: {
+      const shift = await api.openShift(payload)
+      await markShiftSynced(payload.clientId, shift)
+      return
+    }
+    case QUEUE_TYPES.CLOSE_SHIFT: {
+      const shiftId = payload.shiftId || (await requireShiftServerId(payload.clientId))
+      // The open never reached the server and never will (quarantined). There is no remote
+      // row to close; the local record already shows it ended.
+      if (!shiftId) return
+      const closed = await api.closeShift({
+        shiftId,
+        endingCash: payload.endingCash,
+        note: payload.note,
+        closedBy: payload.closedBy,
+      })
+      // Take the server's expected/variance — it derives them from the sales record, and
+      // the offline estimate the device showed at cash-out can be short a sale that
+      // synced from another terminal.
+      if (closed) {
+        await closeLocalShift(payload.clientId, {
+          serverId: closed.id,
+          endingCash: closed.endingCash,
+          expectedCash: closed.expectedCash,
+          variance: closed.variance,
+          cashSales: closed.cashSales,
+          cashRefunds: closed.cashRefunds,
+          cashPaidOut: closed.cashPaidOut,
+          cashPickups: closed.cashPickups,
+          clockOut: closed.clockOut,
+          syncStatus: 'synced',
+        })
+      }
+      return
+    }
     case QUEUE_TYPES.COMPLETE_SALE: {
+      const shiftId = payload.shiftClientId
+        ? await requireShiftServerId(payload.shiftClientId)
+        : payload.shiftId || null
       await api.completeSale({
         ...payload,
+        shiftId,
         clientId: payload.clientId || payload.localTransactionId || null,
       })
       // Drop local pending txn; next pull will bring server row

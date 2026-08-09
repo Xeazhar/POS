@@ -18,6 +18,7 @@ import {
   buildImportPreview,
   normalizeSheetRows,
   sha256Hex,
+  validateImportFile,
   validateImportHeaders,
 } from '../../utils/inventoryImport'
 import { formatSupportError } from '../../utils/errors'
@@ -56,6 +57,14 @@ export default function InventoryImportPanel({ products, onDone }) {
     setDuplicate(null)
     setAcknowledgeDuplicate(false)
     setPreview(null)
+    // Checked BEFORE the file is read. xlsx parses on the main thread, so a huge or
+    // mistyped file freezes the till with no message — this turns that hang into a
+    // sentence. Cheap, and the only guard that runs before the expensive work starts.
+    const fileCheck = validateImportFile(file)
+    if (!fileCheck.ok) {
+      setError(fileCheck.message)
+      return
+    }
     setBusy(true)
     try {
       const buf = await file.arrayBuffer()

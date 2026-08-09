@@ -140,6 +140,11 @@ export function canEditStaff(actor, target) {
   if (!actor || !target) return false
   if (actor.id && target.id && actor.id === target.id) return false
   if (actor.role === 'master') return true
+  // A role that exists in the database but not in ROLE_RANK (someone added a custom row
+  // to `roles`) is unrankable, so it cannot be shown to be below the actor. Refuse rather
+  // than fall through to rank 0, which would render an Edit button that can never be
+  // saved — canAssignRole rejects the same unknown role, so the form would be a dead end.
+  if (!roleRank(target.role)) return false
   return roleRank(target.role) < roleRank(actor.role)
 }
 

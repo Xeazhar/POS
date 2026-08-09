@@ -31,7 +31,12 @@ function SupervisorApprove({
     setBusy(true)
     try {
       if (!user?.id) throw new Error('Not signed in')
-      onApproved({ staffId: user.id, name: user.name || 'Manager', via: 'manager_session' })
+      onApproved({
+        staffId: user.id,
+        name: user.name || 'Manager',
+        role: user.role || 'manager',
+        via: 'manager_session',
+      })
     } catch (err) {
       setError(formatSupportError(err, 'AUTH06'))
       setBusy(false)
@@ -81,6 +86,9 @@ function SupervisorApprove({
             onApproved({
               staffId,
               name: (typeof row === 'object' && (row?.full_name || row?.name)) || 'Supervisor',
+              // The verify RPC does not always return the role; when it doesn't, the
+              // approver's role is resolved from `staff` on the next read of the record.
+              role: (typeof row === 'object' && row?.role) || null,
               via: 'pin',
             })
           } catch (err) {

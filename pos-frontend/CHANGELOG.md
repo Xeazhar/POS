@@ -17,6 +17,354 @@ computation, OR numbering).
 
 ---
 
+## 0.7.0 — 2026-08-09
+
+**Cashiers need telling about one change: signing out no longer asks about your shift.**
+Everything else here is layout, clearer labels, and a new history screen.
+
+### Signing out is now just signing out
+
+The "Leaving the till?" question is gone. Sign out signs you out — nothing else.
+
+Your shift stays open regardless. It already survived a sign-out, a closed tab, a refresh
+and a flat battery; signing back in on the same till picks up where you left off and does
+not ask you to count the change fund again. So the question only ever had one safe answer,
+and being asked it every single time taught people to tap through a box that occasionally
+offered to close their shift by mistake.
+
+**A shift now ends in exactly two ways:** you end it yourself from **End shift**, or the
+day-end / Z-reading closes the business day.
+
+The separate **Cash out** button in the sidebar is also gone — **End shift** is the one
+place a drawer gets counted and closed, and it shows your float, expected cash and variance
+while you do it.
+
+### Change fund by shift is readable now
+
+The old line — `Sup — main · open now — ₱0.00 ₱0.00` — made a supervisor decode a name, a
+drawer, a state and two unlabelled amounts out of one string. It is a proper table now:
+**Cashier · Drawer/terminal · Shift status · Opening float · Closing cash · Variance**.
+
+A shift that ended **without the drawer being counted** now shows **Pending handoff** in
+amber instead of looking exactly like a clean close. That is the row worth chasing. Open
+shifts show a dash for variance rather than ₱0.00, which read as "balanced".
+
+### Promo history tells you *why* a promo ended
+
+Three statuses, never mixed up:
+
+- **Active** — selling now
+- **Stopped** — a manager ended it early
+- **Expired** — it ran to its own end date
+
+Previously both endings were recorded as "stopped", so "we pulled that promo" and "that
+promo finished normally" were indistinguishable in the history. Existing promos are
+relabelled automatically where it can be worked out safely.
+
+### New: Inventory → Movement history
+
+A second tab on Inventory showing every stock movement in order: what product, how much,
+what kind (restock, sale, adjustment, waste/shrinkage, price change), **who did it**, and
+when. Filter by product, by movement type, by date range, with Today / This week / This
+month shortcuts.
+
+### Staff page is now two tabs
+
+**Staff** (everyone at the branch) and **Shifts** (the shift log), with one shared branch
+and date filter across both.
+
+**Supervisors could previously only see themselves in the staff list.** They now see their
+whole branch. They still cannot see anyone's PIN, and still cannot create or edit accounts.
+
+### Also
+
+- New **Refunded today** card on the branch dashboard. The old figure was **wrong** — it
+  ignored fully voided sales, so the more completely a sale was refunded, the less it
+  counted. Fixed.
+- Supervisor catalog: the search box sits on the filter row with the other filters.
+- The login screen no longer claims "Connected to Supabase" when it has not checked. It now
+  says nothing when things are fine, and warns you when the terminal is genuinely offline
+  (PIN sign-in still works then).
+- Search boxes across the app line up with the dropdowns next to them.
+
+### For whoever applies the database changes
+
+Run in the Supabase SQL editor **before deploying**. All are safe to re-run.
+
+1. `migrate_branch_staff_roster.sql` — lets supervisors see their branch's roster **without
+   exposing PINs**. (The staff table stores PINs in plaintext, so this is a narrow
+   read-only function, not a widened table permission. Do not "simplify" it into an RLS
+   policy change.)
+2. `migrate_promo_expired_status.sql` — adds the `expired` status and relabels history.
+
+### Environment separation — action required
+
+**Local development and the live site have been sharing one database**, which means test
+data has been landing in real fiscal records. Production sales are immutable and OR numbers
+are sequential, so a test sale from a laptop consumes a real OR number permanently.
+
+Create a second Supabase project for development and point `.env.local` at it; leave the
+deployed app's hosting variables on the production project. Full instructions in
+`pos-frontend/README.md` → *Environments*.
+
+Any build not marked as production now shows a permanent badge (e.g.
+`DEVELOPMENT · calepos-dev`) on the login screen and in the top bar, naming the actual
+database it is writing to. An unset setting counts as development, never production.
+
+---
+
+## 0.6.0 — 2026-08-09
+
+**Staff need a briefing before this goes on the floor.** Day end is now two different
+screens, Shifts and Staff are one tab, petty cash has an extra step, and the TIN printed on
+receipts changes. Nothing here is a small tweak.
+
+### ⚠️ What prints on a receipt has changed
+
+**Every sale rung up on the POS has been printing `TIN: —`.** Not the wrong TIN — a blank
+one, along with a blank BIR permit number, blank machine ID and blank serial number. The
+receipt printed at the counter was built without the branch's registered details. Reprints
+from the Transactions screen were correct; only the receipt handed to the customer at the
+time of sale was affected. Every receipt printed from now on carries the full details.
+
+**One company TIN, one branch code per branch.** Before, each branch held its own free-text
+TIN and they could quietly drift apart. Now the business has a single TIN, set once under
+**Manager → Branches → Company details**, and each branch has a BIR branch code
+(`00000` for head office, `00001` for the first branch, and so on). The receipt prints them
+joined: `123-456-789-00001`. **Set the company TIN before trading**, or receipts fall back
+to whatever that branch's old TIN field held.
+
+### Day end is now two screens
+
+**Cashiers see "End shift".** Their own opening float, their own expected cash, their own
+count and their own variance — nothing else. No other cashier's drawer, no branch sales
+totals, no restock list, and no "Submit for closing".
+
+**Supervisors and above keep "Day end".** Branch sales, every shift's accountability side
+by side, the restock list, the petty cash approval queue, and "Submit for closing".
+
+**A cashier could previously see other staff members' change fund amounts**, including a
+supervisor's, on the shared Day end screen. They can't any more.
+
+### Petty cash now has three steps, not two
+
+1. **Request** — any cashier. No money has moved.
+2. **Approve** — supervisor or above. Still no money has moved.
+3. **Handed over** — whoever is on the floor, including the cashier who asked, presses
+   "Mark handed over" when the cash physically leaves the drawer.
+
+**This changes the expected drawer figure.** Previously "approved" was treated as "paid",
+so cash still sitting in the till was deducted and the drawer read short until someone
+actually took the money. Now only cash marked as handed over is deducted. If a request is
+approved but not yet handed over, Day end says so and leaves the money in the drawer.
+
+A request can never be marked as handed over unless it has an approval recorded against it.
+
+### Shifts and Staff are one tab
+
+The **Staff** tab now lists each person once with their role, hours worked, shift count and
+net variance for the chosen date range. Open a person's row to see their individual shifts —
+drawer, float in, counted, expected, variance, and any corrections. Supervisors see their
+own branch's roster and drawer detail; creating accounts, changing roles and revealing PINs
+stay manager-only, exactly as before.
+
+### Approvals now record who approved them
+
+Voids, refunds, price overrides, cart-line removals and second-drawer overrides all record
+the **name and role** of the supervisor or manager who approved them — not just that an
+approval happened. It shows on the transaction detail, in the refund history, on the manager's
+Recent receipts list, and in the Void/Refund Log report.
+
+### Fixes
+
+- **"Already signed in on another device" when you aren't.** If a device is switched off,
+  loses power, or the browser is force-closed, the account stayed locked for up to 15 minutes
+  with no way to clear it. A master account can now open **Staff → Signed-in devices** and
+  sign out one person or everyone. Sessions no device is really holding are marked "Expired"
+  so you can tell them from a live till.
+- **Creating a staff login failed with a captcha error.** It now shows the same security
+  check the login screen uses.
+- **Refunded receipts read as if the refund was about to come off twice.** A refunded sale
+  now shows the original total and the refunded amount as two clearly labelled figures.
+- **"Partial"** is now **"Partial Refund"** everywhere.
+- **A day-end closing can no longer be reopened once a new business day has started.** The
+  current day can still be reopened by a manager; passed days are permanently locked. No
+  role can override this.
+- The search bar on the catalog (and everywhere else) was rendering at an unreadably small
+  size. Fixed.
+- Tables with edit/void/refund buttons now have an **Action** column heading.
+
+### Also
+
+- **Inventory**: managers and masters can pick which branch's stock to view. Other branches
+  are view-only — change stock and prices from that branch's own Inventory page.
+- **Branch view**: new Staff table showing who worked there and their clock-in/out hours
+  over the last 30 days.
+- **Catalog bulk edit** now covers name, SKU, barcode and category as well as price and
+  discountable, in one cleaner editor. Row actions moved into a **⋯** menu, and the sync
+  button moved next to the other catalog tools and now says what it does.
+- **Lock** and **Refresh** moved to the top bar, where they are reachable on any screen size.
+
+### For whoever applies the database changes
+
+Run these in the Supabase SQL editor, in this order, **before deploying**:
+
+1. `migrate_company_tin.sql` — company TIN + per-branch BIR branch code.
+2. `migrate_petty_cash_fulfilment.sql` — the `fulfilled` state. **This one also rewrites
+   `close_staff_shift()` and `shift_cash_summary()`.** Without it, every cash-out after
+   deploy reports a false variance.
+3. `migrate_admin_session_release.sql` — master force sign-out.
+
+All three are safe to re-run. Until they are applied the app falls back to the old
+behaviour rather than failing.
+
+---
+
+## 0.5.0 — 2026-08-09
+
+**The change fund is now counted once per shift, not once per sign-in.** If a cashier signs
+out by accident and signs back in, the app no longer asks them to count the drawer again.
+
+### What staff need to know
+
+**Signing out and ending a shift are now two different things.**
+
+- **Sign out, keep shift open** — for a break, or an accidental sign-out. The change fund,
+  the sales and the drawer stay on the same shift. Signing back in on the same till carries
+  straight on. Nothing is counted again.
+- **Cash out & end shift** — the actual handover. Count everything in the drawer, enter it,
+  and the shift closes. Only then is the next cashier asked to count in.
+
+There is a new **Cash out** button in the sidebar so a handover does not require signing out
+first.
+
+**Each cashier now counts their own change fund.** Two cashiers working the same till on the
+same day get their own starting count, their own sales and their own variance. A shortage is
+now attributable to the shift it happened on instead of being averaged over the whole day.
+
+**One cashier per drawer at a time.** If the previous cashier has not cashed out, the next
+one is stopped with their name on screen. A supervisor can count that drawer and close their
+shift to release it — that count is recorded against the person who left, not the one
+arriving.
+
+**Handover pre-fills, it does not auto-accept.** When the previous shift cashed out with
+₱4,500, the new cashier sees ₱4,500 already filled in and a tick box saying they counted it.
+Typing a different figure is allowed and is flagged on screen — their count is what counts.
+
+**Moving to a different drawer is blocked, not silently allowed.** A cashier still open on
+another drawer is told so, because the cash they are answerable for is over there. A
+supervisor can override if they really are working two tills.
+
+**If your branch has one cash box, nothing here needs setting up** — every device already
+counts as the same drawer, which is what makes the rule above work across a phone and a
+counter PC. Only a till with its own separate cash box needs its own name, under
+**Settings → Devices → This terminal's drawer**.
+
+### For supervisors and managers
+
+- **Shifts** (was "Staff shifts") now shows change fund in, cash counted, expected and
+  variance for every shift, with cash sales / refunds / paid-outs / pickups when you open a
+  row. Short and over counts are totalled at the top.
+- **Closed shift figures cannot be edited.** Correcting one records an adjustment — old
+  value, new value, your name and a written reason — and the original stays readable. Same
+  principle as sales records, for the same BIR reason.
+- **Day end** now lists the change fund per shift instead of one figure for the day, and cash
+  pickups and petty cash are charged to whichever shift holds the drawer.
+
+### Database — apply before deploying
+
+Run `supabase/migrate_shift_cash_accountability.sql` in the Supabase SQL editor.
+
+**Apply it outside trading hours if you can.** It requires one open shift per till, and the
+old system allowed several — so anyone still clocked in, other than the most recently
+started person at each branch, is clocked out by the migration with a note explaining why.
+Have staff cash out normally first and this does nothing.
+
+### Fixed
+
+- **The Transactions table headers did not line up with the columns underneath them.** The
+  header row was not laid out as a grid at all, so the labels ran together and sat over the
+  wrong data. Headers and rows now share one column definition, and the Promo column — which
+  had the widest column in the table for a short name — has been narrowed so Total and
+  Status are no longer squeezed at the right edge.
+
+---
+
+## 0.4.1 — 2026-08-09
+
+Follow-up fixes to 0.4.0.
+
+### URGENT — if you applied `migrate_role_assignment_ceiling.sql`, re-run it now
+
+**The version in 0.4.0 stopped cashiers and supervisors signing in**, with the error
+"a cashier cannot assign the cashier role". Signing in updates your own staff record (it
+stamps a session heartbeat), and the check wrongly treated that as an attempt to give
+yourself your own role.
+
+If tills are locked out and you cannot run the migration immediately, this restores sign-in
+straight away:
+
+```sql
+drop trigger if exists staff_role_ceiling on public.staff;
+```
+
+Then apply the corrected `migrate_role_assignment_ceiling.sql` when you can. **After
+running it, sign in as a cashier before you walk away** — the file now says so at the end,
+and the check itself now ignores any change that does not touch role, access, branch or
+active status, so a normal login cannot trip it again.
+
+Two further corrections in the same file:
+
+- **It blocked ordinary self-edits.** Changing your own display name was rejected for the
+  same reason. Only role, access, branch and active status are protected now.
+- **It let a deactivated account through.** Someone switched off but still holding an open
+  browser session skipped the checks until their session expired — the very case the
+  control exists for. Those are now refused.
+
+### Fixed
+
+- **Void / Refund Log and Login & Audit Trail only ever showed the most recent 500
+  entries**, no matter what date range you picked, with nothing saying so. They now cover
+  the whole range. **Re-run either report if you used it to investigate something.**
+- **The Inventory and Price Listing reports stopped at 1000 products.** A branch with more
+  than that was missing items from the price list and had valuation totals — including the
+  new negative-stock count — calculated from an incomplete set.
+- **The "Today" figure on the manager dashboard could include part of yesterday.** The
+  day boundary was computed in UTC rather than local time, so before 8am it started on the
+  wrong day. The headline Revenue and Orders figures were also capped at 1000 sales per
+  branch and now read everything.
+- The Revenue figure and the new up/down percentage beside it were coming from two
+  different calculations, so the arrow could describe a slightly different number than the
+  one shown. Both now come from the same source.
+- The Senior Citizen / PWD Register was **listing voided sales**, and counting them in the
+  "no ID number recorded" warning. Voided sales never happened, so including them in the
+  register risked claiming a deduction for a cancelled sale. The register is now completed
+  sales only, and carries a TOTAL row.
+- **"Re-sync discountable to branches" could change items it should not have.** It matched
+  branch products by SKU when they had no catalog link, so an item a branch had
+  deliberately marked not discountable could be switched on by a coincidental SKU match —
+  changing what a customer pays. It now only touches products genuinely linked to the
+  catalog, and tells you how many were left alone.
+- Six error codes staff could see on screen (`IMP01`, `IMP02`, `PETTY01`, `PETTY02`,
+  `PRICE01`, `SHIFT01`) had no entry in the support guide. They do now, and the check that
+  was supposed to catch this has been fixed — it was only looking for codes it already knew
+  about.
+- **A failed petty-cash, import or price-override could show the "the customer may be
+  charged twice" warning** even though no sale was involved. That warning now only appears
+  for failures that genuinely touched a sale.
+- Import now refuses oversized or wrong-type files with a message instead of freezing the
+  till while it tries to read them.
+
+### Changed
+
+- **Transactions list now has its own Promo and Discount columns.** They used to be
+  squeezed underneath the OR number, which crammed three unrelated things into one cell and
+  cut off the promo name. A sale with no promo shows a dash, so you can tell "no promo"
+  apart from "not loaded". On phones the columns collapse back under the OR number as
+  before.
+- The app no longer reloads itself on the login screen while someone is part-way through
+  typing a PIN, and waits for the new version to finish downloading before switching to it.
+
 ## 0.4.0 — 2026-08-08
 
 ### You must run two database updates for this release

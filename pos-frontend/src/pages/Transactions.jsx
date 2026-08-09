@@ -20,7 +20,7 @@ import {
   tableRowClass,
 } from '../components/ui'
 import {
-  fetchBranches,
+  fetchBranchFiscalHeader,
   fetchRefundSummary,
   fetchTransactionDetail,
   hasSupabase,
@@ -48,6 +48,32 @@ function txnSortTime(item) {
 }
 
 const PAY_LABEL = { cash: 'Cash', card: 'Card', ewallet: 'E-wallet' }
+
+/**
+ * Column template for the transaction list. Declared once because the header row and the
+ * body rows must not drift apart — when they were written out twice, adding a column meant
+ * editing two strings and the headers silently stopped lining up with the data.
+ *
+ * Every track is `minmax(0, …)`, not a bare `Nfr`. A bare `1fr` means `minmax(auto, 1fr)`,
+ * so a track never shrinks below its content: one long promo name or cashier name widened
+ * that ROW's columns only — the header is a separate grid and kept its own widths, so the
+ * labels sat over the wrong data and the whole table looked misaligned. With a 0 minimum
+ * the proportions are identical in every row, and long values truncate instead of pushing.
+ *
+ * Promo is also narrower than it was. It had the widest track in the table while carrying
+ * a short name, which pushed Total and Status into the cramped right-hand edge.
+ */
+const TXN_GRID =
+  'grid-cols-[minmax(0,1.1fr)_minmax(0,0.6fr)_minmax(0,0.9fr)_minmax(0,0.75fr)_minmax(0,0.7fr)_minmax(0,0.55fr)_minmax(0,0.4fr)_minmax(0,0.85fr)_minmax(0,0.7fr)_minmax(0,0.55fr)]'
+const TXN_GRID_NARROW = 'max-[700px]:grid-cols-[minmax(0,1.3fr)_minmax(0,0.8fr)_minmax(0,0.8fr)]'
+
+/** What kind of discount this was, for the compact/mobile summary and tooltips. */
+function discountLabelFor(item) {
+  if (isPromoDiscountType(item.discountType)) {
+    return `Promo · ${discountSourceLabel(item.discountType) || 'Promo'}`
+  }
+  return discountSourceLabel(item.discountType) || 'Discount'
+}
 const PAGE_SIZE = 10
 const REFUND_REASONS = ['Wrong item', 'Customer changed mind', 'Damaged', 'Other']
 
@@ -224,10 +250,10 @@ function Transactions() {
     }
   }
 
-  const applyFullRefund = async (item, reason, approvedBy = null) => {
+  const applyFullRefund = async (item, reason, approvedBy = null, approver = null) => {
     setBusy(true)
     try {
-      await voidTransaction(item.id, reason, approvedBy)
+      await voidTransaction(item.id, reason, approvedBy, approver)
       closeRefund()
       setDetail(null)
     } catch (err) {
@@ -238,7 +264,7 @@ function Transactions() {
     }
   }
 
-  const applyItemRefund = async (item, reason, approvedBy = null) => {
+  const applyItemRefund = async (item, reason, approvedBy = null, approver = null) => {
     const selected = refundLines.filter((line) => line.selected && Number(line.refundQty) > 0)
     if (!selected.length) {
       setError('Select at least one item and quantity to refund.')
@@ -249,6 +275,7 @@ function Transactions() {
       await refundTransactionItems(item.id, {
         reason,
         approvedBy,
+        approver,
         items: selected.map((line) => ({
           item_id: line.id,
           quantity: Number(line.refundQty),
@@ -268,8 +295,10 @@ function Transactions() {
     if (!refunding || !refundMode) return
     const payload = { item: refunding, reason, mode: refundMode }
     if (canApproveDirect) {
-      if (refundMode === 'full') applyFullRefund(refunding, reason, user?.id)
-      else applyItemRefund(refunding, reason, user?.id)
+      // Self-approved: the signed-in supervisor/manager IS the approver on record.
+      const self = { name: user?.name || null, role: user?.role || null }
+      if (refundMode === 'full') applyFullRefund(refunding, reason, user?.id, self)
+      else applyItemRefund(refunding, reason, user?.id, self)
     } else {
       setPendingApproval(payload)
     }
@@ -364,15 +393,22 @@ function Transactions() {
       </div>
 
       <TableCard>
-        <div className="grid grid-cols-[1.1fr_1.2fr_1fr_0.7fr_0.5fr_0.8fr_0.7fr_0.5fr] gap-3 border-0 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr]">
-          <span>OR / Invoice</span>
-          <span>Time</span>
-          <span>Cashier</span>
-          <span className="max-[700px]:hidden">Pay</span>
-          <span className="text-right tabular-nums max-[700px]:hidden">Items</span>
-          <span className="text-right tabular-nums max-[700px]:hidden">Total</span>
-          <span className="text-center max-[700px]:hidden">Status</span>
-          <span className="max-[700px]:hidden">Action</span>
+        {/* Promo and Discount are their own columns. They used to be stacked under the OR
+            number, which made that cell carry three unrelated facts and left the promo
+            name truncated — so the one thing a manager scans this table for was the
+            hardest thing to read. Own columns also mean the values line up down the page
+            and can be compared at a glance. */}
+        <div className={`grid ${TXN_GRID} ${TXN_GRID_NARROW} gap-2.5 border-0 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase`}>
+          <span className="truncate">OR / Invoice</span>
+          <span className="truncate">Time</span>
+          <span className="truncate">Cashier</span>
+          <span className="truncate max-[700px]:hidden">Discount type</span>
+          <span className="truncate pr-4 text-right max-[700px]:hidden">Discount</span>
+          <span className="truncate max-[700px]:hidden">Pay</span>
+          <span className="truncate text-right tabular-nums max-[700px]:hidden">Items</span>
+          <span className="truncate text-right tabular-nums max-[700px]:hidden">Total</span>
+          <span className="truncate text-center max-[700px]:hidden">Status</span>
+          <span className="truncate text-right max-[700px]:hidden">Action</span>
         </div>
         {productsLoading ? (
           <SkeletonRows rows={8} cols={5} />
@@ -382,37 +418,60 @@ function Transactions() {
             key={item.id}
             role="button"
             tabIndex={0}
-            className={`tap-row grid cursor-pointer grid-cols-[1.1fr_1.2fr_1fr_0.7fr_0.5fr_0.8fr_0.7fr_0.5fr] items-center gap-3 px-5 py-[17px] text-xs text-brand-slate max-[700px]:grid-cols-[1.3fr_0.8fr_0.8fr] ${tableRowClass}`}
+            className={`tap-row grid cursor-pointer ${TXN_GRID} ${TXN_GRID_NARROW} items-center gap-2.5 px-5 py-[17px] text-xs text-brand-slate ${tableRowClass}`}
             onClick={() => openDetail(item)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') openDetail(item)
             }}
           >
-            <strong className="text-brand-ink">
+            <strong className="min-w-0 truncate text-brand-ink">
               {item.orNumber || item.id.slice(0, 8)}
+              {/* Narrow screens drop the Promo and Discount columns, so the discount is
+                  summarised back under the OR number there rather than disappearing. */}
               {Number(item.discountAmount || 0) > 0 && (
-                <span
-                  className={`mt-0.5 block truncate text-[10px] font-bold ${
-                    isPromoDiscountType(item.discountType) ? 'text-brand-danger' : 'text-brand-warn'
-                  }`}
-                  title={discountSourceLabel(item.discountType) || 'Discount'}
-                >
-                  {isPromoDiscountType(item.discountType)
-                    ? `Promo · ${discountSourceLabel(item.discountType)}`
-                    : discountSourceLabel(item.discountType) || 'Discount'}{' '}
-                  −{money(item.discountAmount)}
+                <span className="mt-0.5 hidden truncate text-[10px] font-bold text-brand-warn max-[700px]:block">
+                  {discountLabelFor(item)} −{money(item.discountAmount)}
                 </span>
               )}
             </strong>
-            <span>{item.time}</span>
-            <span>{item.cashier}</span>
-            <span className="max-[700px]:hidden">{PAY_LABEL[item.paymentMethod || 'cash'] || 'Cash'}</span>
+            <span className="truncate">{item.time}</span>
+            <span className="truncate">{item.cashier}</span>
+            {/* Em dash when there is no discount — an empty cell reads as missing data,
+                a dash reads as "checked, none". The column names the KIND of discount, so
+                it has to cover SC/PWD too, not only promos. */}
+            <span className="min-w-0 max-[700px]:hidden">
+              {Number(item.discountAmount || 0) > 0 || item.discountType ? (
+                <span
+                  className={`block truncate font-bold ${
+                    isPromoDiscountType(item.discountType) ? 'text-brand-danger' : 'text-brand-warn'
+                  }`}
+                  title={discountLabelFor(item)}
+                >
+                  {discountLabelFor(item)}
+                </span>
+              ) : (
+                <span className="text-brand-n500">—</span>
+              )}
+            </span>
+            <span className={`pr-4 text-right max-[700px]:hidden ${moneyClass}`}>
+              {Number(item.discountAmount || 0) > 0 ? (
+                <span className="font-bold text-brand-warn" title={discountLabelFor(item)}>
+                  −{money(item.discountAmount)}
+                </span>
+              ) : (
+                <span className="text-brand-n500">—</span>
+              )}
+            </span>
+            <span className="truncate max-[700px]:hidden">{PAY_LABEL[item.paymentMethod || 'cash'] || 'Cash'}</span>
             <span className={`text-right max-[700px]:hidden ${moneyClass}`}>{Number(item.items).toFixed(0)}</span>
-            <strong className={`text-right text-brand-ink max-[700px]:hidden ${moneyClass}`}>
-              {money(item.netTotal ?? item.total)}
+            {/* Original total and refunded amount are two separate labelled figures.
+                Showing the already-netted number next to "−₱150" read as if the refund
+                was about to come off a second time. */}
+            <strong className={`min-w-0 text-right text-brand-ink max-[700px]:hidden ${moneyClass}`}>
+              {money(item.total)}
               {Number(item.refundedAmount || 0) > 0 && item.status !== 'Voided' && (
                 <span className="mt-0.5 block text-[10px] font-normal text-brand-danger">
-                  −{money(item.refundedAmount)} refunded
+                  Refunded {money(item.refundedAmount)}
                 </span>
               )}
             </strong>
@@ -421,7 +480,7 @@ function Transactions() {
             </span>
             <button
               type="button"
-              className="border-0 bg-transparent text-[11px] text-brand-danger-soft disabled:text-brand-n500 max-[700px]:hidden"
+              className="justify-self-end border-0 bg-transparent text-[11px] text-brand-danger-soft disabled:text-brand-n500 max-[700px]:hidden"
               disabled={item.status === 'Voided' || isTxnLocked(item)}
               title={
                 isTxnLocked(item)
@@ -480,8 +539,7 @@ function Transactions() {
               }
               let branch = { name: user?.branchName, business_name: user?.branchName }
               if (hasSupabase && user?.branchId) {
-                const branches = await fetchBranches().catch(() => [])
-                branch = branches.find((b) => b.id === user.branchId) || branch
+                branch = (await fetchBranchFiscalHeader(user.branchId).catch(() => null)) || branch
               }
               const receipt = buildReceipt({ branch, user, transaction: row, lines: row.lines || [] })
               await receiptPrinter.printReceipt(receipt)
@@ -646,11 +704,12 @@ function Transactions() {
             pendingApproval.item.orNumber || String(pendingApproval.item.id).slice(0, 8)
           }.`}
           onCancel={() => setPendingApproval(null)}
-          onApproved={({ staffId }) => {
+          onApproved={({ staffId, name, role }) => {
+            const approver = { name: name || null, role: role || null }
             if (pendingApproval.mode === 'full') {
-              applyFullRefund(pendingApproval.item, pendingApproval.reason, staffId)
+              applyFullRefund(pendingApproval.item, pendingApproval.reason, staffId, approver)
             } else {
-              applyItemRefund(pendingApproval.item, pendingApproval.reason, staffId)
+              applyItemRefund(pendingApproval.item, pendingApproval.reason, staffId, approver)
             }
           }}
         />

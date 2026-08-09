@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { FiBluetooth, FiHardDrive, FiPrinter } from 'react-icons/fi'
-import { Eyebrow, PageHeader, PrimaryButton, SkeletonRows, StatusBadge, TableCard, tableRowClass } from '../components/ui'
+import { Eyebrow, Field, PageHeader, PrimaryButton, SkeletonRows, StatusBadge, TableCard, tableRowClass } from '../components/ui'
 import { cashDrawer, getAllDeviceStatuses, isDeviceEnabled, normalizeDeviceSettings } from '../devices'
 import { hasSupabase, reportBranchDevices } from '../lib/api'
 import { useAuthStore } from '../stores/posStore'
+import { getDrawerId, getDrawerLabel, setDrawerId, setDrawerLabel } from '../utils/drawer'
 import { formatSupportError } from '../utils/errors'
 
 const ICONS = {
@@ -135,7 +136,56 @@ function Devices() {
           )}
         </div>
       </TableCard>
+
+      <DrawerIdentityCard />
     </div>
+  )
+}
+
+/**
+ * Which physical drawer this terminal belongs to.
+ *
+ * Only matters for a branch running more than one till at once. Every device defaults to
+ * the same drawer `main`, which is correct when several devices share one cash box — it
+ * is what stops two cashiers counting into the same drawer without either being told.
+ * Give a second till its own id only when it has its own separate cash box, otherwise the
+ * accountability this exists for quietly stops applying.
+ */
+function DrawerIdentityCard() {
+  const [label, setLabel] = useState(() => getDrawerLabel())
+  const [id, setId] = useState(() => getDrawerId())
+  const [saved, setSaved] = useState('')
+
+  return (
+    <TableCard className="mt-3.5 max-h-none p-5">
+      <Eyebrow>CASH DRAWER</Eyebrow>
+      <h2 className="m-0 mb-1 text-base">This terminal&apos;s drawer</h2>
+      <p className="m-0 mb-3 text-xs text-brand-muted">
+        Shifts are counted per drawer. Leave this alone if the branch has one cash box — even
+        with several devices, they all belong to the same drawer. Change it only for a till
+        with its own separate cash box.
+      </p>
+      <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2 max-[700px]:grid-cols-1">
+        <Field label="Drawer name" value={label} onChange={(e) => setLabel(e.target.value)} />
+        <Field
+          label="Drawer id (letters, numbers, - and _)"
+          value={id}
+          onChange={(e) => setId(e.target.value)}
+        />
+        <PrimaryButton
+          compact
+          type="button"
+          onClick={() => {
+            setLabel(setDrawerLabel(label))
+            setId(setDrawerId(id))
+            setSaved('Saved on this device. It takes effect on the next shift start.')
+          }}
+        >
+          Save
+        </PrimaryButton>
+      </div>
+      {saved && <p className="m-0 mt-2 text-[11px] text-brand-muted">{saved}</p>}
+    </TableCard>
   )
 }
 

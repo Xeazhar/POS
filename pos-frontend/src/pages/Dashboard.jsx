@@ -304,7 +304,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
       {restockEntry && (
         <DayEndReportPanels
           report={restockEntry.dayReport}
-          title="Units sold & restock"
+          title="Sold"
           showRestock
           compact
           alert

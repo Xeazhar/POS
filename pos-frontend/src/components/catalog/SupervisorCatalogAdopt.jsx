@@ -252,22 +252,23 @@ export default function SupervisorCatalogAdopt() {
 
       <TableCard className="mb-4 max-h-none">
         <div className="flex flex-col gap-3 border-b border-brand-softline px-5 py-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <h2 className="m-0 text-base">Branch products</h2>
-              <p className="m-0 mt-1 text-[11px] text-brand-subtle">
-                {filtered.length} shown · {products.length} total
-              </p>
-            </div>
+          <div className="min-w-0">
+            <h2 className="m-0 text-base">Branch products</h2>
+            <p className="m-0 mt-1 text-[11px] text-brand-subtle">
+              {filtered.length} shown · {products.length} total
+            </p>
+          </div>
+          {/* Search belongs ON the filter row, not floated opposite the heading — it is a
+              filter like the other three, and splitting it out made the controls read as
+              two unrelated groups. `label` gives it the same height as the selects. */}
+          <div className="grid grid-cols-2 items-end gap-2 sm:grid-cols-4">
             <SearchBox
-              className="w-full sm:w-[260px] sm:shrink-0"
+              label="Search"
               icon={<FiSearch />}
-              placeholder="Search ID, name, SKU, barcode"
+              placeholder="ID, name, SKU, barcode"
               value={query}
               onChange={(e) => setQuery(e.target.value.replace(/[<>]/g, ''))}
             />
-          </div>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <SelectField label="Category" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
               <option value="All">All categories</option>
               {categories.map((cat) => (

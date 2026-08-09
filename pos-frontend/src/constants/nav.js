@@ -1,5 +1,5 @@
-import { FiBarChart2, FiClipboard, FiClock, FiCpu, FiDatabase, FiGrid, FiMoon, FiPackage, FiUsers, FiMapPin, FiFileText, FiCoffee, FiTag } from 'react-icons/fi'
-import { canAccessModule, isManagerRole } from '../utils/roles'
+import { FiBarChart2, FiClipboard, FiCpu, FiDatabase, FiGrid, FiMoon, FiPackage, FiUsers, FiMapPin, FiFileText, FiCoffee, FiTag } from 'react-icons/fi'
+import { canAccessModule, isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 
 export const staffLinks = [
   ['/', 'Dashboard', FiBarChart2, 'dashboard'],
@@ -7,9 +7,10 @@ export const staffLinks = [
   ['/transactions', 'Transactions', FiClipboard, 'transactions'],
   ['/inventory', 'Inventory', FiPackage, 'inventory'],
   ['/data', 'Catalog', FiDatabase, 'catalog'],
-  ['/day-end', 'Day end', FiMoon, 'day_end'],
+  ['/day-end', 'Day end', FiMoon, 'day_end'], // relabelled per role in staffLinksFor
   ['/promos', 'Promos', FiTag, 'manager_promos'],
-  ['/shifts', 'Shifts', FiClock, 'shifts'],
+  // Shifts and Staff are one tab now — the shift log lives inside each person's row.
+  ['/shifts', 'Staff', FiUsers, 'shifts'],
   ['/settings/devices', 'Devices', FiCpu, 'devices'],
 ]
 
@@ -22,9 +23,9 @@ export function staffLinksFor(user) {
           ['/transactions', 'Sales', FiClipboard, 'transactions'],
           ['/inventory', 'Menu', FiCoffee, 'inventory'],
           ['/data', 'Catalog', FiDatabase, 'catalog'],
-          ['/day-end', 'Day end', FiMoon, 'day_end'],
+          ['/day-end', 'Day end', FiMoon, 'day_end'], // relabelled per role in staffLinksFor
           ['/promos', 'Promos', FiTag, 'manager_promos'],
-          ['/shifts', 'Shifts', FiClock, 'shifts'],
+          ['/shifts', 'Staff', FiUsers, 'shifts'],
           ['/settings/devices', 'Devices', FiCpu, 'devices'],
         ]
       : [...staffLinks]
@@ -35,6 +36,16 @@ export function staffLinksFor(user) {
     if (posIdx > 0) {
       const [pos] = base.splice(posIdx, 1)
       base.unshift(pos)
+    }
+  }
+
+  // Below supervisor, /day-end is that cashier's own drawer, not the branch's day —
+  // "Day end" would promise a close they cannot perform.
+  if (!isSupervisorOrAbove(user?.role)) {
+    const dayEndIdx = base.findIndex(([path]) => path === '/day-end')
+    if (dayEndIdx >= 0) {
+      const [p, , icon, moduleId] = base[dayEndIdx]
+      base[dayEndIdx] = [p, 'End shift', icon, moduleId]
     }
   }
 
@@ -50,8 +61,8 @@ export function staffLinksFor(user) {
 export const managerLinks = [
   ['/', 'Overview', FiBarChart2, 'manager_overview'],
   ['/manager/branches', 'Branches', FiMapPin, 'manager_branches'],
+  // One Staff tab: roster, module access, and each person's shift/drawer history.
   ['/manager/staff', 'Staff', FiUsers, 'manager_staff'],
-  ['/manager/shifts', 'Shifts', FiClock, 'shifts'],
   ['/manager/data', 'Data', FiDatabase, 'manager_data'],
   ['/manager/promos', 'Promos', FiTag, 'manager_promos'],
   ['/manager/reports', 'Reports', FiFileText, 'manager_reports'],

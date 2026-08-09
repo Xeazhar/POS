@@ -21,6 +21,7 @@ import {
   fetchTransactionDetail,
   fetchRefundSummary,
   promoEffectiveStatus,
+  promoStatusBadge,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
 import { money, qty } from '../../utils/format'
@@ -835,8 +836,18 @@ export default function ManagerPromos() {
             {!activeEvents.length ? (
               <p className="m-0 mt-3 text-sm text-brand-ink">No live promo right now.</p>
             ) : (
-              <div className="mt-3">
-                <SelectField label="Managing" value={managingId || ''} onChange={(e) => setManagingId(e.target.value)}>
+              <>
+              {/* Selector and its actions on ONE row, bottom-aligned (`items-end`) so the
+                  buttons line up with the select box itself. They used to sit on a second
+                  row right-aligned under a full-width select, which read as floating
+                  loose rather than belonging to the control they act on. */}
+              <div className="mt-3 flex flex-wrap items-end gap-2">
+                <SelectField
+                  label="Managing"
+                  className="min-w-[220px] flex-1"
+                  value={managingId || ''}
+                  onChange={(e) => setManagingId(e.target.value)}
+                >
                   {activeEvents.map((evt) => (
                     <option key={evt.event.id} value={evt.event.id}>
                       {evt.event.name} · {evt.event.status === 'stop_pending' ? 'Stop pending' : 'Active'}
@@ -845,10 +856,9 @@ export default function ManagerPromos() {
                 </SelectField>
 
                 {/* No "Active" badge: everything in this dropdown is live by definition, and
-                    the option label already spells out Active vs Stop pending. Actions sit on
-                    the right of the selector row rather than stacked underneath it. */}
+                    the option label already spells out Active vs Stop pending. */}
                 {managedEvent && (
-                  <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+                  <>
                     <SecondaryButton compact type="button" disabled={busy} onClick={() => onStartRenameEvent(managedEvent.event)}>
                       Rename
                     </SecondaryButton>
@@ -867,14 +877,15 @@ export default function ManagerPromos() {
                         </SecondaryButton>
                       </>
                     )}
-                  </div>
-                )}
-                {managedEvent?.event?.status === 'stop_pending' && managedEvent.event.stopReason && (
-                  <p className="mt-1 mb-0 text-[11px] text-brand-warn">
-                    Stop awaiting manager approval: {managedEvent.event.stopReason}
-                  </p>
+                  </>
                 )}
               </div>
+              {managedEvent?.event?.status === 'stop_pending' && managedEvent.event.stopReason && (
+                <p className="mt-1 mb-0 text-[11px] text-brand-warn">
+                  Stop awaiting manager approval: {managedEvent.event.stopReason}
+                </p>
+              )}
+              </>
             )}
           </div>
 
@@ -983,10 +994,11 @@ export default function ManagerPromos() {
                   </thead>
                   <tbody>
                     {historyPageRows.map((e) => {
-                      // Effective, not stored: a promo past its end date reads as stopped even
+                      // Effective, not stored: a promo past its end date reads as expired even
                       // if the DB sweep hasn't run yet. Keeps the row (and the Delete button
                       // below) honest the moment the end time passes.
                       const status = promoEffectiveStatus(e)
+                      const badge = promoStatusBadge(e)
                       const isLive = status === 'active' || status === 'stop_pending'
                       const endedByClock = isLive !== (e.status === 'active' || e.status === 'stop_pending')
                       const isEditing = editingEventId === e.id
@@ -1002,10 +1014,22 @@ export default function ManagerPromos() {
                         <tr key={e.id} className="border-t border-brand-softline">
                           <td className="px-3 py-3 font-bold text-brand-ink">{e.name}</td>
                           <td className="px-3 py-3">{fmt(e.starts_at)} → {fmt(e.ends_at)}</td>
+                          {/* Colour-coded, and Stopped never renders as Expired or vice
+                              versa: "a manager pulled this" and "this finished on
+                              schedule" are different facts. */}
                           <td className="px-3 py-3">
-                            <span className="capitalize">{status}</span>
+                            <StatusBadge compact tone={badge.tone} title={badge.hint}>
+                              {badge.label}
+                            </StatusBadge>
+                            {status === 'stopped' && e.stop_reason && (
+                              <span className="mt-0.5 block text-[10px] text-brand-subtle">
+                                {e.stop_reason}
+                              </span>
+                            )}
                             {endedByClock && (
-                              <span className="mt-0.5 block text-[10px] text-brand-subtle">Promo ended</span>
+                              <span className="mt-0.5 block text-[10px] text-brand-subtle">
+                                Reached its end time
+                              </span>
                             )}
                           </td>
                           <td className="px-3 py-3 text-right tabular-nums">
@@ -1144,7 +1168,7 @@ export default function ManagerPromos() {
                   <th className="px-3 py-2.5">Rule type</th>
                   <th className="px-3 py-2.5">Discount %</th>
                   <th className="px-3 py-2.5">Products in rule</th>
-                  <th className="px-3 py-2.5"></th>
+                  <th className="px-3 py-2.5 text-right">Action</th>
                 </tr>
               </thead>
               <tbody>

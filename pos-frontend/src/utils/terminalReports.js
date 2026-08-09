@@ -286,7 +286,7 @@ export function buildTerminalReportData({
       name: branch.business_name || branch.name || 'CalePOS',
       tradeName: branch.name || '',
       address: branch.address || '',
-      tin: branch.tin || '',
+      tin: branch.full_tin || branch.tin || '',
       serial: branch.serial_number || branch.serialNumber || '',
       terminal: branch.or_prefix || branch.terminal_id || '00001',
       footerOfficial: branch.receipt_footer_official || 'THIS IS YOUR OFFICIAL RECEIPT',

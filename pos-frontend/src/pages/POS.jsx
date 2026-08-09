@@ -18,7 +18,13 @@ import {
   moneyClass,
 } from '../components/ui'
 import { isDeviceEnabled } from '../devices'
-import { fetchActivePromoEventsWithRules, fetchBranchProducts, hasSupabase, updateProductPrice } from '../lib/api'
+import {
+  fetchActivePromoEventsWithRules,
+  fetchBranchProducts,
+  hasSupabase,
+  logApprovalEvent,
+  updateProductPrice,
+} from '../lib/api'
 import { useLiveData } from '../hooks/useLiveData'
 import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import {
@@ -192,7 +198,7 @@ function POS() {
     else addItem(product)
   }
 
-  const applyPriceChange = async (approvedBy = null) => {
+  const applyPriceChange = async (approvedBy = null, approver = null) => {
     if (!priceTarget) return
     const next = Number(priceValue)
     if (!Number.isFinite(next) || next < 0) {
@@ -208,6 +214,20 @@ function POS() {
           previousPrice: priceTarget.price,
           productName: priceTarget.name,
         })
+        // The price-change row records one staff id, which conflates "who asked" with
+        // "who authorised". The audit event keeps both apart.
+        if (approvedBy && approvedBy !== user?.id) {
+          void logApprovalEvent({
+            branchId: user?.branchId,
+            requestedBy: user?.id,
+            approvedBy,
+            approverName: approver?.name || null,
+            approverRole: approver?.role || null,
+            action: 'price_override',
+            detail: `${priceTarget.name}: ${priceTarget.price} → ${next}`,
+            meta: { product_id: priceTarget.id, old_price: priceTarget.price, new_price: next },
+          })
+        }
       }
       setProducts(products.map((p) => (p.id === priceTarget.id ? { ...p, price: next } : p)))
       setPriceTarget(null)
@@ -824,7 +844,7 @@ function POS() {
           title="Approve price change"
           detail={`Change ${priceTarget.name} to ${money(Number(priceValue) || 0)}`}
           onCancel={() => setAwaitingPriceApproval(false)}
-          onApproved={({ staffId }) => applyPriceChange(staffId)}
+          onApproved={({ staffId, name, role }) => applyPriceChange(staffId, { name, role })}
         />
       )}
       {inquiryProduct && (

@@ -188,16 +188,25 @@ function ManagerOverview() {
       />
     ) : null
 
+  // The displayed figure and its badge MUST come from one source. Previously the number
+  // was the sum of per-branch branchSummary calls while the percentage was computed inside
+  // fetchPeriodComparison — two different queries with different date maths — so the card
+  // could show one total with an arrow describing a different one. When the comparison
+  // loaded, it is authoritative for both; otherwise fall back to the per-branch sum and
+  // show no badge, rather than pairing a number with a percentage it does not belong to.
+  const revenueValue = comparison ? comparison.current.revenue : totals.revenue
+  const ordersValue = comparison ? comparison.current.orders : totals.orders
+
   const kpiCards = [
     {
       label: `Revenue - ${periodLabel}`,
-      value: money(totals.revenue),
+      value: money(revenueValue),
       delta: deltaFor('revenue'),
       note: comparison ? comparisonNote : null,
     },
     {
       label: `Orders - ${periodLabel}`,
-      value: totals.orders,
+      value: ordersValue,
       delta: deltaFor('orders'),
       note: comparison ? comparisonNote : null,
     },
@@ -244,7 +253,7 @@ function ManagerOverview() {
       {/* KPI row. `Menu items on today` is restaurant-only and this build is focused on
           retail/meat, so it is not rendered — totals.menuOn and branchSummary's menu
           counting are left intact so re-enabling it is a one-line change, not a rebuild. */}
-      <div className={`mb-4 grid gap-3.5 max-[700px]:grid-cols-1 ${kpiCards.length === 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>
+      <div className="mb-4 grid grid-cols-3 gap-3.5 max-[700px]:grid-cols-1">
         {kpiCards.map(({ label, value, delta, note }) => (
           <div key={label} className="rounded-[10px] bg-brand-dark p-4 text-white">
             <span className="block text-[11px] text-brand-n500">{label}</span>
@@ -301,7 +310,7 @@ function ManagerOverview() {
           <span className="text-right max-[700px]:hidden">Revenue</span>
           <span className="text-right max-[700px]:hidden">Orders</span>
           <span className="text-right max-[700px]:hidden">Focus</span>
-          <span className="text-right"> </span>
+          <span className="text-right">Action</span>
         </div>
         {branches.map((branch) => {
           const summary = summaries[branch.id] || { revenue: 0, orders: 0, lowStock: 0, menuOn: 0 }

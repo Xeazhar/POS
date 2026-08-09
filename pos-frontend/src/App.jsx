@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import Shell from './components/shared/Shell'
 import { PageSkeleton } from './components/ui'
@@ -19,7 +19,6 @@ const Transactions = lazy(() => import('./pages/Transactions.jsx'))
 const Products = lazy(() => import('./pages/Products.jsx'))
 const DayEnd = lazy(() => import('./pages/DayEnd.jsx'))
 const Devices = lazy(() => import('./pages/Devices.jsx'))
-const Shifts = lazy(() => import('./pages/Shifts.jsx'))
 const ManagerOverview = lazy(() => import('./pages/manager/Overview.jsx'))
 const ManagerBranches = lazy(() => import('./pages/manager/Branches.jsx'))
 const ManagerBranchDashboard = lazy(() => import('./pages/manager/BranchDashboard.jsx'))
@@ -32,6 +31,9 @@ function PageFallback() {
   return <PageSkeleton variant="table" className="px-1 py-2" />
 }
 
+/** Treat the login screen as busy for this long after the last keystroke. */
+const LOGIN_TYPING_GRACE_MS = 20_000
+
 /**
  * Keeps the build fresh while nobody is signed in.
  *
@@ -40,12 +42,33 @@ function PageFallback() {
  * Shell — which owns the other watchdog — isn't mounted then. So a shop that never closed
  * its browser could open on a week-old bundle every morning.
  *
- * Signed out there is no cart, no open shift and no unsynced work on screen, so it
- * reloads on its own without asking. Rendered as a component rather than a hook call in
- * App so the poll only runs while logged out, instead of duplicating Shell's.
+ * Signed out there is no cart, no open shift and no unsynced work — but there IS the
+ * credential someone is halfway through typing. A cashier eight characters into a PIN at
+ * shift start having the page reload under them is a real interruption, so recent typing
+ * counts as work in progress and holds the reload off until they stop. Idle is the normal
+ * state here, so this costs nothing the rest of the time.
+ *
+ * Rendered as a component rather than a hook call in App so the poll only runs while
+ * logged out, instead of duplicating Shell's.
  */
 function LoggedOutUpdateWatchdog() {
-  useAppVersion({ safeToReload: true, autoReload: true })
+  const [typing, setTyping] = useState(false)
+
+  useEffect(() => {
+    let timer = null
+    const onKey = () => {
+      setTyping(true)
+      if (timer) window.clearTimeout(timer)
+      timer = window.setTimeout(() => setTyping(false), LOGIN_TYPING_GRACE_MS)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [])
+
+  useAppVersion({ safeToReload: !typing, autoReload: true })
   return null
 }
 
@@ -179,7 +202,7 @@ function App() {
                 path="/shifts"
                 element={
                   <RequireModule moduleId="shifts">
-                    <Shifts />
+                    <ManagerStaff />
                   </RequireModule>
                 }
               />
@@ -223,11 +246,13 @@ function App() {
                   </RequireModule>
                 }
               />
+              {/* Shifts merged into Staff. Kept as a route (not deleted) so a bookmark
+                  or an old link still lands somewhere useful. */}
               <Route
                 path="/manager/shifts"
                 element={
                   <RequireModule moduleId="shifts">
-                    <Shifts />
+                    <ManagerStaff />
                   </RequireModule>
                 }
               />

@@ -2,34 +2,23 @@ import { useEffect, useRef, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { FiLock, FiLogOut, FiMenu, FiRefreshCw, FiX } from 'react-icons/fi'
 import { navLinksFor } from '../../constants/nav'
-import {
-  hasSupabase,
-  clockIn,
-  clockOut,
-  fetchOpenShift,
-  heartbeatStaffSession,
-  recordChangeFund,
-} from '../../lib/api'
+import { hasSupabase, heartbeatStaffSession } from '../../lib/api'
 import { useAppVersion } from '../../hooks/useAppVersion'
-import { useAuthStore, useCartStore, useInventoryStore } from '../../stores/posStore'
+import { useAuthStore, useCartStore } from '../../stores/posStore'
+import { useShiftStore } from '../../stores/shiftStore'
 import { useSyncStore } from '../../stores/syncStore'
-import { formatSyncError } from '../../utils/errors'
+import { formatSupportError, formatSyncError } from '../../utils/errors'
 import { isManagerRole, usesPinLogin } from '../../utils/roles'
-import { businessDate } from '../../utils/format'
 import { APP_VERSION_LABEL, IS_PRERELEASE, buildStamp } from '../../utils/version'
 import { hardReload } from '../../utils/hardReload'
-import { decimalOnly } from '../../utils/validate'
-import { Eyebrow, Field, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
+import { SHOW_ENV_BADGE, environmentLabel } from '../../utils/environment'
 import Clock from './Clock'
 import LockScreen from './LockScreen'
 import RequestNotifications from './RequestNotifications'
+import ShiftGate from './ShiftGate'
 
 const IDLE_LOCK_MS = 10 * 60 * 1000
 const HEARTBEAT_MS = 2.5 * 60 * 1000
-
-function defaultShiftPeriod() {
-  return new Date().getHours() < 12 ? 'am' : 'pm'
-}
 
 function syncCopy({ online, pending, status, lastError }) {
   const syncing = status === 'syncing' || status === 'pushing'
@@ -92,7 +81,6 @@ const toneText = {
 function Shell({ children }) {
   const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)
-  const pendingClockIn = useAuthStore((state) => state.pendingClockIn)
   const screenLocked = useAuthStore((state) => state.screenLocked)
   const lockScreen = useAuthStore((state) => state.lockScreen)
   const unlockScreen = useAuthStore((state) => state.unlockScreen)
@@ -105,15 +93,11 @@ function Shell({ children }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
-  const [clockBusy, setClockBusy] = useState(false)
-  const [shiftPeriod, setShiftPeriod] = useState(defaultShiftPeriod)
-  const [changeFundAmount, setChangeFundAmount] = useState('')
-  const [changeFundError, setChangeFundError] = useState('')
-  const [logoutPrompt, setLogoutPrompt] = useState(null) // { shift } | true (no shift info yet) | null
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [logoutError, setLogoutError] = useState('')
   const [syncBannerDismissed, setSyncBannerDismissed] = useState(false)
-  const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
+  const shiftGate = useShiftStore((state) => state.gate)
+  const resolveShift = useShiftStore((state) => state.resolve)
   const isManager = isManagerRole(user?.role) && user?.role !== 'master'
   const links = navLinksFor(user)
   const sync = syncCopy({ online, pending, status, lastError })
@@ -124,7 +108,7 @@ function Shell({ children }) {
   // still need this tab alive to push them — so only auto-refresh when neither is true.
   const cartItemCount = useCartStore((state) => state.items.length)
   const { updateReady, reload } = useAppVersion({
-    safeToReload: cartItemCount === 0 && !pending && !logoutPrompt,
+    safeToReload: cartItemCount === 0 && !pending,
   })
 
   useEffect(() => {
@@ -165,125 +149,46 @@ function Shell({ children }) {
     return () => window.clearInterval(t)
   }, [user?.id, deviceSessionId, user?.deviceSessionId])
 
+  // Only cashiers and supervisors work shifts; managers sign in to look at reports.
+  // `holdsDrawer` separates the two kinds: a cashier is accountable for a till and must
+  // count it, a supervisor on the floor is not and would otherwise lock the cashier out
+  // of the very drawer they are standing at.
+  const worksShifts = usesPinLogin(user?.role)
+  const holdsDrawer = user?.role === 'cashier'
+
   useEffect(() => {
-    if (!hasSupabase || !user?.id || !user?.branchId) return undefined
-    if (!usesPinLogin(user?.role)) return undefined
-    let active = true
-    fetchOpenShift(user.id)
-      .then((open) => {
-        if (!active) return
-        if (!open) useAuthStore.setState({ pendingClockIn: true })
-      })
-      .catch(() => {
-        /* clock-in gate soft-fails if shifts table/migration missing */
-      })
-    return () => {
-      active = false
-    }
+    if (!user?.id || !user?.branchId || !worksShifts) return
+    void resolveShift(user, { holdsDrawer })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-resolve on identity change only
   }, [user?.id, user?.branchId, user?.role])
 
-  const clearClockForm = () => {
-    setChangeFundAmount('')
-    setChangeFundError('')
-  }
-
-  const isSupervisorClockIn = user?.role === 'supervisor' || user?.role === 'master'
-
-  const finishClockIn = async () => {
-    setClockBusy(true)
-    setChangeFundError('')
-    try {
-      if (hasSupabase && user?.id && user?.branchId) {
-        const shift = await clockIn({
-          staffId: user.id,
-          branchId: user.branchId,
-          shiftPeriod: shiftPeriod === 'pm' ? 'pm' : 'am',
-        })
-        const amt = Number(changeFundAmount)
-        // Cashiers record opening float; supervisors skip (drawer already set by cashier).
-        if (!isSupervisorClockIn && amt > 0 && shift?.id) {
-          await recordChangeFund({
-            branchId: user.branchId,
-            staffId: user.id,
-            shiftId: shift.id,
-            amount: amt,
-            note: 'Opening float',
-            confirmedBy: user.id,
-            businessDate: businessDate(new Date(), dayOpenHour),
-          })
-        }
-      }
-      useAuthStore.setState({ pendingClockIn: false })
-      clearClockForm()
-    } catch (err) {
-      setChangeFundError(err?.message || 'Could not clock in / record change fund.')
-    } finally {
-      setClockBusy(false)
-    }
-  }
-
-  const signOutWithoutShift = async () => {
-    await logout()
-    clearClockForm()
-    navigate('/')
-  }
-
-  const doClockIn = async () => {
-    if (!isSupervisorClockIn) {
-      const amt = Number(changeFundAmount)
-      if (!changeFundAmount || Number.isNaN(amt) || amt <= 0) {
-        setChangeFundError('Enter the change fund (starting cash) counted into the drawer.')
-        return
-      }
-    }
-    await finishClockIn()
-  }
+  const shiftBlocking = worksShifts && shiftGate !== 'ready' && shiftGate !== 'checking'
 
   const finishLogout = async () => {
     await logout()
-    setLogoutPrompt(null)
     setLogoutError('')
     navigate('/')
   }
 
+  /**
+   * Sign out. Nothing else.
+   *
+   * There is deliberately no "what about your shift?" prompt here. An open shift already
+   * survives sign-out, a closed tab, a refresh and a crash — `useShiftStore.resolve()`
+   * resumes it on the next sign-in without asking for the change fund again. So the
+   * question had exactly one safe answer, and asking it every time trained cashiers to
+   * dismiss a modal that occasionally offered to close their shift.
+   *
+   * A shift ends in exactly two ways: the cashier ends it from End shift, or day-end /
+   * Z-reading closes the business day. Signing out is neither.
+   */
   const requestLogout = async () => {
     setLogoutError('')
-    // Managers / email roles can leave freely
-    if (!usesPinLogin(user?.role) || !hasSupabase || !user?.id) {
-      await finishLogout()
-      return
-    }
     setLogoutBusy(true)
     try {
-      const open = await fetchOpenShift(user.id)
-      if (open?.id) {
-        setLogoutPrompt({ shift: open })
-      } else {
-        // No open shift on record — still confirm they mean to leave
-        setLogoutPrompt({ shift: null })
-      }
-    } catch {
-      setLogoutPrompt({ shift: null })
-    } finally {
-      setLogoutBusy(false)
-    }
-  }
-
-  const endShiftAndLogout = async () => {
-    setLogoutBusy(true)
-    setLogoutError('')
-    try {
-      const shiftId = logoutPrompt?.shift?.id
-      if (shiftId) {
-        await clockOut(shiftId)
-      } else if (hasSupabase && user?.id) {
-        // Race: shift opened after prompt — try once more
-        const open = await fetchOpenShift(user.id).catch(() => null)
-        if (open?.id) await clockOut(open.id)
-      }
       await finishLogout()
     } catch (err) {
-      setLogoutError(err?.message || 'Could not end shift. Try again.')
+      setLogoutError(formatSupportError(err, 'SHIFT01'))
     } finally {
       setLogoutBusy(false)
     }
@@ -311,105 +216,30 @@ function Shell({ children }) {
 
   return (
     <div className="min-h-screen bg-brand-canvas">
-      {pendingClockIn && (
-        <Modal>
-          <Eyebrow>SHIFT</Eyebrow>
-          <h2 className="mb-1 text-lg">Clock in required</h2>
-          <p className="m-0 text-xs text-brand-muted">
-            {isSupervisorClockIn
-              ? 'Choose AM/PM to start your shift. Change fund is entered by the cashier on their clock-in.'
-              : 'Choose AM/PM, then enter the change fund counted into your drawer. You cannot use POS or other tools until you clock in.'}
-          </p>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            {[
-              { id: 'am', label: 'AM', hint: 'Morning' },
-              { id: 'pm', label: 'PM', hint: 'Afternoon' },
-            ].map((opt) => (
-              <button
-                key={opt.id}
-                type="button"
-                className={`rounded-[5px] border px-3 py-2.5 text-left transition-colors ${
-                  shiftPeriod === opt.id
-                    ? 'border-brand-dark bg-brand-dark text-white'
-                    : 'border-brand-border bg-white text-brand-ink'
-                }`}
-                onClick={() => setShiftPeriod(opt.id)}
-              >
-                <strong className="block text-sm">{opt.label}</strong>
-                <span
-                  className={`mt-0.5 block text-[10px] ${
-                    shiftPeriod === opt.id ? 'text-white/70' : 'text-brand-subtle'
-                  }`}
-                >
-                  {opt.hint}
-                </span>
-              </button>
-            ))}
-          </div>
-          {!isSupervisorClockIn && (
-            <Field
-              className="mt-3"
-              label="Change fund (starting cash)"
-              value={changeFundAmount}
-              onChange={(e) => {
-                setChangeFundAmount(decimalOnly(e.target.value))
-                setChangeFundError('')
-              }}
-              inputMode="decimal"
-              required
-              placeholder="0.00"
-            />
-          )}
-          {changeFundError && <p className="mt-2 text-xs text-brand-danger">{changeFundError}</p>}
-          <ModalActions>
-            <SecondaryButton compact type="button" disabled={clockBusy} onClick={signOutWithoutShift}>
-              Sign out
-            </SecondaryButton>
-            <PrimaryButton compact type="button" disabled={clockBusy} onClick={doClockIn}>
-              {clockBusy ? 'Working…' : `Clock in · ${shiftPeriod.toUpperCase()}`}
-            </PrimaryButton>
-          </ModalActions>
-        </Modal>
+      {shiftBlocking && (
+        <ShiftGate
+          user={user}
+          holdsDrawer={holdsDrawer}
+          onSignOut={async () => {
+            await logout()
+            navigate('/')
+          }}
+        />
       )}
-      {logoutPrompt && (
-        <Modal onClose={() => !logoutBusy && setLogoutPrompt(null)}>
-          <Eyebrow>END SHIFT</Eyebrow>
-          <h2 className="mb-1 text-lg">
-            {logoutPrompt.shift ? 'End shift before signing out?' : 'Sign out?'}
-          </h2>
-          <p className="m-0 text-xs text-brand-muted">
-            {logoutPrompt.shift
-              ? 'Your shift is still open. End it to clock out, then you’ll be signed out.'
-              : 'No open shift found. You can sign out now.'}
-          </p>
-          {logoutError && <p className="mt-2 text-xs text-brand-danger">{logoutError}</p>}
-          <ModalActions>
-            <SecondaryButton
-              compact
-              type="button"
-              disabled={logoutBusy}
-              onClick={() => setLogoutPrompt(null)}
-            >
-              Stay signed in
-            </SecondaryButton>
-            <PrimaryButton
-              compact
-              type="button"
-              disabled={logoutBusy}
-              onClick={logoutPrompt.shift ? endShiftAndLogout : finishLogout}
-            >
-              {logoutBusy
-                ? 'Working…'
-                : logoutPrompt.shift
-                  ? 'End shift & sign out'
-                  : 'Sign out'}
-            </PrimaryButton>
-          </ModalActions>
-        </Modal>
+      {/* No cash-out modal here any more. Ending a shift lives on End shift, where the
+          cashier is already looking at their own float, expected cash and variance —
+          not bolted onto the sign-out button. */}
+      {logoutError && (
+        <div
+          role="alert"
+          className="fixed top-[70px] left-1/2 z-[30] -translate-x-1/2 rounded-md bg-brand-danger-bg px-3 py-2 text-xs text-brand-danger shadow-lg"
+        >
+          {logoutError}
+        </div>
       )}
       <div
-        aria-hidden={pendingClockIn || undefined}
-        className={pendingClockIn ? 'pointer-events-none select-none' : undefined}
+        aria-hidden={shiftBlocking || undefined}
+        className={shiftBlocking ? 'pointer-events-none select-none' : undefined}
       >
       <header className="flex h-[62px] items-center justify-between gap-3 bg-brand-dark px-6 text-white max-[700px]:px-4">
         <div className="flex min-w-0 shrink-0 items-center gap-2">
@@ -430,6 +260,19 @@ function Shell({ children }) {
         </div>
 
         <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 px-2">
+          {/* Non-production builds say so, permanently and in the middle of the screen.
+              Local dev used to point at the live database, and the only way to notice was
+              to spot real branch data in a test — by which point a test sale had already
+              taken a real OR number. The project ref is shown because a copied .env can
+              lie about the tier, but the ref is the database being written to. */}
+          {SHOW_ENV_BADGE && (
+            <span
+              className="max-w-full truncate rounded-[4px] bg-brand-warn px-2 py-0.5 text-[10px] font-bold tracking-wide text-brand-dark uppercase"
+              title="This build is NOT pointed at the live store database"
+            >
+              {environmentLabel()}
+            </span>
+          )}
           <small className="max-w-full truncate text-[11px] font-semibold text-brand-gold">
             {user?.branchName || 'Bayombong Branch #001'}
           </small>
@@ -437,6 +280,27 @@ function Shell({ children }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-2.5 text-[13px]">
+          {/* Refresh and Lock live up here with the other whole-session controls
+              (notifications, sign out) rather than at the foot of the sidebar — and they
+              stay reachable on mobile, where the sidebar is behind a menu. */}
+          <button
+            type="button"
+            className="border-0 bg-transparent text-lg text-inherit transition-[transform,opacity] duration-100 hover:opacity-80 active:scale-90 active:opacity-70"
+            title="Refresh — clears cached app files and loads the newest version"
+            aria-label="Refresh"
+            onClick={() => void hardReload({ online })}
+          >
+            <FiRefreshCw />
+          </button>
+          <button
+            type="button"
+            className="border-0 bg-transparent text-lg text-inherit transition-[transform,opacity] duration-100 hover:opacity-80 active:scale-90 active:opacity-70"
+            title="Lock screen"
+            aria-label="Lock screen"
+            onClick={() => lockScreen()}
+          >
+            <FiLock />
+          </button>
           <RequestNotifications />
           <div className="grid h-[35px] w-[35px] place-items-center rounded-full bg-brand-gold font-bold text-brand-dark">
             {user?.name?.[0] || 'A'}
@@ -498,25 +362,12 @@ function Shell({ children }) {
             <NavItems />
           </div>
 
-          <button
-            type="button"
-            className="mt-2 flex w-full flex-col items-center gap-1 rounded-lg border-0 bg-transparent px-1 py-2 text-brand-n500 hover:bg-white/5 hover:text-white"
-            title="Refresh — clears cached app files and loads the newest version"
-            onClick={() => void hardReload({ online })}
-          >
-            <FiRefreshCw className="text-base" />
-            <span className="text-[9px] font-bold">Refresh</span>
-          </button>
+          {/* Refresh and Lock moved to the top navbar — see the header above. */}
 
-          <button
-            type="button"
-            className="mt-1 flex w-full flex-col items-center gap-1 rounded-lg border-0 bg-transparent px-1 py-2 text-brand-n500 hover:bg-white/5 hover:text-white"
-            title="Lock screen"
-            onClick={() => lockScreen()}
-          >
-            <FiLock className="text-base" />
-            <span className="text-[9px] font-bold">Lock</span>
-          </button>
+          {/* The standalone Cash out button is gone: End shift is the one place a cashier
+              closes their drawer, and it shows the float, expected cash and variance while
+              they do it. Two entry points to the same irreversible cash action is one
+              too many. */}
 
           <div
             className={`mt-1 shrink-0 rounded-lg px-1.5 py-2.5 text-center ${
@@ -647,15 +498,8 @@ function Shell({ children }) {
         </section>
       </div>
 
-      {/* Mobile lock affordance */}
-      <button
-        type="button"
-        className="fixed bottom-4 left-4 z-[15] hidden h-11 w-11 place-items-center rounded-full border-0 bg-brand-dark text-white shadow-lg max-[700px]:grid"
-        title="Lock screen"
-        onClick={() => lockScreen()}
-      >
-        <FiLock />
-      </button>
+      {/* The floating mobile lock button is gone: Lock now sits in the top navbar, which
+          is visible on every screen size, so a second one just covered page content. */}
 
       {screenLocked && (
         <LockScreen

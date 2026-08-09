@@ -1,5 +1,5 @@
 import { FiX } from 'react-icons/fi'
-import { saleImpactGuidance } from '../../utils/errors'
+import { isKnownErrorCode, saleImpactGuidance } from '../../utils/errors'
 
 export function PrimaryButton({ className = '', compact = false, children, ...props }) {
   return (
@@ -102,16 +102,79 @@ export function PageHeader({ eyebrow, title, children, className = '' }) {
   )
 }
 
-export function SearchBox({ icon, className = '', ...props }) {
-  return (
+/**
+ * Search input.
+ *
+ * `label` exists so a search box can sit in a filter row next to `SelectField`s and line
+ * up with them. Without it the labelled controls carry ~18px of label above the input and
+ * the search box does not, so the row reads as two different heights. When labelled, the
+ * box is `h-10` — the exact height a `SelectField` select renders at (`p-2.5 text-[13px]`).
+ */
+export function SearchBox({ icon, className = '', label = null, ...props }) {
+  const box = (
     <div
-      className={`flex h-10 items-center gap-2.5 rounded-md border border-brand-search-border bg-brand-search px-3 text-brand-n700 shadow-[0_1px_0_#00000008] ${className}`}
+      className={`flex ${
+        label ? 'mt-[7px] h-10' : 'h-[42px]'
+      } min-w-0 flex-1 items-center gap-2.5 rounded-[5px] border border-brand-search-border bg-brand-search px-3 text-[13px] font-normal text-brand-n700 shadow-[0_1px_0_#00000008] ${
+        label ? '' : className
+      }`}
     >
       <span className="shrink-0 text-brand-n600">{icon}</span>
+      {/* 13px to match every other input in the kit, and w-full/flex-1 so the field
+          actually fills the box. It was 8px and auto-width, which is why the search
+          bar looked shrunken next to the filters beside it. */}
       <input
-        className="min-w-0 w-full border-0 bg-transparent text-[13px] text-brand-ink outline-none placeholder:text-brand-n500"
+        className="w-full min-w-0 flex-1 border-0 bg-transparent text-[13px] text-brand-ink outline-none placeholder:text-brand-n500"
         {...props}
       />
+    </div>
+  )
+  if (!label) return box
+  return (
+    <label className={`block text-[11px] font-bold text-brand-n700 ${className}`}>
+      {label}
+      {box}
+    </label>
+  )
+}
+
+/**
+ * Browser-tab style switcher. Click to change view — not an anchor to a section further
+ * down the page, which is what a "tab" that only scrolls actually is.
+ *
+ * `tabs`: [{ id, label, count? }]
+ */
+export function Tabs({ tabs = [], value, onChange, className = '' }) {
+  return (
+    <div role="tablist" className={`flex gap-1 border-b border-brand-line ${className}`}>
+      {tabs.map((tab) => {
+        const active = tab.id === value
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            className={`-mb-px inline-flex items-center gap-2 rounded-t-[6px] border border-b-0 px-4 py-2.5 text-xs font-bold ${
+              active
+                ? 'border-brand-line bg-white text-brand-ink'
+                : 'border-transparent bg-transparent text-brand-muted hover:text-brand-ink'
+            }`}
+            onClick={() => onChange?.(tab.id)}
+          >
+            {tab.label}
+            {tab.count != null && (
+              <span
+                className={`rounded-full px-1.5 py-px text-[10px] tabular-nums ${
+                  active ? 'bg-brand-n200 text-brand-n700' : 'bg-brand-n100 text-brand-muted'
+                }`}
+              >
+                {tab.count}
+              </span>
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -189,7 +252,7 @@ const STATUS_TONES = {
 }
 
 /** Status pill — tones: success | warn | danger | neutral (brand tokens). */
-export function StatusBadge({ tone = 'neutral', compact = false, children, className = '' }) {
+export function StatusBadge({ tone = 'neutral', compact = false, children, className = '', title }) {
   // `compact` for dense table rows: the default pill's min-width + tall padding makes a
   // short label like "Paid" float in an oversized lozenge and sit taller than the row's
   // other cells. Compact sizes to its text and matches the row's line height.
@@ -198,6 +261,7 @@ export function StatusBadge({ tone = 'neutral', compact = false, children, class
     : 'min-w-[62px] rounded-[20px] px-2 py-[5px] text-center text-[10px]'
   return (
     <span
+      title={title}
       className={`inline-block font-bold whitespace-nowrap ${shape} ${
         STATUS_TONES[tone] || STATUS_TONES.neutral
       } ${className}`}
@@ -207,7 +271,7 @@ export function StatusBadge({ tone = 'neutral', compact = false, children, class
   )
 }
 
-/** Paid=success, Partial (refunded)=warn, Voided=danger. */
+/** Paid=success, Partial Refund=warn, Voided=danger. */
 export function statusToneFromTxn(item) {
   if (!item) return 'neutral'
   if (item.status === 'Voided') return 'danger'
@@ -219,7 +283,7 @@ export function statusToneFromTxn(item) {
 export function statusLabelFromTxn(item) {
   if (!item) return '—'
   if (item.status === 'Voided') return 'Voided'
-  if (Number(item.refundedAmount || 0) > 0) return 'Partial'
+  if (Number(item.refundedAmount || 0) > 0) return 'Partial Refund'
   return item.status || '—'
 }
 
@@ -336,9 +400,14 @@ export function ModalActions({ children, className = '' }) {
 export function ErrorBanner({ error, className = '', onDismiss }) {
   if (!error) return null
   const text = typeof error === 'string' ? error : error.message || String(error)
-  const codeMatch = text.match(/\bCode\s+([A-Z]{2,5}\d{2})\b/i) || text.match(/\b([A-Z]{2,5}\d{2})\b/)
-  const code = codeMatch?.[1] || null
-  const alreadyLabeled = /\bCode\s+[A-Z]{2,5}\d{2}\b/i.test(text)
+  // An explicit "Code ..." label wins. The bare-token fallback is only trusted when the
+  // token is genuinely in the catalog — otherwise a product SKU sitting in a free-text
+  // database message gets presented to staff as a support code they can quote, and
+  // support then has nothing to look it up against.
+  const labelled = text.match(/\bCode\s+([A-Z]{2,6}\d{2})\b/i)?.[1]
+  const bare = text.match(/\b([A-Z]{2,6}\d{2})\b/)?.[1]
+  const code = labelled || (bare && isKnownErrorCode(bare) ? bare : null)
+  const alreadyLabeled = Boolean(labelled)
   const impact = code ? saleImpactGuidance(code) : ''
   return (
     <div

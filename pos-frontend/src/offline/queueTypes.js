@@ -11,6 +11,8 @@ export const QUEUE_TYPES = {
   CREATE_PRODUCT: 'create_product',
   UPDATE_PRODUCT: 'update_product',
   PRICE_CHANGE: 'price_change',
+  OPEN_SHIFT: 'open_shift',
+  CLOSE_SHIFT: 'close_shift',
 }
 
 export const QUEUE_STATUS = {
