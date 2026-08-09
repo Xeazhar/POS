@@ -473,7 +473,10 @@ function Products() {
       {error && isRestaurant && (
         <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
       )}
-      <TableCard>
+      {/* max-h-none: the stock list scrolls with the page, not inside its own box. A nested
+          scroll area meant the pager at the bottom of the card was itself out of view, and
+          two scrollbars on one screen sent people to the wrong one. */}
+      <TableCard className="max-h-none">
         <div className={`grid gap-3 border-0 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase ${
           isRestaurant
             ? 'grid-cols-[2.5rem_1.5fr_1fr_0.7fr_0.8fr] max-[700px]:grid-cols-[2rem_1.4fr_0.8fr]'
@@ -617,8 +620,10 @@ function Products() {
             )}
 
             <h3 className="mt-[22px] mb-2.5 text-sm">Movement history</h3>
+                {/* Dark header, matching the Inventory list above and the standalone Movement
+                    history tab — same ledger, should not read as a different report here. */}
                 <div className="rounded-none border border-brand-sheet">
-                  <div className="grid grid-cols-[1.2fr_0.9fr_1.4fr_1fr] gap-1.5 bg-brand-sheet-head p-2 text-[11px] font-bold">
+                  <div className="grid grid-cols-[1.2fr_0.9fr_1.4fr_1fr] gap-1.5 bg-brand-dark p-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
                     <span>Type</span>
                     <span>Date</span>
                     <span>Change</span>
@@ -629,15 +634,13 @@ function Products() {
                       No movements yet.
                     </div>
                   ) : (
-                    productMovements.map((movement, index) => {
+                    productMovements.map((movement) => {
                       const isPrice =
                         movement.movementType === 'price_change' || movement.type === 'Price change'
                       return (
                         <div
                           key={movement.id}
-                          className={`grid grid-cols-[1.2fr_0.9fr_1.4fr_1fr] gap-1.5 border-t border-brand-sheet-line p-2 text-[11px] ${
-                            index % 2 === 0 ? 'bg-white' : 'bg-brand-sheet-alt'
-                          }`}
+                          className={`grid grid-cols-[1.2fr_0.9fr_1.4fr_1fr] gap-1.5 p-2 text-[11px] ${tableRowClass}`}
                         >
                           <span className={isPrice ? 'font-bold text-brand-ink' : ''}>{movement.type}</span>
                           <span>{movement.date}</span>

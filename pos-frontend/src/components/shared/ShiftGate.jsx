@@ -1,8 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Eyebrow, Field, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
 import SupervisorApprove from './SupervisorApprove'
-import { closeShift as closeShiftRemote, hasSupabase, logApprovalEvent } from '../../lib/api'
-import { isOnline } from '../../offline'
+import { logApprovalEvent } from '../../lib/api'
 import { useShiftStore } from '../../stores/shiftStore'
 import { formatSupportError } from '../../utils/errors'
 import { money } from '../../utils/format'
@@ -24,8 +23,11 @@ function sinceLabel(iso) {
  *
  * It is shown for exactly one reason at a time, and each reason has a different remedy:
  *   start — count the change fund into the drawer (the only routine case)
- *   busy  — the previous cashier has not cashed out; someone must count their drawer
  *   moved — this cashier is open on another till, so their cash is somewhere else
+ *
+ * There is no "drawer still open under someone else" case: starting a shift auto-closes a
+ * stale one on the same drawer server-side (no count required — see endShift), so a new
+ * cashier is never blocked waiting on the previous one to formally cash out.
  *
  * Resuming is not one of the cases: when a shift is already open for this cashier on this
  * drawer, the store answers `ready` and this component never renders. That is what makes
@@ -46,10 +48,9 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
   const [confirmedCount, setConfirmedCount] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  // Supervisor-gated escape hatches: 'close_theirs' (cash out the blocking shift) and
-  // 'override_drawer' (start here while their own shift is open elsewhere).
+  // Supervisor-gated escape hatch: 'override_drawer' (start here while their own shift is
+  // open elsewhere).
   const [approving, setApproving] = useState(null)
-  const [theirCount, setTheirCount] = useState('')
 
   // Pre-fill the handoff amount, but never treat it as counted — `confirmedCount` resets
   // to false so the new cashier has to tick that they physically counted the drawer. A
@@ -96,111 +97,30 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
     }
   }
 
-  if (gate === 'busy' && blocker) {
+  // Just cashed out on this session. No "Check again" or override here on purpose —
+  // the only way off this screen is to sign out, so the next person to touch the till
+  // has to authenticate as themselves before counting cash into it.
+  if (gate === 'ended') {
     return (
-      <>
-        <Modal>
-          <Eyebrow>DRAWER IN USE</Eyebrow>
-          <h2 className="mb-1 text-lg">{drawerLabel} is still open</h2>
-          <p className="m-0 text-xs text-brand-muted">
-            <strong className="text-brand-ink">{blocker.staffName || 'Another cashier'}</strong> started
-            a shift on this drawer{blocker.clockIn ? ` at ${sinceLabel(blocker.clockIn)}` : ''} and has
-            not cashed out. Two people cannot be accountable for the same cash at once — their
-            drawer must be counted and closed first.
-          </p>
-          {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
-          <ModalActions>
-            <SecondaryButton compact type="button" disabled={busy} onClick={onSignOut}>
-              Sign out
-            </SecondaryButton>
-            <SecondaryButton
-              compact
-              type="button"
-              disabled={busy}
-              onClick={() => void resolve(user, { holdsDrawer })}
-            >
-              Check again
-            </SecondaryButton>
-            <PrimaryButton
-              compact
-              type="button"
-              disabled={busy}
-              onClick={() => setApproving('close_theirs')}
-            >
-              Close their shift
-            </PrimaryButton>
-          </ModalActions>
-        </Modal>
-        {approving === 'close_theirs' && (
-          <SupervisorApprove
-            branchId={user?.branchId}
-            title="Close another cashier's shift"
-            detail={`Count ${blocker.staffName || 'their'} drawer first — the amount you enter next becomes their ending count and their variance.`}
-            onCancel={() => setApproving(null)}
-            onApproved={({ staffId }) => {
-              setApproving({ step: 'count', approvedBy: staffId })
-            }}
-          />
-        )}
-        {approving?.step === 'count' && (
-          <Modal onClose={() => !busy && setApproving(null)}>
-            <Eyebrow>COUNT THEIR DRAWER</Eyebrow>
-            <h2 className="mb-1 text-lg">Ending count for {blocker.staffName || 'their shift'}</h2>
-            <p className="m-0 text-xs text-brand-muted">
-              This is recorded against their shift, not yours. Their variance is calculated from it.
-            </p>
-            <Field
-              className="mt-3"
-              label="Cash counted in the drawer"
-              value={theirCount}
-              onChange={(e) => setTheirCount(decimalOnly(e.target.value))}
-              inputMode="decimal"
-              required
-              placeholder="0.00"
-            />
-            {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
-            <ModalActions>
-              <SecondaryButton compact type="button" disabled={busy} onClick={() => setApproving(null)}>
-                Cancel
-              </SecondaryButton>
-              <PrimaryButton
-                compact
-                type="button"
-                disabled={busy || theirCount === ''}
-                onClick={async () => {
-                  setBusy(true)
-                  setError('')
-                  try {
-                    if (!hasSupabase || !isOnline() || !blocker.serverId) {
-                      // Closing someone else's shift changes THEIR accountability, so it is
-                      // not queued offline — the record has to be authoritative, and a
-                      // queued version could be overtaken by their own cash-out.
-                      throw new Error(
-                        'Closing another cashier’s shift needs a connection. Ask them to cash out on their own device.',
-                      )
-                    }
-                    await closeShiftRemote({
-                      shiftId: blocker.serverId,
-                      endingCash: Number(theirCount),
-                      note: `Closed by ${user?.name || 'supervisor'} to release drawer`,
-                      closedBy: approving.approvedBy || user?.id || null,
-                    })
-                    setApproving(null)
-                    setTheirCount('')
-                    await resolve(user, { holdsDrawer })
-                  } catch (err) {
-                    setError(formatSupportError(err, 'SHIFT02'))
-                  } finally {
-                    setBusy(false)
-                  }
-                }}
-              >
-                {busy ? 'Working…' : 'Close their shift'}
-              </PrimaryButton>
-            </ModalActions>
-          </Modal>
-        )}
-      </>
+      <Modal>
+        <Eyebrow>SHIFT ENDED</Eyebrow>
+        <h2 className="mb-1 text-lg">Drawer counted &amp; shift closed</h2>
+        <p className="m-0 text-xs text-brand-muted">
+          {handoff?.endingCash != null ? (
+            <>
+              Counted <strong className="text-brand-ink">{money(handoff.endingCash)}</strong> in{' '}
+              {handoff.drawerLabel || drawerLabel || 'the drawer'}.{' '}
+            </>
+          ) : null}
+          Sign out before handing the terminal to the next cashier.
+        </p>
+        {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
+        <ModalActions>
+          <PrimaryButton compact type="button" disabled={busy} onClick={onSignOut}>
+            Sign out
+          </PrimaryButton>
+        </ModalActions>
+      </Modal>
     )
   }
 

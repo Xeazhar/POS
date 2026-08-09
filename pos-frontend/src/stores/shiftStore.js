@@ -5,7 +5,6 @@ import {
   enqueue,
   getLastClosedShiftOnDrawer,
   getLocalOpenShift,
-  getLocalOpenShiftOnDrawer,
   isOnline,
   markShiftSynced,
   newShiftClientId,
@@ -22,17 +21,23 @@ import { useSyncStore } from './syncStore'
 /**
  * The cash shift this terminal is currently working under.
  *
- * The rule this store exists to enforce: a change fund is counted ONCE per shift, not once
- * per sign-in. Signing out — deliberately or by accident — does not end a shift, so signing
- * back in on the same drawer resumes it and never asks for the float again. Only a genuine
- * cash-out ends a shift, and only then does the next person count cash in.
+ * The opening float is still counted once per shift. Ending a shift is a plain clock-out —
+ * no count, no supervisor witness — because cash counting now happens once per BUSINESS DAY,
+ * at Day End, not once per shift boundary. Signing out — deliberately or by accident — does
+ * not end a shift, so signing back in on the same drawer resumes it and never asks for the
+ * float again.
  *
  * `gate` is what the UI acts on:
  *   ready       — a shift is open and sales may proceed
  *   start       — no shift for this cashier on this drawer; count the change fund
- *   busy        — someone else holds this drawer; they must cash out first
  *   moved       — this cashier is open on a DIFFERENT drawer (see below)
+ *   ended       — this cashier just clocked out on THIS session; sign out before anyone
+ *                 else touches the terminal (see endShift)
  *   checking    — still resolving
+ *
+ * There is deliberately no `busy` gate: a drawer with a stale open shift under someone else
+ * never blocks the next cashier — starting a shift auto-closes it server-side (see
+ * open_staff_shift() in migrate_day_end_request_no_shift_count.sql), no count required.
  *
  * `moved` is deliberately not auto-resolved. Same cashier, different terminal means a
  * different pile of cash: resuming would hand them a drawer they never counted, and
@@ -42,7 +47,7 @@ import { useSyncStore } from './syncStore'
 export const useShiftStore = create((set, get) => ({
   shift: null,
   gate: 'checking',
-  /** The open shift blocking this drawer (gate 'busy') or held elsewhere (gate 'moved'). */
+  /** This cashier's shift held elsewhere (gate 'moved'). */
   blocker: null,
   /** Previous shift on this drawer whose ending count pre-fills a handoff. */
   handoff: null,
@@ -95,17 +100,11 @@ export const useShiftStore = create((set, get) => ({
         return { gate: 'ready', shift: local }
       }
 
-      // Floor shifts (supervisor) do not hold a drawer, so neither the drawer-busy check
-      // nor the handoff pre-fill applies to them.
+      // Floor shifts (supervisor) do not hold a drawer, so the handoff pre-fill does not
+      // apply to them.
       if (!holdsDrawer) {
         set({ shift: null, gate: 'start', blocker: null, handoff: null, checking: false })
         return { gate: 'start' }
-      }
-
-      const blocker = await findDrawerBlocker(user, drawerId)
-      if (blocker) {
-        set({ shift: null, gate: 'busy', blocker, handoff: null, checking: false })
-        return { gate: 'busy', blocker }
       }
 
       const elsewhere = await findShiftOnAnotherDrawer(user, drawerId)
@@ -200,24 +199,24 @@ export const useShiftStore = create((set, get) => ({
   },
 
   /**
-   * Cash out and end the shift. This — not signing out — is what closes a shift, so the
-   * next cashier is asked to count in.
+   * End the shift: a plain clock-out. No cash count, no supervisor witness — counting
+   * happens once per business day at Day End now, not once per shift boundary.
+   *
+   * Lands on gate 'ended', not 'start'. Falling straight through to a new "count your
+   * change fund" screen would let whoever is standing at the till open the NEXT shift under
+   * this cashier's still-open session. The terminal must go back to a sign-in before anyone
+   * starts a new shift here.
    */
-  endShift: async (user, { endingCash, note = '' }) => {
+  endShift: async (user, { note = '' } = {}) => {
     const shift = get().shift
     if (!shift) return null
-    const amount = Number(endingCash || 0)
-    if (shift.holdsDrawer !== false && (!Number.isFinite(amount) || amount < 0)) {
-      throw appError('SHIFT03')
-    }
 
-    const position = await get().cashPosition()
-    const expected = position ? Number(position.expectedCash || 0) : null
     const closed = await closeLocalShift(shift.clientId, {
-      endingCash: shift.holdsDrawer === false ? null : amount,
-      expectedCash: expected,
-      variance: expected == null || shift.holdsDrawer === false ? null : Number((amount - expected).toFixed(2)),
+      endingCash: null,
+      expectedCash: null,
+      variance: null,
       closeNote: note,
+      closedBy: user.id,
       clockOut: new Date().toISOString(),
       syncStatus: 'pending',
     })
@@ -229,9 +228,8 @@ export const useShiftStore = create((set, get) => ({
           clientId: shift.clientId,
           shiftId: shift.serverId || null,
           branchId: shift.branchId,
-          endingCash: amount,
           note,
-          closedBy: user?.id || null,
+          closedBy: user.id,
         },
         { branchId: shift.branchId, clientId: `close_${shift.clientId}` },
       )
@@ -239,7 +237,7 @@ export const useShiftStore = create((set, get) => ({
       if (isOnline()) void syncBranch(shift.branchId).catch(() => {})
     }
 
-    set({ shift: null, gate: 'start', blocker: null, handoff: closed })
+    set({ shift: null, gate: 'ended', blocker: null, handoff: closed })
     return closed
   },
 
@@ -276,26 +274,24 @@ async function upsertFromRemote(remote, local) {
   })
 }
 
-/** Another cashier still holding this drawer. Server wins when reachable. */
-async function findDrawerBlocker(user, drawerId) {
-  if (api.hasSupabase && isOnline()) {
-    const remote = await api
-      .fetchOpenShiftOnDrawer({ branchId: user.branchId, drawerId })
-      .catch(() => null)
-    if (remote && remote.staffId !== user.id) return remote
-    if (remote) return null
-  }
-  const local = await getLocalOpenShiftOnDrawer({ branchId: user.branchId, drawerId })
-  if (local && local.staffId !== user.id) return local
-  return null
-}
-
-/** This cashier open on a different terminal — the "moved drawer" case. */
+/**
+ * This cashier open on a different terminal — the "moved drawer" case.
+ *
+ * `undefined` means the fetch itself failed (offline, network blip) — fall back to the
+ * local cache. A resolved value of `null` means the server was reached and definitively
+ * has no open shift for this staff member; that must return null immediately, not fall
+ * through to IndexedDB, which can hold a stale `open` row this device never learned was
+ * closed (e.g. a supervisor closed it from a different terminal via Day End's Close
+ * shift). Falling through there is what makes an already-closed shift keep showing
+ * "your shift is open on another till" after login.
+ */
 async function findShiftOnAnotherDrawer(user, drawerId) {
   if (api.hasSupabase && isOnline()) {
-    const remote = await api.fetchOpenShift(user.id).catch(() => null)
-    if (remote?.id && remote.drawerId !== drawerId && remote.holdsDrawer !== false) return remote
-    if (remote?.id) return null
+    const remote = await api.fetchOpenShift(user.id).catch(() => undefined)
+    if (remote !== undefined) {
+      if (remote?.id && remote.drawerId !== drawerId && remote.holdsDrawer !== false) return remote
+      return null
+    }
   }
   const rows = await db.shifts.where('status').equals('open').toArray()
   return (

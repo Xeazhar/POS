@@ -35,6 +35,9 @@ export function mapDayEndRow(row) {
     reopenReason: row.reopen_reason || '',
     dayReport: mapDayReport(row.day_report),
     branchId: row.branch_id || null,
+    requestedAt: row.requested_at || null,
+    requestedBy: row.requested_by || null,
+    requestManager: row.request_manager === true,
   }
 }
 
@@ -318,13 +321,57 @@ export async function fetchStockMovements({
   if (error) throw error
   const rows = data || []
   const who = await fetchStaffIdentities(rows.map((r) => r.staff_id)).catch(() => ({}))
+  const orNumbers = await resolveMovementReferences(rows)
   return rows.map((row) =>
     mapMovement({
       ...row,
       staff_name: who[row.staff_id]?.name || null,
       product: row.products?.name || '',
+      reference: readableReference(row, orNumbers),
     }),
   )
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * `stock_movements.reference` holds whatever caused the movement, and for a sale that is the
+ * transaction's internal id — a UUID nobody can look a receipt up with, printed in a column
+ * staff read. Trade it for the OR number, which is the one identifier that appears on the
+ * receipt, in Transactions and in the BIR reports.
+ */
+async function resolveMovementReferences(rows) {
+  const ids = [
+    ...new Set(
+      (rows || [])
+        .filter((r) => r.movement_type === 'sale' && UUID_RE.test(String(r.reference || '')))
+        .map((r) => r.reference),
+    ),
+  ]
+  if (!ids.length) return {}
+  const map = {}
+  // Chunked: a month of movements can reference more transaction ids than a URL will carry.
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('id, or_number')
+      .in('id', ids.slice(i, i + 200))
+    if (error) return map // a missing OR is cosmetic; never fail the whole history for it
+    for (const t of data || []) if (t.or_number) map[t.id] = t.or_number
+  }
+  return map
+}
+
+/** Human-readable reference, or nothing. A bare id is noise, not information. */
+function readableReference(row, orNumbers) {
+  const raw = String(row.reference || '')
+  if (!raw) return ''
+  // or_number already carries its own prefix (e.g. "OR-00000001", or a branch's own
+  // or_prefix) — prepending "OR " here duplicated it as "OR OR-00000001".
+  if (orNumbers[raw]) return orNumbers[raw]
+  // Import batch ids and unresolvable sale ids both land here — say nothing rather than
+  // print a key the reader cannot act on.
+  return UUID_RE.test(raw) ? '' : raw
 }
 
 export async function fetchSessionStaff() {
@@ -591,7 +638,7 @@ const BOOTSTRAP_TX_COLS_LEGACY =
 const BOOTSTRAP_MOVE_COLS =
   'id, created_at, product_id, movement_type, quantity_in, quantity_out, quantity_on_hand_after, old_price, new_price, detail, branch_id, products(name)'
 const BOOTSTRAP_DAY_END_COLS =
-  'id, business_date, recorded_cash, cash_on_hand, variance, expected_cash, note, status, closed_at, submitted_at, approved_at, reopened_at, reopen_reason, day_report, staff_id, branch_id, staff!staff_id(full_name)'
+  'id, business_date, recorded_cash, cash_on_hand, variance, expected_cash, note, status, closed_at, submitted_at, approved_at, reopened_at, reopen_reason, day_report, staff_id, branch_id, staff!staff_id(full_name), requested_at, requested_by, request_manager'
 const BOOTSTRAP_DAY_END_COLS_LEGACY =
   'id, business_date, recorded_cash, cash_on_hand, variance, note, status, closed_at, staff_id, branch_id, staff!staff_id(full_name)'
 
@@ -1040,6 +1087,77 @@ export async function resyncDiscountEligibleToBranches() {
   }
 
   return { enabled: toEnable.length, disabled: toDisable.length, unlinked }
+}
+
+/**
+ * Push a network-catalog identity/price edit (name, sku, barcode, category, price,
+ * budget_price) out to every branch that already adopted this item — same reach pattern as
+ * cascadeDiscountEligibleToBranches (linked rows via catalog_product_id, plus an orphan pass
+ * matched by the item's SKU **before** this edit, since an unlinked branch row still carries
+ * the old SKU). A price change is also logged via recordPriceChange per affected branch row
+ * so the Price Change Register and Price Listing report see it, matching what editing price
+ * on a branch's own Inventory page already does.
+ */
+export async function cascadeCatalogFieldsToBranches(catalogProductId, fields, { matchSku, staffId } = {}) {
+  const updateFields = {}
+  if (fields.name !== undefined) updateFields.name = fields.name
+  if (fields.sku !== undefined) updateFields.sku = fields.sku
+  if (fields.barcode !== undefined) updateFields.barcode = fields.barcode
+  if (fields.price !== undefined) updateFields.price = fields.price
+  if (fields.budgetPrice !== undefined) updateFields.budget_price = fields.budgetPrice
+  if (fields.category) {
+    const { data: cat } = await supabase.from('categories').select('id').eq('name', fields.category).maybeSingle()
+    if (cat?.id) updateFields.category_id = cat.id
+  }
+  if (!Object.keys(updateFields).length) return
+
+  const logPriceChanges = async (rows) => {
+    if (fields.price === undefined) return
+    for (const row of rows) {
+      const oldPrice = row.price != null ? Number(row.price) : null
+      if (oldPrice == null || oldPrice === Number(fields.price)) continue
+      await recordPriceChange({
+        branchId: row.branch_id,
+        productId: row.id,
+        staffId,
+        oldPrice,
+        newPrice: Number(fields.price),
+        detail: fields.name || 'Price update (network catalog)',
+      })
+    }
+  }
+
+  // Pass 1: rows properly linked to this catalog item.
+  const { data: linked, error: linkedError } = await supabase
+    .from('products')
+    .select('id, branch_id, price')
+    .eq('catalog_product_id', catalogProductId)
+  if (linkedError) throw linkedError
+  if (linked?.length) {
+    const { error } = await supabase
+      .from('products')
+      .update(updateFields)
+      .eq('catalog_product_id', catalogProductId)
+    if (error) throw error
+    await logPriceChanges(linked)
+  }
+
+  // Pass 2: rows never linked (see cascadeDiscountEligibleToBranches for why this happens).
+  const trimmedSku = String(matchSku || '').trim()
+  if (!trimmedSku) return
+  const { data: orphans, error: orphanError } = await supabase
+    .from('products')
+    .select('id, branch_id, price')
+    .is('catalog_product_id', null)
+    .ilike('sku', trimmedSku)
+  if (orphanError || !orphans?.length) return
+  const ids = orphans.map((row) => row.id)
+  const { error } = await supabase
+    .from('products')
+    .update({ ...updateFields, catalog_product_id: catalogProductId })
+    .in('id', ids)
+  if (error) throw error
+  await logPriceChanges(orphans)
 }
 
 /** Supervisor: add catalog items to this branch's sellable products + inventory. */
@@ -1778,6 +1896,22 @@ export async function reopenDayEnd({ id, staffId, reason }) {
   return data
 }
 
+/**
+ * A cashier flags the business day for closing — no cash figures yet. Whoever answers it
+ * (a supervisor, or a manager if `requestManager` was set) counts the drawer on the normal
+ * Close Day screen, which overwrites this with real numbers and closes as usual.
+ */
+export async function requestDayEnd({ branchId, staffId, businessDate, requestManager = false }) {
+  const { data, error } = await supabase.rpc('request_day_end', {
+    p_branch_id: branchId,
+    p_staff_id: staffId,
+    p_business_date: businessDate,
+    p_request_manager: requestManager,
+  })
+  if (error) throw error
+  return data
+}
+
 const BRANCH_LIST_COLS =
   'id, name, address, is_active, sort_order, day_open_hour, branch_type, device_settings, vat_rate, tin, branch_tin_code, business_name, bir_permit_no, machine_identification_no, serial_number, or_prefix'
 const BRANCH_LIST_COLS_LEGACY =
@@ -2471,14 +2605,36 @@ export function mapShiftRow(row) {
     cashPickups: Number(row.cash_pickups || 0),
     closeNote: row.close_note || '',
     closedBy: row.closed_by || null,
+    closedWithoutSupervisor: row.closed_without_supervisor === true,
+    reviewedBy: row.reviewed_by || null,
+    reviewedAt: row.reviewed_at || null,
     open: !row.clock_out,
     status: row.clock_out ? 'closed' : 'open',
   }
 }
 
 const SHIFT_COLS =
-  'id, branch_id, staff_id, drawer_id, drawer_label, holds_drawer, business_date, clock_in, clock_out, shift_period, starting_cash, carried_from_shift_id, carried_amount, ending_cash, expected_cash, variance, cash_sales, cash_refunds, cash_paid_out, cash_pickups, close_note, closed_by, client_id'
+  'id, branch_id, staff_id, drawer_id, drawer_label, holds_drawer, business_date, clock_in, clock_out, shift_period, starting_cash, carried_from_shift_id, carried_amount, ending_cash, expected_cash, variance, cash_sales, cash_refunds, cash_paid_out, cash_pickups, close_note, closed_by, client_id, closed_without_supervisor, reviewed_by, reviewed_at'
+// shift_period (migrate_staff_shift_period.sql) and closed_without_supervisor/reviewed_by/
+// reviewed_at (migrate_shift_close_no_supervisor_flag.sql) are each optional, independent of
+// the core cash-accountability schema. Selecting any of them alongside the cash columns means
+// one missing optional column fails the whole select, and the fallback ladder would then drop
+// to a column set with no starting_cash / ending_cash at all — which reads as "the float was
+// never recorded" rather than as a schema gap. This tier keeps every cash figure and gives up
+// only the optional columns, together, rather than trying to isolate which one is missing.
+const SHIFT_COLS_CORE = SHIFT_COLS.replace(
+  ', shift_period',
+  '',
+).replace(', closed_without_supervisor, reviewed_by, reviewed_at', '')
 const SHIFT_COLS_LEGACY = 'id, branch_id, staff_id, clock_in, clock_out, shift_period'
+const SHIFT_COLS_MINIMAL = 'id, branch_id, staff_id, clock_in, clock_out'
+
+/** One of the optional staff_shifts columns is absent — a migration hasn't been applied yet. */
+function isMissingOptionalShiftColumn(error) {
+  return /shift_period|closed_without_supervisor|reviewed_by|reviewed_at/i.test(
+    String(error?.message || error || ''),
+  )
+}
 
 /** True when the database predates migrate_shift_cash_accountability.sql. */
 function isMissingShiftCashSchema(error) {
@@ -2543,7 +2699,7 @@ export async function openShift({
     // clock-in + change-fund-entry pair rather than refusing to open a shift, which would
     // stop the branch selling entirely until someone runs a migration.
     if (isMissingShiftRpc(error, 'open_staff_shift')) {
-      const legacy = await clockIn({ branchId, staffId, shiftPeriod })
+      const legacy = await clockIn({ branchId, staffId, shiftPeriod, businessDate })
       if (holdsDrawer !== false && Number(startingCash || 0) > 0 && legacy?.id) {
         await recordChangeFund({
           branchId,
@@ -2571,23 +2727,44 @@ export async function openShift({
 }
 
 /**
- * End a shift with a counted drawer. Expected cash and variance are computed server-side
- * from rows attributed to the shift — never sent from here, so the person being counted
- * does not get to supply the number they are counted against.
+ * End a shift. `endingCash` is optional now — ending a shift no longer counts the drawer
+ * (Day End does that once per business day); when omitted the shift closes with no
+ * ending/expected/variance figures rather than a fabricated ₱0.00 count. When a count IS
+ * given, expected cash and variance are still computed server-side from rows attributed to
+ * the shift — never sent from here.
  */
-export async function closeShift({ shiftId, endingCash, note = '', closedBy = null }) {
+export async function closeShift({ shiftId, endingCash = null, note = '', closedBy = null }) {
   const { data, error } = await supabase.rpc('close_staff_shift', {
     p_shift_id: shiftId,
-    p_ending_cash: Number(endingCash || 0),
+    p_ending_cash: endingCash == null ? null : Number(endingCash),
     p_note: note || null,
     p_closed_by: closedBy,
   })
   if (error) {
     // Pre-migration: end the shift the old way. No expected/variance is computed, because
-    // nothing attributed sales to the shift — a fabricated variance would be worse.
+    // nothing attributed sales to the shift — a fabricated variance would be worse. The
+    // counted cash itself is still written; see clockOut.
     if (isMissingShiftRpc(error, 'close_staff_shift')) {
-      return mapShiftRow(await clockOut(shiftId))
+      return mapShiftRow(await clockOut(shiftId, { endingCash, note, closedBy }))
     }
+    throw shiftRpcError(error)
+  }
+  return mapShiftRow(Array.isArray(data) ? data[0] : data)
+}
+
+/**
+ * Manager sign-off on a shift that was closed under its own cashier's count because no
+ * supervisor/manager could witness it (see ShiftCashOut's "no supervisor available" path).
+ * Requires migrate_shift_close_no_supervisor_flag.sql — absent on older databases, in which
+ * case there is nothing to acknowledge, so this is a no-op rather than an error.
+ */
+export async function acknowledgeShiftReview(shiftId, staffId) {
+  const { data, error } = await supabase.rpc('acknowledge_shift_review', {
+    p_shift_id: shiftId,
+    p_staff_id: staffId,
+  })
+  if (error) {
+    if (isMissingShiftRpc(error, 'acknowledge_shift_review')) return null
     throw shiftRpcError(error)
   }
   return mapShiftRow(Array.isArray(data) ? data[0] : data)
@@ -2651,12 +2828,18 @@ export async function fetchOpenShiftOnDrawer({ branchId, drawerId }) {
 
 /** Every open shift at a branch — the supervisor's "who is on the tills" view. */
 export async function fetchOpenShiftsForBranch(branchId) {
-  const { data, error } = await supabase
-    .from('staff_shifts')
-    .select(`${SHIFT_COLS}, staff:staff_id(id, full_name, role)`)
-    .eq('branch_id', branchId)
-    .is('clock_out', null)
-    .order('clock_in', { ascending: false })
+  const run = (cols) =>
+    supabase
+      .from('staff_shifts')
+      .select(`${cols}, staff:staff_id(id, full_name, role)`)
+      .eq('branch_id', branchId)
+      .is('clock_out', null)
+      .order('clock_in', { ascending: false })
+
+  let { data, error } = await run(SHIFT_COLS)
+  if (error && isMissingOptionalShiftColumn(error)) {
+    ;({ data, error } = await run(SHIFT_COLS_CORE))
+  }
   if (error) {
     if (isMissingShiftCashSchema(error)) return []
     throw error
@@ -2729,7 +2912,7 @@ export async function fetchShiftAdjustments(shiftIds = []) {
   }))
 }
 
-export async function clockIn({ branchId, staffId, shiftPeriod = null }) {
+export async function clockIn({ branchId, staffId, shiftPeriod = null, businessDate = null }) {
   const period = shiftPeriod === 'am' || shiftPeriod === 'pm' ? shiftPeriod : null
   const payload = {
     branch_id: branchId,
@@ -2737,10 +2920,19 @@ export async function clockIn({ branchId, staffId, shiftPeriod = null }) {
     clock_in: new Date().toISOString(),
   }
   if (period) payload.shift_period = period
+  // Stamp the business date the till computed. Without it the row is invisible to every
+  // business-date range query (see fetchStaffShifts), so a shift opened through this
+  // legacy path would never appear in Day end's "Change fund by shift".
+  if (businessDate) payload.business_date = businessDate
   const { data, error } = await supabase.from('staff_shifts').insert(payload).select('*').single()
   if (error) {
-    // Older DBs without shift_period — retry without it
-    if (period && (isMissingColumnError(error, 'shift_period') || /shift_period/i.test(String(error.message || '')))) {
+    // Older DBs without shift_period / business_date — retry with the minimum column set
+    if (
+      (period || businessDate) &&
+      (isMissingColumnError(error, 'shift_period') ||
+        isMissingColumnError(error, 'business_date') ||
+        /shift_period|business_date/i.test(String(error.message || '')))
+    ) {
       const fallback = await supabase
         .from('staff_shifts')
         .insert({
@@ -2758,13 +2950,36 @@ export async function clockIn({ branchId, staffId, shiftPeriod = null }) {
   return data
 }
 
-export async function clockOut(shiftId) {
-  const { data, error } = await supabase
-    .from('staff_shifts')
-    .update({ clock_out: new Date().toISOString() })
-    .eq('id', shiftId)
-    .select('*')
-    .single()
+/**
+ * End a shift by writing clock_out directly — the pre-RPC path.
+ *
+ * The counted drawer has to be written here too. Clocking out and dropping `ending_cash`
+ * closes the shift with no count on it, which every reader then shows as "Pending handoff"
+ * forever: a closed shift cannot be edited afterwards, so the cashier's figure is gone for
+ * good. Expected/variance are still left null — nothing attributed sales to the shift on
+ * this schema, and a fabricated variance would be worse than an absent one.
+ */
+export async function clockOut(shiftId, { endingCash = null, note = '', closedBy = null } = {}) {
+  const clockOutAt = new Date().toISOString()
+  const patch = { clock_out: clockOutAt }
+  if (endingCash != null) patch.ending_cash = Number(endingCash)
+  if (note) patch.close_note = note
+  if (closedBy) patch.closed_by = closedBy
+
+  const run = (values) =>
+    supabase.from('staff_shifts').update(values).eq('id', shiftId).select('*').single()
+
+  let { data, error } = await run(patch)
+  // Truly old schema: staff_shifts is just a clock-in/clock-out log with nowhere to put a
+  // count. Ending the shift still has to work — the drawer figure is recorded on paper.
+  if (
+    error &&
+    (isMissingColumnError(error, 'ending_cash') ||
+      isMissingColumnError(error, 'close_note') ||
+      isMissingColumnError(error, 'closed_by'))
+  ) {
+    ;({ data, error } = await run({ clock_out: clockOutAt }))
+  }
   if (error) throw error
   return data
 }
@@ -2782,24 +2997,25 @@ export async function fetchOpenShift(staffId, { drawerId = null } = {}) {
       .select(cols)
       .eq('staff_id', staffId)
       .is('clock_out', null)
-    if (drawerId && cols !== SHIFT_COLS_LEGACY) query = query.eq('drawer_id', drawerId)
+    // Only narrow by drawer on column sets that actually have the column — the older tiers
+    // predate per-drawer shifts, and filtering on it there fails the query outright.
+    if (drawerId && cols.includes('drawer_id')) query = query.eq('drawer_id', drawerId)
     return query.order('clock_in', { ascending: false }).limit(1).maybeSingle()
   }
 
+  // shift_period first: it is only a label, and treating its absence as a missing cash schema
+  // would resume the shift with no starting_cash — the cashier's change fund would read as
+  // never counted. See SHIFT_COLS_CORE.
   let { data, error } = await run(SHIFT_COLS)
+  if (error && isMissingOptionalShiftColumn(error)) {
+    ;({ data, error } = await run(SHIFT_COLS_CORE))
+  }
   if (error && isMissingShiftCashSchema(error)) {
     ;({ data, error } = await run(SHIFT_COLS_LEGACY))
   }
   if (error) {
-    if (isMissingColumnError(error, 'shift_period') || /shift_period|schema cache|column/i.test(String(error.message || ''))) {
-      const fallback = await supabase
-        .from('staff_shifts')
-        .select('id, branch_id, staff_id, clock_in, clock_out')
-        .eq('staff_id', staffId)
-        .is('clock_out', null)
-        .order('clock_in', { ascending: false })
-        .limit(1)
-        .maybeSingle()
+    if (isMissingOptionalShiftColumn(error) || /schema cache|column/i.test(String(error.message || ''))) {
+      const fallback = await run(SHIFT_COLS_MINIMAL)
       if (fallback.error) {
         if (isMissingColumnError(fallback.error, 'staff_shifts') || /staff_shifts|schema cache/i.test(String(fallback.error.message || ''))) {
           return null
@@ -2816,9 +3032,34 @@ export async function fetchOpenShift(staffId, { drawerId = null } = {}) {
   return mapShiftRow(data)
 }
 
-/** Shift log for supervisors (one branch) or managers (all / filtered). */
+/**
+ * Shift log for supervisors (one branch) or managers (all / filtered).
+ *
+ * Ranges match on `business_date`, not on `clock_in`. Filtering by the clock-in instant
+ * dropped shifts out of Day end's "Change fund by shift" for two independent reasons:
+ *
+ *  - A business day runs from the branch's open hour to the next open hour, so a shift
+ *    started at 05:00 belongs to the PREVIOUS business date. Bucketing it by the calendar
+ *    day of its clock-in files it under a day the supervisor is not looking at.
+ *  - `clock_in` is timestamptz and a bare `2026-08-09T00:00:00` is read in the database
+ *    session's zone — UTC on Supabase, not Manila. That shifted the whole window eight
+ *    hours, so the opening hours of every trading day fell outside it.
+ *
+ * Together those made a drawer's own float and closing count look unrecorded. `business_date`
+ * is a plain date written from the same value the till computed, so neither applies. Rows
+ * predating that column fall back to clock_in rather than disappearing.
+ */
 export async function fetchStaffShifts({ branchId = null, start = null, end = null, limit = 300 } = {}) {
   const JOINS = 'staff:staff_id(id, full_name, role), branches:branch_id(id, name)'
+  const clockInTerms = [
+    start ? `clock_in.gte.${start}T00:00:00` : null,
+    end ? `clock_in.lte.${end}T23:59:59` : null,
+  ].filter(Boolean)
+  const businessDateTerms = [
+    start ? `business_date.gte.${start}` : null,
+    end ? `business_date.lte.${end}` : null,
+  ].filter(Boolean)
+
   const run = async (cols) => {
     let query = supabase
       .from('staff_shifts')
@@ -2826,19 +3067,34 @@ export async function fetchStaffShifts({ branchId = null, start = null, end = nu
       .order('clock_in', { ascending: false })
       .limit(limit)
     if (branchId) query = query.eq('branch_id', branchId)
-    if (start) query = query.gte('clock_in', `${start}T00:00:00`)
-    if (end) query = query.lte('clock_in', `${end}T23:59:59.999`)
+    if (clockInTerms.length) {
+      if (cols === SHIFT_COLS || cols === SHIFT_COLS_CORE) {
+        query = query.or(
+          `and(${businessDateTerms.join(',')}),and(business_date.is.null,${clockInTerms.join(',')})`,
+        )
+      } else {
+        // Legacy schema has no business_date to match on.
+        if (start) query = query.gte('clock_in', `${start}T00:00:00`)
+        if (end) query = query.lte('clock_in', `${end}T23:59:59.999`)
+      }
+    }
     return query
   }
 
   // Newest schema first, then progressively older ones. A branch mid-migration still gets
-  // a usable shift log instead of an empty page.
+  // a usable shift log instead of an empty page. The optional columns are checked before the
+  // cash schema because isMissingShiftCashSchema matches "does not exist" generically: without
+  // this ordering a missing optional column would be read as a missing cash schema and every
+  // float and closing count would silently drop out of the result.
   let { data, error } = await run(SHIFT_COLS)
+  if (error && isMissingOptionalShiftColumn(error)) {
+    ;({ data, error } = await run(SHIFT_COLS_CORE))
+  }
   if (error && isMissingShiftCashSchema(error)) {
     ;({ data, error } = await run(SHIFT_COLS_LEGACY))
   }
-  if (error && /shift_period/i.test(String(error.message || ''))) {
-    ;({ data, error } = await run('id, branch_id, staff_id, clock_in, clock_out'))
+  if (error && isMissingOptionalShiftColumn(error)) {
+    ;({ data, error } = await run(SHIFT_COLS_MINIMAL))
   }
   if (error) {
     if (isMissingColumnError(error, 'staff_shifts') || /staff_shifts|schema cache/i.test(String(error.message || ''))) {
@@ -2948,9 +3204,13 @@ function mapPettyCashRow(row) {
       : /^\[PICKUP\]/i.test(reason)
         ? 'pickup'
         : 'paid_out')
+  // A paid-out with no status predates the workflow columns, so the cash was already handed
+  // over — 'fulfilled', matching rowStatus() in DayEnd.jsx. Defaulting to 'approved' would
+  // park a years-old disbursement in the "awaiting hand-over" queue and add its cash back
+  // into the expected drawer.
   const status =
     row.status ||
-    (kind === 'paid_out' ? 'approved' : 'recorded')
+    (kind === 'paid_out' ? 'fulfilled' : 'recorded')
   return {
     id: row.id,
     branchId: row.branch_id,
@@ -3005,6 +3265,7 @@ export async function requestPettyCash({
   receiptRef,
   businessDate,
   shiftId = null,
+  autoApprove = false,
 }) {
   const why = String(reason || '').trim()
   if (!why) throw new Error('A reason is required for petty cash requests.')
@@ -3016,8 +3277,14 @@ export async function requestPettyCash({
     receiptRef: String(receiptRef || '').trim() || null,
     businessDate,
     kind: 'paid_out',
-    status: 'pending',
+    // A supervisor-or-above requesting their own branch's petty cash already holds
+    // approval authority — the immediate next step would just be them clicking Approve
+    // on their own row, same as submit_day_end collapsing self-approval. `autoApprove`
+    // is the caller's `canApprove` (see PettyCashPanel), the same gate the manual
+    // Approve button already uses, so this adds no new trust beyond what that button had.
+    status: autoApprove ? 'approved' : 'pending',
     requestedBy: staffId,
+    approvedBy: autoApprove ? staffId : null,
     shiftId,
   })
 }
@@ -3757,12 +4024,18 @@ export async function fetchDailyReading({ date, branchId }) {
 async function fetchFiscalTransactions({ start, end, branchId, includeVoided = true }) {
   const FULL =
     'id, or_number, status, total_amount, amount_tendered, change_given, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, discount_id_note, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, void_reason, refunded_amount'
+  // `created_at` is timestamptz — a bare `2026-08-09T00:00:00` is read in the database
+  // session's zone (UTC on Supabase), not Manila, shifting the whole window 8 hours and
+  // filing early-morning sales under the wrong day (see fetchStaffShifts above for the
+  // same class of bug). Building a local Date and converting to ISO fixes the instant.
+  const dayStart = new Date(`${start}T00:00:00`).toISOString()
+  const dayEnd = new Date(`${end}T23:59:59.999`).toISOString()
   const build = (cols) => (from, to) => {
     let q = supabase
       .from('transactions')
       .select(cols)
-      .gte('created_at', `${start}T00:00:00`)
-      .lte('created_at', `${end}T23:59:59`)
+      .gte('created_at', dayStart)
+      .lte('created_at', dayEnd)
       // created_at is NOT unique — several sales can share a timestamp, and a bulk write
       // inside one transaction gives them an identical now(). Ordering on it alone leaves
       // ties in arbitrary order, so a row straddling a 1000-row page boundary can appear
@@ -4540,6 +4813,20 @@ export async function commitInventoryImport({
       }
     } else {
       await writeProductRow('update', productPayload, { id: productId })
+      // Direct price edits elsewhere (Products.jsx, ManagerNetworkCatalog cascade) log
+      // through recordPriceChange so the Price Change Register sees them — an import
+      // that changes price must not be a silent exception to that.
+      const oldPrice = line.existing?.price != null ? Number(line.existing.price) : null
+      if (oldPrice != null && Number.isFinite(price) && oldPrice !== price) {
+        await recordPriceChange({
+          branchId,
+          productId,
+          staffId,
+          oldPrice,
+          newPrice: price,
+          detail: values.name || 'Price update (import)',
+        })
+      }
     }
 
     if (!restaurant && line.quantityAdded > 0) {
@@ -4863,6 +5150,7 @@ export async function fetchPromoRulesForEvent(promoEventId) {
 export async function createAndActivatePromoEvent({
   branchId,
   name,
+  description = null,
   startsAt = null,
   endsAt = null,
   staffId = null,
@@ -4870,12 +5158,14 @@ export async function createAndActivatePromoEvent({
 }) {
   const starts_iso = startsAt ? new Date(startsAt).toISOString() : null
   const ends_iso = endsAt ? new Date(endsAt).toISOString() : null
+  const desc = description?.trim() || null
 
   // Dual-control: create as pending unless manager activates immediately after approve path.
   // New creates are always pending — never auto-activate.
   const payload = {
     branch_id: branchId,
     name,
+    description: desc,
     is_active: false,
     status: 'pending',
     starts_at: starts_iso,
@@ -4884,6 +5174,16 @@ export async function createAndActivatePromoEvent({
   }
 
   let { data, error } = await supabase.from('promo_events').insert(payload).select('id,name,status').single()
+  if (error && isMissingColumnError(error, 'description')) {
+    // migrate_promo_description.sql not applied yet — create without it rather than fail outright.
+    const withoutDescription = { ...payload }
+    delete withoutDescription.description
+    ;({ data, error } = await supabase
+      .from('promo_events')
+      .insert(withoutDescription)
+      .select('id,name,status')
+      .single())
+  }
   if (error && (isMissingColumnError(error, 'status') || isMissingColumnError(error, 'requested_by'))) {
     // Legacy: old schema (pre dual-control) activated immediately
     ;({ data, error } = await supabase
@@ -5170,17 +5470,27 @@ export async function createPromoRule({ promoEventId, ruleType, discountPct, pro
  * out starts_at/ends_at and silently un-schedule a live promo. Same convention as
  * updateProductRow's discount_eligible guard; keep it if you add more optional fields.
  */
-export async function updatePromoEventDetails({ promoEventId, name, startsAt, endsAt }) {
+export async function updatePromoEventDetails({ promoEventId, name, description, startsAt, endsAt }) {
   const toIso = (value) => (value ? new Date(value).toISOString() : null)
 
   const payload = {
     ...(typeof name === 'string' ? { name } : {}),
+    ...(description !== undefined ? { description: description?.trim() || null } : {}),
     ...(startsAt !== undefined ? { starts_at: toIso(startsAt) } : {}),
     ...(endsAt !== undefined ? { ends_at: toIso(endsAt) } : {}),
     updated_at: new Date().toISOString(),
   }
 
-  const { data, error } = await supabase.from('promo_events').update(payload).eq('id', promoEventId).select('id,name')
+  let { data, error } = await supabase.from('promo_events').update(payload).eq('id', promoEventId).select('id,name')
+  if (error && isMissingColumnError(error, 'description')) {
+    const withoutDescription = { ...payload }
+    delete withoutDescription.description
+    ;({ data, error } = await supabase
+      .from('promo_events')
+      .update(withoutDescription)
+      .eq('id', promoEventId)
+      .select('id,name'))
+  }
   if (error) throw error
   return data
 }
@@ -5196,21 +5506,31 @@ export async function fetchPromoEventsForBranch(branchId) {
   const { data, error } = await supabase
     .from('promo_events')
     .select(
-      'id,name,is_active,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
+      'id,name,description,is_active,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
     )
     .eq('branch_id', branchId)
     .order('created_at', { ascending: false })
 
-  if (error) {
-    const fallback = await supabase
+  if (error && isMissingColumnError(error, 'description')) {
+    const retry = await supabase
       .from('promo_events')
-      .select('id,name,is_active,starts_at,ends_at,created_at')
+      .select(
+        'id,name,is_active,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
+      )
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
-    if (fallback.error) throw error
-    return fallback.data || []
+    if (!retry.error) return retry.data || []
+  } else if (!error) {
+    return data || []
   }
-  return data || []
+
+  const fallback = await supabase
+    .from('promo_events')
+    .select('id,name,is_active,starts_at,ends_at,created_at')
+    .eq('branch_id', branchId)
+    .order('created_at', { ascending: false })
+  if (fallback.error) throw error
+  return fallback.data || []
 }
 
 /** Manager overview: live promos on every branch (no branch filter). */
@@ -5302,8 +5622,9 @@ export async function deletePromoEvent(promoEventId) {
 
 /**
  * Pending approval inbox for Shell notifications.
- * Managers: submitted day-ends + promo pending/stop + petty cash pending.
- * Supervisors: submitted day-ends + petty cash pending on their branch.
+ * Managers: submitted/requested day-ends + promo pending/stop + petty cash pending.
+ * Supervisors: submitted/requested (non-manager-flagged) day-ends + petty cash pending on
+ * their branch.
  */
 export async function fetchPendingApprovals({ role, branchId } = {}) {
   if (!hasSupabase) return []
@@ -5337,6 +5658,36 @@ export async function fetchPendingApprovals({ role, branchId } = {}) {
     }
   }
 
+  // Day-end requested by a cashier — no cash figures yet, just a flag that someone needs to
+  // count the drawer. A supervisor only sees a request that was NOT specifically flagged
+  // for a manager; a manager sees every request (the universal fallback). Always routes to
+  // /day-end (not the branch dashboard) — that's the screen with the actual counting form.
+  let requestQ = supabase
+    .from('day_ends')
+    .select('id, business_date, status, requested_at, request_manager, branch_id, branches(name)')
+    .eq('status', 'requested')
+    .order('requested_at', { ascending: false })
+    .limit(30)
+  if (!manager) {
+    requestQ = requestQ.eq('request_manager', false)
+    if (branchId) requestQ = requestQ.eq('branch_id', branchId)
+  }
+  const { data: requestRows, error: requestErr } = await requestQ
+  if (!requestErr) {
+    for (const row of requestRows || []) {
+      const branchName = row.branches?.name || 'Branch'
+      items.push({
+        id: `day-req-${row.id}`,
+        kind: 'day_end_requested',
+        title: row.request_manager ? 'Day end requested (manager)' : 'Day end requested',
+        detail: `${branchName} · ${row.business_date || 'today'}`,
+        href: '/day-end',
+        createdAt: row.requested_at || null,
+        priority: 1,
+      })
+    }
+  }
+
   // Petty cash requests awaiting approve
   const { data: pettyRows, error: pettyErr } = await withCashDrawerTable((table) => {
     let q = supabase
@@ -5359,6 +5710,35 @@ export async function fetchPendingApprovals({ role, branchId } = {}) {
         detail: `${branchName} · ₱${Number(row.amount || 0).toFixed(2)} · ${row.reason || 'No reason'}`,
         href: manager ? `/manager/branches/${row.branch_id}` : '/day-end',
         createdAt: row.created_at || null,
+        priority: 2,
+      })
+    }
+  }
+
+  // Shifts closed under the cashier's own count because no supervisor/manager was reachable
+  // (see ShiftCashOut's "no supervisor available" path) — needs someone to acknowledge it.
+  // Silently skipped on a database that predates migrate_shift_close_no_supervisor_flag.sql.
+  let shiftQ = supabase
+    .from('staff_shifts')
+    .select('id, staff_id, branch_id, ending_cash, variance, clock_out, staff:staff_id(full_name), branches(name)')
+    .eq('closed_without_supervisor', true)
+    .is('reviewed_at', null)
+    .order('clock_out', { ascending: false })
+    .limit(30)
+  if (!manager && branchId) shiftQ = shiftQ.eq('branch_id', branchId)
+  const { data: shiftRows, error: shiftErr } = await shiftQ
+  if (!shiftErr) {
+    for (const row of shiftRows || []) {
+      const branchName = row.branches?.name || 'Branch'
+      items.push({
+        id: `shift-${row.id}`,
+        kind: 'shift_needs_review',
+        title: 'Shift closed without supervisor',
+        detail: `${row.staff?.full_name || 'Cashier'} · ${branchName} · ending ₱${Number(row.ending_cash || 0).toFixed(2)}${
+          row.variance ? ` · variance ₱${Number(row.variance).toFixed(2)}` : ''
+        }`,
+        href: '/manager/staff',
+        createdAt: row.clock_out || null,
         priority: 2,
       })
     }

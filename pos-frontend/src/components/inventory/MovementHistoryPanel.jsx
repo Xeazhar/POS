@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { FiSearch } from 'react-icons/fi'
+import { FiDownload, FiRefreshCw, FiSearch } from 'react-icons/fi'
 import {
   Field,
   Pager,
@@ -7,16 +7,25 @@ import {
   SecondaryButton,
   SelectField,
   SkeletonRows,
-  StatusBadge,
   TableCard,
   moneyClass,
-  tableRowClass,
+  tableRowDenseClass,
 } from '../ui'
 import { MOVEMENT_TYPES, fetchStockMovements, hasSupabase } from '../../lib/api'
 import { formatSupportError } from '../../utils/errors'
 import { money, qty } from '../../utils/format'
 
 const PAGE_SIZE = 15
+
+/**
+ * xlsx is a ~410KB chunk — only worth loading the moment someone actually exports, same
+ * reasoning as the Reports page's on-demand load.
+ */
+let xlsxPromise = null
+function loadXlsx() {
+  if (!xlsxPromise) xlsxPromise = import('xlsx')
+  return xlsxPromise
+}
 
 /** Local YYYY-MM-DD. Not toISOString — that is UTC and shifts the day in UTC+8. */
 function dayKey(d) {
@@ -42,13 +51,44 @@ function presetRange(preset) {
   return null
 }
 
-const TYPE_TONE = {
-  restock: 'success',
-  sale: 'neutral',
-  adjustment: 'warn',
-  shrinkage: 'danger',
-  price_change: 'warn',
-  update: 'neutral',
+/**
+ * Column widths follow how much text each field actually carries, not equal shares.
+ *
+ * Change and Balance are both short right-aligned numbers and are kept deliberately narrow
+ * so they sit next to each other and read as one pair — "moved this much, left this much".
+ * A wide Balance column pushed its figure far from the change that produced it. Type is one
+ * word, so it takes the least. The freed space goes to By / note, which is the only column
+ * holding sentences.
+ *
+ * Written out in full, twice-referenced by one constant: Tailwind only generates classes it
+ * can see as literal text, so an interpolated width would silently produce no grid at all,
+ * and a second hand-copied string would drift from the header.
+ */
+const MOVEMENT_GRID =
+  'grid-cols-[minmax(0,0.8fr)_minmax(0,1.5fr)_minmax(0,0.5fr)_minmax(0,0.8fr)_minmax(0,0.6fr)_minmax(0,1.9fr)]'
+const MOVEMENT_GRID_NARROW = 'max-[900px]:grid-cols-[minmax(0,1.2fr)_minmax(0,0.7fr)_minmax(0,0.7fr)]'
+
+/**
+ * Movement type as coloured text, matching the per-product movement table in the product
+ * detail drawer (`Products.jsx`). Same log, two places — a badge here and plain text there
+ * made them look like two different reports.
+ */
+const TYPE_TEXT = {
+  restock: 'text-brand-success',
+  sale: 'text-brand-slate',
+  adjustment: 'text-brand-warn',
+  shrinkage: 'text-brand-danger',
+  price_change: 'font-bold text-brand-ink',
+  update: 'text-brand-slate',
+}
+
+/**
+ * A void's restock detail already spells out the OR ("Void restock OR-00000071") — showing
+ * `reference` again next to it would just repeat the same OR number.
+ */
+function noteReference(row) {
+  if (!row.reference) return ''
+  return row.detail && row.detail.includes(row.reference) ? '' : row.reference
 }
 
 /**
@@ -70,6 +110,7 @@ function MovementHistoryPanel({ branchId, products = [] }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [page, setPage] = useState(0)
+  const [exporting, setExporting] = useState(false)
 
   const applyPreset = (id) => {
     setPreset(id)
@@ -133,6 +174,56 @@ function MovementHistoryPanel({ branchId, products = [] }) {
     [products],
   )
 
+  // Quantities carry their unit, same as the per-product table. "53.00" alone is ambiguous
+  // on a branch that sells both by piece and by kilo.
+  const unitById = useMemo(() => {
+    const map = new Map()
+    products.forEach((p) => map.set(p.id, p.pricingMode === 'kg' ? 'kg' : 'pc'))
+    return map
+  }, [products])
+
+  // Exports every filtered row, not just the current page — a manager pulling this for
+  // month-end wants the whole range, not 15 rows at a time.
+  const handleExport = async () => {
+    if (!visible.length || exporting) return
+    setExporting(true)
+    setError('')
+    try {
+      const XLSX = await loadXlsx()
+      const sheetRows = visible.map((row) => {
+        const isPrice = row.movementType === 'price_change'
+        const unit = unitById.get(row.productId) || ''
+        return {
+          Date: row.createdAt
+            ? new Date(row.createdAt).toLocaleString([], {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              })
+            : row.date || '',
+          Product: row.product || '',
+          Type: row.type || '',
+          Change: isPrice
+            ? `${money(row.oldPrice)} -> ${money(row.newPrice)}`
+            : qty(row.quantityChange, unit),
+          Balance: isPrice ? '' : qty(row.resultingStock, unit),
+          By: row.staffName || 'System',
+          Note: row.detail || '',
+          Reference: row.reference || '',
+        }
+      })
+      const book = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(sheetRows), 'Movements')
+      XLSX.writeFile(book, `movement-history_${start || 'all'}_to_${end || 'all'}.csv`)
+    } catch (err) {
+      setError(formatSupportError(err, 'INV06'))
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <>
       <TableCard className="mb-3.5 max-h-none rounded-t-none p-4">
@@ -141,7 +232,7 @@ function MovementHistoryPanel({ branchId, products = [] }) {
             label="Search"
             className="min-w-[200px] flex-1"
             icon={<FiSearch />}
-            placeholder="Product, note, reference or staff"
+            placeholder="Product, note, OR number or staff"
             value={query}
             onChange={(e) => setQuery(e.target.value.replace(/[<>]/g, ''))}
           />
@@ -211,8 +302,27 @@ function MovementHistoryPanel({ branchId, products = [] }) {
               {p.label}
             </button>
           ))}
-          <SecondaryButton compact type="button" disabled={loading} onClick={() => void load()}>
-            {loading ? 'Loading…' : 'Refresh'}
+          <SecondaryButton
+            compact
+            type="button"
+            className="px-2.5"
+            disabled={loading}
+            aria-label={loading ? 'Loading movements' : 'Refresh movements'}
+            title={loading ? 'Loading…' : 'Refresh'}
+            onClick={() => void load()}
+          >
+            <FiRefreshCw className={`text-[14px] ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />
+          </SecondaryButton>
+          <SecondaryButton
+            compact
+            type="button"
+            className="px-2.5"
+            disabled={exporting || !visible.length}
+            aria-label={exporting ? 'Exporting movements' : 'Export movements to CSV'}
+            title={exporting ? 'Exporting…' : 'Export to CSV'}
+            onClick={() => void handleExport()}
+          >
+            <FiDownload className="text-[14px]" aria-hidden="true" />
           </SecondaryButton>
           <span className="text-[11px] text-brand-subtle">
             {visible.length} movement{visible.length === 1 ? '' : 's'}
@@ -222,17 +332,22 @@ function MovementHistoryPanel({ branchId, products = [] }) {
       </TableCard>
 
       <TableCard className="max-h-none">
-        <div className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_minmax(0,0.8fr)_minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,1fr)] items-center gap-2 bg-brand-dark px-4 py-2.5 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[minmax(0,1.2fr)_minmax(0,0.7fr)_minmax(0,0.7fr)]">
-          <span>When</span>
+        {/* Dark header, same as the Inventory list and Catalog tables — and the per-product
+            movement table in the product detail drawer. It is the same ledger everywhere;
+            it should not read as a different report just because it is on a different screen. */}
+        <div
+          className={`grid ${MOVEMENT_GRID} ${MOVEMENT_GRID_NARROW} items-center gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase`}
+        >
+          <span>Date</span>
           <span>Product</span>
           <span className="max-[900px]:hidden">Type</span>
           <span className="text-right">Change</span>
-          <span className="text-right max-[900px]:hidden">On hand after</span>
+          <span className={`text-right whitespace-nowrap max-[900px]:hidden ${moneyClass}`}>Balance</span>
           <span className="max-[900px]:hidden">By / note</span>
         </div>
 
         {loading ? (
-          <SkeletonRows rows={10} cols={5} />
+          <SkeletonRows rows={10} cols={6} />
         ) : pageRows.length === 0 ? (
           <div className="px-4 py-8 text-xs text-brand-subtle">
             No stock movements match these filters.
@@ -240,12 +355,15 @@ function MovementHistoryPanel({ branchId, products = [] }) {
         ) : (
           pageRows.map((row) => {
             const isPrice = row.movementType === 'price_change'
+            const unit = unitById.get(row.productId) || ''
             return (
               <div
                 key={row.id}
-                className={`grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_minmax(0,0.8fr)_minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,1fr)] items-center gap-2 px-4 py-2.5 text-xs max-[900px]:grid-cols-[minmax(0,1.2fr)_minmax(0,0.7fr)_minmax(0,0.7fr)] ${tableRowClass}`}
+                className={`grid ${MOVEMENT_GRID} ${MOVEMENT_GRID_NARROW} items-center gap-2 text-[11px] ${tableRowDenseClass}`}
               >
                 <span className="text-brand-slate">
+                  {/* Date AND time, unlike the per-product table: this is every product at
+                      once, so two movements on the same day need to be tellable apart. */}
                   {row.createdAt
                     ? new Date(row.createdAt).toLocaleString([], {
                         month: 'short',
@@ -262,35 +380,50 @@ function MovementHistoryPanel({ branchId, products = [] }) {
                     {row.staffName ? ` · ${row.staffName}` : ''}
                   </small>
                 </div>
-                <span className="max-[900px]:hidden">
-                  <StatusBadge compact tone={TYPE_TONE[row.movementType] || 'neutral'}>
-                    {row.type}
-                  </StatusBadge>
+                <span className={`truncate max-[900px]:hidden ${TYPE_TEXT[row.movementType] || 'text-brand-slate'}`}>
+                  {row.type}
                 </span>
-                <strong
-                  className={`text-right ${moneyClass} ${
-                    isPrice
-                      ? 'text-brand-muted'
-                      : row.quantityChange > 0
-                        ? 'text-brand-success'
-                        : row.quantityChange < 0
-                          ? 'text-brand-danger'
-                          : 'text-brand-muted'
-                  }`}
+                {/* A price change moves money, not stock — showing "0" in a quantity column
+                    would read as a no-op adjustment. It is also the one long value in a
+                    narrow column, hence truncate + title. */}
+                <span
+                  className={`truncate text-right ${moneyClass} text-brand-slate`}
+                  title={isPrice ? `${money(row.oldPrice)} → ${money(row.newPrice)}` : undefined}
                 >
-                  {/* A price change moves money, not stock — showing "0" in a quantity
-                      column would read as a no-op adjustment. */}
                   {isPrice
                     ? `${money(row.oldPrice)} → ${money(row.newPrice)}`
-                    : `${row.quantityChange > 0 ? '+' : ''}${qty(row.quantityChange)}`}
-                </strong>
-                <span className={`text-right text-brand-muted max-[900px]:hidden ${moneyClass}`}>
-                  {isPrice ? '—' : qty(row.resultingStock)}
+                    : row.quantityChange > 0
+                      ? `+${qty(row.quantityChange, unit)}`
+                      : row.quantityChange < 0
+                        ? `−${qty(Math.abs(row.quantityChange), unit)}`
+                        : '—'}
                 </span>
-                <span className="min-w-0 truncate text-brand-slate max-[900px]:hidden">
+                {/* The running count — the reason this screen exists, so it is the only bold
+                    figure in the row. Negative stock is impossible in theory and worth
+                    shouting about when it happens. */}
+                <strong
+                  className={`text-right whitespace-nowrap max-[900px]:hidden ${moneyClass} ${
+                    isPrice
+                      ? 'text-brand-muted'
+                      : row.resultingStock < 0
+                        ? 'text-brand-danger'
+                        : 'text-brand-ink'
+                  }`}
+                >
+                  {isPrice ? '—' : qty(row.resultingStock, unit)}
+                </strong>
+                {/* `reference` has already been turned into an OR number or dropped by
+                    fetchStockMovements — a raw transaction/batch id is a key the reader
+                    cannot act on, so it never reaches this column. A void's restock detail
+                    already spells out "Void restock OR-00000071" server-side, so showing
+                    the same OR again as reference would just repeat it. */}
+                <span
+                  className="min-w-0 truncate text-brand-slate max-[900px]:hidden"
+                  title={[row.staffName || 'System', row.detail, noteReference(row)].filter(Boolean).join(' · ')}
+                >
                   {row.staffName || 'System'}
                   {row.detail ? ` · ${row.detail}` : ''}
-                  {row.reference ? ` · ${row.reference}` : ''}
+                  {noteReference(row) ? ` · ${noteReference(row)}` : ''}
                 </span>
               </div>
             )

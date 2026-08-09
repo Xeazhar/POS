@@ -16,12 +16,16 @@
    - `migrate_staff_shift_period.sql` (AM/PM on clock-in)
    - `migrate_day_end_dual_control.sql` (submit → approve close, immutability)
    - `migrate_promo_dual_control.sql` (promo create/stop need manager approval)
+   - `migrate_promo_description.sql` (adds `promo_events.description`, shown in Promo History)
    - `migrate_staff_active_session.sql` (one active login + lock-screen PIN verify)
    - `migrate_network_product_catalog.sql` (shared catalog; supervisors adopt to branch)
    - `migrate_catalog_branch_type.sql` (retail vs restaurant catalog filter)
    - `migrate_rename_petty_cash_to_cash_drawer_entries.sql` (**only this one** for change fund / petty cash / cash drawer — creates `cash_drawer_entries` + columns; do not also run `migrate_cash_accountability_controls.sql`)
    - `migrate_manager_can_approve_any_branch.sql` (managers may PIN-approve any branch; supervisors stay branch-scoped)
    - `migrate_shift_cash_accountability.sql` (per-shift change fund, one shift per drawer, `transactions.shift_id`, `shift_adjustments`). Needs `migrate_refund_amount_on_transactions.sql` and the cash-drawer migration above first — it checks and refuses rather than half-applying. **Apply outside trading hours:** it enforces one open shift per drawer and clocks out any extra shifts that are already open.
+   - `migrate_day_end_supervisor_autoclose.sql` (a supervisor's own day-end submission closes immediately instead of waiting on a separate approval step). Needs `migrate_day_end_dual_control.sql` first.
+   - `migrate_shift_close_no_supervisor_flag.sql` (lets a cashier close their own shift when no supervisor/manager can reach the till, flagged `closed_without_supervisor` for a manager to review remotely). Needs `migrate_shift_cash_accountability.sql` first.
+   - `migrate_sync_catalog_identity_fields.sql` (one-time catch-up: pushes name/SKU/barcode/category from network-catalog edits made before the live per-save cascade existed down to branches that already adopted the item; price is deliberately excluded — see file header. Safe to re-run.)
    - `wipe_products_clean_start.sql` (**destructive**) — wipe products + catalog for a fresh import
    - etc.
 

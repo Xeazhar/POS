@@ -17,6 +17,306 @@ computation, OR numbering).
 
 ---
 
+## 0.15.0 — 2026-08-10
+
+**Action required, once per database:** re-run `migrate_enable_realtime.sql` in the Supabase
+SQL editor (adds `staff_shifts` to the realtime publication; safe to re-run).
+
+### Fixed: Branch dashboard stopped updating after the first load
+
+**Day-end closings, the cash drawer log, and cashier hours on a branch's dashboard page**
+(`Manager → Branches → [a branch]`) were fetched once when the page opened and never again —
+closing a day, logging a change fund/pickup/paid-out entry, or a cashier clocking in or out
+from any terminal never reached an already-open dashboard tab, so it looked frozen until
+someone manually reloaded the page. The dashboard now refreshes itself when any of those
+happen, with a 5-minute fallback check even on a connection where the instant update doesn't
+reach it. If you were seeing "today" figures that were actually several days old, reloading
+this page once after updating should catch it up; it will keep itself current from then on.
+
+### Changed: Staff hours now shows Today alongside the 30-day total
+
+The Staff panel on Branch dashboard only ever showed a rolling 30-day hours total, which
+climbs every day by design and can look like it's stuck or double-counting even when clock-ins
+and clock-outs are correct. It now shows **Today's hours** as the main figure, with the 30-day
+total still available next to it (and in each row's subtext) for a payroll-period check.
+
+### Changed: Devices tab no longer default-visible for admin accounts
+
+Devices (cashier-unit pairing) is a floor-terminal screen, not something an office-role account
+needs by default. Removed from **admin**'s default access — can still be switched on for a
+specific admin account from **Staff**, same as any other module. Manager already didn't have it
+by default; master is unchanged (still sees everything, so a lone master account never risks
+locking itself out — see Staff's self-edit rule).
+
+### Changed: Branches list is now click-anywhere
+
+The branch table on **Manager overview** had a trailing "Open" link — the whole row now
+navigates to that branch's dashboard, so there's one less thing to aim for.
+
+## 0.14.0 — 2026-08-10
+
+### Changed: Close day now sits at the bottom of the Day end screen
+
+The sales summary, cash-on-hand count, and **Close day** button used to sit right at the top,
+reachable before scrolling past anything else. They now sit at the bottom, after the shift
+accountability table and the petty cash queue — so a supervisor sees each cashier's drawer and
+any pending petty cash requests before reaching the button that locks the day, not after.
+
+### Changed: your own petty cash request approves itself when you're a supervisor or above
+
+Requesting petty cash from **Day end** (not the cashier's own "End shift" screen) used to land
+"Awaiting approval" even though the person requesting it was already someone who could approve
+it — an extra click on your own request. It now approves immediately when the requester is a
+supervisor, manager, admin, or master. A cashier's own request is unchanged: it still needs a
+supervisor or above to approve it.
+
+### Removed: the duplicate closings list on Day end
+
+Day end had its own read-only "Previous day-end closings" table at the bottom, showing the
+same history **Manager → Branch dashboard** already shows in more detail (with pagination and
+Reopen). Removed from Day end to keep that screen focused on today; check Branch dashboard for
+history.
+
+## 0.13.0 — 2026-08-10
+
+**Action required, once per database:** run `migrate_sync_catalog_identity_fields.sql` in the
+Supabase SQL editor to catch up branches that were edited in the network catalog before this
+release (their name/SKU/barcode/category may still show the old value until this runs).
+
+### Changed: editing an item in the network Catalog page now updates every branch that stocks it
+
+Previously, editing a product's name, SKU, barcode, category, or price on **Manager → Data**
+(the shared network catalog) only changed the default a *new* branch would get when adopting
+it later — a branch that had already adopted the item, and every report, kept showing the old
+value. That's why an edit there looked like it silently "didn't take."
+
+Saving an edit there now pushes it to every branch that already stocked the item, the same way
+the Discountable toggle already did. **This includes price** — editing a price in the network
+catalog now changes what that item sells for at every branch that carries it, and is logged to
+each branch's Price Change Register just like editing the price on that branch's own Catalog
+page. If you only want to change one branch's price or name without touching the others, use
+that branch's own Catalog/Inventory page instead of the network catalog page.
+
+The **category** field in the item editor is now a dropdown of the real category list instead
+of free text — you can no longer accidentally save a typo'd category that neither reports nor
+filters recognize.
+
+### Fixed: today's reports could miss sales rung before ~8AM
+
+The SC/PWD Register, Discount Report, Electronic Journal, BIR Daily Breakdown, and Tender
+Summary computed "today" using the server's clock instead of Manila time. A sale rung before
+roughly 8:00 AM could get filed under the previous day and silently disappear from that
+morning's "today" figures. Report totals for early-morning hours may look different (correct
+now) the next time you check a date range that includes them.
+
+### Fixed: an inventory import that changed a price didn't show up in the Price Change Register
+
+Importing a spreadsheet that updates an existing item's price changed the price but never
+logged the change, so the Price Change Register and price history looked like nothing
+happened. Import-driven price changes are now logged the same as any other price edit.
+
+## 0.12.0 — 2026-08-10
+
+### Fixed: movement history notes showing the OR number twice
+
+A stock movement's note sometimes repeated the OR number — either as "OR OR-00000071" or,
+for a voided sale's restock line, as "Void restock OR-00000071 · OR-00000071". Both now show
+the OR number once.
+
+### Added: export button on Movement history
+
+**Inventory → Movement history** now has an Export button next to Refresh. It downloads the
+currently filtered movements (whole date range, not just the page on screen) as a CSV you can
+open in Excel or Sheets.
+
+### Changed: Movement history now matches the rest of Inventory
+
+The Movement history table (and the shorter one inside a product's detail panel) used a
+lighter header than the rest of the app. Both now use the same dark header row as the
+Inventory list and Catalog — no functional change, just consistent look.
+
+## 0.11.0 — 2026-08-09
+
+**Action required, once per database:** run `migrate_shift_close_no_supervisor_flag.sql` in
+the Supabase SQL editor.
+
+### Changed: a stuck till no longer shows a cashier who's holding it or a way to close it
+
+Starting a shift while the drawer is still open under another cashier used to name that
+cashier and offer a **Close their shift** button right there. That button always needed a
+supervisor's PIN anyway, so it is now only in **Manager/Staff → Shifts** (**Close shift** on
+any open row) — a cashier who is simply stuck just sees "drawer still open, ask a
+supervisor," with no name and no closing tool on their screen.
+
+### Added: closing a shift with no supervisor available, flagged for later review
+
+Where the manager is only ever remote, a cashier can now tick **"No supervisor available"**
+on End shift to close under their own count instead of waiting on a PIN that can't be entered
+in person. This is flagged — it shows as **Needs review** in Manager/Staff → Shifts and in
+the header bell, until a supervisor or manager taps **Acknowledge**. Use the supervisor PIN
+whenever one is actually available; this is for when one genuinely is not.
+
+## 0.10.0 — 2026-08-09
+
+**Action required, once per database:** run `migrate_day_end_supervisor_autoclose.sql` in the
+Supabase SQL editor. Until it's applied, Close day still behaves like before (submit, then a
+second approve tap) — it is safe either way, just not instant until the migration runs.
+
+### Changed: Close day closes right away — no more waiting on a separate approval
+
+A supervisor's own **Close day** now closes the day immediately. It used to submit for
+approval and then need a second "Approve & close" tap before the day actually closed — since
+only a supervisor or manager ever sees this screen, that second tap was always the same
+person approving their own count. One tap now does it.
+
+### Added: Cancel closing, for managers
+
+If a day was closed by mistake — wrong cash-on-hand, wrong note — a manager can now undo it
+right from Day end with **Cancel closing** (a reason is required, and it's on the record).
+This is the same reopen already available from the branch dashboard, just available where the
+close happens too. A supervisor cannot undo their own close; a manager still has to.
+
+## 0.9.0 — 2026-08-09
+
+### Changed: a cashier can no longer close their own shift — a supervisor must verify the count
+
+**Staff need to know this before their next shift.** Counting the drawer at End shift no
+longer closes it by itself. It now asks for a supervisor's (or manager's) PIN, the same
+prompt used for voids and price overrides, before the shift actually ends. The count the
+cashier entered is unchanged and still theirs — the supervisor is verifying it, not
+re-counting it — but the shift record now shows who signed off on the close.
+
+Cashiers: count the drawer as before, then hand the terminal to a supervisor to enter their
+PIN. The shift will not close without it.
+
+### Changed: ending a shift now sends the cashier straight to sign out
+
+After counting the drawer and ending a shift, the till used to immediately ask for a NEW
+change fund — as if a different cashier had just walked up. That let one cashier count in
+the next shift under their own already-open session, with nothing stopping the wrong name
+ending up on the next float. The screen now shows the counted total and a single **Sign
+out** button; nothing else on the terminal is usable until that happens. The next person
+signs in as themselves before they count anything into the drawer.
+
+## 0.8.1 — 2026-08-09
+
+### Fixed: shifts would not open, and change funds showed as never counted
+
+On some databases the shift update was applied but one small piece of it was missing, which
+broke shift handling in two visible ways: starting a shift (or overriding an open one) failed
+with a "Database needs an update" message, and where a shift did exist, its opening float and
+closing count came back blank — as if nobody had counted the drawer.
+
+**Action required, once, per database:** re-run `migrate_shift_cash_accountability.sql` in
+the Supabase SQL editor. It is safe to run again and now installs the missing piece itself.
+No figures were lost — the counts were recorded all along and reappear once it is applied.
+
+The app has also been made to cope on its own: if that piece is still missing it now drops
+only the AM/PM shift label and keeps every cash figure, instead of hiding the lot.
+
+### Fixed: shifts going missing from "Change fund by shift"
+
+Day end's **Change fund by shift** was leaving shifts out, so opening floats and closing
+counts looked as if they had never been recorded. Two things were wrong with how the list
+picked which shifts belonged to the day:
+
+- Shifts were bucketed by the clock on the wall rather than by the **business day**. With
+  the day opening at 7 AM, anyone who clocked in before 7 was filed under the following
+  day instead of the one they actually worked.
+- The cut-off times were being read in the wrong time zone — eight hours out — which hid
+  the opening stretch of every trading day.
+
+No cash figure was ever wrong; the affected shifts were simply not shown. They will appear
+on the correct business day from now on, including ones already recorded.
+
+### Fixed: a counted drawer could be closed without saving the count
+
+On a database that has not had the shift-accountability update applied yet, ending a shift
+recorded the clock-out but threw away the cash figure the cashier had just counted. The
+shift then sat on **Pending handoff** permanently, because a closed shift cannot be edited
+afterwards. The count is now saved. Shifts already closed this way keep showing Pending
+handoff — a supervisor can correct them with **Adjust** on Manager → Shifts.
+
+---
+
+## 0.8.0 — 2026-08-09
+
+### Promo events now have a description
+
+When creating a promo, there's a new optional **Description** field to explain what it's
+about ("20% off canned goods to clear shelf space before new stock arrives") — for your own
+and other managers'/supervisors' reference later, not shown to customers. It can also be added
+or edited afterwards from Promo History's **⋯** menu → **Edit description**, and it shows up
+under the promo's name in that history list.
+
+### Promo History: date filter, and actions tidied into one menu
+
+- Added **From / To** date fields above Promo History to narrow the list to promos that
+  started in a given range.
+- The row of small text buttons (Sales, Approve, Modify, Rename, Delete, etc.) is now one
+  **⋯** menu per row — same actions, less clutter.
+
+No change to how stopping a promo works: a reason was already required when a promo is
+stopped or a stop is requested, and it already shows in Promo History — that part needed no
+fixing, just confirming it was there.
+
+## 0.7.1 — 2026-08-09
+
+**Read this one: the cash figure on your X and Z readings was wrong, and this fixes it.**
+
+### Petty cash was counted at the wrong moment on X/Z readings
+
+Petty cash now has three steps — someone **requests** it, a supervisor **approves** it, and
+then the money is actually **handed over**. Only the last step is cash leaving the drawer.
+
+The X and Z readings had not caught up. They were subtracting petty cash the moment it was
+approved, even if the money was still sitting in the till, and after the recent change they
+stopped subtracting handed-over petty cash at all. Either way, the **cash in drawer** line
+and the **short/over** line on those readings could not be trusted.
+
+Both readings now count petty cash exactly when it is handed over — the same rule the
+End-shift screen and the day-end already use. The three figures agree with each other now.
+
+**What you should do:** if you kept printed X or Z readings from testing, the cash-in-drawer
+and short/over lines on them may not match what the app shows today. Reprint or re-check any
+you were relying on. No sales figures changed — only the cash reconciliation lines.
+
+### Movement history now looks like the one inside a product
+
+Inventory → **Movement history** and the movement table inside a product's detail page are
+the same stock ledger, but they were laid out as two different-looking reports. The tab now
+matches the product one: light header, striped rows, and the same columns —
+**Date · Product · Type · Change · Balance · By / note**.
+
+- **Balance** (was "On hand after") is the running count and is now the bold figure in each
+  row, with more room. A negative balance shows in red.
+- **Change** now shows its unit, like the product table does: `+4.00 pc`, `−1.00 kg`.
+- **Change** and **Balance** now sit side by side as a narrow pair — how much moved, and
+  what was left — instead of being spread apart.
+- **By / note** got the freed space; it is the only column holding a sentence.
+- Refresh is now an icon, so the filter row is less crowded.
+
+### The stock list scrolls with the page
+
+The Inventory stock table no longer scrolls inside its own box. It was a scrollbar within a
+scrollbar — the page had one and the table had another — which hid the page buttons at the
+bottom of the table and meant a flick of the wheel moved whichever one your pointer happened
+to be over. Now there is one scrollbar: the page's.
+
+### Sales in movement history now show the OR number
+
+A sale line used to end with a long internal code like `349b128c-ea8a-4ae7-…`. That was the
+system's own id for the sale — you could not look anything up with it. It now shows the
+**OR number** instead, so you can find the receipt in Transactions. Codes that mean nothing
+to a person (bulk-import batch ids) are simply not shown any more.
+
+You can also search this tab by OR number now.
+
+The tab still shows the **time** as well as the date. It lists every product at once, so two
+movements on the same day have to be tellable apart.
+
+---
+
 ## 0.7.0 — 2026-08-09
 
 **Cashiers need telling about one change: signing out no longer asks about your shift.**

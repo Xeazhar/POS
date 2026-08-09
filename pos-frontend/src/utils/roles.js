@@ -51,6 +51,9 @@ const DEFAULTS = {
     'manager_promos',
     'manager_reports',
     'shifts',
+    // A cashier's "request manager" day-end (no supervisor available) needs a manager to
+    // reach the same Day End / Close Day screen a supervisor uses — see DayEnd.jsx.
+    'day_end',
   ],
   admin: [
     'manager_overview',
@@ -60,6 +63,7 @@ const DEFAULTS = {
     'manager_promos',
     'manager_reports',
     'shifts',
+    'day_end',
   ],
   master: [
     'dashboard',
@@ -204,7 +208,12 @@ export function moduleLabel(moduleId) {
 
 export function canAccessModule(user, moduleId) {
   if (!user) return false
-  if (user.role === 'master' || user.role === 'admin') return true
+  if (user.role === 'master') return true
+  // Admin keeps the same unconditional access as master, except Devices — that's
+  // strictly a cashier-unit pairing screen, not something an office-role account has a
+  // use for by default. Falls through to the normal permissions check below, so it can
+  // still be switched on per-account (Staff page), same as any other module.
+  if (user.role === 'admin' && moduleId !== 'devices') return true
   return effectivePermissions(user).includes(moduleId)
 }
 

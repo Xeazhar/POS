@@ -206,6 +206,11 @@ async function pushOne(item) {
       await api.reopenDayEnd(payload)
       return
     }
+    case QUEUE_TYPES.REQUEST_DAY_END: {
+      const row = await api.requestDayEnd(payload)
+      if (payload.localId) await db.dayEnds.delete(payload.localId)
+      return row
+    }
     case QUEUE_TYPES.CREATE_PRODUCT: {
       await api.createProduct(payload)
       return

@@ -191,6 +191,7 @@ For changes involving authentication, authorization, RLS, payments, inventory, p
 for live sales" on the login screen and in the sidebar. This is derived from the version,
 not a separate flag — cutting `1.0.0` removes both markers automatically. Do not bump to
 1.0.0 until the system is trusted to handle real money.
+Only update or increment Version from 0.1.0 to 0.2.0 when the user accepts and prompted to. do not automattically adjust or update the version number.
 
 `pos-frontend/package.json` `version` is the **single source of truth**. `vite.config.js`
 bakes it into the bundle (`__APP_VERSION__`), `src/utils/version.js` exposes it, the Shell
@@ -207,9 +208,6 @@ version anywhere else — `VITE_APP_VERSION` exists only as a build-time overrid
 
 Docs-only, comment-only, or refactor-with-no-behaviour-change commits don't need a bump.
 
-Write CHANGELOG entries for the person running the store, not for a developer: what changed
-for them and what they must do differently. Call out anything that changes what a customer
-pays or what prints on a receipt — explicitly, not buried in a list.
 
 Distinct from `/version.json`, which carries a per-**build** token used to detect a deploy
 under an open tab (`src/hooks/useAppVersion.js`). Two deploys of the same release are still

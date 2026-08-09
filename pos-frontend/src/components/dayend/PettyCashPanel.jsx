@@ -88,6 +88,11 @@ function PettyCashPanel({
           receiptRef: receipt.trim(),
           businessDate,
           shiftId,
+          // Same gate the manual Approve button already uses — a supervisor/manager
+          // requesting on their own branch's screen already has approval authority, so
+          // there is no separate person to wait on. A cashier's own screen passes
+          // canApprove={false}, so their requests still land pending as before.
+          autoApprove: canApprove,
         })
         await onChanged?.()
       }

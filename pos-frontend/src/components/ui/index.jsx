@@ -111,6 +111,12 @@ export function PageHeader({ eyebrow, title, children, className = '' }) {
  * box is `h-10` — the exact height a `SelectField` select renders at (`p-2.5 text-[13px]`).
  */
 export function SearchBox({ icon, className = '', label = null, ...props }) {
+  const { value, onChange } = props
+  const hasValue = value != null && String(value).length > 0
+  const clear = () => {
+    if (!onChange) return
+    onChange({ target: { value: '' } })
+  }
   const box = (
     <div
       className={`flex ${
@@ -127,6 +133,16 @@ export function SearchBox({ icon, className = '', label = null, ...props }) {
         className="w-full min-w-0 flex-1 border-0 bg-transparent text-[13px] text-brand-ink outline-none placeholder:text-brand-n500"
         {...props}
       />
+      {hasValue && (
+        <button
+          type="button"
+          aria-label="Clear search"
+          className="shrink-0 rounded-full p-0.5 text-brand-n600 hover:text-brand-ink"
+          onClick={clear}
+        >
+          <FiX size={14} />
+        </button>
+      )}
     </div>
   )
   if (!label) return box

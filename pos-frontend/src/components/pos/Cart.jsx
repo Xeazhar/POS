@@ -171,19 +171,25 @@ function Cart({
    * so a cart sitting open across the cutoff silently reprices upward. Without a notice the
    * cashier just sees a different total than the one they quoted the customer, mid-sale.
    */
-  const promoNamesKey = pricing.linePromoNames.filter(Boolean).join('|')
   const [expiredPromoNotice, setExpiredPromoNotice] = useState(null)
-  const prevPromoNames = useRef(promoNamesKey)
+  const prevPromoByLineRef = useRef(new Map())
   useEffect(() => {
-    const before = prevPromoNames.current
-    prevPromoNames.current = promoNamesKey
-    if (!items.length) return
-    const lost = before
-      .split('|')
-      .filter(Boolean)
-      .filter((name) => !promoNamesKey.split('|').includes(name))
+    // Keyed by product id + price tier (not cart index) so a line that's still in the
+    // cart but lost its promo reads as "expired", while a line the cashier just removed
+    // does not — removing an item is not the same event as its promo ending.
+    const currentByLine = new Map()
+    items.forEach((item, i) => {
+      const key = `${item.id}:${item.priceTier || 'regular'}`
+      currentByLine.set(key, pricing.linePromoNames[i] || null)
+    })
+    const lost = []
+    currentByLine.forEach((promoName, key) => {
+      const prevPromoName = prevPromoByLineRef.current.get(key)
+      if (prevPromoName && promoName !== prevPromoName) lost.push(prevPromoName)
+    })
+    prevPromoByLineRef.current = currentByLine
     if (lost.length) setExpiredPromoNotice([...new Set(lost)].join(', '))
-  }, [promoNamesKey, items.length])
+  }, [items, pricing.linePromoNames])
 
   const payTotal = pricing.total
   /**
@@ -443,7 +449,7 @@ function Cart({
 
   const quickCash = [
     { label: 'Exact', value: payTotal },
-    { label: pesoWhole(50), value: 50 },
+    { label: 'Clear', value: null },
     { label: pesoWhole(100), value: 100 },
     { label: pesoWhole(200), value: 200 },
     { label: pesoWhole(500), value: 500 },
@@ -459,6 +465,10 @@ function Cart({
   }
 
   const applyQuickCash = (item) => {
+    if (item.label === 'Clear') {
+      setTendered('')
+      return
+    }
     const add = Number(item.value)
     if (!Number.isFinite(add)) return
     if (item.label === 'Exact') {
