@@ -42,6 +42,7 @@ import {
   saveBranch,
 } from '../../lib/api'
 import { BRANCH_DEVICES, normalizeDeviceSettings } from '../../devices'
+import { useLiveData } from '../../hooks/useLiveData'
 import { useAuthStore } from '../../stores/posStore'
 import { previousDayRestockReport } from '../../utils/dayEndReport'
 import { formatSupportError } from '../../utils/errors'
@@ -70,8 +71,13 @@ function hoursLabel(totalMs) {
 /**
  * One row per person, not per shift. "Who works here and how many hours did they log"
  * is a roster question; the shift-by-shift cash detail already has its own page.
+ *
+ * `totalMs` is a rolling STAFF_LOG_DAYS-day sum — useful for a payroll-period check, but it
+ * only ever climbs and can read as "stuck" day to day. `todayMs` (a shift whose business
+ * date is `todayKey`) is the figure that actually resets, so both are surfaced rather than
+ * replacing one with the other.
  */
-function rollUpStaffHours(rows = []) {
+function rollUpStaffHours(rows = [], todayKey, openHour) {
   const byStaff = new Map()
   for (const row of rows) {
     const key = row.staffId || row.staffName || 'unknown'
@@ -81,6 +87,7 @@ function rollUpStaffHours(rows = []) {
       role: row.staffRole || null,
       sessions: 0,
       totalMs: 0,
+      todayMs: 0,
       openNow: false,
       lastIn: null,
       lastOut: null,
@@ -91,7 +98,12 @@ function rollUpStaffHours(rows = []) {
     const end = row.clockOut ? new Date(row.clockOut).getTime() : NaN
     // An open shift counts up to now — otherwise today's hours read as zero all day.
     const stop = Number.isNaN(end) ? Date.now() : end
-    if (!Number.isNaN(start) && stop > start) entry.totalMs += stop - start
+    const duration = !Number.isNaN(start) && stop > start ? stop - start : 0
+    entry.totalMs += duration
+    // Rows predating `business_date` fall back to the clock-in's own business date,
+    // same fallback fetchStaffShifts documents for the identical gap.
+    const rowBusinessDate = row.businessDate || (row.clockIn ? businessDate(new Date(row.clockIn), openHour) : null)
+    if (rowBusinessDate === todayKey) entry.todayMs += duration
     if (!row.clockOut) entry.openNow = true
     if (!entry.lastIn && row.clockIn) entry.lastIn = row.clockIn
     if (!entry.lastOut && row.clockOut) entry.lastOut = row.clockOut
@@ -207,6 +219,40 @@ function ManagerBranchDashboard() {
     setData({ ...payload, pettyTimeline })
   }
 
+  const loadStaffShifts = async () => {
+    if (!hasSupabase || !branchId) return
+    const shiftRows = await fetchStaffShifts({
+      branchId,
+      start: daysAgoKey(STAFF_LOG_DAYS),
+      end: businessDate(new Date(), Number(branch?.day_open_hour ?? 7)),
+    }).catch(() => [])
+    setStaffShifts(shiftRows || [])
+  }
+
+  /**
+   * This page used to fetch everything once at mount and never again — a day-end close,
+   * a change-fund/petty-cash entry, or a shift clock-out from another terminal never
+   * reached an already-open dashboard tab. `day_ends`/`cash_drawer_entries` are realtime-
+   * enabled (`migrate_enable_realtime.sql`); `staff_shifts` is added to that publication
+   * alongside this fix. Even without realtime reaching a given deploy yet, `useLiveData`'s
+   * visibility/focus and 5-minute poll layers mean reopening or refocusing the tab is
+   * enough to pick up a change made elsewhere.
+   */
+  useLiveData({
+    enabled: hasSupabase && Boolean(branchId),
+    fetch: reload,
+    tables: [
+      { table: 'day_ends', filter: `branch_id=eq.${branchId}` },
+      { table: 'cash_drawer_entries', filter: `branch_id=eq.${branchId}` },
+    ],
+  })
+
+  useLiveData({
+    enabled: hasSupabase && Boolean(branchId),
+    fetch: loadStaffShifts,
+    tables: [{ table: 'staff_shifts', filter: `branch_id=eq.${branchId}` }],
+  })
+
   const openHour = Number(branch?.day_open_hour ?? 7)
   const isRestaurant = branch?.branch_type === 'restaurant'
   const todayKey = businessDate(new Date(), openHour)
@@ -234,7 +280,10 @@ function ManagerBranchDashboard() {
   const low = data.products.filter((product) => product.stock <= product.lowStockAt)
   const menuOn = data.products.filter((p) => p.availableToday !== false)
   const menuOff = data.products.filter((p) => p.availableToday === false)
-  const staffRoster = useMemo(() => rollUpStaffHours(staffShifts), [staffShifts])
+  const staffRoster = useMemo(
+    () => rollUpStaffHours(staffShifts, todayKey, openHour),
+    [staffShifts, todayKey, openHour],
+  )
   const plateMix = useMemo(() => {
     const map = {}
     const comboMap = {}
@@ -1005,31 +1054,34 @@ function ManagerBranchDashboard() {
       <TableCard className="mb-4 max-h-none overflow-hidden">
         <SectionHeading
           title="Staff"
-          subtitle={`Clock-in / out hours · last ${STAFF_LOG_DAYS} days`}
+          subtitle={`Clock-in / out hours · today, and last ${STAFF_LOG_DAYS} days`}
           meta={`${staffRoster.length} on the log`}
         />
-        <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,0.8fr)_5rem_5.5rem_minmax(0,1fr)] items-center gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[minmax(0,1fr)_5.5rem]">
+        <div className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,0.7fr)_4.5rem_5rem_5.5rem_minmax(0,1fr)] items-center gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[minmax(0,1fr)_5rem]">
           <span>Name</span>
           <span className="max-[900px]:hidden">Role</span>
           <span className="text-right max-[900px]:hidden">Shifts</span>
-          <span className="text-right">Hours</span>
+          <span className="text-right">Today</span>
+          <span className="text-right max-[900px]:hidden">{STAFF_LOG_DAYS}-day</span>
           <span className="max-[900px]:hidden">Last in / out</span>
         </div>
         {staffRoster.map((row) => (
           <div
             key={row.key}
-            className={`grid grid-cols-[minmax(0,1.4fr)_minmax(0,0.8fr)_5rem_5.5rem_minmax(0,1fr)] items-center gap-2 text-xs max-[900px]:grid-cols-[minmax(0,1fr)_5.5rem] ${tableRowDenseClass}`}
+            className={`grid grid-cols-[minmax(0,1.3fr)_minmax(0,0.7fr)_4.5rem_5rem_5.5rem_minmax(0,1fr)] items-center gap-2 text-xs max-[900px]:grid-cols-[minmax(0,1fr)_5rem] ${tableRowDenseClass}`}
           >
             <div className="min-w-0">
               <strong className="block truncate text-brand-ink">{row.name}</strong>
               <small className="block truncate text-[10px] text-brand-subtle capitalize max-[900px]:block">
                 {row.role || '—'}
                 {row.openNow ? ' · on shift now' : ''}
+                {` · ${hoursLabel(row.totalMs)} / ${STAFF_LOG_DAYS}d`}
               </small>
             </div>
             <span className="truncate capitalize max-[900px]:hidden">{row.role || '—'}</span>
             <span className="text-right tabular-nums max-[900px]:hidden">{row.sessions}</span>
-            <strong className="text-right tabular-nums text-brand-ink">{hoursLabel(row.totalMs)}</strong>
+            <strong className="text-right tabular-nums text-brand-ink">{hoursLabel(row.todayMs)}</strong>
+            <span className="text-right tabular-nums max-[900px]:hidden">{hoursLabel(row.totalMs)}</span>
             <span className="truncate text-brand-slate max-[900px]:hidden">
               {row.lastIn ? new Date(row.lastIn).toLocaleString() : '—'}
               {row.lastOut ? ` → ${new Date(row.lastOut).toLocaleTimeString()}` : row.openNow ? ' → open' : ''}

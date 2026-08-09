@@ -262,6 +262,14 @@ export const ERROR_CATALOG = {
     cause: 'The stock_movements read failed. Stock counts themselves are unaffected.',
     fix: 'Retry, or narrow the date range. Selling and stock adjustments still work.',
   },
+  INV06: {
+    message: 'Could not export the movement history.',
+    severity: D,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'The xlsx library failed to load, or the file could not be written.',
+    fix: 'Retry. The movements already on screen are unaffected either way.',
+  },
 
   // ── CAT — shared network catalog vs. branch products ─────────────────────
   CAT01: {

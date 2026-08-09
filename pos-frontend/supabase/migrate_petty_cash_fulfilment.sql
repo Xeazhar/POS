@@ -9,9 +9,29 @@
 -- handed over at 5pm made the drawer look short for three hours, and a request approved
 -- but never handed over made it look short forever.
 --
--- Apply AFTER migrate_cash_accountability_controls.sql (or
--- migrate_rename_petty_cash_to_cash_drawer_entries.sql — either creates the columns this
--- relies on). Safe to re-run.
+-- PREREQUISITES — apply these first, in this order:
+--   migrate_cash_accountability_controls.sql   (cash_drawer_entries.kind/status/approved_by)
+--     or migrate_rename_petty_cash_to_cash_drawer_entries.sql — either creates those columns
+--   migrate_shift_cash_accountability.sql      (transactions.shift_id, and the original
+--     close_staff_shift / shift_cash_summary that section 5 below redefines)
+--
+-- Safe to re-run.
+
+-- ---------------------------------------------------------------------------
+-- 0) Fail early and clearly rather than half-applying
+-- ---------------------------------------------------------------------------
+do $$
+begin
+  if to_regclass('public.cash_drawer_entries') is null then
+    raise exception 'cash_drawer_entries is missing — apply migrate_cash_accountability_controls.sql first';
+  end if;
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'transactions' and column_name = 'shift_id'
+  ) then
+    raise exception 'transactions.shift_id is missing — apply migrate_shift_cash_accountability.sql first';
+  end if;
+end $$;
 
 -- confirmed_by / confirmed_at already exist from the earlier migration; assert it here so
 -- this file is self-contained if run against an older environment.
@@ -29,25 +49,12 @@ alter table public.cash_drawer_entries
   check (status in ('pending', 'approved', 'rejected', 'recorded', 'fulfilled'));
 
 -- ---------------------------------------------------------------------------
--- 2) Fulfilment can never exist without a prior approval
+-- 2) Backfill — MUST run before the fulfilment constraint is added
 -- ---------------------------------------------------------------------------
--- This is the whole point of the task and it is enforced in the database, not only in the
--- UI: a client that skipped the approve step (or a direct table write) must not be able to
--- mark cash as handed over.
+-- Ordering matters: `not valid` only skips the one-off scan of existing rows, it does NOT
+-- exempt an UPDATE. Adding the constraint first makes this very backfill illegal.
 alter table public.cash_drawer_entries drop constraint if exists cash_drawer_entries_fulfil_needs_approval;
 
-alter table public.cash_drawer_entries
-  add constraint cash_drawer_entries_fulfil_needs_approval
-  check (
-    status <> 'fulfilled'
-    or (approved_by is not null and approved_at is not null)
-  )
-  not valid;   -- pre-existing rows are never 'fulfilled', so nothing to validate;
-               -- `not valid` also keeps this from failing on odd historical data.
-
--- ---------------------------------------------------------------------------
--- 3) Backfill
--- ---------------------------------------------------------------------------
 -- Every paid-out already marked approved BEFORE this migration was, in practice, cash that
 -- had already been handed over — that is what "approved" meant under the old two-state
 -- model. Re-labelling them 'fulfilled' keeps historical day-end figures identical; leaving
@@ -59,17 +66,28 @@ set status = 'fulfilled',
 where kind = 'paid_out'
   and status = 'approved';
 
--- Rows that predate approval tracking have no approver; give them one so the constraint
--- above holds, using the requester as the least-wrong attribution and marking it in the
--- reason so nobody reads it as a real sign-off.
-update public.cash_drawer_entries
-set approved_by = coalesce(approved_by, staff_id),
-    approved_at = coalesce(approved_at, created_at)
-where kind = 'paid_out'
-  and status = 'fulfilled'
-  and (approved_by is null or approved_at is null);
+-- Rows that predate approval tracking keep a null approver. Do NOT fill it in: the only
+-- candidate is the requester, and writing that would record a cashier approving their own
+-- petty cash — a sign-off that never happened, in an audit trail. A null here is honest:
+-- under the old two-state model there was no separate approval step to record.
 
-alter table public.cash_drawer_entries validate constraint cash_drawer_entries_fulfil_needs_approval;
+-- ---------------------------------------------------------------------------
+-- 3) Fulfilment can never exist without a prior approval
+-- ---------------------------------------------------------------------------
+-- This is the whole point of the task and it is enforced in the database, not only in the
+-- UI: a client that skipped the approve step (or a direct table write) must not be able to
+-- mark cash as handed over.
+alter table public.cash_drawer_entries
+  add constraint cash_drawer_entries_fulfil_needs_approval
+  check (
+    status <> 'fulfilled'
+    or (approved_by is not null and approved_at is not null)
+  )
+  not valid;
+-- Left permanently NOT VALID, and deliberately never VALIDATEd — same pattern as
+-- transactions_vat_breakdown_sane_check. It is fully enforced on every new insert and
+-- update; the exemption applies only to the historical rows above, which are immutable
+-- day-end history and must not be rewritten to satisfy a rule that postdates them.
 
 -- ---------------------------------------------------------------------------
 -- 4) Index for the two queues the UI reads constantly

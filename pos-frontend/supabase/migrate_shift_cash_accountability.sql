@@ -9,10 +9,15 @@
 -- its own ending count and its own variance.
 --
 -- PREREQUISITES — apply these first if you have not already:
---   migrate_staff_pin_payments_roles_finance.sql   (staff_shifts, is_supervisor_or_above)
---   migrate_cash_accountability_controls.sql       (cash_drawer_entries.kind/status/shift_id)
---   migrate_refund_amount_on_transactions.sql      (transactions.refunded_amount)
---   migrate_staff_pin_payments_roles_finance.sql   (transactions.payment_method)
+--   migrate_staff_pin_payments_roles_finance.sql        (staff_shifts, is_supervisor_or_above,
+--                                                         transactions.payment_method)
+--   migrate_refund_amount_on_transactions.sql           (transactions.refunded_amount)
+--   migrate_rename_petty_cash_to_cash_drawer_entries.sql (cash_drawer_entries.kind/status/shift_id
+--                                                          — NOT migrate_cash_accountability_controls.sql,
+--                                                          which this supersedes; see supabase/README.md)
+--
+-- migrate_staff_shift_period.sql is NOT a prerequisite: this file adds staff_shifts.shift_period
+-- itself, because the open_staff_shift() RPC defined below writes to that column.
 --
 -- Safe to re-run.
 
@@ -46,6 +51,19 @@ end $$;
 -- cashiers cannot both hold the same drawer" expressible at all.
 alter table public.staff_shifts add column if not exists drawer_id text not null default 'main';
 alter table public.staff_shifts add column if not exists drawer_label text;
+-- shift_period belongs to migrate_staff_shift_period.sql, but open_staff_shift() below
+-- inserts into it, so a database that skipped that migration would get an RPC that raises
+-- 'column shift_period does not exist' on every attempt to open a shift. Guarantee it here
+-- rather than depending on apply order.
+alter table public.staff_shifts add column if not exists shift_period text;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'staff_shifts_shift_period_check') then
+    alter table public.staff_shifts
+      add constraint staff_shifts_shift_period_check
+      check (shift_period is null or shift_period in ('am', 'pm'));
+  end if;
+end $$;
 -- Not every shift holds cash. A supervisor on the floor works the same hours but is not
 -- accountable for a drawer, so their shift is exempt from both the change-fund count and
 -- the one-shift-per-drawer rule — otherwise a supervisor clocking in would lock the

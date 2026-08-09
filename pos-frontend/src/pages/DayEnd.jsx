@@ -14,16 +14,15 @@ import {
   StatusBadge,
   TableCard,
   moneyClass,
-  tableRowClass,
   varianceToneClass,
 } from '../components/ui'
-import { addPettyCash, fetchPettyCash, fetchStaffShifts, hasSupabase } from '../lib/api'
+import { addPettyCash, closeShift, fetchPettyCash, fetchStaffShifts, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { useShiftStore } from '../stores/shiftStore'
 import { buildDayEndReport } from '../utils/dayEndReport'
 import { formatSupportError } from '../utils/errors'
 import { businessDate, dayEndForBusinessDate, formatOpenHourLabel, money } from '../utils/format'
-import { isSupervisorOrAbove } from '../utils/roles'
+import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 import { decimalOnly } from '../utils/validate'
 
 const rowKind = (row) =>
@@ -44,15 +43,13 @@ const FUND_GRID_NARROW = 'max-[700px]:grid-cols-[minmax(0,1.3fr)_minmax(0,0.8fr)
  * Shift state as a badge, separate from the drawer name.
  *
  * "main · open now" forced a supervisor to read a drawer id and a lifecycle state out of
- * one string. A shift that ended without a count is NOT a normal close and must not
- * render the same as one — that is the row someone has to chase.
+ * one string. A shift never carries an ending count anymore (the drawer is counted once at
+ * Day End, not per shift) — so "no ending cash" is the normal closed state now, not a
+ * warning to chase.
  */
 function shiftStatusBadge(row) {
   if (row.open) return { label: 'Open', tone: 'success', hint: 'Cashier is on this drawer now' }
-  if (row.holdsDrawer !== false && row.endingCash == null) {
-    return { label: 'Pending handoff', tone: 'warn', hint: 'Shift ended without a drawer count' }
-  }
-  return { label: 'Closed', tone: 'neutral', hint: 'Counted and cashed out' }
+  return { label: 'Closed', tone: 'neutral', hint: 'Shift ended' }
 }
 
 /**
@@ -125,11 +122,15 @@ function CashierEndShift() {
   const date = businessDate(new Date(), dayOpenHour)
   const shift = useShiftStore((state) => state.shift)
   const cashPosition = useShiftStore((state) => state.cashPosition)
-  const resolve = useShiftStore((state) => state.resolve)
+  const dayEnds = useInventoryStore((state) => state.dayEnds)
+  const requestDay = useInventoryStore((state) => state.requestDay)
 
   const { petty, loading, reload } = useDayEndData(user, date)
   const [position, setPosition] = useState(null)
   const [cashOutOpen, setCashOutOpen] = useState(false)
+  const [requestManagerToggle, setRequestManagerToggle] = useState(false)
+  const [requesting, setRequesting] = useState(false)
+  const [requestError, setRequestError] = useState('')
 
   useEffect(() => {
     let active = true
@@ -164,6 +165,21 @@ function CashierEndShift() {
   if (loading) return <PageSkeleton variant="dashboard" />
 
   const expected = position ? Number(position.expectedCash || 0) : null
+  const todayEntry = dayEnds.find((item) => item.date === date)
+  const dayRequested = todayEntry?.status === 'requested'
+  const dayInProgress = todayEntry?.status === 'submitted' || todayEntry?.status === 'closed'
+
+  const handleRequestDayEnd = async () => {
+    setRequesting(true)
+    setRequestError('')
+    try {
+      await requestDay(requestManagerToggle)
+    } catch (err) {
+      setRequestError(formatSupportError(err, 'TILL02'))
+    } finally {
+      setRequesting(false)
+    }
+  }
 
   return (
     <div>
@@ -174,15 +190,13 @@ function CashierEndShift() {
       </PageHeader>
 
       <TableCard className="mb-3.5 max-h-none p-5">
-        <h2 className="m-0 mb-1 text-base">Your change fund</h2>
+        <h2 className="m-0 mb-1 text-base">Your shift so far</h2>
         <p className="m-0 mb-3 text-xs text-brand-muted">
-          These are your own drawer&apos;s figures. Other cashiers&apos; drawers are counted
-          separately and are not shown here.
+          These figures are informational — the drawer itself is counted once for the whole
+          business day, at Day End, not per shift.
         </p>
         {!shift ? (
-          <p className="m-0 text-xs text-brand-subtle">
-            No open shift on this drawer. Start a shift to count a change fund.
-          </p>
+          <p className="m-0 text-xs text-brand-subtle">No open shift on this drawer.</p>
         ) : (
           <>
             <div className="grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2 border-y border-brand-n300 py-3 text-[13px]">
@@ -221,14 +235,45 @@ function CashierEndShift() {
                 {expected == null ? '—' : money(expected)}
               </strong>
             </div>
-            <p className="mt-3 mb-3 text-xs text-brand-muted">
-              Counting the drawer ends your shift. Your final count and variance are recorded
-              against you, and only a supervisor can correct them afterwards — as a logged
-              adjustment, never a silent edit.
-            </p>
-            <PrimaryButton compact type="button" onClick={() => setCashOutOpen(true)}>
-              Count drawer &amp; end shift
+            <PrimaryButton compact type="button" className="mt-3" onClick={() => setCashOutOpen(true)}>
+              End shift
             </PrimaryButton>
+          </>
+        )}
+      </TableCard>
+
+      <TableCard className="mb-3.5 max-h-none p-5">
+        <h2 className="m-0 mb-1 text-base">Day end</h2>
+        {dayInProgress ? (
+          <p className="m-0 text-xs text-brand-muted">
+            {todayEntry.status === 'closed'
+              ? 'Day is closed.'
+              : 'Day end is submitted — waiting on approval.'}
+          </p>
+        ) : dayRequested ? (
+          <p className="m-0 text-xs text-brand-muted">
+            Requested — waiting for {todayEntry.requestManager ? 'a manager' : 'a supervisor'}{' '}
+            to count the drawer and close the day.
+          </p>
+        ) : (
+          <>
+            <p className="m-0 mb-3 text-xs text-brand-muted">
+              Done selling for the day? Request day end — a supervisor counts the drawer and
+              closes it, or a manager if none is available.
+            </p>
+            <label className="mb-3 flex items-start gap-2 text-[11px] leading-snug text-brand-muted">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={requestManagerToggle}
+                onChange={(e) => setRequestManagerToggle(e.target.checked)}
+              />
+              <span>No supervisor available — request manager instead.</span>
+            </label>
+            {requestError && <p className="mb-2 text-xs text-brand-danger">{requestError}</p>}
+            <SecondaryButton compact type="button" disabled={requesting} onClick={handleRequestDayEnd}>
+              {requesting ? 'Requesting…' : 'Request day end'}
+            </SecondaryButton>
           </>
         )}
       </TableCard>
@@ -250,9 +295,12 @@ function CashierEndShift() {
           user={user}
           shift={shift}
           onCancel={() => setCashOutOpen(false)}
-          onDone={async () => {
+          onDone={() => {
+            // No resolve() here: endShift already set gate 'ended', which Shell renders as
+            // a sign-out prompt over a locked screen. Re-resolving would ask the server
+            // "is a shift open?", get no, and jump straight to "count a new change fund" —
+            // skipping the sign-out this session is supposed to force.
             setCashOutOpen(false)
-            await resolve(user)
           }}
         />
       )}
@@ -276,7 +324,9 @@ function SupervisorDayEnd() {
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const submitDay = useInventoryStore((state) => state.submitDay)
   const approveDay = useInventoryStore((state) => state.approveDay)
+  const reopenDay = useInventoryStore((state) => state.reopenDay)
   const activeShift = useShiftStore((state) => state.shift)
+  const isManager = isManagerRole(user?.role)
 
   const date = businessDate(new Date(), dayOpenHour)
   const { petty, shifts, loading, reload } = useDayEndData(user, date)
@@ -294,17 +344,31 @@ function SupervisorDayEnd() {
   const existing = dayEndForBusinessDate(dayEnds, date)
   const isSubmitted = existing?.status === 'submitted'
   const isClosed = existing?.status === 'closed'
+  // A request has no real numbers yet (placeholder ₱0.00 figures) and does not lock the
+  // till — it is a notification, not a submission. Only submitted/closed lock sales.
+  const isRequested = existing?.status === 'requested'
   const isLocked = isSubmitted || isClosed
   const canApprove = isSubmitted
+  // A cashier can flag "request manager" when no supervisor is available — that request is
+  // not actionable from a supervisor's own screen, so they see a waiting message instead of
+  // the Close Day form. Any manager can always act on it.
+  const waitingForManager = isRequested && existing.requestManager && !isManager
 
-  const [cashOnHand, setCashOnHand] = useState(existing ? String(existing.cashOnHand) : '')
+  const [cashOnHand, setCashOnHand] = useState(
+    existing && !isRequested ? String(existing.cashOnHand) : '',
+  )
   const [note, setNote] = useState(existing?.note || '')
   const [confirmSubmit, setConfirmSubmit] = useState(false)
   const [confirmApprove, setConfirmApprove] = useState(false)
+  const [reopenOpen, setReopenOpen] = useState(false)
+  const [reopenReason, setReopenReason] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [pickupAmount, setPickupAmount] = useState('')
   const [pickupNote, setPickupNote] = useState('')
+  const [closingShift, setClosingShift] = useState(null)
+  const [closingBusy, setClosingBusy] = useState(false)
+  const [closingError, setClosingError] = useState('')
 
   const changeFundRows = petty.filter((row) => rowKind(row) === 'change_fund')
   const pickupRows = petty.filter((row) => rowKind(row) === 'pickup')
@@ -389,6 +453,29 @@ function SupervisorDayEnd() {
     }
   }
 
+  // Undo for a day a supervisor just closed. Manager-only — reopen_day_end() enforces
+  // this server-side regardless of what the UI shows, and it stays that way on purpose:
+  // closing no longer needs a second person's approval, so this is the one remaining
+  // check on a mistaken or disputed close, and it needs a reason on the record.
+  const handleReopen = async () => {
+    setError('')
+    const reason = reopenReason.trim()
+    if (!reason) {
+      setError('A reason is required to reopen the day.')
+      return
+    }
+    setBusy(true)
+    try {
+      await reopenDay(existing.id, reason)
+      setReopenOpen(false)
+      setReopenReason('')
+    } catch (err) {
+      setError(formatSupportError(err, 'TILL02'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (loading || (productsLoading && !products.length)) {
     return <PageSkeleton variant="dashboard" />
   }
@@ -416,96 +503,18 @@ function SupervisorDayEnd() {
         </div>
       )}
 
+      {isRequested && (
+        <div className="mb-3.5 rounded-md bg-brand-warn-bg px-4 py-3 text-xs text-brand-warn">
+          A cashier requested day end{existing.requestManager ? ' — a manager was specifically asked for' : ''}.
+          Count the drawer below and close when ready. Sales stay open until then.
+        </div>
+      )}
+
       <DayEndReportPanels
         report={report}
         title={isClosed ? 'Closed day report' : isSubmitted ? 'Submitted day report' : "Today's sales report"}
         showRestock={!isRestaurant}
       />
-
-      <TableCard className="mb-3.5 grid max-h-none gap-4 p-5">
-        <div className="grid grid-cols-3 gap-3.5 max-[900px]:grid-cols-1">
-          <div>
-            <span className="block text-[11px] text-brand-subtle">All sales (POS)</span>
-            <strong className={`my-2 block text-[22px] ${moneyClass} text-brand-gold`}>{money(recorded)}</strong>
-            <small className="block text-[11px] text-brand-subtle">
-              Cash sales {money(cashSales)} · Float {money(changeFundTotal)} · Pickups{' '}
-              {money(pickupTotal)} · Paid-out {money(paidOutTotal)} · Expected {money(expectedCash)}
-            </small>
-          </div>
-          <Field
-            label="Cash on hand"
-            inputMode="decimal"
-            value={cashOnHand}
-            onChange={(event) => setCashOnHand(decimalOnly(event.target.value))}
-            placeholder="0.00"
-            disabled={isLocked}
-          />
-          <div>
-            <span className="block text-[11px] text-brand-subtle">Variance vs expected</span>
-            <strong className={`my-2 block text-[22px] ${moneyClass} ${varianceToneClass(variance)}`}>
-              {money(variance)}
-            </strong>
-            <small className="block text-[11px] text-brand-subtle">
-              {variance === 0 ? 'Balanced' : variance < 0 ? 'Short' : 'Over'} (after petty cash)
-            </small>
-          </div>
-        </div>
-        {approvedUnfulfilled > 0 && (
-          <p className="m-0 rounded-md bg-brand-n50 px-3 py-2 text-[11px] text-brand-muted">
-            {money(approvedUnfulfilled)} of approved petty cash has not been handed over yet, so it
-            is still counted as being in the drawer.
-          </p>
-        )}
-        <Field
-          label={noteRequired ? 'Notes (required — variance not zero)' : 'Notes'}
-          value={note}
-          onChange={(event) => setNote(event.target.value.replace(/[<>]/g, ''))}
-          placeholder={noteRequired ? 'Explain the variance' : 'Optional note'}
-          disabled={isLocked}
-        />
-        {error && <p className="text-xs text-brand-danger">{error}</p>}
-        {isClosed ? (
-          <p className="text-[13px] text-brand-muted">
-            Day closed{existing.approvedAt ? ` at ${existing.approvedAt}` : existing.closedAt ? ` at ${existing.closedAt}` : ''}{' '}
-            by {existing.cashier || 'staff'}. POS sales are locked until a manager reopens, or until{' '}
-            {formatOpenHourLabel(dayOpenHour)} starts the next business day.
-            {!isRestaurant && report?.restock?.length
-              ? ` Restock list (${report.restock.length}) will show on the next open.`
-              : ''}
-          </p>
-        ) : isSubmitted ? (
-          <div>
-            <p className="mb-3 text-[13px] text-brand-muted">
-              Counts are locked while awaiting approval. A supervisor or manager must approve and close
-              the day.
-            </p>
-            {canApprove && (
-              <PrimaryButton compact disabled={busy} onClick={() => setConfirmApprove(true)}>
-                Approve &amp; close day
-              </PrimaryButton>
-            )}
-          </div>
-        ) : (
-          <div>
-            {existing?.status === 'reopened' && (
-              <p className="mb-3 text-xs text-brand-warn">
-                Till was reopened by a manager
-                {existing.reopenedAt ? ` at ${existing.reopenedAt}` : ''}
-                {existing.reopenReason ? `: ${existing.reopenReason}` : ''}. Submit again when ready.
-              </p>
-            )}
-            {/* Submit for closing is the Z-reading gate, so it is supervisor+ only —
-                consistent with where Z-readings are generated elsewhere in the app. */}
-            <PrimaryButton
-              compact
-              disabled={cashOnHand === '' || (noteRequired && !note.trim())}
-              onClick={() => setConfirmSubmit(true)}
-            >
-              Submit for closing
-            </PrimaryButton>
-          </div>
-        )}
-      </TableCard>
 
       <TableCard className="mb-3.5 max-h-none p-5">
         <h2 className="m-0 mb-1 text-base">Accountability</h2>
@@ -565,6 +574,21 @@ function SupervisorDayEnd() {
                       <StatusBadge compact tone={status.tone} title={status.hint}>
                         {status.label}
                       </StatusBadge>
+                      {/* A cashier stuck on a "your shift is open on another till" gate
+                          cannot see or close it themselves (ShiftGate) — freed from here
+                          instead, by whoever is already looking at this business day. */}
+                      {row.open && (
+                        <button
+                          type="button"
+                          className="mt-0.5 block border-0 bg-transparent text-[10px] font-bold text-brand-ink underline underline-offset-2"
+                          onClick={() => {
+                            setClosingError('')
+                            setClosingShift(row)
+                          }}
+                        >
+                          Close shift
+                        </button>
+                      )}
                     </span>
                     <strong className={`text-right max-[700px]:hidden ${moneyClass}`}>
                       {money(row.startingCash)}
@@ -677,56 +701,127 @@ function SupervisorDayEnd() {
         onChanged={reload}
       />
 
-      <TableCard>
-        <div className="flex items-center justify-between px-5 pt-4 pb-3">
-          <h2 className="m-0 text-lg capitalize">Previous day-end closings</h2>
-        </div>
-        <div className="grid grid-cols-[1fr_0.9fr_0.9fr_0.9fr_0.8fr_1fr_1.2fr] gap-3 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[700px]:grid-cols-[minmax(0,1.2fr)_0.9fr_0.9fr] max-[700px]:px-3">
-          <span>Date</span>
-          <span className="max-[700px]:hidden">Recorded</span>
-          <span>On hand</span>
-          <span className="text-right">Variance</span>
-          <span className="max-[700px]:hidden">Status</span>
-          <span className="max-[700px]:hidden">Cashier</span>
-          <span className="max-[700px]:hidden">Restock</span>
-        </div>
-        {dayEnds.map((item) => (
-          <div
-            key={item.id}
-            className={`grid grid-cols-[1fr_0.9fr_0.9fr_0.9fr_0.8fr_1fr_1.2fr] items-center gap-3 px-5 py-[17px] text-xs text-brand-slate max-[700px]:grid-cols-[minmax(0,1.2fr)_0.9fr_0.9fr] max-[700px]:px-3 ${tableRowClass}`}
-          >
-            <div className="min-w-0">
-              <strong className="block text-brand-ink">{item.date}</strong>
-              <small className="mt-0.5 hidden text-[10px] text-brand-subtle max-[700px]:block">
-                Rec {money(item.recordedCash)} · {item.status || 'closed'}
-                {item.dayReport?.restock?.length ? ` · restock ${item.dayReport.restock.length}` : ''}
-              </small>
-            </div>
-            <span className={`max-[700px]:hidden ${moneyClass}`}>{money(item.recordedCash)}</span>
-            <span className={moneyClass}>{money(item.cashOnHand)}</span>
-            <strong className={`text-right ${moneyClass} ${varianceToneClass(item.variance)}`}>
-              {money(item.variance)}
-            </strong>
-            <span className="capitalize max-[700px]:hidden">{item.status || 'closed'}</span>
-            <span className="max-[700px]:hidden">{item.cashier || '—'}</span>
-            <span className="max-[700px]:hidden">
-              {item.dayReport?.restock?.length
-                ? `${item.dayReport.restock.length} items`
-                : item.dayReport?.sold?.length
-                  ? 'OK'
-                  : '—'}
-            </span>
+      {/* Close day sits last, after the sales report, shift accountability, and petty cash
+          queue above — a supervisor has to scroll past everything worth checking before
+          reaching the button that locks the day, instead of being able to close it first
+          and read the rest after. */}
+      <TableCard className="mb-3.5 grid max-h-none gap-4 p-5">
+        <div className="grid grid-cols-3 gap-3.5 max-[900px]:grid-cols-1">
+          <div>
+            <span className="block text-[11px] text-brand-subtle">All sales (POS)</span>
+            <strong className={`my-2 block text-[22px] ${moneyClass} text-brand-gold`}>{money(recorded)}</strong>
+            <small className="block text-[11px] text-brand-subtle">
+              Cash sales {money(cashSales)} · Float {money(changeFundTotal)} · Pickups{' '}
+              {money(pickupTotal)} · Paid-out {money(paidOutTotal)} · Expected {money(expectedCash)}
+            </small>
           </div>
-        ))}
+          <Field
+            label="Cash on hand"
+            inputMode="decimal"
+            value={cashOnHand}
+            onChange={(event) => setCashOnHand(decimalOnly(event.target.value))}
+            placeholder="0.00"
+            disabled={isLocked || waitingForManager}
+          />
+          <div>
+            <span className="block text-[11px] text-brand-subtle">Variance vs expected</span>
+            <strong className={`my-2 block text-[22px] ${moneyClass} ${varianceToneClass(variance)}`}>
+              {money(variance)}
+            </strong>
+            <small className="block text-[11px] text-brand-subtle">
+              {variance === 0 ? 'Balanced' : variance < 0 ? 'Short' : 'Over'} (after petty cash)
+            </small>
+          </div>
+        </div>
+        {approvedUnfulfilled > 0 && (
+          <p className="m-0 rounded-md bg-brand-n50 px-3 py-2 text-[11px] text-brand-muted">
+            {money(approvedUnfulfilled)} of approved petty cash has not been handed over yet, so it
+            is still counted as being in the drawer.
+          </p>
+        )}
+        <Field
+          label={noteRequired ? 'Notes (required — variance not zero)' : 'Notes'}
+          value={note}
+          onChange={(event) => setNote(event.target.value.replace(/[<>]/g, ''))}
+          placeholder={noteRequired ? 'Explain the variance' : 'Optional note'}
+          disabled={isLocked || waitingForManager}
+        />
+        {error && <p className="text-xs text-brand-danger">{error}</p>}
+        {isClosed ? (
+          <div>
+            <p className="text-[13px] text-brand-muted">
+              Day closed{existing.approvedAt ? ` at ${existing.approvedAt}` : existing.closedAt ? ` at ${existing.closedAt}` : ''}{' '}
+              by {existing.cashier || 'staff'}. POS sales are locked until a manager reopens, or until{' '}
+              {formatOpenHourLabel(dayOpenHour)} starts the next business day.
+              {!isRestaurant && report?.restock?.length
+                ? ` Restock list (${report.restock.length}) will show on the next open.`
+                : ''}
+            </p>
+            {isManager && (
+              <SecondaryButton
+                compact
+                type="button"
+                className="mt-3"
+                disabled={busy}
+                onClick={() => setReopenOpen(true)}
+              >
+                Cancel closing
+              </SecondaryButton>
+            )}
+          </div>
+        ) : isSubmitted ? (
+          <div>
+            <p className="mb-3 text-[13px] text-brand-muted">
+              Counts are locked while awaiting approval. A supervisor or manager must approve and close
+              the day.
+            </p>
+            {canApprove && (
+              <PrimaryButton compact disabled={busy} onClick={() => setConfirmApprove(true)}>
+                Approve &amp; close day
+              </PrimaryButton>
+            )}
+          </div>
+        ) : (
+          <div>
+            {existing?.status === 'reopened' && (
+              <p className="mb-3 text-xs text-brand-warn">
+                Till was reopened by a manager
+                {existing.reopenedAt ? ` at ${existing.reopenedAt}` : ''}
+                {existing.reopenReason ? `: ${existing.reopenReason}` : ''}. Submit again when ready.
+              </p>
+            )}
+            {waitingForManager ? (
+              <p className="text-[13px] text-brand-muted">
+                A cashier requested day end and specifically asked for a manager — waiting for
+                one to count the drawer and close.
+              </p>
+            ) : (
+              <>
+                {/* Closing is the Z-reading gate, so it is supervisor+ only — consistent with
+                    where Z-readings are generated elsewhere in the app. It closes immediately:
+                    the person on this screen already IS the approval, so there is no separate
+                    approve step to wait on (see migrate_day_end_supervisor_autoclose.sql). A
+                    manager can still undo it with Cancel closing if something was miskeyed. */}
+                <PrimaryButton
+                  compact
+                  disabled={cashOnHand === '' || (noteRequired && !note.trim())}
+                  onClick={() => setConfirmSubmit(true)}
+                >
+                  Close day
+                </PrimaryButton>
+              </>
+            )}
+          </div>
+        )}
       </TableCard>
 
       {confirmSubmit && (
         <Modal wide onClose={() => setConfirmSubmit(false)}>
-          <Eyebrow>SUBMIT FOR CLOSING</Eyebrow>
-          <h2 className="mb-3 text-[22px] max-[700px]:text-lg">Submit {date}?</h2>
+          <Eyebrow>CLOSE DAY</Eyebrow>
+          <h2 className="mb-3 text-[22px] max-[700px]:text-lg">Close {date}?</h2>
           <p className="mb-2 text-xs text-brand-muted">
-            This locks POS sales until a supervisor or manager approves and closes the day. The sales
-            report
+            This locks POS sales until a manager reopens the day or the next business day
+            starts. The sales report
             {!isRestaurant ? ' and restock list' : ''} will be saved with your counts.
           </p>
           <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-brand-n300 py-3.5 text-[13px]">
@@ -756,7 +851,35 @@ function SupervisorDayEnd() {
               Cancel
             </SecondaryButton>
             <PrimaryButton compact type="button" disabled={busy} onClick={handleSubmit}>
-              Submit for closing
+              {busy ? 'Closing…' : 'Close day'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {reopenOpen && (
+        <Modal onClose={() => !busy && setReopenOpen(false)}>
+          <Eyebrow>CANCEL CLOSING</Eyebrow>
+          <h2 className="mb-2 text-lg">Reopen {date}?</h2>
+          <p className="m-0 text-xs text-brand-muted">
+            POS sales unlock again for this business day. The close stays on record — this adds
+            a reopen entry with your reason, it does not erase what was submitted.
+          </p>
+          <Field
+            className="mt-3"
+            label="Reason (required)"
+            value={reopenReason}
+            onChange={(e) => setReopenReason(e.target.value.replace(/[<>]/g, ''))}
+            placeholder="Why is this being reopened?"
+            required
+          />
+          {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={busy} onClick={() => setReopenOpen(false)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton compact type="button" disabled={busy || !reopenReason.trim()} onClick={handleReopen}>
+              {busy ? 'Reopening…' : 'Reopen day'}
             </PrimaryButton>
           </ModalActions>
         </Modal>
@@ -790,6 +913,47 @@ function SupervisorDayEnd() {
             </SecondaryButton>
             <PrimaryButton compact type="button" disabled={busy} onClick={handleApprove}>
               Approve &amp; close day
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {closingShift && (
+        <Modal onClose={() => !closingBusy && setClosingShift(null)}>
+          <Eyebrow>CLOSE SHIFT</Eyebrow>
+          <h2 className="mb-2 text-lg">Close {closingShift.staffName}&apos;s shift?</h2>
+          <p className="m-0 text-xs text-brand-muted">
+            Ends it on {closingShift.drawerLabel || closingShift.drawerId} with no count — the
+            drawer is counted once at Day End, not per shift. They&apos;ll need to sign in
+            again to start a new one.
+          </p>
+          {closingError && <p className="mt-2 text-xs text-brand-danger">{closingError}</p>}
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={closingBusy} onClick={() => setClosingShift(null)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton
+              compact
+              type="button"
+              disabled={closingBusy}
+              onClick={async () => {
+                setClosingBusy(true)
+                setClosingError('')
+                try {
+                  await closeShift({
+                    shiftId: closingShift.serverId || closingShift.id,
+                    closedBy: user?.id || null,
+                  })
+                  setClosingShift(null)
+                  await reload()
+                } catch (err) {
+                  setClosingError(formatSupportError(err, 'SHIFT02'))
+                } finally {
+                  setClosingBusy(false)
+                }
+              }}
+            >
+              {closingBusy ? 'Closing…' : 'Close shift'}
             </PrimaryButton>
           </ModalActions>
         </Modal>

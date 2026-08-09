@@ -246,8 +246,11 @@ export function buildTerminalReportData({
   let paidOut = 0
   ;(pettyCash || []).forEach((row) => {
     const kind = entryKind(row)
-    const status = row.status || (kind === 'paid_out' ? 'approved' : 'recorded')
-    if (kind === 'paid_out' && status !== 'approved') return
+    // 'fulfilled' is the disbursement, not 'approved' — an approved request is money still
+    // sitting in the till. Counting 'approved' here made every X/Z reading deduct cash that
+    // had not been handed over, and (after the three-state split) miss the cash that had.
+    const status = row.status || (kind === 'paid_out' ? 'fulfilled' : 'recorded')
+    if (kind === 'paid_out' && status !== 'fulfilled') return
     const amt = Number(row.amount || 0)
     if (kind === 'float') floatAmt += amt
     else if (kind === 'pickup') pickupCash += amt

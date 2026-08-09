@@ -45,7 +45,7 @@ import {
   TableCard,
   tableRowClass,
 } from '../../components/ui'
-import { FiPlus } from 'react-icons/fi'
+import { FiPlus, FiMoreHorizontal } from 'react-icons/fi'
 
 const HISTORY_PAGE_SIZE = 10
 
@@ -181,6 +181,7 @@ export default function ManagerPromos() {
   const [managingId, setManagingId] = useState(null) // which live event's rules are being edited
   const [busy, setBusy] = useState(false)
   const [eventName, setEventName] = useState('')
+  const [eventDescription, setEventDescription] = useState('')
   const [error, setError] = useState('')
   const [startsAt, setStartsAt] = useState('')
   const [endsAt, setEndsAt] = useState('')
@@ -200,11 +201,16 @@ export default function ManagerPromos() {
   const [editEndsAt, setEditEndsAt] = useState('')
   const [renameTarget, setRenameTarget] = useState(null) // { id, name } while the rename modal is open
   const [renameValue, setRenameValue] = useState('')
+  const [descTarget, setDescTarget] = useState(null) // { id, description } while the edit-description modal is open
+  const [descValue, setDescValue] = useState('')
   const [pendingDelete, setPendingDelete] = useState(null)
   const [workingEvent, setWorkingEvent] = useState(null) // pending event for adding rules
   const [stopReason, setStopReason] = useState('')
   const [stopTarget, setStopTarget] = useState(null) // event being stopped, or null when modal closed
   const [historyStats, setHistoryStats] = useState({}) // eventId -> summary
+  const [historyFrom, setHistoryFrom] = useState('')
+  const [historyTo, setHistoryTo] = useState('')
+  const [openActionsId, setOpenActionsId] = useState(null) // history row whose "..." menu is open
   const [trackingEvent, setTrackingEvent] = useState(null) // { event, stats, busy }
   const [txnDetail, setTxnDetail] = useState(null)
   const [txnRefundSummary, setTxnRefundSummary] = useState(null)
@@ -216,9 +222,21 @@ export default function ManagerPromos() {
   const selectedBranch = branches.find((b) => b.id === branchId)
   // The live event currently selected for rule editing / sales stats (defaults to the newest live event).
   const managedEvent = activeEvents.find((e) => e.event.id === managingId) || activeEvents[0] || null
-  const historyPageCount = Math.max(1, Math.ceil(history.length / HISTORY_PAGE_SIZE))
+  // Filtered by the promo's start date, so "show me March" means "promos that started in March" —
+  // the date a manager actually has in mind when they say "promo history for [range]".
+  const filteredHistory = useMemo(() => {
+    if (!historyFrom && !historyTo) return history
+    return history.filter((e) => {
+      if (!e.starts_at) return false
+      const started = e.starts_at.slice(0, 10)
+      if (historyFrom && started < historyFrom) return false
+      if (historyTo && started > historyTo) return false
+      return true
+    })
+  }, [history, historyFrom, historyTo])
+  const historyPageCount = Math.max(1, Math.ceil(filteredHistory.length / HISTORY_PAGE_SIZE))
   const historyPageIndex = Math.min(historyPage, historyPageCount - 1)
-  const historyPageRows = history.slice(
+  const historyPageRows = filteredHistory.slice(
     historyPageIndex * HISTORY_PAGE_SIZE,
     historyPageIndex * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
   )
@@ -454,11 +472,13 @@ export default function ManagerPromos() {
       await createAndActivatePromoEvent({
         branchId,
         name: eventName.trim(),
+        description: eventDescription.trim() || null,
         startsAt: startsAt || null,
         endsAt: endsAt || null,
         staffId: user?.id,
       })
       setEventName('')
+      setEventDescription('')
       await refreshActive()
     } catch (e) {
       setError(e?.message || 'Failed to create promo event.')
@@ -607,6 +627,29 @@ export default function ManagerPromos() {
       await refreshActive()
     } catch (e) {
       setError(e?.message || 'Failed to rename promo.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Same partial-update convention as rename/duration — only description changes, nothing else.
+  const onStartEditDescription = (row) => {
+    if (!row?.id) return
+    setDescTarget({ id: row.id, description: row.description || '' })
+    setDescValue(row.description || '')
+  }
+
+  const onSaveDescription = async () => {
+    if (!descTarget?.id) return
+    setBusy(true)
+    setError('')
+    try {
+      await updatePromoEventDetails({ promoEventId: descTarget.id, description: descValue.trim() })
+      setDescTarget(null)
+      setDescValue('')
+      await refreshActive()
+    } catch (e) {
+      setError(e?.message || 'Failed to save promo description.')
     } finally {
       setBusy(false)
     }
@@ -909,6 +952,17 @@ export default function ManagerPromos() {
               </PrimaryButton>
             </div>
 
+            <label className="block text-xs">
+              <div className="mb-1 font-bold text-brand-muted">Description (optional)</div>
+              <textarea
+                rows={2}
+                value={eventDescription}
+                onChange={(e) => setEventDescription(e.target.value)}
+                placeholder="What is this promo about?"
+                className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+              />
+            </label>
+
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="block text-xs">
                 <div className="mb-1 font-bold text-brand-muted">Starts at</div>
@@ -967,16 +1021,57 @@ export default function ManagerPromos() {
         editing a promo's structure needs room, not a half-width column.
       */}
       <TableCard className="mb-4 max-h-none p-5">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <h2 className="m-0 text-base">Promo history</h2>
                 <p className="m-0 mt-1 text-xs text-brand-subtle">
                   Past and current events with sales tracking — open Sales to see receipts and items sold.
                 </p>
               </div>
+              {/* Filters by the promo's own start date, so picking a range means "promos that
+                  started here" — not when the row happened to be created or edited. */}
+              <div className="flex items-end gap-2">
+                <label className="block text-[11px] font-bold text-brand-n700">
+                  From
+                  <input
+                    type="date"
+                    value={historyFrom}
+                    onChange={(e) => {
+                      setHistoryFrom(e.target.value)
+                      setHistoryPage(0)
+                    }}
+                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-white p-2 text-[12px] outline-none"
+                  />
+                </label>
+                <label className="block text-[11px] font-bold text-brand-n700">
+                  To
+                  <input
+                    type="date"
+                    value={historyTo}
+                    onChange={(e) => {
+                      setHistoryTo(e.target.value)
+                      setHistoryPage(0)
+                    }}
+                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-white p-2 text-[12px] outline-none"
+                  />
+                </label>
+                {(historyFrom || historyTo) && (
+                  <button
+                    type="button"
+                    className="border-0 bg-transparent pb-2 text-[11px] font-bold text-brand-ink underline"
+                    onClick={() => {
+                      setHistoryFrom('')
+                      setHistoryTo('')
+                      setHistoryPage(0)
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
             </div>
 
-            {history.length ? (
+            {filteredHistory.length ? (
               // Full-bleed: negative margin cancels the card's p-5 so the dark header row
               // reaches both edges instead of floating in a white gutter, and the first/last
               // cells get that padding back individually so text still lines up with the title.
@@ -985,6 +1080,7 @@ export default function ManagerPromos() {
                   <thead className="bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
                     <tr>
                       <th className="px-3 py-2.5">Promo name</th>
+                      <th className="px-3 py-2.5">Description</th>
                       <th className="px-3 py-2.5">Schedule</th>
                       <th className="px-3 py-2.5">Status</th>
                       <th className="px-3 py-2.5 text-right">Promo receipts</th>
@@ -1013,6 +1109,22 @@ export default function ManagerPromos() {
                       return (
                         <tr key={e.id} className="border-t border-brand-softline">
                           <td className="px-3 py-3 font-bold text-brand-ink">{e.name}</td>
+                          <td className="px-3 py-3">
+                            {(() => {
+                              // Why it ended lives here, not in Status — it's context about the
+                              // promo itself, appended after whatever description it already has.
+                              const combined = [e.description, e.stop_reason ? `— Reason for ending: ${e.stop_reason}` : null]
+                                .filter(Boolean)
+                                .join(' ')
+                              return combined ? (
+                                <span className="block max-w-[220px] truncate text-brand-slate" title={combined}>
+                                  {combined}
+                                </span>
+                              ) : (
+                                <span className="text-brand-subtle">—</span>
+                              )
+                            })()}
+                          </td>
                           <td className="px-3 py-3">{fmt(e.starts_at)} → {fmt(e.ends_at)}</td>
                           {/* Colour-coded, and Stopped never renders as Expired or vice
                               versa: "a manager pulled this" and "this finished on
@@ -1021,11 +1133,6 @@ export default function ManagerPromos() {
                             <StatusBadge compact tone={badge.tone} title={badge.hint}>
                               {badge.label}
                             </StatusBadge>
-                            {status === 'stopped' && e.stop_reason && (
-                              <span className="mt-0.5 block text-[10px] text-brand-subtle">
-                                {e.stop_reason}
-                              </span>
-                            )}
                             {endedByClock && (
                               <span className="mt-0.5 block text-[10px] text-brand-subtle">
                                 Reached its end time
@@ -1039,89 +1146,139 @@ export default function ManagerPromos() {
                             {stats ? `−${money(stats.discountTotal || 0)}` : '—'}
                           </td>
                           <td className="px-3 py-3 text-right">
-                            <div className="flex flex-wrap items-center justify-end gap-2">
+                            {/* Collapsed into one menu — the row used to spill 4-8 inline text
+                                buttons across the width of the table depending on status. */}
+                            <div className="relative inline-block text-left">
                               <button
                                 type="button"
-                                className="border-0 bg-transparent text-xs font-bold text-brand-danger underline"
-                                disabled={busy}
-                                onClick={() => openPromoTracking(e)}
+                                className="rounded p-1.5 text-brand-ink hover:bg-brand-n100"
+                                aria-label="Actions"
+                                aria-haspopup="true"
+                                aria-expanded={openActionsId === e.id}
+                                onClick={() => setOpenActionsId((prev) => (prev === e.id ? null : e.id))}
                               >
-                                Sales
+                                <FiMoreHorizontal />
                               </button>
-                            {managerView && e.status === 'pending' && (
-                              <>
-                                <button
-                                  type="button"
-                                  className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                                  disabled={busy}
-                                  onClick={() => onApproveCreate(e.id)}
-                                >
-                                  Approve
-                                </button>
-                                <button
-                                  type="button"
-                                  className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                                  disabled={busy}
-                                  onClick={() => onRejectCreate(e.id)}
-                                >
-                                  Reject
-                                </button>
-                              </>
-                            )}
-                            {managerView && status === 'stop_pending' && (
-                              <>
-                                <button
-                                  type="button"
-                                  className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                                  disabled={busy}
-                                  onClick={() => onApproveStop(e.id)}
-                                >
-                                  Approve stop
-                                </button>
-                                <button
-                                  type="button"
-                                  className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                                  disabled={busy}
-                                  onClick={() => onRejectStop(e.id)}
-                                >
-                                  Reject stop
-                                </button>
-                              </>
-                            )}
-                            {/* Duration can be edited regardless of status — including an already-active
-                                promo — this only ever touches starts_at/ends_at (updatePromoEventDetails),
-                                never approval state, so it doesn't need to go through dual control. */}
-                            <button
-                              type="button"
-                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                              disabled={busy || isEditing}
-                              onClick={() => onStartEditEvent(e)}
-                            >
-                              Modify
-                            </button>
-                            <button
-                              type="button"
-                              className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                              disabled={busy}
-                              onClick={() => onStartRenameEvent(e)}
-                            >
-                              Rename
-                            </button>
-                            {!isLive && (
-                              <button
-                                type="button"
-                                className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                                disabled={busy}
-                                onClick={() =>
-                                  openDeleteConfirm({
-                                    kind: 'event',
-                                    id: e.id,
-                                    label: e.name,
-                                  })}
-                              >
-                                Delete
-                              </button>
-                            )}
+                              {openActionsId === e.id && (
+                                <div className="absolute right-0 top-full z-20 mt-1 flex min-w-[170px] flex-col rounded-md border border-brand-line bg-white p-1 text-left shadow-lg">
+                                  <button
+                                    type="button"
+                                    className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-danger hover:bg-brand-n100"
+                                    disabled={busy}
+                                    onClick={() => {
+                                      setOpenActionsId(null)
+                                      openPromoTracking(e)
+                                    }}
+                                  >
+                                    Sales
+                                  </button>
+                                  {managerView && e.status === 'pending' && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                                        disabled={busy}
+                                        onClick={() => {
+                                          setOpenActionsId(null)
+                                          onApproveCreate(e.id)
+                                        }}
+                                      >
+                                        Approve
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                                        disabled={busy}
+                                        onClick={() => {
+                                          setOpenActionsId(null)
+                                          onRejectCreate(e.id)
+                                        }}
+                                      >
+                                        Reject
+                                      </button>
+                                    </>
+                                  )}
+                                  {managerView && status === 'stop_pending' && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                                        disabled={busy}
+                                        onClick={() => {
+                                          setOpenActionsId(null)
+                                          onApproveStop(e.id)
+                                        }}
+                                      >
+                                        Approve stop
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                                        disabled={busy}
+                                        onClick={() => {
+                                          setOpenActionsId(null)
+                                          onRejectStop(e.id)
+                                        }}
+                                      >
+                                        Reject stop
+                                      </button>
+                                    </>
+                                  )}
+                                  {/* Duration can be edited regardless of status — including an already-active
+                                      promo — this only ever touches starts_at/ends_at (updatePromoEventDetails),
+                                      never approval state, so it doesn't need to go through dual control. */}
+                                  <button
+                                    type="button"
+                                    className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                                    disabled={busy || isEditing}
+                                    onClick={() => {
+                                      setOpenActionsId(null)
+                                      onStartEditEvent(e)
+                                    }}
+                                  >
+                                    Modify
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                                    disabled={busy}
+                                    onClick={() => {
+                                      setOpenActionsId(null)
+                                      onStartRenameEvent(e)
+                                    }}
+                                  >
+                                    Rename
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                                    disabled={busy}
+                                    onClick={() => {
+                                      setOpenActionsId(null)
+                                      onStartEditDescription(e)
+                                    }}
+                                  >
+                                    Edit description
+                                  </button>
+                                  {!isLive && (
+                                    <button
+                                      type="button"
+                                      className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                                      disabled={busy}
+                                      onClick={() => {
+                                        setOpenActionsId(null)
+                                        openDeleteConfirm({
+                                          kind: 'event',
+                                          id: e.id,
+                                          label: e.name,
+                                        })
+                                      }}
+                                    >
+                                      Delete
+                                    </button>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -1131,14 +1288,16 @@ export default function ManagerPromos() {
                 </table>
               </div>
             ) : (
-              <div className="mt-4 text-xs text-brand-subtle">No promo events yet.</div>
+              <div className="mt-4 text-xs text-brand-subtle">
+                {history.length ? 'No promo events in that date range.' : 'No promo events yet.'}
+              </div>
             )}
             {historyPageCount > 1 && (
               <div className="-mx-5 -mb-5 mt-4">
                 <Pager
                   page={historyPageIndex + 1}
                   pageCount={historyPageCount}
-                  total={history.length}
+                  total={filteredHistory.length}
                   label="events"
                   onPrev={() => setHistoryPage((p) => Math.max(0, p - 1))}
                   onNext={() => setHistoryPage((p) => Math.min(historyPageCount - 1, p + 1))}
@@ -1313,6 +1472,11 @@ export default function ManagerPromos() {
         </>
       )}
 
+      {/* Click-away for the "..." row menu — sits below the menu's z-20. */}
+      {openActionsId && (
+        <div className="fixed inset-0 z-10" onClick={() => setOpenActionsId(null)} />
+      )}
+
       {editingEventId && (
         <Modal onClose={onCancelEditEvent}>
           <Eyebrow>MODIFY PROMO</Eyebrow>
@@ -1378,6 +1542,33 @@ export default function ManagerPromos() {
               onClick={onSaveRename}
             >
               {busy ? 'Saving…' : 'Save name'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {descTarget && (
+        <Modal onClose={() => !busy && setDescTarget(null)}>
+          <Eyebrow>PROMO DESCRIPTION</Eyebrow>
+          <h2 className="m-0 mb-2 text-lg">What is this promo about?</h2>
+          <p className="m-0 mb-3 text-xs text-brand-muted">
+            Shown to managers and supervisors in Promo History. Not shown to customers.
+          </p>
+          <label className="block text-xs">
+            <textarea
+              rows={4}
+              value={descValue}
+              onChange={(ev) => setDescValue(ev.target.value)}
+              placeholder="e.g. 20% off all canned goods to clear shelf space before the new stock arrives."
+              className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+            />
+          </label>
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={busy} onClick={() => setDescTarget(null)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton compact type="button" disabled={busy} onClick={onSaveDescription}>
+              {busy ? 'Saving…' : 'Save description'}
             </PrimaryButton>
           </ModalActions>
         </Modal>

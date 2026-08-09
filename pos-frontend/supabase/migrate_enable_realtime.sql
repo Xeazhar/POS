@@ -1,7 +1,10 @@
 -- Enables Supabase Realtime (postgres_changes) on the tables that need to push
 -- live updates to an open POS/notification screen: price/promo edits made by a
--- manager should reach the cashier immediately, and approval requests should
--- reach supervisors/managers immediately — see src/offline/realtime.js.
+-- manager should reach the cashier immediately, approval requests should reach
+-- supervisors/managers immediately, and a day-end close / cash-drawer entry /
+-- shift clock-in-out from one terminal should reach an already-open Branch
+-- dashboard tab on another — see src/offline/realtime.js and
+-- src/pages/manager/BranchDashboard.jsx's useLiveData calls.
 --
 -- RLS already gates what each subscribed client actually receives (same
 -- policies as normal SELECT), so this migration only turns replication on —
@@ -31,7 +34,8 @@ begin
     'promo_rule_products',
     'day_ends',
     'cash_drawer_entries',
-    'petty_cash'
+    'petty_cash',
+    'staff_shifts'
   ]
   loop
     if exists (select 1 from information_schema.tables where table_schema = 'public' and table_name = t)

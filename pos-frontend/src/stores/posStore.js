@@ -15,6 +15,7 @@ import { clearLocalSession, clearRequireFreshLogin, loadLocalSession, markRequir
 import { clearAuthSessionStorage, consumeBrowserClosedFlag } from '../offline/sessionLifecycle'
 import { appError } from '../utils/errors'
 import { isTillClosed, today } from '../utils/format'
+import { isSupervisorOrAbove } from '../utils/roles'
 import { detectUlamCombo, effectiveUnitPrice, hasBudgetTier, lineTotal, normalizeMenuKind } from '../utils/ulam'
 import { useShiftStore } from './shiftStore'
 import { useSyncStore } from './syncStore'
@@ -953,12 +954,19 @@ export const useInventoryStore = create((set, get) => ({
     const existing = get().dayEnds.find((item) => item.date === entry.date)
     if (existing?.status === 'closed') return existing
 
+    // submit_day_end auto-closes on the server when the caller is supervisor+ (see
+    // migrate_day_end_supervisor_autoclose.sql) — the only screen that calls this is
+    // already gated to supervisor+, so the local optimistic state should say 'closed'
+    // too, not sit on 'submitted' until the round trip / sync catches up.
+    const autoCloses = isSupervisorOrAbove(user?.role)
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     const mapped = {
       ...entry,
       id: existing?.id || newClientId('day'),
-      status: 'submitted',
+      status: autoCloses ? 'closed' : 'submitted',
       cashier: user?.name || entry.cashier,
-      submittedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      submittedAt: now,
+      approvedAt: autoCloses ? now : null,
       reopenedAt: null,
       branchId: user?.branchId,
       dayReport: entry.dayReport || null,
@@ -990,6 +998,71 @@ export const useInventoryStore = create((set, get) => ({
           branchId: user.branchId,
           staffId: user.id,
           entry: { ...entry, id: existing?.id, localId: mapped.id },
+        },
+        { branchId: user.branchId },
+      )
+      useSyncStore.getState().refresh(user.branchId)
+    }
+    return mapped
+  },
+  /**
+   * Cashier-triggered "Request day end" — no cash figures, just a flag that someone
+   * (a supervisor, or a manager when `requestManager` is set) needs to count the drawer
+   * and close the day from the normal Day End screen.
+   */
+  requestDay: async (requestManager = false) => {
+    const user = useAuthStore.getState().user
+    const dayOpenHour = get().dayOpenHour
+    const date = today(dayOpenHour)
+    const existing = get().dayEnds.find((item) => item.date === date)
+    if (existing?.status === 'submitted' || existing?.status === 'closed') return existing
+
+    const mapped = {
+      id: existing?.id || newClientId('day'),
+      date,
+      status: 'requested',
+      requestedAt: new Date().toISOString(),
+      requestedBy: user?.id || null,
+      requestManager: Boolean(requestManager),
+      cashier: user?.name || '',
+      branchId: user?.branchId,
+      syncStatus: api.hasSupabase ? 'pending' : 'local',
+    }
+
+    // Online with a real backend: wait for the server to actually confirm the request
+    // before showing "Requested" — setting the optimistic state first and letting a
+    // thrown error land after would leave the screen saying "Requested" even when the
+    // RPC failed (e.g. migration missing) and nothing reached the database.
+    if (api.hasSupabase && user?.branchId && isOnline()) {
+      const row = await api.requestDayEnd({
+        branchId: user.branchId,
+        staffId: user.id,
+        businessDate: date,
+        requestManager: Boolean(requestManager),
+      })
+      const remote = api.mapDayEndRow(row)
+      remote.syncStatus = 'synced'
+      remote.branchId = user.branchId
+      set((state) => ({
+        dayEnds: [remote, ...state.dayEnds.filter((item) => item.id !== remote.id && item.date !== remote.date)],
+      }))
+      return remote
+    }
+
+    // Offline (or no backend at all): nothing to confirm against right now, so the
+    // optimistic state IS the only answer — queue it for syncEngine to replay later.
+    set((state) => ({
+      dayEnds: [mapped, ...state.dayEnds.filter((item) => item.date !== date)],
+    }))
+    if (api.hasSupabase && user?.branchId) {
+      await enqueue(
+        QUEUE_TYPES.REQUEST_DAY_END,
+        {
+          branchId: user.branchId,
+          staffId: user.id,
+          businessDate: date,
+          requestManager: Boolean(requestManager),
+          localId: mapped.id,
         },
         { branchId: user.branchId },
       )

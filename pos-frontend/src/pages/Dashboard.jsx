@@ -221,13 +221,6 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
     (item) => item.status === 'Paid' && inPeriod(item.date, cutoff),
   )
   const revenue = filtered.reduce((sum, item) => sum + item.total, 0)
-  const shrink = movements
-    .filter((item) => item.type === 'Shrinkage' && inPeriod(item.date, cutoff))
-    .reduce(
-      (sum, item) =>
-        sum + Math.abs(item.quantityChange) * (products.find((p) => p.id === item.productId)?.price || 0),
-      0,
-    )
   const low = products.filter((product) => stockTone(product) === 'low')
   const menuOn = products.filter((p) => p.availableToday !== false)
   const menuOff = products.filter((p) => p.availableToday === false)
@@ -239,6 +232,19 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
         : buildSalesFromMovements(movements, products, cutoff),
     [isRestaurant, filtered, products, movements, cutoff],
   )
+
+  const paymentMethodLabels = { cash: 'Cash', card: 'Card', ewallet: 'E-wallet' }
+  const paymentMethods = useMemo(() => {
+    const byMethod = new Map()
+    filtered.forEach((item) => {
+      const method = String(item.paymentMethod || 'cash').toLowerCase()
+      const prev = byMethod.get(method) || { method, amount: 0, count: 0 }
+      prev.amount += Number(item.total || 0)
+      prev.count += 1
+      byMethod.set(method, prev)
+    })
+    return [...byMethod.values()].sort((a, b) => b.amount - a.amount)
+  }, [filtered])
 
   const greeting = greetingFor(user)
   const todayKey = businessDate(new Date(), dayOpenHour)
@@ -282,7 +288,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
           : [
               [`Revenue · ${period}`, money(revenue), `${filtered.length} paid transactions`],
               [`Orders · ${period}`, filtered.length, 'Completed sales'],
-              [`Reseko loss · ${period}`, money(shrink), 'Recorded shrinkage'],
+              ['Low-stock items', low.length, 'This branch'],
             ]
         ).map(([label, value, note]) => (
           <div
@@ -333,7 +339,9 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
         <RevenueChart points={buildChartPoints(filtered, period)} period={period} />
         <SalesMixBar mix={mix} />
       </div>
-      <div className="grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
+      <div
+        className={`grid gap-4 max-[900px]:grid-cols-1 ${isRestaurant ? 'grid-cols-3' : 'grid-cols-2'}`}
+      >
         {isRestaurant ? (
           <TableCard className="max-h-none overflow-hidden p-0">
             <SectionHeading
@@ -381,38 +389,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
               )}
             </div>
           </TableCard>
-        ) : (
-          <TableCard className="max-h-none overflow-hidden p-0">
-            <SectionHeading
-              title="Low stock"
-              meta={`${low.length} products`}
-              tone={low.length ? 'warn' : 'default'}
-            />
-            <div className="px-4 py-1">
-              {low.length === 0 ? (
-                <div className="border-t border-brand-softline py-3 text-xs">
-                  <strong className="block text-brand-ink">All stocked up</strong>
-                  <small className="mt-1 block text-[10px] text-brand-muted">No items below reorder level</small>
-                </div>
-              ) : (
-                low.map((product) => (
-                  <div
-                    key={product.id}
-                    className="flex items-center justify-between border-t border-brand-softline py-2.5 text-xs"
-                  >
-                    <div>
-                      <strong className="block text-brand-ink">{product.name}</strong>
-                      <small className="mt-1 block text-[10px] text-brand-muted">{product.category}</small>
-                    </div>
-                    <strong className="text-brand-danger">
-                      {qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}
-                    </strong>
-                  </div>
-                ))
-              )}
-            </div>
-          </TableCard>
-        )}
+        ) : null}
         <TableCard className="max-h-none overflow-hidden p-0">
           <SectionHeading
             title={isRestaurant ? 'Top dishes' : 'Top products'}
@@ -438,6 +415,33 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
                     </small>
                   </div>
                   <strong className={`text-brand-ink ${moneyClass}`}>{money(product.revenue)}</strong>
+                </div>
+              ))
+            )}
+          </div>
+        </TableCard>
+        <TableCard className="max-h-none overflow-hidden p-0">
+          <SectionHeading title="Payment methods" subtitle={`By tender · ${period}`} />
+          <div className="px-4 py-1">
+            {paymentMethods.length === 0 ? (
+              <div className="border-t border-brand-softline py-3 text-xs text-brand-muted">
+                No sales in this period yet.
+              </div>
+            ) : (
+              paymentMethods.map((row) => (
+                <div
+                  key={row.method}
+                  className="flex items-center justify-between border-t border-brand-softline py-2.5 text-xs"
+                >
+                  <div>
+                    <strong className="block text-brand-ink">
+                      {paymentMethodLabels[row.method] || row.method}
+                    </strong>
+                    <small className="mt-1 block text-[10px] text-brand-muted">
+                      {row.count} {row.count === 1 ? 'transaction' : 'transactions'}
+                    </small>
+                  </div>
+                  <strong className={`text-brand-ink ${moneyClass}`}>{money(row.amount)}</strong>
                 </div>
               ))
             )}

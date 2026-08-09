@@ -36,7 +36,7 @@ import {
   money,
 } from '../utils/format'
 import { buildPromoByProductId, promoBadgeLabel, promoUnitPrice } from '../utils/promo'
-import { isManagerRole } from '../utils/roles'
+import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 import { formatSupportError } from '../utils/errors'
 
 function menuSetupKey(branchId, bizDate) {
@@ -68,10 +68,15 @@ function POS() {
   const [searchPopupOpen, setSearchPopupOpen] = useState(false)
   const [cartOverlayOpen, setCartOverlayOpen] = useState(false)
   const [activePromos, setActivePromos] = useState([])
+  const [requestManagerNotice, setRequestManagerNotice] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const tillClosed = isTillClosed(dayEnds, dayOpenHour)
   const daySubmitted = isDaySubmitted(dayEnds, dayOpenHour)
   const dayFullyClosed = isDayFullyClosed(dayEnds, dayOpenHour)
+  // Reopening a fully-closed day is manager-only; approving a submitted one is
+  // supervisor+. Anyone below that can't act on /day-end here, so send them there
+  // never redirects them into a screen that has nothing they can do.
+  const canOpenDayEnd = dayFullyClosed ? isManagerRole(user?.role) : isSupervisorOrAbove(user?.role)
   const bizDate = businessDate(new Date(), dayOpenHour)
   const barcodeOn = isDeviceEnabled(user?.deviceSettings, 'barcode_scanner')
   const barcodeTableMode = barcodeOn && !isRestaurant && !manageMenu
@@ -258,7 +263,7 @@ function POS() {
           <div className="max-w-md text-center">
             <strong className="block text-lg text-brand-danger">
               {dayFullyClosed
-                ? 'Day end is closed'
+                ? 'POS is closed'
                 : daySubmitted
                   ? 'Day end submitted'
                   : 'Till is closed'}
@@ -274,13 +279,30 @@ function POS() {
               Nothing on this screen can be used until the till is reopened.
             </p>
             <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-              <Link
-                to="/day-end"
-                className="inline-flex items-center justify-center rounded-[5px] border-0 bg-brand-gold px-4 py-2.5 text-xs font-bold text-brand-dark no-underline"
-              >
-                Open day end
-              </Link>
+              {canOpenDayEnd ? (
+                <Link
+                  to="/day-end"
+                  className="inline-flex items-center justify-center rounded-[5px] border-0 bg-brand-gold px-4 py-2.5 text-xs font-bold text-brand-dark no-underline"
+                >
+                  Open day end
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center rounded-[5px] border-0 bg-brand-gold px-4 py-2.5 text-xs font-bold text-brand-dark"
+                  onClick={() => setRequestManagerNotice(true)}
+                >
+                  Open day end
+                </button>
+              )}
             </div>
+            {!canOpenDayEnd && requestManagerNotice && (
+              <p className="m-0 mt-3 text-xs font-bold text-brand-danger-deep" role="status">
+                {dayFullyClosed
+                  ? 'Ask a manager to reopen the till.'
+                  : 'Ask a supervisor or manager to approve day end.'}
+              </p>
+            )}
           </div>
         </div>
       </div>

@@ -26,6 +26,7 @@ import {
   tableRowClass,
 } from '../ui'
 import {
+  cascadeCatalogFieldsToBranches,
   cascadeDiscountEligibleToBranches,
   resyncDiscountEligibleToBranches,
   commitCatalogImport,
@@ -34,6 +35,7 @@ import {
   hasSupabase,
   updateCatalogProduct,
 } from '../../lib/api'
+import { useAuthStore } from '../../stores/posStore'
 import {
   buildCatalogImportPreview,
   normalizeSheetRows,
@@ -59,6 +61,11 @@ function loadXlsx() {
 
 const PAGE_SIZE = 12
 
+const CATEGORY_CHOICES = {
+  retail: ['Groceries', 'Bakery', 'Meat'],
+  restaurant: ['Meat', 'Veggie', 'Pancit', 'Drink', 'Rice', 'Extra'],
+}
+
 const emptyForm = (branchType = 'retail') => ({
   name: '',
   sku: '',
@@ -76,6 +83,7 @@ const emptyForm = (branchType = 'retail') => ({
  * Manual add creates catalog_products; branches adopt via supervisor Catalog.
  */
 export default function ManagerNetworkCatalog() {
+  const user = useAuthStore((state) => state.user)
   const [branchType, setBranchType] = useState('retail')
   const [catalog, setCatalog] = useState([])
   const [query, setQuery] = useState('')
@@ -143,6 +151,13 @@ export default function ManagerNetworkCatalog() {
   const categories = useMemo(
     () => [...new Set(catalog.map((p) => p.category).filter(Boolean))].sort(),
     [catalog],
+  )
+
+  // Fixed choices for the given catalog type, plus any legacy category already in use
+  // (e.g. from old imports) so an existing item never loses its current value.
+  const categoryOptions = useMemo(
+    () => [...new Set([...CATEGORY_CHOICES[isRestaurant ? 'restaurant' : 'retail'], ...categories])],
+    [categories, isRestaurant],
   )
 
   const filtered = useMemo(() => {
@@ -418,15 +433,38 @@ export default function ManagerNetworkCatalog() {
           budgetPrice: draft.budgetPrice === '' ? null : Number(draft.budgetPrice),
           discountEligible: draft.discountEligible === true,
         })
-        // Discountable is the one catalog field that also pushes to branches that already
-        // adopted the item — otherwise this only sets the default for future adoptions and
-        // PWD/Senior keeps not applying on already-live products. SKU is passed so the
-        // cascade also reaches branch rows whose catalog_product_id was never populated.
+        // Every edit here also pushes to branches that already adopted the item — otherwise
+        // this would only set the default for future adoptions, leaving an already-live
+        // product's name/SKU/barcode/category/price stale everywhere (branch screens and
+        // every report, which read products, never catalog_products). The old SKU (row.sku,
+        // not the edited draft) is passed for the orphan-matching pass, since an unlinked
+        // branch row still carries whatever SKU it had before this edit.
         if (draft.discountEligible !== (row.discountEligible === true)) {
           await cascadeDiscountEligibleToBranches(
             row.id,
             draft.discountEligible === true,
-            draft.sku.trim(),
+            row.sku,
+          )
+        }
+        const identityOrPriceChanged =
+          draft.name !== (row.name || '') ||
+          draft.sku !== (row.sku || '') ||
+          draft.barcode !== (row.barcode || '') ||
+          draft.category !== (row.category || '') ||
+          price !== Number(row.price) ||
+          String(draft.budgetPrice) !== String(row.budgetPrice ?? '')
+        if (identityOrPriceChanged) {
+          await cascadeCatalogFieldsToBranches(
+            row.id,
+            {
+              name: draft.name.trim(),
+              sku: draft.sku.trim(),
+              barcode: draft.barcode || null,
+              category: draft.category || row.category,
+              price,
+              budgetPrice: draft.budgetPrice === '' ? null : Number(draft.budgetPrice),
+            },
+            { matchSku: row.sku, staffId: user?.id },
           )
         }
       }
@@ -659,10 +697,9 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
               </h2>
               <p className="m-0 mt-1 text-[11px] text-brand-subtle">
                 {filtered.length} shown · {catalog.length} total · this is the shared template new
-                branches adopt from. "Edit discountable" also pushes to branches that already
-                adopted the item. Other edits (price, name, etc.) only set the default for
-                future adoptions — use that branch's Catalog page to change those on an
-                already-adopted item.
+                branches adopt from. Saving an edit here also pushes it to every branch that
+                already adopted the item — use that branch's Catalog page instead if you only
+                want to change one branch's copy.
               </p>
             </div>
            
@@ -1103,10 +1140,9 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
             {editorIds.length === 1 ? 'Edit catalog item' : `Edit ${editorIds.length} catalog items`}
           </h2>
           <p className="mt-1 mb-3 text-xs text-brand-muted">
-            Shared template. <strong>Discountable</strong> also pushes to branches that already
-            adopted the item; every other field here only sets the default for{' '}
-            <strong>future</strong> adoptions — a branch already stocking the item keeps its own
-            name and price.
+            Shared template. Saving here pushes every field to branches that already adopted
+            the item, not just future adoptions — a price change is logged to that branch's
+            Price Change Register just like editing it on the branch's own Catalog page.
           </p>
           {error && (
             <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">
@@ -1197,15 +1233,18 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                           />
                         </td>
                         <td className="px-3 py-2">
-                          {/* Free text with the existing categories offered — a strict
-                              dropdown would make a new category impossible from here. */}
-                          <input
+                          <select
                             className="w-full rounded border border-brand-line bg-white px-2 py-1 text-brand-ink outline-none"
-                            list="catalog-category-options"
                             value={draft.category}
                             aria-label={`Category for ${row.name}`}
                             onChange={(e) => setDraft(row.id, 'category', e.target.value)}
-                          />
+                          >
+                            {categoryOptions.map((cat) => (
+                              <option key={cat} value={cat}>
+                                {cat}
+                              </option>
+                            ))}
+                          </select>
                         </td>
                         <td className="px-3 py-2 text-right">
                           <input
@@ -1237,11 +1276,6 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
               </tbody>
             </table>
           </div>
-          <datalist id="catalog-category-options">
-            {categories.map((cat) => (
-              <option key={cat} value={cat} />
-            ))}
-          </datalist>
 
           <ModalActions>
             <SecondaryButton compact type="button" disabled={busy} onClick={() => setEditorIds(null)}>

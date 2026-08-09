@@ -304,21 +304,23 @@ function ManagerOverview() {
       </div>
 
       <TableCard>
-        <div className="grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem_4.5rem] items-center gap-3 bg-brand-dark px-5 py-3 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[700px]:grid-cols-[minmax(0,1fr)_4.5rem]">
+        <div className="grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem] items-center gap-3 bg-brand-dark px-5 py-3 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[700px]:grid-cols-[minmax(0,1fr)]">
           <span>Branch</span>
           <span className="max-[700px]:hidden">Type</span>
           <span className="text-right max-[700px]:hidden">Revenue</span>
           <span className="text-right max-[700px]:hidden">Orders</span>
           <span className="text-right max-[700px]:hidden">Focus</span>
-          <span className="text-right">Action</span>
         </div>
         {branches.map((branch) => {
           const summary = summaries[branch.id] || { revenue: 0, orders: 0, lowStock: 0, menuOn: 0 }
           const restaurant = branch.branch_type === 'restaurant'
           return (
-            <div
+            // Whole row navigates — a trailing "Open" action column was one more click than
+            // the row itself needed, and the row has no other click target to conflict with.
+            <Link
               key={branch.id}
-              className={`grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem_4.5rem] items-center gap-3 px-5 py-3 text-xs max-[700px]:grid-cols-[minmax(0,1fr)_4.5rem] ${tableRowClass}`}
+              to={`/manager/branches/${branch.id}`}
+              className={`grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem] items-center gap-3 px-5 py-3 text-xs no-underline max-[700px]:grid-cols-[minmax(0,1fr)] ${tableRowClass}`}
             >
               <div className="min-w-0">
                 <strong className="block truncate text-brand-ink">{branch.name}</strong>
@@ -338,13 +340,7 @@ function ManagerOverview() {
               >
                 {restaurant ? `${summary.menuOn || 0} on` : summary.lowStock}
               </span>
-              <Link
-                to={`/manager/branches/${branch.id}`}
-                className="justify-self-end text-right text-[11px] font-bold whitespace-nowrap text-brand-dark no-underline"
-              >
-                Open <span aria-hidden>{'\u2192'}</span>
-              </Link>
-            </div>
+            </Link>
           )
         })}
       </TableCard>

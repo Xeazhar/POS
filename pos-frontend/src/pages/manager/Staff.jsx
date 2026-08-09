@@ -22,7 +22,9 @@ import {
   varianceToneClass,
 } from '../../components/ui'
 import {
+  acknowledgeShiftReview,
   adjustShiftCash,
+  closeShift,
   createStaffAccount,
   fetchStaffRoster,
   fetchBranches,
@@ -229,6 +231,9 @@ function shiftStatus(row, adjusted) {
   if (row.holdsDrawer !== false && row.endingCash == null) {
     return { label: 'Pending handoff', tone: 'warn', hint: 'Ended without a drawer count' }
   }
+  if (row.closedWithoutSupervisor && !row.reviewedAt) {
+    return { label: 'Needs review', tone: 'warn', hint: 'Closed by the cashier — no supervisor was available to verify' }
+  }
   if (adjusted) {
     return { label: 'Adjusted', tone: 'warn', hint: 'Cash figures were corrected after closing' }
   }
@@ -254,7 +259,7 @@ const SHIFT_GRID_NARROW =
  * what it should have been · how far off. A supervisor should be able to scan the variance
  * column alone and stop on the row that is wrong.
  */
-function ShiftsTab({ rows, adjustments, loading, showBranch, canAdjustCash, onAdjust }) {
+function ShiftsTab({ rows, adjustments, loading, showBranch, canAdjustCash, onAdjust, onCloseShift, onAcknowledgeReview }) {
   const grid = showBranch ? SHIFT_GRID_WITH_BRANCH : SHIFT_GRID_NO_BRANCH
   const narrow = SHIFT_GRID_NARROW
   return (
@@ -341,6 +346,27 @@ function ShiftsTab({ rows, adjustments, loading, showBranch, canAdjustCash, onAd
                     Correct
                   </button>
                 )}
+                {canAdjustCash && row.closedWithoutSupervisor && !row.reviewedAt && (
+                  <button
+                    type="button"
+                    className="mt-0.5 block border-0 bg-transparent text-[10px] font-bold text-brand-ink underline underline-offset-2"
+                    onClick={() => onAcknowledgeReview(row)}
+                  >
+                    Acknowledge
+                  </button>
+                )}
+                {/* A cashier starting a new shift on this drawer never sees who is holding
+                    it or a way to close it (see ShiftGate) — the drawer is freed from here
+                    instead, by someone who can actually count and verify the cash. */}
+                {canAdjustCash && row.open && !floorShift && (
+                  <button
+                    type="button"
+                    className="mt-0.5 border-0 bg-transparent text-[10px] font-bold text-brand-ink underline underline-offset-2"
+                    onClick={() => onCloseShift(row)}
+                  >
+                    Close shift
+                  </button>
+                )}
               </div>
             </div>
           )
@@ -394,6 +420,11 @@ function ManagerStaff() {
   const [adjustValue, setAdjustValue] = useState('')
   const [adjustReason, setAdjustReason] = useState('')
   const [adjustBusy, setAdjustBusy] = useState(false)
+  const [closingShift, setClosingShift] = useState(null)
+  const [closingCash, setClosingCash] = useState('')
+  const [closingNote, setClosingNote] = useState('')
+  const [closingBusy, setClosingBusy] = useState(false)
+  const [closingError, setClosingError] = useState('')
 
   // Captcha for account creation (signUp), not for editing.
   const {
@@ -688,6 +719,20 @@ function ManagerStaff() {
             setAdjusting({ shift, field })
             setAdjustValue(String(current ?? ''))
             setAdjustReason('')
+          }}
+          onCloseShift={(shift) => {
+            setClosingShift(shift)
+            setClosingCash('')
+            setClosingNote('')
+            setClosingError('')
+          }}
+          onAcknowledgeReview={async (shift) => {
+            try {
+              await acknowledgeShiftReview(shift.id, currentUser?.id || null)
+              await loadShifts()
+            } catch (err) {
+              setError(formatSupportError(err, 'SHIFT01'))
+            }
           }}
         />
       ) : (
@@ -1135,6 +1180,64 @@ function ManagerStaff() {
               }}
             >
               {adjustBusy ? 'Saving…' : 'Save correction'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+      {closingShift && (
+        <Modal onClose={() => !closingBusy && setClosingShift(null)}>
+          <Eyebrow>CLOSE SHIFT</Eyebrow>
+          <h2 className="mb-1 text-lg">{closingShift.staffName}'s drawer</h2>
+          <p className="m-0 text-xs text-brand-muted">
+            Count {closingShift.drawerLabel || closingShift.drawerId} yourself before entering
+            this — it becomes their ending count and their variance, and frees the drawer for
+            the next cashier.
+          </p>
+          <Field
+            className="mt-3"
+            label="Cash counted in the drawer"
+            value={closingCash}
+            onChange={(e) => setClosingCash(decimalOnly(e.target.value))}
+            inputMode="decimal"
+            required
+            placeholder="0.00"
+          />
+          <Field
+            className="mt-3"
+            label="Note"
+            value={closingNote}
+            onChange={(e) => setClosingNote(e.target.value.replace(/[<>]/g, ''))}
+            placeholder="Optional"
+          />
+          {closingError && <ErrorBanner className="mt-3 mb-0" error={closingError} />}
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={closingBusy} onClick={() => setClosingShift(null)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton
+              compact
+              type="button"
+              disabled={closingBusy || closingCash === ''}
+              onClick={async () => {
+                setClosingBusy(true)
+                setClosingError('')
+                try {
+                  await closeShift({
+                    shiftId: closingShift.serverId || closingShift.id,
+                    endingCash: Number(closingCash),
+                    note: closingNote.trim(),
+                    closedBy: currentUser?.id || null,
+                  })
+                  setClosingShift(null)
+                  await loadShifts()
+                } catch (err) {
+                  setClosingError(formatSupportError(err, 'SHIFT02'))
+                } finally {
+                  setClosingBusy(false)
+                }
+              }}
+            >
+              {closingBusy ? 'Closing…' : 'Close shift'}
             </PrimaryButton>
           </ModalActions>
         </Modal>

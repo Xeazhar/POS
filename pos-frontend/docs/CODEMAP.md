@@ -101,7 +101,7 @@ When changing behavior, the usual path is:
 | `/` | `src/pages/Dashboard.jsx` or `src/pages/manager/Overview.jsx` | home depends on role |
 | `/pos` | `src/pages/POS.jsx` | cashiering, barcode mode, inquiry, promos |
 | `/transactions` | `src/pages/Transactions.jsx` | list + detail modal + refund flow |
-| `/inventory` | `src/pages/Products.jsx` | staff inventory/menu operations — tabs: stock + **Movement history** |
+| `/inventory` | `src/pages/Products.jsx` | staff inventory/menu operations — tabs: stock + **Movement history** (`src/components/inventory/MovementHistoryPanel.jsx`) |
 | `/data` | `src/pages/manager/Data.jsx` | supervisor branch catalog tools |
 | `/day-end` | `src/pages/DayEnd.jsx` | **role-split**: cashier → "End shift" (own drawer only); supervisor+ → "Day end" (branch, petty approval queue, submit for closing) |
 | `/settings/devices` | `src/pages/Devices.jsx` | staff device awareness |
@@ -210,6 +210,13 @@ Permission behavior:
 - custom `user.permissions` override defaults
 - nav visibility uses the same checks as route access
 - DB still enforces branch access via RLS even if UI allows navigation
+- `canAccessModule` gives `master` unconditional access to every module, no `DEFAULTS`/
+  `permissions` check at all — a lone master account can never lock itself out via Staff, since
+  self-edit is always blocked (`canEditStaff`) and nobody outranks master. `admin` gets the same
+  unconditional access **except** `devices` (a cashier-unit pairing screen an office role has no
+  default use for) — that one module falls through to the normal permissions check, so it can
+  still be switched on per-admin-account via Staff. `manager` was never in this bypass and
+  already excludes `devices` from its `DEFAULTS`.
 
 ---
 
@@ -469,26 +476,38 @@ Staff Inventory /inventory
 
 **`catalog_products` (network template) vs. `products` (a branch's live item) are different
 tables, edited by different UI:** `manager/Data.jsx` in manager mode (`ManagerNetworkCatalog`)
-edits `catalog_products` via `api.updateCatalogProduct` — this only changes the default a
-*future* adoption gets, never an already-adopted branch product. To change something on a
-branch's already-adopted item (price, stock, **discount eligibility**), use that branch's own
-page: `Products.jsx` (manager/supervisor edit form) or `manager/Data.jsx` in supervisor mode
-(`SupervisorCatalogAdopt`, inline "Discountable" toggle) — both call `api.updateProductRow`
-against `products`. Mixing these up is exactly how "I turned on Discountable but PWD/Senior
-still won't apply" happens — the product's `discount_eligible` never actually changed on the
-branch's real row. `updateProductRow` only includes `discount_eligible` in its update payload
-when the caller explicitly passes it, so a partial edit (e.g. stock-only) never silently clears
-it — keep that guard if you add more optional fields to that function.
+edits `catalog_products` via `api.updateCatalogProduct` — this sets the default a *future*
+adoption gets, and **also cascades to every branch that already adopted the item** (see below).
+To change **one specific branch's** copy without touching every other branch that adopted the
+same catalog item, use that branch's own page instead: `Products.jsx` (manager/supervisor edit
+form) or `manager/Data.jsx` in supervisor mode (`SupervisorCatalogAdopt`, inline "Discountable"
+toggle) — both call `api.updateProductRow` against `products`. `updateProductRow` only includes
+`discount_eligible` in its update payload when the caller explicitly passes it, so a partial
+edit (e.g. stock-only) never silently clears it — keep that guard if you add more optional
+fields to that function.
 
-**Exception — Discountable cascades from the network catalog too:** managers' actual workflow
-for this specific toggle is the `/manager/data` network catalog page (`ManagerNetworkCatalog`),
-not the branch-level pages above. Its "Discountable" save (`saveDiscount()`) calls
-`api.cascadeDiscountEligibleToBranches(catalogProductId, discountEligible)`, which updates
-`discount_eligible` on every already-adopted `products` row matched via
-`products.catalog_product_id` — so unlike every other catalog field (price, name, etc., which
-stay template-only / future-adoption-only), Discountable *does* propagate immediately to live
-branch products from that page. **Still reportedly not enabling PWD/Senior in the cart even
-after this fix** — see Backlog below, not yet root-caused.
+**The network catalog editor cascades to already-adopted branches, not just future adoptions:**
+saving an item in `ManagerNetworkCatalog`'s bulk editor (`saveEditor`) writes `catalog_products`
+via `updateCatalogProduct`, then also pushes to every `products` row already linked to it
+(matched via `products.catalog_product_id`, falling back to a SKU match for rows that were
+never linked — see `cascadeDiscountEligibleToBranches` below for why that link is often
+missing):
+- **`discountEligible`** — `api.cascadeDiscountEligibleToBranches(catalogProductId, eligible, sku)`.
+- **`name`/`sku`/`barcode`/`category`/`price`/`budgetPrice`** — `api.cascadeCatalogFieldsToBranches(catalogProductId, fields, { matchSku, staffId })`,
+  fired whenever any of those fields is dirty. A price change is also logged per branch via
+  `recordPriceChange` (same RPC `Products.jsx` uses), so the Price Change Register and Price
+  Listing report see catalog-driven price edits, not just branch-level ones. The SKU match for
+  unlinked rows uses the item's **pre-edit** SKU (`row.sku`), since an unlinked branch row still
+  carries whatever SKU it had before this save.
+
+Both cascades are called from the same `saveEditor` loop, sequentially per changed row (not
+`Promise.all`) — a burst of per-item follow-up writes against Supabase is a good way to get
+rate-limited halfway through a bulk save. `supabase/migrate_sync_catalog_identity_fields.sql`
+is the one-time catch-up for edits made **before** the identity/price cascade existed
+(`migrate_sync_discount_eligible.sql` is the equivalent for `discount_eligible`); it
+deliberately does not touch price/budget_price — see that file's header for why a bulk
+one-time price overwrite is treated differently from a one-time name/SKU/barcode/category
+catch-up.
 
 | Feature | Files |
 |---------|--------|
@@ -508,21 +527,34 @@ after this fix** — see Backlog below, not yet root-caused.
 
 ## Shifts & change fund (cash accountability)
 
-The unit of cash accountability is the SHIFT, not the day: one branch, one drawer, several
-cashiers a day, and a shortage has to point at whoever was holding the cash.
+The unit of cash accountability is the BUSINESS DAY, not the shift: one branch, one drawer,
+several cashiers a day, and the drawer is counted once — at Day End — not once per cashier.
+(Earlier this was per-shift; see `migrate_day_end_request_no_shift_count.sql` for why it
+changed and the tradeoff that came with it: a variance can no longer be pinned to a specific
+cashier when more than one worked the drawer that day, only to whoever counted at close.)
 
 ```
 Start shift  → count change fund → useShiftStore.startShift
                → local Dexie `shifts` row (clientId) + enqueue OPEN_SHIFT
                → open_staff_shift() RPC → staff_shifts row (serverId)
+               (a stale open shift left by a previous cashier on this drawer is
+                auto-closed here, no count, so the new shift is never blocked)
 
 Selling      → posStore.addTransaction stamps shiftClientId / shiftId
                → syncEngine swaps clientId for serverId on push
                → transactions.shift_id
 
-Cash out     → ShiftCashOut → shift_cash_summary() for expected
-               → enqueue CLOSE_SHIFT → close_staff_shift() computes
-                 expected + variance server-side, sets clock_out
+End shift    → ShiftCashOut → plain clock-out. No count, no PIN — just enqueue
+               CLOSE_SHIFT → close_staff_shift() sets clock_out, leaves
+               ending_cash/expected_cash/variance null
+
+Request day  → CashierEndShift "Request day end" (+ "request manager" toggle)
+end            → requestDay() → request_day_end() RPC → day_ends.status = 'requested'
+               (till stays open — a request is a notification, not a lock)
+
+Day end      → SupervisorDayEnd "Close day" → counts the drawer once for the
+               whole day → submitDay() → submit_day_end() → auto-closes for
+               supervisor+ (see "Day end & cash" below)
 
 Sign out     → shift stays open. Signing back in on the same drawer resumes it and
                does NOT ask for the change fund again.
@@ -546,21 +578,84 @@ Same cashier on a different drawer is a different pile of cash, so that is gate 
 |------|---------|--------|
 | `ready` | shift open, sell | — |
 | `start` | no shift here | count the change fund |
-| `busy` | another cashier holds this drawer | they cash out, or supervisor closes it |
 | `moved` | this cashier is open on another till | cash out there, or supervisor override |
+
+There is no `busy` gate: a stale open shift under a previous cashier on the same drawer
+never blocks the next one — `open_staff_shift()` auto-closes it (no count) before opening
+the new shift, server-side, in the same transaction as the unique open-shift-per-drawer
+index.
 
 | Piece | File |
 |-------|------|
 | Store | `src/stores/shiftStore.js` |
 | Gate UI | `src/components/shared/ShiftGate.jsx` |
-| Cash-out UI | `src/components/shared/ShiftCashOut.jsx` |
+| End-shift UI | `src/components/shared/ShiftCashOut.jsx` (plain clock-out, no count) |
 | Log / adjustments UI | `src/pages/Shifts.jsx` |
 | Drawer identity | `src/utils/drawer.js` |
 | Local store | `src/offline/shifts.js` (Dexie `shifts`, v2) |
-| Queue ops | `OPEN_SHIFT`, `CLOSE_SHIFT` in `queueTypes.js` / `syncEngine.js` |
-| API | `api.js` → `openShift`, `closeShift`, `fetchOpenShift`, `fetchOpenShiftOnDrawer`, `fetchLastClosedShiftOnDrawer`, `fetchShiftCashSummary`, `adjustShiftCash`, `fetchShiftAdjustments`, `fetchStaffShifts` |
-| Tables | `staff_shifts` (+ cash columns), `shift_adjustments`, `transactions.shift_id` |
-| Migration | `migrate_shift_cash_accountability.sql` |
+| Queue ops | `OPEN_SHIFT`, `CLOSE_SHIFT`, `REQUEST_DAY_END` in `queueTypes.js` / `syncEngine.js` |
+| API | `api.js` → `openShift`, `closeShift`, `requestDayEnd`, `fetchOpenShift`, `fetchOpenShiftOnDrawer`, `fetchOpenShiftsForBranch`, `fetchLastClosedShiftOnDrawer`, `fetchShiftCashSummary`, `adjustShiftCash`, `fetchShiftAdjustments`, `fetchStaffShifts`, `acknowledgeShiftReview` |
+| Tables | `staff_shifts` (+ cash columns, `closed_without_supervisor`, `reviewed_by`, `reviewed_at` — dormant, see below), `shift_adjustments`, `transactions.shift_id`, `day_ends` (+ `requested_at`, `requested_by`, `request_manager`) |
+| Migration | `migrate_shift_cash_accountability.sql`, `migrate_shift_close_no_supervisor_flag.sql`, `migrate_day_end_request_no_shift_count.sql` |
+
+**Query shifts by `business_date`, never by `clock_in`.** `fetchStaffShifts` matches its
+date range on the `business_date` column. Filtering on the clock-in instant is wrong twice
+over: a business day runs open-hour to open-hour, so a 05:00 clock-in belongs to the
+*previous* business date; and `clock_in` is `timestamptz`, so a bare `2026-08-09T00:00:00`
+is read in the database session's zone (UTC on Supabase) rather than Manila, sliding the
+whole window eight hours. Both silently dropped rows out of Day end's "Change fund by
+shift", which reads as floats and closing counts never having been recorded. Any new
+shift query needs the same treatment. Rows predating the column fall back to `clock_in`.
+
+**A shift close never carries a count anymore.** `close_staff_shift()` accepts
+`p_ending_cash` as optional; when omitted (the normal `ShiftCashOut.jsx` path now)
+`ending_cash`/`expected_cash`/`variance` are left null rather than a fabricated ₱0.00 —
+`api.closeShift()` defaults `endingCash` to `null`, never `0`, for exactly this reason.
+`cash_sales`/`cash_refunds`/`cash_paid_out`/`cash_pickups` are still computed and stored on
+every close regardless, since Day End's "Change fund by shift" totals read from those, not
+from a per-shift ending count.
+
+**The `staff_shifts` column fallback ladder is ordered, and the order is load-bearing.**
+`api.js` reads shifts through progressively older column sets: `SHIFT_COLS` →
+`SHIFT_COLS_CORE` → `SHIFT_COLS_LEGACY` → `SHIFT_COLS_MINIMAL`. `shift_period` (its own
+migration) and `closed_without_supervisor`/`reviewed_by`/`reviewed_at`
+(`migrate_shift_close_no_supervisor_flag.sql`) are each optional and independent of the core
+cash-accountability schema, so any of them can be missing on a database that has every cash
+column. They are therefore tested *together*, via `isMissingOptionalShiftColumn`, *before*
+`isMissingShiftCashSchema` — which matches `does not exist` generically and would otherwise
+read one missing optional column as a missing cash schema, dropping straight to a column set
+with no `starting_cash`/`ending_cash` and rendering every float and closing count blank.
+`migrate_shift_cash_accountability.sql` adds `shift_period` itself, because the
+`open_staff_shift()` RPC it defines inserts into that column; without it, opening a shift
+raises `column shift_period does not exist`. Any new optional column added to the ladder
+keeps the same rule: narrow filters (`drawer_id`, `business_date`) only on tiers that
+actually carry the column.
+
+**Ending a shift no longer needs anyone's approval.** `ShiftCashOut.jsx` is a plain confirm
+now — no cash field, no `SupervisorApprove` PIN prompt. `endShift` (shiftStore.js) always
+closes under the cashier's own id (`closedBy: user.id`); `close_staff_shift()`'s
+`closed_without_supervisor` flag is deliberately never set true by this path anymore (it
+would otherwise fire on every single shift close, not just the rare unwitnessed one it used
+to mean) — `migrate_day_end_request_no_shift_count.sql` covers why. The
+`closed_without_supervisor`/`reviewed_by`/`reviewed_at` columns and
+`acknowledge_shift_review()` RPC are left in the schema (harmless) but are dormant: nothing
+sets the flag true anymore, so `fetchPendingApprovals`' "shift closed without supervisor"
+section and Manager/Staff → Shifts' **Needs review** status will not fire on new shifts.
+
+**Ending a shift forces sign-out before the next count.** `endShift` (shiftStore.js) lands on
+`gate: 'ended'`, not `'start'`. `ShiftGate` renders that gate as a screen with only a
+**Sign out** button — no "count a new change fund" form, no override. Falling through to the
+start screen would let whoever is standing at the till open the NEXT shift under THIS
+cashier's still-open session. `Shell`'s `shiftBlocking` covers every gate except
+`ready`/`checking`, so `ended` locks the rest of the app the same way `moved` does. The
+cash-out modal's `onDone` (`DayEnd.jsx`) must NOT call `resolve()` afterward — that re-asks
+the server "is a shift open?", gets no, and overwrites `ended` back to `start`, undoing this.
+
+**A cashier is never blocked by another cashier's still-open drawer.** There is no `busy`
+gate (removed along with per-shift counting) — `open_staff_shift()` auto-closes a stale
+open shift on the same drawer (no count, `close_note` explains why) before opening the new
+one, inside the same transaction that satisfies the unique open-shift-per-drawer index. See
+`migrate_day_end_request_no_shift_count.sql`.
 
 **Closed shifts are frozen** by a trigger. A correction goes through `adjust_shift_cash()`,
 which logs old value, new value, actor and reason to `shift_adjustments` — the same
@@ -627,24 +722,83 @@ FKs `staff` three times, so an embed needs disambiguating at every call site).
 
 | Role | Screen | Sees |
 |---|---|---|
-| cashier | **End shift** | own float → expected → count → variance (via `useShiftStore.cashPosition`), own petty requests, `ShiftCashOut`. No branch totals, no restock, no Submit for closing. |
-| supervisor+ | **Day end** | branch sales, every shift's accountability, restock, petty **approval queue**, Submit for closing (the Z-reading gate). |
+| cashier | **End shift** | own shift's cash-sales-so-far (informational — `useShiftStore.cashPosition`), a plain **End shift** clock-out (`ShiftCashOut`, no count/PIN), a **Request day end** action, own petty requests. No branch totals, no restock, no Close day. |
+| supervisor+ | **Day end** | branch sales, every shift's accountability, restock, petty **approval queue**, any pending **day-end request**, Close day (the Z-reading gate, does the one drawer count for the day). |
 
-The split is a privacy boundary, not cosmetics: the old shared screen rendered "Change fund
-by shift" — every staff member's float and variance — to whoever opened it, so a cashier
-could read a supervisor's drawer. Do not reintroduce a branch-wide figure into the cashier
-view.
+`day_end` is in `manager`/`admin`'s default module list (`roles.js` `DEFAULTS`) specifically
+so a manager can reach this same screen — needed for a cashier's "request manager" day end
+when no supervisor is available (see below); managers otherwise mostly work from
+`BranchDashboard.jsx`.
+
+The cashier/supervisor split is a privacy boundary, not cosmetics: the old shared screen
+rendered "Change fund by shift" — every staff member's float and variance — to whoever
+opened it, so a cashier could read a supervisor's drawer. Do not reintroduce a branch-wide
+figure into the cashier view.
 
 ```
 Sales during day → expected cash (sales − voids/refunds ± petty/pickup/float)
-DayEnd.jsx (supervisor+) → closeDayEnd RPC → day_ends row
+Cashier "Request day end" → request_day_end RPC → day_ends.status = 'requested'
+  (no numbers yet, till stays open — a request is a notification, not a lock)
+DayEnd.jsx (supervisor+) → submit_day_end RPC → day_ends row, status 'closed' immediately
 Till locked until reopen (manager, CURRENT business day only) or next business date
 Cart soft nudge after ~8 PM or last 2h before openHour+14h
 ```
 
+**A cashier requests, a supervisor (or manager) counts and closes.** Cash counting happens
+once per business day now — the cashier's "Request day end" (`CashierEndShift`, DayEnd.jsx)
+carries no cash figures, just a flag (`request_day_end` RPC → `day_ends.status =
+'requested'`, `requested_by`, `request_manager`). The **"No supervisor available — request
+manager instead"** toggle is always shown to the cashier (not conditioned on whether a
+supervisor happens to be clocked in — a supervisor's shift is not expected to stay open all
+day, so that presence is not a reliable signal). `SupervisorDayEnd` shows a banner for a
+pending request and — unchanged — the normal Close Day form (cash-on-hand → `submitDay`)
+counts the drawer and closes, overwriting the `'requested'` row with real numbers. If
+`request_manager` was set, a supervisor viewing the screen sees "waiting for a manager"
+instead of the form (`waitingForManager` in `DayEnd.jsx`) — any manager can always act on it.
+`fetchPendingApprovals` surfaces `'requested'` rows the same way: to a supervisor only when
+not manager-flagged, to a manager always.
+
+**Closing no longer waits on a separate approval.** `submit_day_end` auto-closes (sets
+`status = 'closed'`, `approved_by`/`approved_at`) when the caller is supervisor_or_above, by
+calling `approve_day_end` on itself in the same statement — see
+`migrate_day_end_supervisor_autoclose.sql`. This screen is already gated to supervisor+
+(`DayEnd()`'s role split above), so the old two-step submit-then-approve was one person
+approving their own submission a moment later; collapsing it removes that wait without adding
+a new actor. A plain cashier calling `submit_day_end` directly (not exposed in the UI — a
+cashier's own action here is `request_day_end`, not `submit_day_end`) still lands on
+`'submitted'` and needs a supervisor+ to approve — dual control is untouched for that caller.
+The local optimistic status in `submitDay` (`posStore.js`) mirrors this: `'closed'` when the
+signed-in user is supervisor+, `'submitted'` otherwise, so the UI does not show "awaiting
+approval" for a day that is about to close anyway.
+
+**Cancel closing = the existing manager-only reopen, surfaced here too.** Since a supervisor
+closing their own day removed the review pause approval used to provide, `DayEnd.jsx` puts a
+**Cancel closing** button next to a closed day, visible only to managers — it calls the same
+`reopenDay`/`reopen_day_end` used by `BranchDashboard.jsx`'s Reopen, unchanged and still
+manager-only, reason required, logged to `audit_events`. A supervisor cannot self-reopen a day
+they closed; that boundary was deliberately left alone.
+
 **Reopen is current-day only.** `BranchDashboard.jsx` offers Reopen on a closed day-end row
 only while `entry.date === todayKey`; past closings render `Locked` with no override at any
-role. Reopening a passed day would move cash figures under a Z-reading already filed.
+role. `DayEnd.jsx`'s Cancel closing only ever acts on `dayEndForBusinessDate(dayEnds, date)`
+for the CURRENT business date, so it inherits the same restriction without a separate check.
+Reopening a passed day would move cash figures under a Z-reading already filed.
+
+**`DayEnd.jsx` has no historical closings list of its own.** It used to render its own
+"Previous day-end closings" table, duplicating `BranchDashboard.jsx`'s paginated "Day-end
+closings" section (which also has Reopen) with a plainer read-only copy. Removed — a
+supervisor closing today's day doesn't need yesterday's numbers on the same screen, and a
+manager wanting history already has the richer version. `DayEnd.jsx` still fetches `dayEnds`
+(`useInventoryStore`) for `dayEndForBusinessDate(dayEnds, date)` — only the list *rendering*
+was removed, not the underlying fetch.
+
+**Close day is the last thing on the page, not the first.** The sales-summary / cash-on-hand /
+variance / notes / Close day card used to sit directly under the top sales report, above
+Accountability and the petty cash queue — reachable (and closeable) without scrolling past
+either. It now renders last, after Accountability and Petty cash, so a supervisor sees the
+shift-by-shift drawer breakdown and any pending petty cash before reaching the button that
+locks the day. No state or logic moved, only where the card renders in `SupervisorDayEnd`'s
+JSX.
 
 ### Petty cash: request → approve → fulfil
 
@@ -656,15 +810,51 @@ approved    authorised. Money is STILL IN THE DRAWER.
 fulfilled   cash physically handed over. THIS is the disbursement.
 ```
 
+**A supervisor-or-above's own request skips `pending` entirely.** `requestPettyCash({ ...,
+autoApprove })` writes `status: 'approved'` (and self-sets `approved_by`) instead of
+`'pending'` when `autoApprove` is true. The caller passes `autoApprove: canApprove` —
+`PettyCashPanel`'s existing prop, the same gate its manual Approve button already uses
+(`DayEnd.jsx`'s supervisor screen renders the panel with `canApprove` true; the cashier's own
+"End shift" screen passes `canApprove={false}`, so a cashier's request still lands pending as
+before). This adds no new trust boundary: `canApprove` was already a purely app-level gate (no
+DB role check on the write itself — see the note below), so self-approving at creation is the
+same authority the same person already had one click later via Approve.
+
+**Note on this table's write boundary:** `cash_drawer_entries`' RLS policy
+(`migrate_rename_petty_cash_to_cash_drawer_entries.sql`) only checks branch match / `is_manager()`,
+not role — unlike the fulfil step, there is no DB `CHECK` gating who can set `status = 'approved'`
+on this table, so the supervisor-only rule for approving is enforced by UI (`canApprove`) only, not
+by the database. Pre-existing, unrelated to the auto-approve change above; flagged here rather than
+fixed, since closing it would mean adding a `SECURITY DEFINER` RPC for the whole request/approve
+path (matching the `submit_day_end` pattern below) — a larger change than any reported bug asked for.
+
 **Only `fulfilled` is deducted from expected cash.** `approved` is a commitment, not a
 disbursement — deducting it made the drawer read short between approval and handover.
-`close_staff_shift()` and `shift_cash_summary()` were rewritten to match
-(`migrate_petty_cash_fulfilment.sql`); leaving them on `'approved'` produces a false
-variance on every cash-out.
+**Every consumer of that rule must agree**, or the same drawer reconciles to different
+numbers on different screens. All four now filter on `'fulfilled'`:
+
+| Consumer | Where |
+|---|---|
+| `close_staff_shift()`, `shift_cash_summary()` | `migrate_petty_cash_fulfilment.sql` |
+| End-shift / day-end expected cash | `src/pages/DayEnd.jsx` (`rowStatus`) |
+| **X / Z reading cash-in-drawer + short/over** | `src/utils/terminalReports.js` |
+| Row mapping default for pre-workflow rows | `src/lib/api.js` (`mapPettyCashRow`) |
+
+A `paid_out` row with a null `status` predates the workflow columns, so its cash was already
+handed over: the default is `'fulfilled'` in all of the above. Defaulting one of them to
+`'approved'` parks an old disbursement in the awaiting-handover queue and adds its cash back
+into the expected drawer.
 
 Fulfilment without a prior approval is impossible by construction, in two places:
 `fulfillPettyCash` filters `.eq('status', 'approved')`, and the DB holds
-`cash_drawer_entries_fulfil_needs_approval`. The UI is not the boundary.
+`cash_drawer_entries_fulfil_needs_approval`. The UI is not the boundary. That constraint is
+deliberately left `NOT VALID` forever — enforced on every new write, exempt only for
+pre-split history rows, which keep a null approver rather than being back-filled with a
+sign-off that never happened.
+
+`migrate_petty_cash_fulfilment.sql` must be applied **after**
+`migrate_shift_cash_accountability.sql` — it needs `transactions.shift_id` and rewrites two
+functions that file creates. Its section 0 raises a named error if you run it early.
 
 | Piece | File |
 |---|---|
@@ -759,7 +949,8 @@ edits something a cashier is currently looking at (price, promo, an approval req
 that needs to show up **immediately**, not after the next 60s poll or page reload.
 
 ```
-Postgres row changes (products, promo_events/rules, day_ends, cash_drawer_entries, …)
+Postgres row changes (products, promo_events/rules, day_ends, cash_drawer_entries,
+staff_shifts, …)
    │ (only if migrate_enable_realtime.sql has been run — see below)
    ▼
 Supabase Realtime (postgres_changes), RLS-gated same as a normal SELECT
@@ -768,10 +959,21 @@ Supabase Realtime (postgres_changes), RLS-gated same as a normal SELECT
 src/offline/realtime.js  subscribeTable / subscribeMany  →  debounce()  →  refetch
    ├─► useLiveData (src/hooks/useLiveData.js) — the layered wrapper pages should use
    │     ├─► POS.jsx: promo_events/promo_rules/promo_rule_products → reload activePromos
-   │     └─► POS.jsx: products/branch_inventory → useProductStore.mergeProducts
+   │     ├─► POS.jsx: products/branch_inventory → useProductStore.mergeProducts
+   │     └─► BranchDashboard.jsx: day_ends/cash_drawer_entries → reload() (branch + full
+   │           bootstrap + petty timeline); staff_shifts (separately) → loadStaffShifts()
    └─► RequestNotifications.jsx: day_ends/cash_drawer_entries(+petty_cash)/promo_events
          (manager: unfiltered; supervisor: own branch only) → reload the approval-inbox badge
 ```
+
+**`BranchDashboard.jsx` used to fetch everything once at mount and never again** — a day-end
+close, cash-drawer entry, or shift clock-out from another terminal never reached an already-open
+dashboard tab, so "Day-end closings", the cash drawer log, and the staff hours roster all looked
+frozen until a manual page reload. Fixed with the two `useLiveData` calls above. `staff_shifts`
+was not previously in the realtime publication — added alongside this fix (re-run
+`migrate_enable_realtime.sql`). Even before that migration reaches a given deploy, the
+visibility/focus and 5-minute poll layers still apply, so reopening or refocusing the tab picks
+up the change.
 
 **`useLiveData` is the front door — don't hand-roll a subscription in a page.** It layers four
 independent freshness signals so no single failure leaves a tab stale, which is exactly what
@@ -936,6 +1138,28 @@ Product name in UI/docs: **CalePOS**.
   - `Cart` receives `barcodeMode={barcodeTableMode}`
   - `barcodeMode ? (...) : (...)` section is the barcode-specific “cart lines (left) + sale summary rail (right)”
 
+### Stock movement ledger — two views of one table
+
+`stock_movements` is surfaced in two places, and they are deliberately kept identical in
+look and column vocabulary (`Date · Type · Change · Balance`) so they do not read as two
+different reports:
+
+| View | File | Scope |
+|---|---|---|
+| Inventory → Movement history tab | `src/components/inventory/MovementHistoryPanel.jsx` | every product, filterable, adds Product + By/note columns and a time alongside the date |
+| Product detail drawer | `src/pages/Products.jsx` | one product |
+
+Shared conventions: quantities carry their unit (`+4.00 pc`, `−1.00 kg`), `Balance` is the
+only bold figure in the row and turns red when negative, and a `price_change` row shows
+`₱old → ₱new` under Change with `—` under Balance — it moved money, not stock. Change either
+view and change the other.
+
+`stock_movements.reference` is an internal key, not display text: a sale writes the
+**transaction id**, a bulk import writes the **batch id**, other types write a word
+(`initial`, `edit`, the adjustment action). `fetchStockMovements` resolves sale ids to
+`OR <number>` in one chunked lookup and blanks any other bare UUID before the row reaches
+the UI — never render `reference` raw.
+
 ### Discountable indicators (where you can see “Discountable: Yes/No”)
 - **Barcode search results table:** `src/pages/POS.jsx` → `ITEM SEARCH` modal table
 - **Manager/supervisor product catalog list:** `src/pages/manager/Data.jsx` → product row in the catalog table (`pageRows.map`)
@@ -1071,12 +1295,19 @@ exactly why some products discounted correctly and others never did. Fixed three
 - Sidebar **Refresh** button → `window.location.reload()`.
 - **Multiple concurrent promos** — several promo events can now be live (active/stop_pending) on one branch at once. See below.
 - **Discountable cascade from network catalog** — toggling Discountable on `/manager/data` now also flips `discount_eligible` on every already-adopted branch product (`api.cascadeDiscountEligibleToBranches`), not just the template default. See "Products / inventory / import" section above.
+- **Catalog identity/price cascade** — saving name/SKU/barcode/category/price/budgetPrice on `/manager/data` now also pushes to every already-adopted branch product (`api.cascadeCatalogFieldsToBranches`), same reach as the Discountable cascade, instead of only setting the default for future adoptions. A price change is logged per branch via `recordPriceChange`, so the Price Change Register and Price Listing report pick it up. `migrate_sync_catalog_identity_fields.sql` catches up edits made before this existed (price intentionally excluded — see file header). See "Products / inventory / import" section above.
+- **Bulk import price-change logging** — `commitInventoryImport`'s update-existing-row branch now calls `recordPriceChange` when the imported price differs from the row's price before the import, matching every other price-editing path. Previously an import could change a product's price with nothing recorded in the Price Change Register.
+- **Fiscal report "today" timezone fix** — `fetchFiscalTransactions` (feeds the SC/PWD Register, Discount Report, Electronic Journal, BIR Daily Breakdown, and Tender Summary) filtered `created_at` with a bare `${start}T00:00:00` string, read in the DB session's UTC zone instead of Manila — the same class of bug already documented and fixed for `fetchStaffShifts`/`branchSummary` elsewhere in this file. Sales rung before ~8AM local were filed under the previous day and dropped from "today". Fixed by converting the local day boundary to a real ISO instant before querying.
 - **Promo auto-expire** — a promo past its `ends_at` ends itself, no manager action needed. Three layers, because the DB one alone silently did nothing when its migration wasn't applied:
   1. **Display truth (always correct, zero dependencies):** `promoHasEnded()` / `promoEffectiveStatus()` in `api.js` derive status from the timestamp. Promo History shows `stopped · Promo ended`, and Delete unlocks, the moment the end time passes.
   2. **Never live:** `fetchActivePromoEventsWithRules` filters ended events out of the live list **regardless of `respectDuration`**. This was the actual bug — `manager/Promos.jsx` passes `respectDuration: false` (so rules can be built on a not-yet-started promo), which was also resurrecting *finished* ones into the Active dropdown. `respectDuration` governs the not-started case only; ended is unconditional.
   3. **Durable DB sweep:** `expireEndedPromos()` calls RPC `expire_ended_promos()` (`migrate_promo_auto_expire.sql`); if that function isn't deployed it falls back to a direct `UPDATE` on `promo_events` (managers/supervisors have RLS write on their branch — cashiers get denied, which is fine since layers 1–2 already cover them). Runs at the top of `fetchActivePromoEventsWithRules`, `fetchActivePromosAcrossBranches`, and `fetchPromoEventsForBranch`.
 - **`datetime-local` timezone fix** (`manager/Promos.jsx` `localDateTimeValue`) — promo start/end fields were formatted with `toISOString().slice(0,16)`, which is **UTC**: a Manila manager saw and saved times 8 hours off. Now built from local getters. New promos also default `starts_at` to now (fills a blank field only — never overwrites a typed value).
 - **Edit dates on an already-active promo** — `manager/Promos.jsx` Promo History "Modify" button used to be hidden for `active`/`stop_pending` rows; now shown for all statuses (only edits `starts_at`/`ends_at` via `updatePromoEventDetails`, never touches approval state, so no new dual-control needed). Delete stays restricted to non-live statuses.
+- **Promo description** — `promo_events.description` (`migrate_promo_description.sql`, nullable text). Set on create (optional textarea next to Name) or afterwards via Promo History's row menu → **Edit description**, both through the same partial-update `updatePromoEventDetails`/insert path as name/dates — a description-only edit never touches schedule or approval state. Shown under the promo's name in Promo History; not read by the discount engine, not shown to customers. `createAndActivatePromoEvent` and `fetchPromoEventsForBranch` fall back to omitting the column if the migration isn't applied yet (same `isMissingColumnError` pattern as other optional columns in this file).
+- **Promo History date filter** — From/To `<input type="date">` above the history table, filtering client-side on `starts_at`'s date (not `created_at` — a manager picking a range means "promos that ran then", not "rows I made then"). Pure UI filter on the already-fetched `history` array; no new query.
+- **Promo History actions collapsed into a "⋯" menu** — the row used to lay out 4-8 inline text buttons (Sales, Approve/Reject, Approve/Reject stop, Modify, Rename, Edit description, Delete) side by side; same actions now live in a per-row dropdown (`openActionsId` state, closed by a full-screen click-away `div`). No action's behavior changed, only where it lives.
+- **Stop reason was already implemented** — a reason is required when requesting or executing a stop (`request_stop_promo` RPC, `stop_reason` column) and already rendered in Promo History under the status badge. This predates the description/date-filter work above; don't re-add it.
 
 ### Multiple concurrent promos (DONE)
 **Required SQL migration:** run `pos-frontend/supabase/migrate_promo_multi_active.sql` (drops the one-live-promo-per-branch unique index and stops `approve_promo_event()` from deactivating sibling promos).
