@@ -220,6 +220,14 @@ export const ERROR_CATALOG = {
       'The duplicate guard in migrate_sale_dedupe_hardening.sql matched an existing client_id. A retry reached the server twice.',
     fix: 'Nothing to do — this is the protection working. The customer was charged once.',
   },
+  SALE06: {
+    message: 'Refund request failed.',
+    severity: W,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'Creating, cancelling, or rejecting the remote manager approval request was rejected.',
+    fix: 'Nothing has been refunded yet — retry, or fall back to in-person supervisor approval.',
+  },
 
   // ── INV — products and stock ─────────────────────────────────────────────
   INV01: {

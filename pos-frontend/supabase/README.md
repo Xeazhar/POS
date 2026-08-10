@@ -90,6 +90,39 @@ migrate_day_end_request_no_shift_count.sql     -- needs both files above (dual-c
 migrate_promo_description.sql
 migrate_sync_catalog_identity_fields.sql       -- one-time catch-up, safe to re-run
 migrate_day_end_reject_request.sql             -- needs migrate_day_end_request_no_shift_count.sql above
+migrate_promo_reject_reason.sql                -- needs migrate_promo_dual_control.sql above; adds
+                                                -- reject_reason + 3-arg reject_promo_event RPC
+migrate_void_sale_approved_by.sql              -- needs migrate_day_end_dual_control.sql above (supersedes
+                                                -- its void_sale_secure body); adds 4-arg void_sale_secure
+                                                -- (p_approved_by) so the Void/Refund Log report's
+                                                -- "Approved by" column is populated for voids
+migrate_fix_refund_sale_items_typo.sql         -- needs migrate_day_end_dual_control.sql above (supersedes
+                                                -- its refund_sale_items body); fixes a "p_txn" typo that
+                                                -- broke every item-level refund, and restores the
+                                                -- sale_events inserts + fully_voided return key that
+                                                -- migration had silently dropped
+migrate_refund_requests.sql                    -- needs migrate_fix_refund_sale_items_typo.sql and
+                                                -- migrate_void_sale_approved_by.sql above; adds the
+                                                -- refund_requests table + approve/reject/cancel RPCs for
+                                                -- remote manager approval when no supervisor is on site
+migrate_staff_identity_resolve.sql             -- needs migrate_staff_pin_payments_roles_finance.sql above;
+                                                -- adds resolve_staff_identities() so a supervisor can
+                                                -- resolve a same-branch staff name/role (audit "performed
+                                                -- by", shift log) without RLS silently blanking the join
+migrate_branch_roster_exclude_managers.sql     -- needs migrate_branch_staff_roster.sql above; supersedes
+                                                -- its function body so a supervisor's branch roster no
+                                                -- longer lists manager/admin/master accounts
+migrate_day_end_reopen_request.sql             -- needs migrate_day_end_dual_control.sql and
+                                                -- migrate_day_end_supervisor_autoclose.sql above; adds
+                                                -- request_day_reopen() + reopen_requested_at/by/reason
+                                                -- columns so a cashier blocked by a closed day can ask
+                                                -- for it back instead of being stuck; supersedes
+                                                -- reopen_day_end() and submit_day_end() to clear the
+                                                -- request once it's fulfilled or moot
+migrate_promo_rule_bundle_name.sql             -- needs migrate_promos_events_and_rules.sql above; adds
+                                                -- promo_rules.bundle_name (nullable, bundle_pct only) —
+                                                -- a name for one bundle rule, distinct from its promo
+                                                -- event's name, for the POS quick-add button
 ```
 
 `wipe_products_clean_start.sql` is **destructive** and not part of this order —

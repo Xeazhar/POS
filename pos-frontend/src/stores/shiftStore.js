@@ -380,13 +380,25 @@ async function findShiftOnAnotherDrawer(user, drawerId) {
   )
 }
 
-/** Ending count of the last shift on this drawer, to pre-fill a handoff. */
+/**
+ * Ending count of the last shift on this drawer, to pre-fill a handoff.
+ *
+ * `undefined` means the fetch itself failed (offline, network blip) — fall back to the
+ * local cache, same rule `findShiftOnAnotherDrawer` above uses. A resolved value of `null`
+ * means the server was reached and definitively has no closed shift on this drawer; that
+ * must return immediately, not fall through to IndexedDB, which can hold a stale closed-
+ * shift row the server no longer has (its `staff_shifts` row was deleted, corrected, or
+ * this device just never learned it's gone). Falling through there handed a new shift's
+ * `carriedFromShiftId` an id that no longer exists server-side — `insert or update on
+ * table "staff_shifts" violates foreign key constraint "staff_shifts_carried_from_shift_id_fkey"`
+ * on the very next start-shift.
+ */
 async function findHandoff(user, drawerId) {
   if (api.hasSupabase && isOnline()) {
     const remote = await api
       .fetchLastClosedShiftOnDrawer({ branchId: user.branchId, drawerId })
-      .catch(() => null)
-    if (remote) return remote
+      .catch(() => undefined)
+    if (remote !== undefined) return remote
   }
   return getLastClosedShiftOnDrawer({ branchId: user.branchId, drawerId })
 }

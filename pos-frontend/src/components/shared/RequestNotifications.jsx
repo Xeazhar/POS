@@ -13,7 +13,7 @@ const POLL_MS = 5 * 60_000
 
 /**
  * Header inbox for important approval requests.
- * Manager: day-end submitted + promo pending / stop pending.
+ * Manager: day-end submitted + promo pending / stop pending + refund requests.
  * Supervisor: day-end submitted on their branch.
  */
 export default function RequestNotifications() {
@@ -57,7 +57,10 @@ export default function RequestNotifications() {
       { table: 'cash_drawer_entries', onChange: debouncedRefresh },
       { table: 'petty_cash', onChange: debouncedRefresh }, // legacy table name, harmless if it doesn't exist
     ]
-    if (manager) subs.push({ table: 'promo_events', onChange: debouncedRefresh })
+    if (manager) {
+      subs.push({ table: 'promo_events', onChange: debouncedRefresh })
+      subs.push({ table: 'refund_requests', onChange: debouncedRefresh })
+    }
     else if (user.branchId) {
       subs[0] = { table: 'day_ends', filter: `branch_id=eq.${user.branchId}`, onChange: debouncedRefresh }
       subs[1] = { table: 'cash_drawer_entries', filter: `branch_id=eq.${user.branchId}`, onChange: debouncedRefresh }
@@ -162,7 +165,7 @@ export default function RequestNotifications() {
             {!loading && items.length === 0 && (
               <div className="px-3 py-6 text-center text-[11px] text-brand-subtle">
                 {manager
-                  ? 'No day-end, promo, or petty cash requests right now.'
+                  ? 'No day-end, promo, refund, or petty cash requests right now.'
                   : 'No day-end or petty cash requests waiting for approval.'}
               </div>
             )}

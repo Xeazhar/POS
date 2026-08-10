@@ -8,7 +8,7 @@ import { formatSupportError } from '../utils/errors'
 import { sanitizePinInput } from '../utils/pin'
 import { staffHomePath } from '../constants/nav'
 import { APP_VERSION_LABEL, IS_PRERELEASE } from '../utils/version'
-import { SHOW_ENV_BADGE, environmentLabel } from '../utils/environment'
+import { SHOW_ENV_BADGE, environmentCaption, environmentLabel } from '../utils/environment'
 
 function Login() {
   const configured = hasSupabase || allowDemoMode
@@ -201,14 +201,12 @@ function Login() {
               </PrimaryButton>
             </form>
             {IS_PRERELEASE && (
-              <div className="mt-4 rounded-[6px] border border-brand-warn/40 bg-brand-warn-bg px-3 py-2 text-center">
-                <strong className="block text-[11px] text-brand-warn">
-                  {APP_VERSION_LABEL} · In development
-                </strong>
-                <span className="mt-0.5 block text-[10px] text-brand-warn">
-                  Testing build — not yet approved for live sales.
+              <p className="mt-4 text-center text-[10px] font-bold tracking-wide text-brand-warn uppercase">
+                {APP_VERSION_LABEL} · In development
+                <span className="mt-0.5 block font-normal normal-case tracking-normal">
+                  Not for live sales
                 </span>
-              </div>
+              </p>
             )}
             <div className="mt-[22px] flex items-center justify-between gap-3">
               <small className="text-[10px] text-brand-n600">
@@ -222,10 +220,10 @@ function Login() {
                   entering data into it. */}
               {SHOW_ENV_BADGE && hasSupabase && (
                 <span
-                  className="rounded-[4px] bg-brand-warn-bg px-2 py-0.5 text-[10px] font-bold tracking-wide text-brand-warn uppercase"
-                  title="Not the live store database"
+                  className="max-w-[45%] shrink-0 truncate rounded-[4px] bg-brand-warn-bg px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-warn uppercase"
+                  title={`${environmentLabel()} — not the live store database`}
                 >
-                  {environmentLabel()}
+                  {environmentCaption()}
                 </span>
               )}
               {mode === 'pin' ? (

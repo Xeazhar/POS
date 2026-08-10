@@ -28,11 +28,13 @@ import {
 } from '../../components/ui'
 import {
   approverLabel,
+  approveRefundRequest,
   bootstrapBranchData,
   fetchBranchCashImpact,
   fetchBranchTelemetry,
   fetchBranches,
   fetchPettyCashTimeline,
+  fetchRefundRequests,
   fetchRefundSummary,
   fetchSaleEvents,
   fetchStaffShifts,
@@ -42,6 +44,7 @@ import {
   approvePettyCash,
   fulfillPettyCash,
   rejectPettyCash,
+  rejectRefundRequest,
   reopenDayEnd,
   saveBranch,
 } from '../../lib/api'
@@ -51,7 +54,7 @@ import { useAuthStore } from '../../stores/posStore'
 import { previousDayRestockReport } from '../../utils/dayEndReport'
 import { formatSupportError } from '../../utils/errors'
 import { businessDate, formatOpenHourLabel, money, qty, rowBusinessDate } from '../../utils/format'
-import { isSupervisorOrAbove } from '../../utils/roles'
+import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { discountSourceLabel, isPromoDiscountType } from '../../utils/promo'
 import { isUuid } from '../../utils/transactionDetail'
 
@@ -120,7 +123,14 @@ function ManagerBranchDashboard() {
   const { branchId } = useParams()
   const user = useAuthStore((state) => state.user)
   const [branch, setBranch] = useState(null)
-  const [data, setData] = useState({ products: [], transactions: [], movements: [], dayEnds: [], pettyTimeline: [] })
+  const [data, setData] = useState({
+    products: [],
+    transactions: [],
+    movements: [],
+    dayEnds: [],
+    pettyTimeline: [],
+    refundRequests: [],
+  })
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
@@ -141,6 +151,9 @@ function ManagerBranchDashboard() {
   const [selectedProduct, setSelectedProduct] = useState(null)
   const [deviceBusy, setDeviceBusy] = useState(null)
   const [pettyBusyId, setPettyBusyId] = useState(null)
+  const [refundBusyId, setRefundBusyId] = useState(null)
+  const [rejectingRefund, setRejectingRefund] = useState(null)
+  const [rejectRefundReason, setRejectRefundReason] = useState('')
   const [staffShifts, setStaffShifts] = useState([])
   const [loading, setLoading] = useState(true)
   const [cashImpact, setCashImpact] = useState(null)
@@ -185,12 +198,13 @@ function ManagerBranchDashboard() {
           start: daysAgoKey(STAFF_LOG_DAYS),
           end: todayForFetch,
         }).catch(() => [])
-        const [cashImpactRow, auditRows] = await Promise.all([
+        const [cashImpactRow, auditRows, refundRequests] = await Promise.all([
           fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
           fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
+          fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
         ])
         if (active) {
-          setData({ ...payload, pettyTimeline })
+          setData({ ...payload, pettyTimeline, refundRequests })
           setTelemetry({ devices: tel.devices[branchId] || [] })
           setStaffShifts(shiftRows || [])
           setCashImpact(cashImpactRow)
@@ -232,11 +246,12 @@ function ManagerBranchDashboard() {
       startDate: todayForFetch,
       endDate: todayForFetch,
     }).catch(() => [])
-    const [cashImpactRow, auditRows] = await Promise.all([
+    const [cashImpactRow, auditRows, refundRequests] = await Promise.all([
       fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
       fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
+      fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
     ])
-    setData({ ...payload, pettyTimeline })
+    setData({ ...payload, pettyTimeline, refundRequests })
     setCashImpact(cashImpactRow)
     setAuditEvents(auditRows || [])
   }
@@ -266,6 +281,7 @@ function ManagerBranchDashboard() {
     tables: [
       { table: 'day_ends', filter: `branch_id=eq.${branchId}` },
       { table: 'cash_drawer_entries', filter: `branch_id=eq.${branchId}` },
+      { table: 'refund_requests', filter: `branch_id=eq.${branchId}` },
     ],
   })
 
@@ -383,12 +399,15 @@ function ManagerBranchDashboard() {
     },
   ]
   // Expected cash leads — it's the one figure a manager actually needs to act on
-  // (does the drawer match). The rest is how it was arrived at.
+  // (does the drawer match). The rest is how it was arrived at. This branch page has no
+  // separate "Payment methods" ranking card, so Card/E-wallet sales live here — informational
+  // only, never part of Expected cash.
   const cashImpactItems = cashImpact
     ? [
         { label: 'Expected cash', value: money(cashImpact.expectedCash) },
         { label: 'Cash sales', value: money(cashImpact.cashSales) },
-        { label: 'Cash refunds', value: money(cashImpact.cashRefunds), tone: 'danger' },
+        { label: 'Card sales', value: money(cashImpact.cardSales) },
+        { label: 'E-wallet sales', value: money(cashImpact.ewalletSales) },
         {
           label: 'Cash in / out',
           value: money(cashImpact.changeFund - cashImpact.pickup - cashImpact.paidOut),
@@ -560,6 +579,7 @@ function ManagerBranchDashboard() {
   }, [data.movements, selectedProduct])
 
   const pettyTimeline = useMemo(() => data.pettyTimeline || [], [data.pettyTimeline])
+  const refundRequests = useMemo(() => data.refundRequests || [], [data.refundRequests])
   const cashStats = useMemo(() => {
     return pettyTimeline.reduce(
       (acc, row) => {
@@ -668,7 +688,7 @@ function ManagerBranchDashboard() {
       </div>
 
       <StatTiles title="Sales performance" subtitle={`${todayKey}`} items={salesPerformanceItems} />
-      <StatTiles title="Cash impact" subtitle={`${todayKey} · this branch's drawer`} items={cashImpactItems} />
+      <StatTiles title="Payment & cash impact" subtitle={`${todayKey} · this branch's drawer`} items={cashImpactItems} />
 
       <div className="mb-4 grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
         <TableCard className="max-h-none overflow-hidden">
@@ -825,14 +845,21 @@ function ManagerBranchDashboard() {
           )}
           {closedToday && (
             <div className="mx-4 my-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-3 py-2.5 text-xs text-brand-warn">
-              <span>Business day {todayKey} is closed — POS sales locked for this branch.</span>
+              <span>
+                Business day {todayKey} is closed — POS sales locked for this branch.
+                {todayEntry.reopenRequestedAt && (
+                  <strong className="ml-1">
+                    Reopen requested{todayEntry.reopenRequestReason ? `: ${todayEntry.reopenRequestReason}` : '.'}
+                  </strong>
+                )}
+              </span>
               <PrimaryButton
                 compact
                 type="button"
                 disabled={reopening === todayEntry.id}
                 onClick={() => {
                   setReopenTarget(todayEntry)
-                  setReopenReason('')
+                  setReopenReason(todayEntry.reopenRequestReason || '')
                 }}
               >
                 Reopen till
@@ -989,6 +1016,117 @@ function ManagerBranchDashboard() {
             </div>
           )}
         </TableCard>
+      )}
+
+      {isManagerRole(user?.role) && refundRequests.length > 0 && (
+        <TableCard className="mb-4 max-h-none overflow-hidden">
+          <SectionHeading
+            title="Refund requests"
+            subtitle="No supervisor was available on site — approve or reject remotely"
+            meta={`${refundRequests.length} pending`}
+          />
+          <div className="grid grid-cols-[0.9fr_0.7fr_1.4fr_1fr_1.1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[1fr_1fr_1.2fr]">
+            <span>OR #</span>
+            <span className="max-[900px]:hidden">Type</span>
+            <span>Reason</span>
+            <span className="max-[900px]:hidden">Requested by</span>
+            <span>Action</span>
+          </div>
+          {refundRequests.map((row) => (
+            <div
+              key={row.id}
+              className="grid grid-cols-[0.9fr_0.7fr_1.4fr_1fr_1.1fr] items-center gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[1fr_1fr_1.2fr]"
+            >
+              <span className="truncate text-brand-ink">{row.orNumber || row.transactionId.slice(0, 8)}</span>
+              <span className="capitalize text-brand-slate max-[900px]:hidden">
+                {row.mode === 'full' ? 'Full' : 'Items'}
+              </span>
+              <span className="truncate text-brand-slate" title={row.reason || ''}>
+                {row.reason || '—'}
+              </span>
+              <span className="truncate text-brand-slate max-[900px]:hidden">{row.requestedByName || '—'}</span>
+              <span className="flex flex-wrap gap-1.5 max-[900px]:col-span-full">
+                <SecondaryButton
+                  compact
+                  type="button"
+                  disabled={refundBusyId === row.id}
+                  onClick={() => {
+                    setRejectingRefund(row)
+                    setRejectRefundReason('')
+                  }}
+                >
+                  Reject
+                </SecondaryButton>
+                <PrimaryButton
+                  compact
+                  type="button"
+                  disabled={refundBusyId === row.id}
+                  onClick={async () => {
+                    try {
+                      setRefundBusyId(row.id)
+                      setError('')
+                      await approveRefundRequest({ id: row.id, staffId: user.id })
+                      await reload()
+                    } catch (err) {
+                      setError(formatSupportError(err, 'SALE03'))
+                    } finally {
+                      setRefundBusyId(null)
+                    }
+                  }}
+                >
+                  Approve
+                </PrimaryButton>
+              </span>
+            </div>
+          ))}
+        </TableCard>
+      )}
+
+      {rejectingRefund && (
+        <Modal onClose={() => !refundBusyId && setRejectingRefund(null)}>
+          <Eyebrow>REJECT REFUND</Eyebrow>
+          <h2 className="m-0 mb-2 text-lg">
+            Reject refund for {rejectingRefund.orNumber || rejectingRefund.transactionId.slice(0, 8)}?
+          </h2>
+          <p className="m-0 mb-3 text-xs text-brand-muted">
+            The cashier will see this reason and can try again.
+          </p>
+          <Field
+            label="Reason (required)"
+            value={rejectRefundReason}
+            onChange={(e) => setRejectRefundReason(e.target.value.replace(/[<>]/g, ''))}
+            placeholder="Why reject this refund?"
+          />
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={refundBusyId === rejectingRefund.id} onClick={() => setRejectingRefund(null)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton
+              compact
+              type="button"
+              disabled={refundBusyId === rejectingRefund.id || !rejectRefundReason.trim()}
+              onClick={async () => {
+                try {
+                  setRefundBusyId(rejectingRefund.id)
+                  setError('')
+                  await rejectRefundRequest({
+                    id: rejectingRefund.id,
+                    staffId: user.id,
+                    reason: rejectRefundReason.trim(),
+                  })
+                  setRejectingRefund(null)
+                  await reload()
+                } catch (err) {
+                  setError(formatSupportError(err, 'SALE06'))
+                } finally {
+                  setRefundBusyId(null)
+                }
+              }}
+            >
+              {refundBusyId === rejectingRefund.id ? 'Rejecting…' : 'Reject refund'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
       )}
 
       <TableCard className="mb-4 max-h-none overflow-hidden">
@@ -1256,9 +1394,8 @@ function ManagerBranchDashboard() {
       </TableCard>
 
       {editing && form && (
-        <div className="fixed inset-0 z-[5] grid place-items-center bg-brand-scrim">
+        <Modal onClose={() => setEditing(false)}>
           <form
-            className="w-[min(420px,calc(100%-32px))] rounded-[10px] bg-white p-6"
             onSubmit={async (event) => {
               event.preventDefault()
               try {
@@ -1277,7 +1414,7 @@ function ManagerBranchDashboard() {
             }}
           >
             <h2 className="mb-4 text-lg">Branch settings</h2>
-            <div className="grid max-h-[70vh] gap-3 overflow-auto pr-1">
+            <div className="grid gap-3">
               <Field label="Branch name" required value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} />
               <Field label="Business name (receipt)" value={form.business_name || ''} onChange={(e) => setForm({ ...form, business_name: e.target.value })} />
               <Field label="Address" value={form.address || ''} onChange={(e) => setForm({ ...form, address: e.target.value })} />
@@ -1351,12 +1488,12 @@ function ManagerBranchDashboard() {
               </label>
               <p className="text-[11px] text-brand-muted">Inactive branches stay in history but are hidden from normal operations.</p>
             </div>
-            <div className="mt-4 flex justify-end gap-2">
+            <ModalActions>
               <SecondaryButton compact type="button" onClick={() => setEditing(false)}>Cancel</SecondaryButton>
               <PrimaryButton compact type="submit">Save settings</PrimaryButton>
-            </div>
+            </ModalActions>
           </form>
-        </div>
+        </Modal>
       )}
 
       <TableCard className="mb-4 max-h-none overflow-hidden">
@@ -1421,9 +1558,9 @@ function ManagerBranchDashboard() {
       )}
 
       {selectedProduct && !isRestaurant && (
-        <div className="fixed inset-0 z-[5] bg-[#20242666]" onClick={() => setSelectedProduct(null)}>
+        <div className="fixed inset-0 z-[5] bg-brand-scrim" onClick={() => setSelectedProduct(null)}>
           <aside
-            className="absolute top-0 right-0 h-full w-[min(520px,92vw)] overflow-auto bg-white p-7 shadow-[-8px_0_24px_#20242622]"
+            className="absolute top-0 right-0 h-full w-[min(520px,92vw)] overflow-auto bg-white p-5 shadow-[-8px_0_24px_#20242622]"
             onClick={(event) => event.stopPropagation()}
           >
             <button

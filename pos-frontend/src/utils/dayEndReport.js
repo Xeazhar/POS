@@ -2,12 +2,6 @@
 
 import { rowBusinessDate } from './format'
 
-function lineQty(line) {
-  if (!line) return 0
-  if (line.pricingMode === 'kg') return Number(line.weight || 0)
-  return Number(line.quantity || 0)
-}
-
 function bumpSold(map, key, patch) {
   const prev = map.get(key) || {
     productId: patch.productId,
@@ -19,9 +13,6 @@ function bumpSold(map, key, patch) {
   }
   prev.qty = Number((prev.qty + Number(patch.qty || 0)).toFixed(3))
   prev.revenue = Number((prev.revenue + Number(patch.revenue || 0)).toFixed(2))
-  if (patch.name) prev.name = patch.name
-  if (patch.sku) prev.sku = patch.sku
-  if (patch.pricingMode) prev.pricingMode = patch.pricingMode
   map.set(key, prev)
 }
 
@@ -29,20 +20,24 @@ function bumpSold(map, key, patch) {
  * @param {{
  *   date: string,
  *   transactions?: object[],
- *   movements?: object[],
+ *   soldItemRows?: object[],
  *   products?: object[],
  *   isRestaurant?: boolean,
  *   dayOpenHour?: number,
  * }} args
  *
- * `date` is a BUSINESS date, so rows are matched with `rowBusinessDate(row, dayOpenHour)`
- * rather than their calendar `date` field — see that helper for why the two differ and why
- * comparing them directly loses money either side of midnight.
+ * `date` is a BUSINESS date, so `transactions` are matched with
+ * `rowBusinessDate(row, dayOpenHour)` rather than their calendar `date` field — see that
+ * helper for why the two differ and why comparing them directly loses money either side of
+ * midnight. `soldItemRows` (from `fetchSoldLineItems`) is expected to already be narrowed to
+ * this business day by the caller (DayEnd.jsx does the same buffer-then-`rowBusinessDate`
+ * narrowing fetchBranchCashImpact uses) — this function does not re-filter it, so a caller
+ * that passes an unscoped list will get an unscoped `sold` breakdown back.
  */
 export function buildDayEndReport({
   date,
   transactions = [],
-  movements = [],
+  soldItemRows = [],
   products = [],
   isRestaurant = false,
   dayOpenHour = undefined,
@@ -57,60 +52,24 @@ export function buildDayEndReport({
     paid.reduce((sum, txn) => sum + Number(txn.refundedAmount || 0), 0).toFixed(2),
   )
 
-  const soldMap = new Map()
+  // `revenue` on each row is line_total — what was actually charged, immune to a later
+  // price edit — sourced from transaction_items directly (fetchSoldLineItems), not
+  // stock_movements: that log survives a debug transaction reset and would keep counting
+  // deleted test sales as if they sold today.
   const productById = Object.fromEntries((products || []).map((p) => [p.id, p]))
-
-  paid.forEach((txn) => {
-    ;(txn.itemsList || []).forEach((line) => {
-      const product = productById[line.id]
-      const qty = lineQty(line)
-      if (!qty) return
-      const unit = Number(line.price ?? line.unitPrice ?? product?.price ?? 0)
-      bumpSold(soldMap, line.id || line.name, {
-        productId: line.id || null,
-        name: product?.name || line.name || 'Item',
-        sku: product?.sku || line.sku || '',
-        pricingMode: line.pricingMode || product?.pricingMode || 'pc',
-        qty,
-        revenue: unit * qty,
-      })
+  const soldMap = new Map()
+  ;(soldItemRows || []).forEach((row) => {
+    if (!row.quantity || !row.productId) return
+    const product = productById[row.productId]
+    bumpSold(soldMap, row.productId, {
+      productId: row.productId,
+      name: product?.name || 'Product',
+      sku: product?.sku || '',
+      pricingMode: product?.pricingMode || 'pc',
+      qty: row.quantity,
+      revenue: row.revenue,
     })
   })
-
-  // Retail: sale movements fill gaps when synced txs lack itemsList
-  if (!isRestaurant) {
-    ;(movements || []).forEach((move) => {
-      if (!inDay(move)) return
-      if (move.movementType !== 'sale' && move.type !== 'Sale') return
-      const qty = Math.abs(Number(move.quantityChange || 0))
-      if (!qty || !move.productId) return
-      const product = productById[move.productId]
-      const existing = soldMap.get(move.productId)
-      // Prefer movement totals when we have no cart lines yet
-      if (!existing) {
-        bumpSold(soldMap, move.productId, {
-          productId: move.productId,
-          name: product?.name || move.product || 'Product',
-          sku: product?.sku || '',
-          pricingMode: product?.pricingMode || 'pc',
-          qty,
-          revenue: Number(product?.price || 0) * qty,
-        })
-        return
-      }
-      if (existing.qty + 0.001 < qty) {
-        const add = qty - existing.qty
-        bumpSold(soldMap, move.productId, {
-          productId: move.productId,
-          name: product?.name || existing.name,
-          sku: product?.sku || existing.sku,
-          pricingMode: product?.pricingMode || existing.pricingMode,
-          qty: add,
-          revenue: Number(product?.price || 0) * add,
-        })
-      }
-    })
-  }
 
   const sold = [...soldMap.values()].sort((a, b) => b.qty - a.qty || b.revenue - a.revenue)
 
@@ -121,11 +80,12 @@ export function buildDayEndReport({
         const soldQty = soldMap.get(product.id)?.qty || 0
         const onHand = Number(product.stock ?? 0)
         const lowStockAt = Number(product.lowStockAt ?? 5)
-        const needsRestock = onHand <= lowStockAt || (soldQty > 0 && onHand <= lowStockAt * 1.5)
+        // Today's report flags restock only for items that actually sold today — a product
+        // sitting low on stock without any sales today is carry-over inventory noise, not
+        // something today's sales report should surface.
+        const needsRestock = soldQty > 0 && onHand <= lowStockAt * 1.5
         if (!needsRestock) return null
-        const suggestedQty = Number(
-          Math.max(lowStockAt * 2 - onHand, soldQty > 0 ? soldQty : 0, 0).toFixed(2),
-        )
+        const suggestedQty = Number(Math.max(lowStockAt * 2 - onHand, soldQty, 0).toFixed(2))
         return {
           productId: product.id,
           name: product.name,

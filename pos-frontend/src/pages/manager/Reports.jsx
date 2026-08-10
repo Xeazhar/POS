@@ -837,12 +837,12 @@ function ManagerReports() {
       )}
       <PageHeader eyebrow="MANAGER" title="Reports" />
 
-      <div className="mb-3 border border-brand-n400 bg-white p-3">
+      <div className="mb-3 rounded-[10px] border border-brand-line bg-white p-4">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
           <label className="block text-[11px] font-bold text-brand-n800">
             Report
             <select
-              className="mt-1 block w-full border border-brand-n400 bg-white p-2 text-xs"
+              className="mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px]"
               value={selected}
               onChange={(e) => {
                 setSelected(e.target.value)
@@ -986,7 +986,7 @@ function ManagerReports() {
         {error && <p className="mt-2 mb-0 text-xs text-brand-danger">{error}</p>}
       </div>
 
-      <div className="border border-brand-n400 bg-white">
+      <div className="overflow-hidden rounded-[10px] border border-brand-line bg-white">
         {busy ? (
           <div className="p-3" role="status" aria-label="Loading">
             {isTerminal ? (

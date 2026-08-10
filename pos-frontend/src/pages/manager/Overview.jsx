@@ -173,13 +173,24 @@ function ManagerOverview() {
           cashRows.reduce(
             (acc, row) => ({
               cashSales: acc.cashSales + (row?.cashSales || 0),
+              cardSales: acc.cardSales + (row?.cardSales || 0),
+              ewalletSales: acc.ewalletSales + (row?.ewalletSales || 0),
               cashRefunds: acc.cashRefunds + (row?.cashRefunds || 0),
               changeFund: acc.changeFund + (row?.changeFund || 0),
               pickup: acc.pickup + (row?.pickup || 0),
               paidOut: acc.paidOut + (row?.paidOut || 0),
               expectedCash: acc.expectedCash + (row?.expectedCash || 0),
             }),
-            { cashSales: 0, cashRefunds: 0, changeFund: 0, pickup: 0, paidOut: 0, expectedCash: 0 },
+            {
+              cashSales: 0,
+              cardSales: 0,
+              ewalletSales: 0,
+              cashRefunds: 0,
+              changeFund: 0,
+              pickup: 0,
+              paidOut: 0,
+              expectedCash: 0,
+            },
           ),
         )
         setAuditEvents((events || []).filter((e) => e.event_type === 'void' || e.event_type === 'refund'))
@@ -231,12 +242,15 @@ function ManagerOverview() {
     { label: 'Refunds', value: money(totals.refunds), tone: 'danger' },
     { label: 'Voided sales', value: money(totals.voidedSales), tone: 'danger' },
   ]
-  // Expected cash leads — the one figure that's actually actionable network-wide.
+  // Expected cash leads — the one figure that's actually actionable network-wide. Card/
+  // E-wallet sales are informational only (never part of Expected cash) — always TODAY,
+  // network-wide, distinct from the period-scoped "Payment methods" mix card below.
   const cashImpactItems = cashImpactTotals
     ? [
         { label: 'Expected cash', value: money(cashImpactTotals.expectedCash) },
         { label: 'Cash sales', value: money(cashImpactTotals.cashSales) },
-        { label: 'Cash refunds', value: money(cashImpactTotals.cashRefunds), tone: 'danger' },
+        { label: 'Card sales', value: money(cashImpactTotals.cardSales) },
+        { label: 'E-wallet sales', value: money(cashImpactTotals.ewalletSales) },
         {
           label: 'Cash in / out',
           value: money(cashImpactTotals.changeFund - cashImpactTotals.pickup - cashImpactTotals.paidOut),
@@ -349,7 +363,7 @@ function ManagerOverview() {
         <div className="flex flex-col gap-2.5">
           <StatTiles title="Sales performance" subtitle={periodLabel} items={salesPerformanceItems} />
           <StatTiles
-            title="Cash impact"
+            title="Payment & cash impact"
             subtitle={`${businessDate(new Date())} · today, network-wide`}
             items={cashImpactItems}
           />

@@ -16,7 +16,14 @@ import {
   moneyClass,
   varianceToneClass,
 } from '../components/ui'
-import { addPettyCash, closeShift, fetchPettyCash, fetchStaffShifts, hasSupabase } from '../lib/api'
+import {
+  addPettyCash,
+  closeShift,
+  fetchPettyCash,
+  fetchSoldLineItems,
+  fetchStaffShifts,
+  hasSupabase,
+} from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { cashPositionNotice, useShiftStore } from '../stores/shiftStore'
 import { buildDayEndReport } from '../utils/dayEndReport'
@@ -295,6 +302,14 @@ function CashierEndShift() {
             Requested — waiting for {todayEntry.requestManager ? 'a manager' : 'a supervisor'}{' '}
             to count the drawer and close the day.
           </p>
+        ) : shift ? (
+          // Requesting day end while still clocked in reads as "close the whole business
+          // day" while this cashier's own drawer isn't even counted yet — End shift first
+          // (above), then this card unlocks. Keeps the two actions in the order they
+          // actually have to happen in.
+          <p className="m-0 text-xs text-brand-subtle">
+            End your shift first (above) — Request day end unlocks once your drawer is closed.
+          </p>
         ) : (
           <>
             {todayEntry?.status === 'rejected' && (
@@ -344,10 +359,11 @@ function CashierEndShift() {
           shift={shift}
           onCancel={() => setCashOutOpen(false)}
           onDone={() => {
-            // No resolve() here: endShift already set gate 'ended', which Shell renders as
-            // a sign-out prompt over a locked screen. Re-resolving would ask the server
-            // "is a shift open?", get no, and jump straight to "count a new change fund" —
-            // skipping the sign-out this session is supposed to force.
+            // No resolve() here: endShift already set gate 'ended'. This page stays open
+            // past that (see Shell's shiftBlocking) so Request day end below is still
+            // reachable, but re-resolving would ask the server "is a shift open?", get no,
+            // and jump straight to "count a new change fund" — skipping the sign-out this
+            // session is supposed to require before anyone starts the next shift here.
             setCashOutOpen(false)
           }}
         />
@@ -367,7 +383,6 @@ function SupervisorDayEnd() {
   const products = useProductStore((state) => state.products)
   const productsLoading = useProductStore((state) => state.loading)
   const transactions = useInventoryStore((state) => state.transactions)
-  const movements = useInventoryStore((state) => state.movements)
   const dayEnds = useInventoryStore((state) => state.dayEnds)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const submitDay = useInventoryStore((state) => state.submitDay)
@@ -393,6 +408,14 @@ function SupervisorDayEnd() {
       item.status === 'Paid' && inBusinessDay(item) && (item.paymentMethod || 'cash') === 'cash',
   )
   const cashSales = cashTransactions.reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
+  // Non-cash tenders — informational only, never part of the Expected-in-drawer math below.
+  // Net of refunds, same as cashSales, so Cash + Card + E-wallet reconciles to `recorded`.
+  const cardSales = transactions
+    .filter((item) => item.status === 'Paid' && inBusinessDay(item) && item.paymentMethod === 'card')
+    .reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
+  const ewalletSales = transactions
+    .filter((item) => item.status === 'Paid' && inBusinessDay(item) && item.paymentMethod === 'ewallet')
+    .reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
   // Informational only — `total`/`netTotal` are already net of discount (the customer only
   // ever hands over the discounted amount), so this does not change any cash figure above.
   // It exists so "why is cash sales lower than the sticker prices would suggest" has an
@@ -467,12 +490,61 @@ function SupervisorDayEnd() {
   const pendingCount = paidOutRows.filter((row) => rowStatus(row) === 'pending').length
 
   const expectedCash = Number((changeFundTotal + cashSales - paidOutTotal - pickupTotal).toFixed(2))
+  // An untouched field is "not yet counted", not "counted as ₱0.00" — treating it as zero
+  // showed a false "Short" the instant this screen loaded, before anyone had counted anything.
+  const hasCashOnHand = cashOnHand !== ''
   const variance = Number(cashOnHand || 0) - expectedCash
-  const noteRequired = variance !== 0
+  const noteRequired = hasCashOnHand && variance !== 0
+
+  // Sold-item breakdown + restock suggestions read transaction_items (line_total — what was
+  // actually charged) via a fresh fetch, not the local stock_movements log: that log survives
+  // a debug transaction reset and would keep counting deleted test sales as if they sold
+  // today, priced at today's live product price rather than what was charged. `null` means
+  // "not loaded yet / unavailable offline" — distinct from `[]` ("loaded, nothing sold"), so
+  // the panel below can tell a real zero-sales day apart from a fetch that never landed.
+  const [soldItemRows, setSoldItemRows] = useState(null)
+  useEffect(() => {
+    if (!hasSupabase || !user?.branchId) {
+      // No backend to reconnect to (offline demo mode) — treat as a real zero, not an error.
+      setSoldItemRows([])
+      return undefined
+    }
+    let active = true
+    setSoldItemRows(null)
+    // Same buffer-then-rowBusinessDate-narrow shape as fetchBranchCashImpact.
+    const windowStart = new Date(`${date}T00:00:00`)
+    windowStart.setDate(windowStart.getDate() - 1)
+    const windowEnd = new Date(`${date}T00:00:00`)
+    windowEnd.setDate(windowEnd.getDate() + 2)
+    fetchSoldLineItems({
+      branchId: user.branchId,
+      startIso: windowStart.toISOString(),
+      endIso: windowEnd.toISOString(),
+    })
+      .then((rows) => {
+        if (!active) return
+        setSoldItemRows(rows.filter((row) => rowBusinessDate(row, dayOpenHour) === date))
+      })
+      .catch(() => {
+        if (active) setSoldItemRows(null)
+      })
+    return () => {
+      active = false
+    }
+  }, [user?.branchId, date, dayOpenHour])
+  const soldItemsUnavailable = hasSupabase && soldItemRows === null
 
   const liveReport = useMemo(
-    () => buildDayEndReport({ date, transactions, movements, products, isRestaurant, dayOpenHour }),
-    [date, transactions, movements, products, isRestaurant, dayOpenHour],
+    () =>
+      buildDayEndReport({
+        date,
+        transactions,
+        soldItemRows: soldItemRows || [],
+        products,
+        isRestaurant,
+        dayOpenHour,
+      }),
+    [date, transactions, soldItemRows, products, isRestaurant, dayOpenHour],
   )
   const report = isLocked && existing?.dayReport ? existing.dayReport : liveReport
 
@@ -480,7 +552,7 @@ function SupervisorDayEnd() {
     const dayReport = buildDayEndReport({
       date,
       transactions,
-      movements,
+      soldItemRows: soldItemRows || [],
       products,
       isRestaurant,
       dayOpenHour,
@@ -614,11 +686,21 @@ function SupervisorDayEnd() {
         </div>
       )}
 
-      <DayEndReportPanels
-        report={report}
-        title={isClosed ? 'Closed day report' : isSubmitted ? 'Submitted day report' : "Today's sales report"}
-        showRestock={!isRestaurant}
-      />
+      {!isLocked && soldItemsUnavailable ? (
+        <TableCard className="mb-3.5 p-5">
+          <h2 className="m-0 mb-1 text-base">Today&rsquo;s sales report</h2>
+          <p className="m-0 text-xs text-brand-muted">
+            Reconnect to see today&rsquo;s sold items and restock suggestions. Cash counting and
+            closing the day below are unaffected.
+          </p>
+        </TableCard>
+      ) : (
+        <DayEndReportPanels
+          report={report}
+          title={isClosed ? 'Closed day report' : isSubmitted ? 'Submitted day report' : "Today's sales report"}
+          showRestock={!isRestaurant}
+        />
+      )}
 
       <TableCard className="mb-3.5 max-h-none p-5">
         <h2 className="m-0 mb-1 text-base">Accountability</h2>
@@ -815,7 +897,7 @@ function SupervisorDayEnd() {
             <span className="block text-[11px] text-brand-subtle">All sales (POS)</span>
             <strong className={`my-2 block text-[22px] ${moneyClass} text-brand-gold`}>{money(recorded)}</strong>
             <small className="block text-[11px] text-brand-subtle">
-              Cash sales {money(cashSales)} of this total
+              Cash {money(cashSales)} · Card {money(cardSales)} · E-wallet {money(ewalletSales)}
             </small>
           </div>
           <Field
@@ -828,11 +910,17 @@ function SupervisorDayEnd() {
           />
           <div>
             <span className="block text-[11px] text-brand-subtle">Variance vs expected</span>
-            <strong className={`my-2 block text-[22px] ${moneyClass} ${varianceToneClass(variance)}`}>
-              {money(variance)}
+            <strong
+              className={`my-2 block text-[22px] ${moneyClass} ${
+                hasCashOnHand ? varianceToneClass(variance) : 'text-brand-subtle'
+              }`}
+            >
+              {hasCashOnHand ? money(variance) : '—'}
             </strong>
             <small className="block text-[11px] text-brand-subtle">
-              {variance === 0 ? 'Balanced' : variance < 0 ? 'Short' : 'Over'} (after petty cash)
+              {hasCashOnHand
+                ? `${variance === 0 ? 'Balanced' : variance < 0 ? 'Short' : 'Over'} (after petty cash)`
+                : 'Enter cash on hand to compare'}
             </small>
           </div>
         </div>

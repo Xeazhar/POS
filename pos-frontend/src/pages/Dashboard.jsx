@@ -6,7 +6,7 @@ import SalesMixBar from '../components/dashboard/SalesMixBar'
 import StatTiles from '../components/dashboard/StatTiles'
 import { DayEndReportPanels } from '../components/dayend/DayEndReportPanels'
 import { PageHeader, PageSkeleton, PrimaryButton, SectionHeading, TableCard, moneyClass } from '../components/ui'
-import { fetchBranchCashImpact, fetchSaleEvents, hasSupabase } from '../lib/api'
+import { fetchBranchCashImpact, fetchSaleEvents, fetchSoldLineItems, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { previousDayRestockReport } from '../utils/dayEndReport'
 import { businessDate, greetingFor, money, stockTone } from '../utils/format'
@@ -112,74 +112,36 @@ function inPeriod(dateKey, cutoff) {
   return startOfDay(new Date(`${dateKey}T00:00:00`)) >= cutoff
 }
 
-function buildSalesFromMovements(movements, products, cutoff) {
+/**
+ * Aggregate raw sold-line rows (fetchSoldLineItems) into Top Products (top 5 by revenue)
+ * and Top Categories, resolving name/category/pricingMode from the branch's already-loaded
+ * `products` list. `revenue` on each row is `line_total` — what was actually charged, not
+ * today's live product price — so a later price edit can't retroactively distort history.
+ */
+function aggregateSoldLines(rows, products) {
+  const byProductId = new Map(products.map((p) => [p.id, p]))
   const byProduct = new Map()
   const byCategory = new Map()
 
-  movements
-    .filter((item) => item.type === 'Sale' && inPeriod(item.date, cutoff))
-    .forEach((item) => {
-      const product = products.find((row) => row.id === item.productId)
-      const qtySold = Math.abs(Number(item.quantityChange) || 0)
-      const price = Number(product?.price || 0)
-      const revenue = qtySold * price
-      const category = product?.category || 'Other'
-      const name = product?.name || item.product || 'Product'
+  rows.forEach((row) => {
+    const product = byProductId.get(row.productId)
+    const category = product?.category || 'Other'
+    const name = product?.name || 'Product'
 
-      const prev = byProduct.get(item.productId) || {
-        id: item.productId,
-        name,
-        category,
-        pricingMode: product?.pricingMode || 'pc',
-        revenue: 0,
-        qty: 0,
-      }
-      prev.revenue += revenue
-      prev.qty += qtySold
-      byProduct.set(item.productId, prev)
+    const prev = byProduct.get(row.productId) || {
+      id: row.productId,
+      name,
+      category,
+      pricingMode: product?.pricingMode || 'pc',
+      revenue: 0,
+      qty: 0,
+    }
+    prev.revenue += row.revenue
+    prev.qty += row.quantity
+    byProduct.set(row.productId, prev)
 
-      byCategory.set(category, (byCategory.get(category) || 0) + revenue)
-    })
-
-  const top = [...byProduct.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 5)
-  const mix = [...byCategory.entries()]
-    .map(([category, value]) => ({ category, value }))
-    .sort((a, b) => b.value - a.value)
-
-  return { top, mix }
-}
-
-/** Restaurant sales come from cart lines, not stock movements. */
-function buildSalesFromTransactions(transactions, products, cutoff) {
-  const byProduct = new Map()
-  const byCategory = new Map()
-
-  transactions
-    .filter((item) => item.status === 'Paid' && inPeriod(item.date, cutoff))
-    .forEach((txn) => {
-      ;(txn.itemsList || []).forEach((line) => {
-        const product = products.find((row) => row.id === line.id)
-        const qtySold =
-          line.pricingMode === 'kg' ? Number(line.weight || 0) : Number(line.quantity || 0)
-        const revenue = Number(line.price || 0) * qtySold
-        const category = product?.category || line.menuKind || 'Menu'
-        const name = product?.name || line.name || 'Item'
-        const key = line.id || name
-
-        const prev = byProduct.get(key) || {
-          id: key,
-          name,
-          category,
-          pricingMode: line.pricingMode || 'pc',
-          revenue: 0,
-          qty: 0,
-        }
-        prev.revenue += revenue
-        prev.qty += qtySold
-        byProduct.set(key, prev)
-        byCategory.set(category, (byCategory.get(category) || 0) + revenue)
-      })
-    })
+    byCategory.set(category, (byCategory.get(category) || 0) + row.revenue)
+  })
 
   const top = [...byProduct.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 5)
   const mix = [...byCategory.entries()]
@@ -195,24 +157,33 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const storeProducts = useProductStore((state) => state.products)
   const productsLoading = useProductStore((state) => state.loading)
   const storeTransactions = useInventoryStore((state) => state.transactions)
-  const storeMovements = useInventoryStore((state) => state.movements)
   const dayEnds = useInventoryStore((state) => state.dayEnds)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const [period, setPeriod] = useState('Today')
   const [bootingPage, setBootingPage] = useState(Boolean(hasSupabase))
   const [cashImpact, setCashImpact] = useState(null)
   const [auditEvents, setAuditEvents] = useState([])
+  const [productMix, setProductMix] = useState({ top: [], mix: [] })
   const loadBranch = useProductStore((state) => state.loadBranch)
   const hydrate = useInventoryStore((state) => state.hydrate)
   const branchIdForFetch = scopedBranchId || user?.branchId
 
+  // Only do a real network bootstrap when the store is genuinely empty (a cold load —
+  // e.g. a hard refresh landing directly on "/"). App.jsx already loads this branch at
+  // boot/session-restore and Login.jsx at sign-in, so re-running the full
+  // bootstrapBranchData round-trip (products + 200 transactions + 500 movements +
+  // day_ends + categories + staff-name/approver lookups) every time a user merely
+  // navigates back to Home was the main cause of "everything feels slow" — it blocked
+  // the page behind a full skeleton for data that was already fresh. Freshness after the
+  // first load is kept by the sale/shift flows' own background `syncBranch` calls and the
+  // manual Refresh control in the header, not by re-fetching here.
   useEffect(() => {
     if (!hasSupabase) {
       setBootingPage(false)
       return
     }
     const branchId = scopedBranchId || user?.branchId
-    if (!branchId) {
+    if (!branchId || storeProducts.length > 0) {
       setBootingPage(false)
       return
     }
@@ -223,6 +194,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
       })
       .catch(() => {})
       .finally(() => setBootingPage(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally only re-run on branch change, not on every storeProducts update
   }, [scopedBranchId, user?.branchId, loadBranch, hydrate])
 
   // Cash impact is always TODAY's business day, regardless of the Today/Week/Month toggle
@@ -245,7 +217,6 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
 
   const products = storeProducts
   const transactions = storeTransactions
-  const movements = storeMovements
   const days = period === 'Today' ? 1 : period === 'Week' ? 7 : 30
   const cutoff = startOfDay(new Date())
   cutoff.setDate(cutoff.getDate() - days + 1)
@@ -255,15 +226,38 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const voidedInPeriod = transactions.filter(
     (item) => item.status === 'Voided' && inPeriod(item.date, cutoff),
   )
-  const revenue = filtered.reduce((sum, item) => sum + item.total, 0)
+  // Net of refunds — this is the KPI card's "Net sales" figure (renamed from "Revenue" once
+  // it started equaling Net sales; the Sales performance list below no longer repeats it).
+  const revenue = filtered.reduce((sum, item) => sum + item.total - Number(item.refundedAmount || 0), 0)
 
   // Audit follows the same Today/Week/Month toggle as Sales performance.
   useEffect(() => {
     if (!hasSupabase || !branchIdForFetch) return undefined
     let active = true
-    fetchSaleEvents({ branchId: branchIdForFetch, start: toDateKey(cutoff), end: toDateKey(new Date()) })
+    // Buffered a day on each side, then re-bucketed by calendar date client-side to match
+    // filtered/voidedInPeriod above exactly — mapTransaction sets a transaction's `.date` to
+    // localDateKey(created_at) (the plain CALENDAR date), not a business_date column, so
+    // bucketing this fetch by business date (open-hour-shifted) would disagree with those
+    // tiles instead of agreeing with them. The buffer only exists to counter DST-adjacent
+    // edge cases in the raw Supabase range; the real bucketing happens in this filter.
+    const bufferStart = new Date(cutoff)
+    bufferStart.setDate(bufferStart.getDate() - 1)
+    const bufferEnd = new Date()
+    bufferEnd.setDate(bufferEnd.getDate() + 1)
+    fetchSaleEvents({
+      branchId: branchIdForFetch,
+      start: toDateKey(bufferStart),
+      end: toDateKey(bufferEnd),
+    })
       .then((rows) => {
-        if (active) setAuditEvents((rows || []).filter((e) => e.event_type === 'void' || e.event_type === 'refund'))
+        if (!active) return
+        setAuditEvents(
+          (rows || []).filter(
+            (e) =>
+              (e.event_type === 'void' || e.event_type === 'refund') &&
+              inPeriod(toDateKey(new Date(e.created_at)), cutoff),
+          ),
+        )
       })
       .catch(() => {
         if (active) setAuditEvents([])
@@ -273,17 +267,43 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchIdForFetch, period])
+
+  // Top products / Top categories — same buffer-then-rebucket shape as the audit effect
+  // above, reading transaction_items (line_total, the price actually charged) rather than
+  // stock_movements: that log survives a debug transaction reset and would keep counting
+  // deleted test sales, and it has no historical price at all so it can only ever use
+  // today's live product price. Kept in state (not useMemo) since it's a fetch.
+  useEffect(() => {
+    if (!hasSupabase || !branchIdForFetch) return undefined
+    let active = true
+    const bufferStart = new Date(cutoff)
+    bufferStart.setDate(bufferStart.getDate() - 1)
+    const bufferEnd = new Date()
+    bufferEnd.setDate(bufferEnd.getDate() + 1)
+    fetchSoldLineItems({
+      branchId: branchIdForFetch,
+      startIso: bufferStart.toISOString(),
+      endIso: bufferEnd.toISOString(),
+    })
+      .then((rows) => {
+        if (!active) return
+        const inWindow = rows.filter((row) => inPeriod(toDateKey(new Date(row.createdAt)), cutoff))
+        setProductMix(aggregateSoldLines(inWindow, products))
+      })
+      .catch(() => {
+        // Keep last-good state — same graceful degradation as cashImpact/auditEvents above.
+      })
+    return () => {
+      active = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchIdForFetch, period, products])
+
   const low = products.filter((product) => stockTone(product) === 'low')
   const menuOn = products.filter((p) => p.availableToday !== false)
   const menuOff = products.filter((p) => p.availableToday === false)
 
-  const { top, mix } = useMemo(
-    () =>
-      isRestaurant
-        ? buildSalesFromTransactions(filtered, products, cutoff)
-        : buildSalesFromMovements(movements, products, cutoff),
-    [isRestaurant, filtered, products, movements, cutoff],
-  )
+  const { top, mix } = productMix
 
   const paymentMethodLabels = { cash: 'Cash', card: 'Card', ewallet: 'E-wallet' }
   const paymentMethods = useMemo(() => {
@@ -307,10 +327,6 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   // Lead item (first) is the number that matters most — StatTiles renders it larger.
   const salesPerformanceItems = [
     {
-      label: 'Net sales',
-      value: money(filtered.reduce((sum, t) => sum + Number(t.total || 0) - Number(t.refundedAmount || 0), 0)),
-    },
-    {
       label: 'Gross sales',
       value: money(filtered.reduce((sum, t) => sum + Number(t.total || 0) + Number(t.discountAmount || 0), 0)),
     },
@@ -331,12 +347,16 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
     },
   ]
   // Expected cash leads — the one figure that's actually actionable ("does the drawer
-  // match"); the rest is how it was arrived at.
+  // match"); the rest is how it was arrived at. Card/E-wallet sales are informational only
+  // (never affect Expected cash) — shown so this card doubles as "how today was paid for"
+  // without repeating the period-scoped "Payment methods" card below it (that one ranks by
+  // %/period; these three are always TODAY's absolute pesos, for drawer context).
   const cashImpactItems = cashImpact
     ? [
         { label: 'Expected cash', value: money(cashImpact.expectedCash) },
         { label: 'Cash sales', value: money(cashImpact.cashSales) },
-        { label: 'Cash refunds', value: money(cashImpact.cashRefunds), tone: 'danger' },
+        { label: 'Card sales', value: money(cashImpact.cardSales) },
+        { label: 'E-wallet sales', value: money(cashImpact.ewalletSales) },
         {
           label: 'Cash in / out',
           value: money(cashImpact.changeFund - cashImpact.pickup - cashImpact.paidOut),
@@ -352,53 +372,47 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
 
   return (
     <div className="overflow-auto pt-2.5 pb-[18px]">
-      <PageHeader className="mb-4" eyebrow="OVERVIEW" title={greeting}>
-        <div className="flex flex-col items-end gap-2 max-[700px]:items-stretch">
+      <PageHeader eyebrow="OVERVIEW" title={greeting}>
+        <div className="flex flex-wrap items-center gap-1.5 max-[700px]:w-full">
           {(branchName || scopedBranchId) && (
-            <span className="text-xs text-brand-muted">{branchName || 'Branch dashboard'}</span>
+            <span className="mr-1 text-xs text-brand-muted">{branchName || 'Branch dashboard'}</span>
           )}
-          <div className="flex gap-0.5 rounded-md bg-brand-tab p-0.5 max-[700px]:w-full max-[700px]:justify-stretch">
-            {['Today', 'Week', 'Month'].map((item) => (
-              <button
-                key={item}
-                type="button"
-                className={`rounded border-0 px-3 py-2 text-[11px] max-[700px]:flex-1 max-[700px]:px-1.5 max-[700px]:py-1.5 max-[700px]:text-[10px] ${
-                  period === item ? 'bg-brand-dark text-white' : 'bg-transparent text-brand-slate'
-                }`}
-                onClick={() => setPeriod(item)}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
+          {['Today', 'Week', 'Month'].map((item) => (
+            <button
+              key={item}
+              type="button"
+              className={`rounded-[5px] border px-3 py-2 text-xs font-bold max-[700px]:flex-1 max-[700px]:px-1.5 max-[700px]:py-1.5 max-[700px]:text-[10px] ${
+                period === item
+                  ? 'border-brand-dark bg-brand-dark text-white'
+                  : 'border-brand-border bg-white text-brand-n700'
+              }`}
+              onClick={() => setPeriod(item)}
+            >
+              {item}
+            </button>
+          ))}
         </div>
       </PageHeader>
 
-      <div className="mb-3.5 grid grid-cols-3 gap-3.5 max-[700px]:grid-cols-1 max-[700px]:gap-2">
+      <div className="mb-4 grid grid-cols-3 gap-3.5 max-[700px]:grid-cols-1">
         {(isRestaurant
           ? [
-              [`Revenue · ${period}`, money(revenue), `${filtered.length} paid orders`],
+              [`Net sales · ${period}`, money(revenue), `${filtered.length} paid orders`],
               [`Orders · ${period}`, filtered.length, 'Completed sales'],
               ['Serving today', menuOn.length, `${menuOff.length} marked off`],
             ]
           : [
-              [`Revenue · ${period}`, money(revenue), `${filtered.length} paid transactions`],
+              [`Net sales · ${period}`, money(revenue), `${filtered.length} paid transactions`],
               [`Orders · ${period}`, filtered.length, 'Completed sales'],
               ['Low-stock items', low.length, 'This branch'],
             ]
         ).map(([label, value, note]) => (
-          <div
-            key={label}
-            className="rounded-[10px] bg-brand-dark p-[14px] text-white max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:gap-3 max-[700px]:p-3.5"
-          >
-            <div className="min-w-0">
-              <span className="block text-[11px] text-brand-n500 max-[700px]:text-[10px]">{label}</span>
-              <small className="mt-1 hidden text-[10px] text-brand-n500 max-[700px]:block">{note}</small>
+          <div key={label} className="rounded-[10px] bg-brand-dark p-4 text-white">
+            <span className="block text-[11px] text-brand-n500">{label}</span>
+            <div className="mt-2 flex flex-wrap items-baseline gap-2">
+              <strong className={`block text-[26px] text-brand-gold ${moneyClass}`}>{value}</strong>
             </div>
-            <strong className={`mt-2 block text-[28px] text-brand-gold max-[700px]:mt-0 max-[700px]:shrink-0 max-[700px]:text-[22px] ${moneyClass}`}>
-              {value}
-            </strong>
-            <small className="block text-[11px] text-brand-n500 max-[700px]:hidden">{note}</small>
+            {note && <span className="mt-1 block text-[10px] text-brand-n500">{note}</span>}
           </div>
         ))}
       </div>
@@ -435,11 +449,11 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
           Cash impact / Audit stack beside it rather than above it, so the chart isn't
           pushed down the page by supporting numbers. Chart height is raised to roughly
           match that 3-card stack instead of the default (a 2-card stack's) height. */}
-      <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(220px,0.9fr)] items-stretch gap-3.5 max-[900px]:grid-cols-1">
+      <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(240px,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
         <RevenueChart points={buildChartPoints(filtered, period)} period={period} height={300} />
         <div className="flex flex-col gap-2.5">
           <StatTiles title="Sales performance" subtitle={period} items={salesPerformanceItems} />
-          <StatTiles title="Cash impact" subtitle={`${todayKey} · today`} items={cashImpactItems} />
+          <StatTiles title="Payment & cash impact" subtitle={`${todayKey} · today`} items={cashImpactItems} />
           <AuditSummary
             events={auditEvents}
             linkHref={canOpenReports ? '/manager/reports' : null}

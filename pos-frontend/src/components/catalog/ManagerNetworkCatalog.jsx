@@ -23,6 +23,7 @@ import {
   StatusOverlay,
   SkeletonRows,
   TableCard,
+  tableHeadClass,
   tableRowClass,
 } from '../ui'
 import {
@@ -719,11 +720,11 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                 compact
                 type="button"
                 disabled={busy}
-                title="Push every catalog Discountable setting down to branch products"
+                title="Push the catalog's Discountable setting down to branch products (price, name, SKU, etc. are not synced — edit those per-branch)"
                 onClick={() => void resyncDiscountable()}
               >
                 <FiRefreshCw className={`shrink-0 ${busy ? 'animate-spin' : ''}`} size={13} />
-                {busy ? 'Syncing…' : 'Sync discountable to branches'}
+                {busy ? 'Syncing…' : 'Sync updates to branches'}
               </SecondaryButton>
               {resyncNote && (
                 <span className="text-[11px] text-brand-subtle">{resyncNote}</span>
@@ -854,7 +855,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
 
         <div className="overflow-auto">
           <table className="min-w-full text-left text-xs">
-            <thead className="bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
+            <thead className={tableHeadClass}>
               <tr>
                 {bulkMode && (
                   <th className="w-8 px-5 py-3">
@@ -1187,7 +1188,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
 
           <div className="max-h-[52vh] overflow-auto rounded border border-brand-softline">
             <table className="min-w-full text-left text-xs">
-              <thead className="sticky top-0 z-10 bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
+              <thead className={`sticky top-0 z-10 ${tableHeadClass}`}>
                 <tr>
                   <th className="px-3 py-2 min-w-[180px]">Name</th>
                   <th className="px-3 py-2 min-w-[110px]">SKU</th>

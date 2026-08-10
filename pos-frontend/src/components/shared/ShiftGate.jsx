@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Eyebrow, Field, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
 import SupervisorApprove from './SupervisorApprove'
 import { logApprovalEvent } from '../../lib/api'
+import { useInventoryStore } from '../../stores/posStore'
 import { useShiftStore } from '../../stores/shiftStore'
 import { formatSupportError } from '../../utils/errors'
-import { money } from '../../utils/format'
+import { businessDate, dayEndForBusinessDate, isDayFullyClosed, money } from '../../utils/format'
 import { decimalOnly } from '../../utils/validate'
 
 function defaultShiftPeriod() {
@@ -19,11 +21,19 @@ function sinceLabel(iso) {
 }
 
 /**
- * Blocks everything until this terminal has a shift to sell under.
+ * Blocks everything until this terminal has a shift to sell under (or explains why it
+ * cannot, yet).
  *
- * It is shown for exactly one reason at a time, and each reason has a different remedy:
- *   start — count the change fund into the drawer (the only routine case)
- *   moved — this cashier is open on another till, so their cash is somewhere else
+ * Cases, each with its own remedy:
+ *   start        — count the change fund into the drawer (the routine case) — UNLESS
+ *                  today's business day is already closed (see `dayClosed` below).
+ *   moved        — this cashier is open on another till, so their cash is somewhere else.
+ *   ended        — this session just cashed out; sign out (Shell exempts /day-end from
+ *                  this so Request day end stays reachable first — see Shell's
+ *                  `shiftBlocking`).
+ *   day closed   — `gate === 'start'` but today's day-end already closed; no new change
+ *                  fund is accepted until the next business day rolls in or a manager
+ *                  reopens the closing.
  *
  * There is no "drawer still open under someone else" case: starting a shift auto-closes a
  * stale one on the same drawer server-side (no count required — see endShift), so a new
@@ -34,12 +44,38 @@ function sinceLabel(iso) {
  * an accidental sign-out cost nothing.
  */
 function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
+  const navigate = useNavigate()
   const gate = useShiftStore((state) => state.gate)
   const blocker = useShiftStore((state) => state.blocker)
   const handoff = useShiftStore((state) => state.handoff)
   const drawerLabel = useShiftStore((state) => state.drawerLabel)
   const startShift = useShiftStore((state) => state.startShift)
   const resolve = useShiftStore((state) => state.resolve)
+  const dayEnds = useInventoryStore((state) => state.dayEnds)
+  const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
+  const requestDayReopen = useInventoryStore((state) => state.requestDayReopen)
+  // A closed business day has already been counted and filed — a NEW change fund entering
+  // the drawer after that is cash a supervisor's Z-reading never saw, an instant
+  // discrepancy nobody can explain later. Only gates the cashier's own change-fund count;
+  // a supervisor floor shift (holdsDrawer false) never touches cash, so it is unaffected.
+  const todayEntry = dayEndForBusinessDate(dayEnds, businessDate(new Date(), dayOpenHour))
+  const dayClosed = holdsDrawer && isDayFullyClosed(dayEnds, dayOpenHour)
+  const [reopenReason, setReopenReason] = useState('')
+  const [reopenBusy, setReopenBusy] = useState(false)
+  const [reopenError, setReopenError] = useState('')
+
+  const doRequestReopen = async () => {
+    if (!todayEntry?.id) return
+    setReopenBusy(true)
+    setReopenError('')
+    try {
+      await requestDayReopen(todayEntry.id, reopenReason)
+    } catch (err) {
+      setReopenError(formatSupportError(err, 'TILL03'))
+    } finally {
+      setReopenBusy(false)
+    }
+  }
 
   const carried = handoff?.endingCash
 
@@ -97,9 +133,14 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
     }
   }
 
-  // Just cashed out on this session. No "Check again" or override here on purpose —
-  // the only way off this screen is to sign out, so the next person to touch the till
-  // has to authenticate as themselves before counting cash into it.
+  // Just cashed out on this session. Shell lets the End shift screen itself
+  // (CashierEndShift on /day-end) stay open past this point so Request day end is still
+  // reachable — this overlay only appears when they navigate somewhere else, so the "Day
+  // end" shortcut below is how they get back to it without abandoning the sign-out screen
+  // it's paired with. There is no "start a new shift here" escape on purpose: falling
+  // through to the count-the-change-fund screen would let whoever is standing at the till
+  // open the NEXT shift under THIS cashier's still-open session — the next person has to
+  // authenticate as themselves first.
   if (gate === 'ended') {
     return (
       <Modal>
@@ -112,10 +153,65 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
               {handoff.drawerLabel || drawerLabel || 'the drawer'}.{' '}
             </>
           ) : null}
-          Sign out before handing the terminal to the next cashier.
+          Request day end first if this business day is done, then sign out before handing
+          the terminal to the next cashier.
         </p>
         {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
         <ModalActions>
+          <SecondaryButton compact type="button" disabled={busy} onClick={() => navigate('/day-end')}>
+            Day end
+          </SecondaryButton>
+          <PrimaryButton compact type="button" disabled={busy} onClick={onSignOut}>
+            Sign out
+          </PrimaryButton>
+        </ModalActions>
+      </Modal>
+    )
+  }
+
+  // The business day already got counted and filed at Day End — a new change fund now is
+  // cash nobody's Z-reading will ever see. The only way past this is a fresh business day
+  // (it rolls forward automatically at the branch's open hour), someone with authority
+  // reopening today's closing from Day End, or asking for that below — reopening itself
+  // stays manager-only (this is a request, not a bypass).
+  if (gate === 'start' && dayClosed) {
+    const reopenRequested = Boolean(todayEntry?.reopenRequestedAt)
+    return (
+      <Modal>
+        <Eyebrow>DAY CLOSED</Eyebrow>
+        <h2 className="mb-1 text-lg">Today&apos;s business day is closed</h2>
+        <p className="m-0 text-xs text-brand-muted">
+          The drawer was already counted and the day filed. Starting a shift now would put
+          new cash in a drawer nobody's Z-reading covers.
+        </p>
+        {reopenRequested ? (
+          <p className="mt-3 rounded-md bg-brand-n50 px-2.5 py-2 text-[11px] text-brand-muted">
+            Reopen requested — waiting on a manager.
+          </p>
+        ) : (
+          <>
+            <Field
+              className="mt-3"
+              label="Why does this need reopening? (optional)"
+              value={reopenReason}
+              onChange={(e) => setReopenReason(e.target.value)}
+              placeholder="e.g. forgot to ring up a sale"
+            />
+            {reopenError && <p className="mt-2 text-xs text-brand-danger">{reopenError}</p>}
+          </>
+        )}
+        {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
+        <ModalActions>
+          {!reopenRequested && (
+            <SecondaryButton
+              compact
+              type="button"
+              disabled={reopenBusy || !todayEntry?.id}
+              onClick={() => void doRequestReopen()}
+            >
+              {reopenBusy ? 'Requesting…' : 'Request reopen'}
+            </SecondaryButton>
+          )}
           <PrimaryButton compact type="button" disabled={busy} onClick={onSignOut}>
             Sign out
           </PrimaryButton>

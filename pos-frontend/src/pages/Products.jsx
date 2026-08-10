@@ -589,9 +589,9 @@ function Products() {
       )}
 
       {selected && !isRestaurant && (
-        <div className="fixed inset-0 z-[5] bg-[#20242666]" onClick={close}>
+        <div className="fixed inset-0 z-[5] bg-brand-scrim" onClick={close}>
           <aside
-            className="absolute top-0 right-0 h-full w-[min(560px,92vw)] overflow-auto bg-white p-7 shadow-[-8px_0_24px_#20242622]"
+            className="absolute top-0 right-0 h-full w-[min(560px,92vw)] overflow-auto bg-white p-5 shadow-[-8px_0_24px_#20242622]"
             onClick={(event) => event.stopPropagation()}
           >
             <button

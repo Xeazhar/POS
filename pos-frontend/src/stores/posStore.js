@@ -1130,6 +1130,23 @@ export const useInventoryStore = create((set, get) => ({
     }
   },
   /**
+   * A cashier blocked by a closed business day (ShiftGate's "Day closed" screen) asks a
+   * manager to reopen it. Online-only, deliberately not queued: the whole point is to
+   * notify a manager *now*, and the till is already blocked either way — there is nothing
+   * useful for an offline queue to defer here.
+   */
+  requestDayReopen: async (id, reason) => {
+    const user = useAuthStore.getState().user
+    if (!api.hasSupabase || !user) return null
+    if (!isOnline()) throw appError('SYNC01')
+    const row = await api.requestDayReopen({ id, staffId: user.id, reason })
+    const mapped = api.mapDayEndRow(row)
+    set((state) => ({
+      dayEnds: state.dayEnds.map((item) => (item.id === id ? mapped : item)),
+    }))
+    return mapped
+  },
+  /**
    * Supervisor/manager declines a cashier's "Request day end" made by mistake. Keeps the
    * row (status 'rejected') rather than deleting it, for the audit trail — the cashier's
    * screen falls back to the normal "Request day end" form on its own once status is no

@@ -48,6 +48,17 @@ export function environmentLabel() {
 }
 
 /**
+ * Plain-language explanation of the badge above, for staff who don't know what
+ * "DEVELOPMENT · pcasudqyqgzrlpyfdvbe" means. Shown as on-screen text (not just a hover
+ * `title`) because this runs on touch POS terminals, where hover doesn't exist.
+ */
+export function environmentCaption() {
+  return APP_ENV === 'staging'
+    ? 'Staging build — not the live store'
+    : 'Test build — not the live store'
+}
+
+/**
  * True when this build should shout about which database it is on — i.e. anything that
  * is not production. Production stays unlabelled so the badge means something.
  */

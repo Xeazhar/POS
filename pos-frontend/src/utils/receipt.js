@@ -118,9 +118,14 @@ export function receiptToHtml(receipt) {
         </td>
         <td class="num">${qty(line.qty, line.unit)}</td>
         <td class="num">${
-          line.netLineTotal < line.lineTotal
-            ? `<div class="muted strike">${money(line.unitPrice)}</div>${money(line.netUnitPrice)}`
-            : money(line.unitPrice)
+          // At qty 1 the unit price and the line amount are the same number — printing
+          // both reads as the price shown twice. The Amt column already carries it, so
+          // Price only needs to print when it says something Amt doesn't (qty != 1).
+          line.qty === 1
+            ? '—'
+            : line.netLineTotal < line.lineTotal
+              ? `<div class="muted strike">${money(line.unitPrice)}</div>${money(line.netUnitPrice)}`
+              : money(line.unitPrice)
         }</td>
         <td class="num">${
           line.netLineTotal < line.lineTotal

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { FiLock, FiLogOut, FiMenu, FiRefreshCw, FiX } from 'react-icons/fi'
+import { FiChevronLeft, FiChevronRight, FiLock, FiLogOut, FiMenu, FiRefreshCw, FiX } from 'react-icons/fi'
 import { navLinksFor } from '../../constants/nav'
 import { hasSupabase, heartbeatStaffSession } from '../../lib/api'
 import { useAppVersion } from '../../hooks/useAppVersion'
@@ -11,7 +11,7 @@ import { formatSupportError, formatSyncError } from '../../utils/errors'
 import { isManagerRole, usesPinLogin } from '../../utils/roles'
 import { APP_VERSION_LABEL, IS_PRERELEASE, buildStamp } from '../../utils/version'
 import { hardReload } from '../../utils/hardReload'
-import { SHOW_ENV_BADGE, environmentLabel } from '../../utils/environment'
+import { SHOW_ENV_BADGE, environmentCaption, environmentLabel } from '../../utils/environment'
 import Clock from './Clock'
 import LockScreen from './LockScreen'
 import RequestNotifications from './RequestNotifications'
@@ -19,6 +19,7 @@ import ShiftGate from './ShiftGate'
 
 const IDLE_LOCK_MS = 10 * 60 * 1000
 const HEARTBEAT_MS = 2.5 * 60 * 1000
+const SIDEBAR_COLLAPSED_KEY = 'cale-sidebar-collapsed'
 
 function syncCopy({ online, pending, status, lastError }) {
   const syncing = status === 'syncing' || status === 'pushing'
@@ -93,6 +94,22 @@ function Shell({ children }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
+  // Desktop-only icon-rail preference. Phones keep the full slide-over menu regardless —
+  // this never affects `max-[700px]` layout, only the persistent `w-[88px]` aside.
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0')
+    } catch {
+      /* ignore */
+    }
+  }, [collapsed])
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [logoutError, setLogoutError] = useState('')
   const [syncBannerDismissed, setSyncBannerDismissed] = useState(false)
@@ -162,7 +179,16 @@ function Shell({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-resolve on identity change only
   }, [user?.id, user?.branchId, user?.role])
 
-  const shiftBlocking = worksShifts && shiftGate !== 'ready' && shiftGate !== 'checking'
+  // A just-ended shift still needs Day End reachable — Request day end lives there, and
+  // it must stay possible right up until sign-out (see CashierEndShift). Every other
+  // gate/route combination still gets the full-screen block, including 'ended' anywhere
+  // other than this one page.
+  const onDayEndRoute = location.pathname === '/day-end'
+  const shiftBlocking =
+    worksShifts &&
+    shiftGate !== 'ready' &&
+    shiftGate !== 'checking' &&
+    !(shiftGate === 'ended' && onDayEndRoute)
 
   const finishLogout = async () => {
     await logout()
@@ -194,13 +220,14 @@ function Shell({ children }) {
     }
   }
 
-  const NavItems = ({ onNavigate }) =>
+  const NavItems = ({ onNavigate, collapsed: iconOnly = false }) =>
     links.map(([path, label, Icon]) => (
       <NavLink
         key={path}
         to={path}
         end={path === '/'}
         onClick={() => onNavigate?.()}
+        title={iconOnly ? label : undefined}
         className={({ isActive }) =>
           `mb-2 grid w-full justify-items-center gap-1.5 overflow-hidden rounded-lg px-1 py-3 text-[10px] leading-tight no-underline transition-[background-color,color,transform] duration-100 max-[700px]:mb-0 max-[700px]:flex max-[700px]:items-center max-[700px]:justify-start max-[700px]:gap-3 max-[700px]:px-3 max-[700px]:py-3 max-[700px]:text-xs ${
             isActive
@@ -210,7 +237,11 @@ function Shell({ children }) {
         }
       >
         <Icon className="text-xl shrink-0" />
-        <span className="max-w-full break-words text-center max-[700px]:inline max-[700px]:text-left">{label}</span>
+        {!iconOnly && (
+          <span className="max-w-full break-words text-center max-[700px]:inline max-[700px]:text-left">
+            {label}
+          </span>
+        )}
       </NavLink>
     ))
 
@@ -259,24 +290,25 @@ function Shell({ children }) {
           </div>
         </div>
 
-        <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 px-2">
-          {/* Non-production builds say so, permanently and in the middle of the screen.
-              Local dev used to point at the live database, and the only way to notice was
-              to spot real branch data in a test — by which point a test sale had already
-              taken a real OR number. The project ref is shown because a copied .env can
-              lie about the tier, but the ref is the database being written to. */}
-          {SHOW_ENV_BADGE && (
-            <span
-              className="max-w-full truncate rounded-[4px] bg-brand-warn px-2 py-0.5 text-[10px] font-bold tracking-wide text-brand-dark uppercase"
-              title="This build is NOT pointed at the live store database"
-            >
-              {environmentLabel()}
-            </span>
-          )}
-          <small className="max-w-full truncate text-[11px] font-semibold text-brand-gold">
+        <div className="flex min-w-0 flex-1 items-center justify-center gap-2.5 px-2">
+          <small className="max-w-[40%] truncate text-[11px] font-semibold text-brand-gold">
             {user?.branchName || 'Bayombong Branch #001'}
           </small>
           <Clock className="text-[12px]" />
+          {/* Non-production builds say so, always visible — but as one small chip, not a
+              vertical stack. Local dev used to point at the live database and the only way
+              to notice was to spot real branch data in a test, so this can't be silent; the
+              plain-language caption is the on-screen text, the raw ENV·ref detail (the
+              actual ground-truth signal — a copied .env can lie about the tier, the ref
+              can't) is one tap/hover away via `title`. */}
+          {SHOW_ENV_BADGE && (
+            <span
+              className="max-w-[30%] shrink-0 truncate rounded-[4px] bg-brand-warn px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-dark uppercase"
+              title={`${environmentLabel()} — not the live store database`}
+            >
+              {environmentCaption()}
+            </span>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-2.5 text-[13px]">
@@ -347,19 +379,32 @@ function Shell({ children }) {
       )}
 
       <div className="flex h-[calc(100vh-62px)]">
-        <aside className="flex w-[88px] flex-col overflow-hidden bg-brand-panel px-3 py-[25px] max-[700px]:hidden">
-          {isManager && (
+        <aside
+          className={`flex flex-col overflow-hidden bg-brand-panel px-3 py-[25px] max-[700px]:hidden ${
+            collapsed ? 'w-[64px] px-2' : 'w-[88px]'
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="mb-3 grid h-7 w-full shrink-0 place-items-center rounded-lg text-brand-n500 hover:bg-brand-dark-hover hover:text-brand-n400"
+          >
+            {collapsed ? <FiChevronRight size={14} /> : <FiChevronLeft size={14} />}
+          </button>
+          {!collapsed && isManager && (
             <div className="mb-3 text-center text-[9px] tracking-wide text-brand-n600 uppercase">
               Manager
             </div>
           )}
-          {user?.role === 'supervisor' && (
+          {!collapsed && user?.role === 'supervisor' && (
             <div className="mb-3 text-center text-[9px] tracking-wide text-brand-n600 uppercase">
               Supervisor
             </div>
           )}
           <div className="sidebar-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-            <NavItems />
+            <NavItems collapsed={collapsed} />
           </div>
 
           {/* Refresh and Lock moved to the top navbar — see the header above. */}
@@ -370,26 +415,31 @@ function Shell({ children }) {
               too many. */}
 
           <div
+            title={collapsed ? `${sync.label} — ${sync.detail}${sync.hint ? ` · ${sync.hint}` : ''}` : undefined}
             className={`mt-1 shrink-0 rounded-lg px-1.5 py-2.5 text-center ${
               sync.isError ? 'bg-brand-sync-warn-bg ring-1 ring-brand-sync-warn/40' : 'bg-brand-panel'
             }`}
           >
             <span className={`mx-auto mb-1 block h-1.5 w-1.5 rounded-full ${toneDot[sync.tone]}`} />
-            <strong className={`block text-[9px] font-bold leading-tight ${toneText[sync.tone]}`}>
-              {sync.label}
-            </strong>
-            <span
-              className={`mt-0.5 block text-[8px] leading-snug break-words ${
-                sync.isError ? 'text-brand-sync-warn-body' : 'text-brand-ondark-dim'
-              }`}
-            >
-              {sync.detail}
-            </span>
-            {sync.hint ? (
-              <span className="mt-1 block text-[8px] leading-snug text-brand-sync-warn break-words">
-                {sync.hint}
-              </span>
-            ) : null}
+            {!collapsed && (
+              <>
+                <strong className={`block text-[9px] font-bold leading-tight ${toneText[sync.tone]}`}>
+                  {sync.label}
+                </strong>
+                <span
+                  className={`mt-0.5 block text-[8px] leading-snug break-words ${
+                    sync.isError ? 'text-brand-sync-warn-body' : 'text-brand-ondark-dim'
+                  }`}
+                >
+                  {sync.detail}
+                </span>
+                {sync.hint ? (
+                  <span className="mt-1 block text-[8px] leading-snug text-brand-sync-warn break-words">
+                    {sync.hint}
+                  </span>
+                ) : null}
+              </>
+            )}
           </div>
           {/* Always visible so a support call can start with "what version are you on?"
               instead of a guess. Title carries the build timestamp for the same reason. */}
@@ -399,16 +449,20 @@ function Shell({ children }) {
           >
             {APP_VERSION_LABEL}
           </div>
-          {/* Pre-1.0 = still under test. Deliberately hard to miss: someone must never
-              mistake this for a finished system and trade on it unsupervised. Disappears
-              on its own at 1.0.0 — it keys off the version, not a flag someone must
-              remember to flip. */}
+          {/* Pre-1.0 = still under test. Kept visible (restyled, not removed) so someone
+              never mistakes this for a finished system — disappears on its own at 1.0.0,
+              since it keys off the version, not a flag someone must remember to flip. */}
           {IS_PRERELEASE && (
-            <div className="mt-1 rounded-[4px] bg-brand-warn-bg px-1.5 py-1 text-center text-[8px] leading-tight font-bold tracking-wide text-brand-warn uppercase">
+            <div
+              className="mt-1 text-center text-[8px] leading-tight font-bold tracking-wide text-brand-warn uppercase"
+              title={collapsed ? 'In development — Not for live sales' : undefined}
+            >
               In development
-              <span className="mt-0.5 block font-normal normal-case tracking-normal">
-                Not for live sales
-              </span>
+              {!collapsed && (
+                <span className="mt-0.5 block font-normal normal-case tracking-normal">
+                  Not for live sales
+                </span>
+              )}
             </div>
           )}
         </aside>
