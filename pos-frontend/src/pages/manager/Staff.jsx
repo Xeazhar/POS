@@ -38,6 +38,7 @@ import {
   forceReleaseStaffSession,
   revealStaffPin,
   updateStaffRow,
+  verifyAccountPassword,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
 import { formatSupportError } from '../../utils/errors'
@@ -400,6 +401,10 @@ function ManagerStaff() {
   const [formError, setFormError] = useState('')
   const [error, setError] = useState('')
   const [reveal, setReveal] = useState(null)
+  const [pinRevealTarget, setPinRevealTarget] = useState(null) // person whose PIN to reveal once password is confirmed
+  const [pinRevealPassword, setPinRevealPassword] = useState('')
+  const [pinRevealError, setPinRevealError] = useState('')
+  const [pinRevealBusy, setPinRevealBusy] = useState(false)
   const [showPin, setShowPin] = useState(false)
   const [loading, setLoading] = useState(true)
 
@@ -415,7 +420,6 @@ function ManagerStaff() {
   const [shifts, setShifts] = useState([])
   const [adjustments, setAdjustments] = useState({})
   const [shiftsLoading, setShiftsLoading] = useState(false)
-  const [expanded, setExpanded] = useState(null)
   const [adjusting, setAdjusting] = useState(null) // { shift, field }
   const [adjustValue, setAdjustValue] = useState('')
   const [adjustReason, setAdjustReason] = useState('')
@@ -585,6 +589,35 @@ function ManagerStaff() {
 
   if (loading && !staff.length) {
     return <PageSkeleton variant="table" />
+  }
+
+  // Revealing a PIN is impersonation for every future audit entry (see the button above) —
+  // re-confirming the manager's own password first means a screen left unlocked can't be
+  // used to lift someone else's login on a glance. Same verifier the lock screen uses, so
+  // it works offline too.
+  const onConfirmPinReveal = async () => {
+    if (!pinRevealTarget) return
+    if (!pinRevealPassword) {
+      setPinRevealError('Enter your password to continue.')
+      return
+    }
+    setPinRevealBusy(true)
+    setPinRevealError('')
+    try {
+      if (hasSupabase) {
+        await verifyAccountPassword(currentUser?.email, pinRevealPassword, { staffId: currentUser?.id })
+      }
+      const data = hasSupabase
+        ? await revealStaffPin(pinRevealTarget.id)
+        : { name: pinRevealTarget.full_name, loginCode: '1234', loginPin: '1234' }
+      setReveal(data)
+      setPinRevealTarget(null)
+      setPinRevealPassword('')
+    } catch (err) {
+      setPinRevealError(err.message)
+    } finally {
+      setPinRevealBusy(false)
+    }
   }
 
   return (
@@ -758,17 +791,10 @@ function ManagerStaff() {
           const closedShifts = personShifts.filter((s) => !s.open && s.variance != null)
           const netVariance = closedShifts.reduce((sum, s) => sum + Number(s.variance || 0), 0)
           const openNow = personShifts.some((s) => s.open)
-          const isOpen = expanded === person.id
           return (
           <div key={person.id}>
           <div
-            role="button"
-            tabIndex={0}
-            className={`grid ${STAFF_GRID} cursor-pointer items-center gap-3 px-5 py-3 text-xs max-[700px]:grid-cols-[minmax(0,1fr)_auto] max-[700px]:items-start max-[700px]:px-3 ${tableRowClass}`}
-            onClick={() => setExpanded(isOpen ? null : person.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') setExpanded(isOpen ? null : person.id)
-            }}
+            className={`grid ${STAFF_GRID} items-center gap-3 px-5 py-3 text-xs max-[700px]:grid-cols-[minmax(0,1fr)_auto] max-[700px]:items-start max-[700px]:px-3 ${tableRowClass}`}
           >
             <div className="min-w-0">
               <strong className="block truncate text-brand-ink">
@@ -783,7 +809,6 @@ function ManagerStaff() {
                 {person.branches?.name || '—'}
                 {' · '}
                 {person.roles?.label || person.role}
-                {person.login_code ? ` · code ${person.login_code}` : ''}
                 {' · '}
                 {totalHoursLabel(personShifts)}
                 {' · '}
@@ -829,17 +854,10 @@ function ManagerStaff() {
                 <button
                   type="button"
                   className="border-0 bg-transparent text-xs font-bold text-brand-ink"
-                  onClick={async () => {
-                    try {
-                      if (!hasSupabase) {
-                        setReveal({ name: person.full_name, loginCode: '1234', loginPin: '1234' })
-                        return
-                      }
-                      const data = await revealStaffPin(person.id)
-                      setReveal(data)
-                    } catch (err) {
-                      setError(err.message)
-                    }
+                  onClick={() => {
+                    setPinRevealError('')
+                    setPinRevealPassword('')
+                    setPinRevealTarget(person)
                   }}
                 >
                   Reveal PIN
@@ -884,135 +902,6 @@ function ManagerStaff() {
               )}
             </div>
           </div>
-
-          {/* The old Shifts page, scoped to one person. Drawer, float, count, expected,
-              variance and the adjustment trail — nothing dropped in the merge. */}
-          {isOpen && (
-            <div className="border-t border-brand-softline bg-brand-n50 px-5 py-3 text-xs max-[700px]:px-3">
-              {shiftsLoading ? (
-                <p className="m-0 text-brand-subtle">Loading shifts…</p>
-              ) : personShifts.length === 0 ? (
-                <p className="m-0 text-brand-subtle">
-                  No shifts for {person.full_name} between {start} and {end}.
-                </p>
-              ) : (
-                personShifts.map((row) => {
-                  const logged = adjustments[row.id] || []
-                  const floorShift = row.holdsDrawer === false
-                  return (
-                    <div
-                      key={row.id}
-                      className="border-t border-brand-softline py-2.5 first:border-t-0 first:pt-0"
-                    >
-                      <div className="flex flex-wrap items-baseline justify-between gap-2">
-                        <div className="min-w-0">
-                          <strong className="text-brand-ink">{formatWhen(row.clockIn)}</strong>
-                          <span className="ml-2 text-brand-subtle">
-                            {formatDuration(row.clockIn, row.clockOut)}
-                            {' · '}
-                            {floorShift ? 'No drawer' : row.drawerLabel || row.drawerId}
-                            {row.shiftPeriod ? ` · ${row.shiftPeriod.toUpperCase()}` : ''}
-                            {canManageAccounts && row.branchName ? ` · ${row.branchName}` : ''}
-                          </span>
-                        </div>
-                        <StatusBadge
-                          compact
-                          tone={row.open ? 'success' : logged.length ? 'warn' : 'neutral'}
-                        >
-                          {row.open ? 'Open' : logged.length ? 'Adjusted' : 'Cashed out'}
-                        </StatusBadge>
-                      </div>
-
-                      <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] gap-3">
-                        <div>
-                          <span className="block text-[10px] text-brand-subtle">Float in</span>
-                          <strong className={moneyClass}>
-                            {floorShift ? '—' : money(row.startingCash)}
-                          </strong>
-                        </div>
-                        <div>
-                          <span className="block text-[10px] text-brand-subtle">Counted</span>
-                          <strong className={moneyClass}>
-                            {row.endingCash == null ? '—' : money(row.endingCash)}
-                          </strong>
-                        </div>
-                        <div>
-                          <span className="block text-[10px] text-brand-subtle">Expected</span>
-                          <strong className={moneyClass}>
-                            {row.expectedCash == null ? '—' : money(row.expectedCash)}
-                          </strong>
-                        </div>
-                        <div>
-                          <span className="block text-[10px] text-brand-subtle">Variance</span>
-                          <strong className={`${moneyClass} ${varianceToneClass(row.variance)}`}>
-                            {row.variance == null ? '—' : money(row.variance)}
-                          </strong>
-                        </div>
-                        <div>
-                          <span className="block text-[10px] text-brand-subtle">Cash sales</span>
-                          <strong className={moneyClass}>{money(row.cashSales)}</strong>
-                        </div>
-                        <div>
-                          <span className="block text-[10px] text-brand-subtle">Paid out</span>
-                          <strong className={moneyClass}>{money(row.cashPaidOut)}</strong>
-                        </div>
-                      </div>
-
-                      {row.closeNote && (
-                        <p className="m-0 mt-2 text-[11px] text-brand-muted">Note: {row.closeNote}</p>
-                      )}
-
-                      {/* A closed shift is frozen by a DB trigger; corrections go through
-                          adjust_shift_cash(), which logs old value, new value, actor and
-                          reason. Same immutability rule as a sales record. */}
-                      {canAdjustCash && !row.open && (
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <SecondaryButton
-                            compact
-                            type="button"
-                            onClick={() => {
-                              setAdjusting({ shift: row, field: 'starting_cash' })
-                              setAdjustValue(String(row.startingCash ?? ''))
-                              setAdjustReason('')
-                            }}
-                          >
-                            Correct float in
-                          </SecondaryButton>
-                          <SecondaryButton
-                            compact
-                            type="button"
-                            onClick={() => {
-                              setAdjusting({ shift: row, field: 'ending_cash' })
-                              setAdjustValue(String(row.endingCash ?? ''))
-                              setAdjustReason('')
-                            }}
-                          >
-                            Correct count
-                          </SecondaryButton>
-                        </div>
-                      )}
-
-                      {logged.length > 0 && (
-                        <div className="mt-2 rounded-md border border-brand-softline bg-white px-2.5 py-2">
-                          <span className="block text-[10px] font-bold tracking-wide text-brand-label uppercase">
-                            Adjustments
-                          </span>
-                          {logged.map((adj) => (
-                            <div key={adj.id} className="mt-1 text-[11px] text-brand-muted">
-                              {adj.field === 'starting_cash' ? 'Float in' : 'Count'}{' '}
-                              {money(adj.oldValue)} → <strong>{money(adj.newValue)}</strong>
-                              {adj.reason ? ` · ${adj.reason}` : ''}
-                              {adj.createdAt ? ` · ${formatWhen(adj.createdAt)}` : ''}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })
-              )}
-            </div>
-          )}
           </div>
           )
         })}
@@ -1243,9 +1132,15 @@ function ManagerStaff() {
         </Modal>
       )}
       {form && (
-        <div className="fixed inset-0 z-[5] grid place-items-center overflow-auto bg-brand-scrim py-8">
+        <Modal
+          wide
+          onClose={() => {
+            setForm(null)
+            setFormError('')
+            setShowPin(false)
+          }}
+        >
           <form
-            className="w-[min(520px,calc(100%-32px))] rounded-[10px] bg-white p-6"
             onSubmit={async (event) => {
               event.preventDefault()
               setFormError('')
@@ -1578,7 +1473,7 @@ function ManagerStaff() {
                 </div>
               )}
             </div>
-            <div className="mt-4 flex justify-end gap-2">
+            <ModalActions>
               <SecondaryButton
                 compact
                 type="button"
@@ -1602,13 +1497,57 @@ function ManagerStaff() {
               >
                 {form.id ? 'Save' : 'Create login'}
               </PrimaryButton>
-            </div>
+            </ModalActions>
           </form>
-        </div>
+        </Modal>
+      )}
+      {pinRevealTarget && (
+        <Modal
+          layer
+          onClose={() => {
+            setPinRevealTarget(null)
+            setPinRevealPassword('')
+            setPinRevealError('')
+          }}
+        >
+            <h2 className="mb-2 text-lg">Confirm your password</h2>
+            <p className="text-sm text-brand-muted">
+              Re-enter your password to reveal {pinRevealTarget.full_name}&rsquo;s PIN.
+            </p>
+            <Field
+              className="mt-3"
+              label="Your password"
+              type="password"
+              autoComplete="current-password"
+              value={pinRevealPassword}
+              onChange={(e) => setPinRevealPassword(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onConfirmPinReveal()
+              }}
+              autoFocus
+            />
+            {pinRevealError && <p className="mt-2 text-xs text-brand-danger">{pinRevealError}</p>}
+            <ModalActions>
+              <SecondaryButton
+                compact
+                type="button"
+                disabled={pinRevealBusy}
+                onClick={() => {
+                  setPinRevealTarget(null)
+                  setPinRevealPassword('')
+                  setPinRevealError('')
+                }}
+              >
+                Cancel
+              </SecondaryButton>
+              <PrimaryButton compact type="button" disabled={pinRevealBusy} onClick={onConfirmPinReveal}>
+                {pinRevealBusy ? 'Checking…' : 'Confirm'}
+              </PrimaryButton>
+            </ModalActions>
+        </Modal>
       )}
       {reveal && (
-        <div className="fixed inset-0 z-[6] grid place-items-center bg-brand-scrim">
-          <div className="w-[min(360px,calc(100%-32px))] rounded-[10px] bg-white p-6">
+        <Modal layer onClose={() => setReveal(null)}>
             <h2 className="mb-2 text-lg">PIN for {reveal.name}</h2>
             <p className="text-sm text-brand-muted">
               Staff code: <strong>{reveal.loginCode || '—'}</strong>
@@ -1617,13 +1556,12 @@ function ManagerStaff() {
               PIN: <strong>{reveal.loginPin || '—'}</strong>
             </p>
             <p className="mt-3 text-[11px] text-brand-subtle">This view is audited.</p>
-            <div className="mt-4 flex justify-end">
+            <ModalActions>
               <PrimaryButton compact type="button" onClick={() => setReveal(null)}>
                 Done
               </PrimaryButton>
-            </div>
-          </div>
-        </div>
+            </ModalActions>
+        </Modal>
       )}
     </div>
   )

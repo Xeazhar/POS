@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   hasSupabase,
   bootstrapBranchData,
@@ -18,12 +19,14 @@ import {
   rejectStopPromo,
   fetchPromoSalesStats,
   fetchActivePromosAcrossBranches,
+  fetchPromoEventsAcrossBranches,
   fetchTransactionDetail,
   fetchRefundSummary,
   promoEffectiveStatus,
   promoStatusBadge,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
+import { useLiveData } from '../../hooks/useLiveData'
 import { money, qty } from '../../utils/format'
 import { isManagerRole } from '../../utils/roles'
 import { isUuid } from '../../utils/transactionDetail'
@@ -43,6 +46,7 @@ import {
   SkeletonRows,
   StatusBadge,
   TableCard,
+  tableHeadClass,
   tableRowClass,
 } from '../../components/ui'
 import { FiPlus, FiMoreHorizontal } from 'react-icons/fi'
@@ -152,6 +156,18 @@ function localDateTimeValue(date) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** Shared by both create forms (branch-scoped + network view): today-or-future start, end after start. */
+function validateNewPromoDates(startsAt, endsAt) {
+  if (!startsAt || !endsAt) return 'Enter a promo duration (Starts at + Ends at) before creating.'
+  const startDate = new Date(startsAt)
+  const endDate = new Date(endsAt)
+  if (endDate <= startDate) return 'End date must be after start date.'
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  if (startDate < today) return 'Start date cannot be in the past.'
+  return null
+}
+
 /**
  * Manager / Supervisor Promos
  * - Promos are always scoped to one branch (never all branches)
@@ -192,6 +208,7 @@ export default function ManagerPromos() {
   const [productA, setProductA] = useState(null)
   const [productB, setProductB] = useState(null)
   const [bundleSelected, setBundleSelected] = useState([])
+  const [bundleName, setBundleName] = useState('')
   const [itemSelected, setItemSelected] = useState([])
 
   const [history, setHistory] = useState([])
@@ -207,16 +224,28 @@ export default function ManagerPromos() {
   const [workingEvent, setWorkingEvent] = useState(null) // pending event for adding rules
   const [stopReason, setStopReason] = useState('')
   const [stopTarget, setStopTarget] = useState(null) // event being stopped, or null when modal closed
+  const [rejectReason, setRejectReason] = useState('')
+  const [rejectTarget, setRejectTarget] = useState(null) // pending event being rejected, or null when modal closed
   const [historyStats, setHistoryStats] = useState({}) // eventId -> summary
   const [historyFrom, setHistoryFrom] = useState('')
   const [historyTo, setHistoryTo] = useState('')
   const [openActionsId, setOpenActionsId] = useState(null) // history row whose "..." menu is open
+  // Screen-space anchor for the open menu, computed from the trigger button's own rect at
+  // click time. The menu renders through a portal (see below) instead of as a child of the
+  // table row, so it needs its own position rather than relying on `position: absolute`.
+  const [actionsAnchor, setActionsAnchor] = useState(null)
   const [trackingEvent, setTrackingEvent] = useState(null) // { event, stats, busy }
   const [txnDetail, setTxnDetail] = useState(null)
   const [txnRefundSummary, setTxnRefundSummary] = useState(null)
   const [loadingTxnDetail, setLoadingTxnDetail] = useState(false)
   const [networkActive, setNetworkActive] = useState([])
   const [networkBusy, setNetworkBusy] = useState(false)
+  const [networkHistory, setNetworkHistory] = useState([])
+  const [networkHistoryBusy, setNetworkHistoryBusy] = useState(false)
+  const [networkHistoryFrom, setNetworkHistoryFrom] = useState('')
+  const [networkHistoryTo, setNetworkHistoryTo] = useState('')
+  const [networkHistoryPage, setNetworkHistoryPage] = useState(0)
+  const [networkCreateBranchId, setNetworkCreateBranchId] = useState('')
   const [pageLoading, setPageLoading] = useState(false)
 
   const selectedBranch = branches.find((b) => b.id === branchId)
@@ -240,6 +269,29 @@ export default function ManagerPromos() {
     historyPageIndex * HISTORY_PAGE_SIZE,
     historyPageIndex * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
   )
+  // workingEvent (below) only ever surfaces the first pending row it finds — this covers
+  // every pending request on the branch, not just one, so a second supervisor's submission
+  // isn't invisible until someone happens to scroll into Promo History.
+  const pendingRequests = useMemo(() => history.filter((r) => r.status === 'pending'), [history])
+  // Same shape as filteredHistory/historyPageRows above, but across every branch — its own
+  // filter/page state since it's a different data set (all statuses, all branches) than the
+  // single-branch table.
+  const filteredNetworkHistory = useMemo(() => {
+    if (!networkHistoryFrom && !networkHistoryTo) return networkHistory
+    return networkHistory.filter((e) => {
+      if (!e.starts_at) return false
+      const started = e.starts_at.slice(0, 10)
+      if (networkHistoryFrom && started < networkHistoryFrom) return false
+      if (networkHistoryTo && started > networkHistoryTo) return false
+      return true
+    })
+  }, [networkHistory, networkHistoryFrom, networkHistoryTo])
+  const networkHistoryPageCount = Math.max(1, Math.ceil(filteredNetworkHistory.length / HISTORY_PAGE_SIZE))
+  const networkHistoryPageIndex = Math.min(networkHistoryPage, networkHistoryPageCount - 1)
+  const networkHistoryPageRows = filteredNetworkHistory.slice(
+    networkHistoryPageIndex * HISTORY_PAGE_SIZE,
+    networkHistoryPageIndex * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
+  )
   const selectedProductsForRule = useMemo(() => {
     if (ruleType === 'item_pct') return itemSelected
     if (ruleType === 'bogo_pct') return [productSingle].filter(Boolean)
@@ -247,6 +299,16 @@ export default function ManagerPromos() {
     if (ruleType === 'bundle_pct') return bundleSelected
     return []
   }, [ruleType, itemSelected, productSingle, productA, productB, bundleSelected])
+
+  // Pair/bundle/BOGO promos are piece-based (computePromoDiscounts already zeroes them out
+  // for kg lines at checkout) — weighed meat-counter items would silently never apply, so
+  // don't let a manager pick them into these rule types in the first place.
+  const eligibleProducts = useMemo(() => {
+    if (ruleType === 'pair_pct' || ruleType === 'bundle_pct' || ruleType === 'bogo_pct') {
+      return products.filter((p) => p.pricingMode !== 'kg')
+    }
+    return products
+  }, [ruleType, products])
 
   // Managers: load all branches and require an explicit selection.
   // Supervisors: lock to their assigned branch only.
@@ -316,12 +378,24 @@ export default function ManagerPromos() {
         .finally(() => {
           if (alive) setNetworkBusy(false)
         })
+      setNetworkHistoryBusy(true)
+      fetchPromoEventsAcrossBranches()
+        .then((rows) => {
+          if (alive) setNetworkHistory(rows)
+        })
+        .catch((e) => {
+          if (alive) setError(e?.message || 'Failed to load promo history.')
+        })
+        .finally(() => {
+          if (alive) setNetworkHistoryBusy(false)
+        })
       return () => {
         alive = false
       }
     }
 
     setNetworkActive([])
+    setNetworkHistory([])
     if (!branchId) {
       setPageLoading(false)
       return undefined
@@ -362,6 +436,41 @@ export default function ManagerPromos() {
     // Clear cached Sales summaries when switching branches.
     setHistoryStats({})
   }, [branchId])
+
+  // Receipts/discount-given on Promo History used to only fill in once a manager opened a
+  // row's Sales modal. Fetch the currently-visible page eagerly and keep it live off the
+  // same realtime+poll pattern POS.jsx uses for promos, so a sale bumps the count without
+  // anyone clicking in. Scoped to the visible page, not all history — each event's stats
+  // query scans up to 1000 transactions, so doing this for every row ever created would be
+  // a lot of redundant work for rows nobody is looking at.
+  const refreshVisibleStats = useCallback(async () => {
+    if (!branchId || !historyPageRows.length) return
+    const entries = await Promise.all(
+      historyPageRows.map(async (e) => {
+        try {
+          const stats = await fetchPromoSalesStats({
+            branchId,
+            promoName: e.name,
+            startsAt: e.starts_at || null,
+            endsAt: e.ends_at || null,
+          })
+          return [e.id, { receiptCount: stats.receiptCount, discountTotal: stats.discountTotal, saleTotal: stats.saleTotal }]
+        } catch {
+          return null
+        }
+      }),
+    )
+    setHistoryStats((prev) => ({ ...prev, ...Object.fromEntries(entries.filter(Boolean)) }))
+  }, [branchId, historyPageRows])
+
+  useLiveData({
+    enabled: !!branchId && historyPageRows.length > 0,
+    fetch: refreshVisibleStats,
+    tables: [
+      { table: 'transactions', filter: `branch_id=eq.${branchId}` },
+      { table: 'transaction_items' },
+    ],
+  })
 
   const openPromoTracking = async (eventRow) => {
     if (!branchId || !eventRow?.name) return
@@ -452,6 +561,24 @@ export default function ManagerPromos() {
     }
   }
 
+  // refreshActive() is branch-scoped and no-ops with no branch selected — actions taken from
+  // the network view (approve/reject/create with no branch chosen) need this instead, or the
+  // network tables just sit stale even though the backend call succeeded.
+  const refreshNetworkOverview = async () => {
+    setNetworkBusy(true)
+    setNetworkHistoryBusy(true)
+    await Promise.all([
+      fetchActivePromosAcrossBranches()
+        .then(setNetworkActive)
+        .catch((e) => setError(e?.message || 'Failed to load active promos.'))
+        .finally(() => setNetworkBusy(false)),
+      fetchPromoEventsAcrossBranches()
+        .then(setNetworkHistory)
+        .catch((e) => setError(e?.message || 'Failed to load promo history.'))
+        .finally(() => setNetworkHistoryBusy(false)),
+    ])
+  }
+
   // Rule editor targets the pending draft if there is one, else the live event picked in "Manage rules".
   const eventForRules = workingEvent || managedEvent
 
@@ -461,8 +588,9 @@ export default function ManagerPromos() {
       return
     }
     if (!eventName.trim()) return
-    if (!startsAt || !endsAt) {
-      setError('Enter a promo duration (Starts at + Ends at) before creating.')
+    const dateError = validateNewPromoDates(startsAt, endsAt)
+    if (dateError) {
+      setError(dateError)
       return
     }
     setBusy(true)
@@ -487,12 +615,51 @@ export default function ManagerPromos() {
     }
   }
 
+  // Same form, no branch pre-selected — the network overview has no implicit branch, so the
+  // manager picks one from a dropdown right in the form instead of navigating in first.
+  const onCreateEventNetwork = async () => {
+    if (!networkCreateBranchId) {
+      setError('Select a branch before creating a promo.')
+      return
+    }
+    if (!eventName.trim()) return
+    const dateError = validateNewPromoDates(startsAt, endsAt)
+    if (dateError) {
+      setError(dateError)
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await createAndActivatePromoEvent({
+        branchId: networkCreateBranchId,
+        name: eventName.trim(),
+        description: eventDescription.trim() || null,
+        startsAt: startsAt || null,
+        endsAt: endsAt || null,
+        staffId: user?.id,
+      })
+      setEventName('')
+      setEventDescription('')
+      setStartsAt('')
+      setEndsAt('')
+      setNetworkCreateBranchId('')
+      await refreshNetworkOverview()
+    } catch (e) {
+      setError(e?.message || 'Failed to create promo event.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const onApproveCreate = async (id) => {
     setBusy(true)
     setError('')
     try {
       await approvePromoEvent({ id, staffId: user.id })
-      await refreshActive()
+      // Approve can be triggered from the network view's tables too, which has no selected
+      // branch — refreshActive() only reloads branch-scoped state and no-ops without one.
+      await (branchId ? refreshActive() : refreshNetworkOverview())
     } catch (e) {
       setError(e?.message || 'Failed to approve promo.')
     } finally {
@@ -500,12 +667,18 @@ export default function ManagerPromos() {
     }
   }
 
-  const onRejectCreate = async (id) => {
+  const onSubmitReject = async () => {
+    if (!rejectTarget?.id || !rejectReason.trim()) {
+      setError('Enter a reason to reject this promo.')
+      return
+    }
     setBusy(true)
     setError('')
     try {
-      await rejectPromoEvent({ id, staffId: user.id })
-      await refreshActive()
+      await rejectPromoEvent({ id: rejectTarget.id, staffId: user.id, reason: rejectReason.trim() })
+      setRejectTarget(null)
+      setRejectReason('')
+      await (branchId ? refreshActive() : refreshNetworkOverview())
     } catch (e) {
       setError(e?.message || 'Failed to reject promo.')
     } finally {
@@ -680,6 +853,10 @@ export default function ManagerPromos() {
       setError('Enter Starts + Ends when modifying an event.')
       return
     }
+    if (new Date(editEndsAt) <= new Date(editStartsAt)) {
+      setError('End date must be after start date.')
+      return
+    }
     setBusy(true)
     setError('')
     try {
@@ -702,6 +879,17 @@ export default function ManagerPromos() {
     if (!eventId) return
     if (!selectedProductsForRule.length) return
     if (discountPct < 0 || discountPct > 100) return
+    // A product already covered by another rule on this event would just duplicate the
+    // discount — surface it instead of silently creating a second rule for the same item.
+    const usedProductIds = new Set(
+      (eventForRules?.rules || []).flatMap((r) => (r.products || []).map((p) => p.productId)),
+    )
+    const duplicates = selectedProductsForRule.filter((id) => usedProductIds.has(id))
+    if (duplicates.length) {
+      const names = duplicates.map((id) => products.find((p) => p.id === id)?.name || id).join(', ')
+      setError(`${names} already ${duplicates.length > 1 ? 'have' : 'has'} a promo rule on this event.`)
+      return
+    }
     setBusy(true)
     setError('')
     try {
@@ -718,14 +906,15 @@ export default function ManagerPromos() {
         productIds: selectedProductsForRule,
         buyQty,
         getQty,
+        bundleName: ruleType === 'bundle_pct' ? bundleName.trim() : null,
       })
 
       setProductSingle(null)
       setProductA(null)
       setProductB(null)
       setBundleSelected([])
+      setBundleName('')
       setItemSelected([])
-    setItemSelected([])
       await refreshActive()
     } catch (e) {
       setError(e?.message || 'Failed to create promo rule.')
@@ -781,6 +970,76 @@ export default function ManagerPromos() {
 
       {!branchId ? (
         managerView ? (
+          <>
+          <TableCard className="mb-4 max-h-none overflow-visible p-5">
+            <Eyebrow>NETWORK</Eyebrow>
+            <h2 className="m-0 text-base">Create a promo</h2>
+            <p className="m-0 mt-1 text-xs text-brand-muted">
+              Pick the branch this promo belongs to — promos never apply to all branches at once.
+            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <SelectField
+                label="Branch"
+                value={networkCreateBranchId}
+                onChange={(e) => setNetworkCreateBranchId(e.target.value)}
+              >
+                <option value="">Select a branch…</option>
+                {branches.map((branch) => (
+                  <option key={branch.id} value={branch.id}>
+                    {branch.name}
+                  </option>
+                ))}
+              </SelectField>
+              <Field
+                label="Promo name"
+                value={eventName}
+                onChange={(e) => setEventName(e.target.value)}
+                placeholder="e.g. Valentines"
+              />
+            </div>
+            <label className="mt-3 block text-xs">
+              <div className="mb-1 font-bold text-brand-muted">Description (optional)</div>
+              <textarea
+                rows={2}
+                value={eventDescription}
+                onChange={(e) => setEventDescription(e.target.value)}
+                placeholder="What is this promo about?"
+                className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+              />
+            </label>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <label className="block text-xs">
+                <div className="mb-1 font-bold text-brand-muted">Starts at</div>
+                <input
+                  type="datetime-local"
+                  value={startsAt}
+                  min={localDateTimeValue(new Date())}
+                  onChange={(e) => setStartsAt(e.target.value)}
+                  className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+                />
+              </label>
+              <label className="block text-xs">
+                <div className="mb-1 font-bold text-brand-muted">Ends at</div>
+                <input
+                  type="datetime-local"
+                  value={endsAt}
+                  onChange={(e) => setEndsAt(e.target.value)}
+                  className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+                />
+              </label>
+            </div>
+            <div className="mt-4 flex justify-end">
+              <PrimaryButton
+                compact
+                type="button"
+                disabled={busy || !networkCreateBranchId || !eventName.trim() || !startsAt || !endsAt}
+                onClick={onCreateEventNetwork}
+              >
+                {busy ? 'Saving…' : 'Create promo'}
+              </PrimaryButton>
+            </div>
+          </TableCard>
+
           <TableCard className="max-h-none overflow-hidden">
             <div className="px-5 pt-4 pb-2">
               <Eyebrow>NETWORK</Eyebrow>
@@ -860,6 +1119,169 @@ export default function ManagerPromos() {
               </div>
             )}
           </TableCard>
+
+          <TableCard className="mt-4 max-h-none overflow-visible p-5">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <Eyebrow>NETWORK</Eyebrow>
+                <h2 className="m-0 text-base">All branches — promo history</h2>
+                <p className="m-0 mt-1 text-xs text-brand-subtle">
+                  Every promo event on every branch, whatever its status.
+                </p>
+              </div>
+              <div className="flex items-end gap-2">
+                <label className="block text-[11px] font-bold text-brand-n700">
+                  From
+                  <input
+                    type="date"
+                    value={networkHistoryFrom}
+                    onChange={(e) => {
+                      setNetworkHistoryFrom(e.target.value)
+                      setNetworkHistoryPage(0)
+                    }}
+                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-white p-2 text-[12px] outline-none"
+                  />
+                </label>
+                <label className="block text-[11px] font-bold text-brand-n700">
+                  To
+                  <input
+                    type="date"
+                    value={networkHistoryTo}
+                    onChange={(e) => {
+                      setNetworkHistoryTo(e.target.value)
+                      setNetworkHistoryPage(0)
+                    }}
+                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-white p-2 text-[12px] outline-none"
+                  />
+                </label>
+                {(networkHistoryFrom || networkHistoryTo) && (
+                  <button
+                    type="button"
+                    className="border-0 bg-transparent pb-2 text-[11px] font-bold text-brand-ink underline"
+                    onClick={() => {
+                      setNetworkHistoryFrom('')
+                      setNetworkHistoryTo('')
+                      setNetworkHistoryPage(0)
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {networkHistoryBusy && (
+              <div className="mt-4" role="status" aria-label="Loading">
+                <SkeletonRows rows={4} cols={5} />
+              </div>
+            )}
+
+            {!networkHistoryBusy && networkHistoryPageRows.length ? (
+              <div className="-mx-5 mt-4 overflow-x-auto overflow-y-visible">
+                <table className="min-w-full text-left text-xs [&_td:first-child]:pl-5 [&_td:last-child]:pr-5 [&_th:first-child]:pl-5 [&_th:last-child]:pr-5">
+                  <thead className={tableHeadClass}>
+                    <tr>
+                      <th className="px-3 py-2.5">Branch</th>
+                      <th className="px-3 py-2.5">Promo name</th>
+                      <th className="px-3 py-2.5">Description</th>
+                      <th className="px-3 py-2.5">Schedule</th>
+                      <th className="px-3 py-2.5">Status</th>
+                      <th className="px-3 py-2.5 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {networkHistoryPageRows.map((e) => {
+                      const status = promoEffectiveStatus(e)
+                      const badge = promoStatusBadge(e)
+                      const fmt = (iso) => {
+                        if (!iso) return '—'
+                        const d = new Date(iso)
+                        if (Number.isNaN(d.getTime())) return '—'
+                        return d.toLocaleString([], {
+                          month: '2-digit',
+                          day: '2-digit',
+                          year: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      }
+                      // Same "why it ended/was rejected" combine as the per-branch history table.
+                      const combined = [
+                        e.description,
+                        e.stop_reason ? `— Reason for ending: ${e.stop_reason}` : null,
+                        e.reject_reason ? `— Reason for rejecting: ${e.reject_reason}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' ')
+                      return (
+                        <tr key={e.id} className="border-t border-brand-softline">
+                          <td className="px-3 py-3 font-bold text-brand-ink">{e.branchName}</td>
+                          <td className="px-3 py-3">{e.name}</td>
+                          <td className="px-3 py-3">
+                            {combined ? (
+                              <span className="block max-w-[220px] truncate text-brand-slate" title={combined}>
+                                {combined}
+                              </span>
+                            ) : (
+                              <span className="text-brand-subtle">—</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-3">
+                            {fmt(e.starts_at)} → {fmt(e.ends_at)}
+                          </td>
+                          <td className="px-3 py-3">
+                            <StatusBadge compact tone={badge.tone} title={badge.hint}>
+                              {badge.label}
+                            </StatusBadge>
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <div className="flex justify-end gap-2">
+                              {status === 'pending' && (
+                                <>
+                                  <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveCreate(e.id)}>
+                                    Approve
+                                  </PrimaryButton>
+                                  <SecondaryButton compact type="button" disabled={busy} onClick={() => setRejectTarget({ id: e.id, name: e.name })}>
+                                    Reject
+                                  </SecondaryButton>
+                                </>
+                              )}
+                              <button
+                                type="button"
+                                className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                                onClick={() => setBranchId(e.branch_id)}
+                              >
+                                View
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              !networkHistoryBusy && (
+                <div className="mt-4 text-xs text-brand-subtle">
+                  {networkHistory.length ? 'No promo events in that date range.' : 'No promo events yet.'}
+                </div>
+              )
+            )}
+            {networkHistoryPageCount > 1 && (
+              <div className="-mx-5 -mb-5 mt-4">
+                <Pager
+                  page={networkHistoryPageIndex + 1}
+                  pageCount={networkHistoryPageCount}
+                  total={filteredNetworkHistory.length}
+                  label="events"
+                  onPrev={() => setNetworkHistoryPage((p) => Math.max(0, p - 1))}
+                  onNext={() => setNetworkHistoryPage((p) => Math.min(networkHistoryPageCount - 1, p + 1))}
+                />
+              </div>
+            )}
+          </TableCard>
+          </>
         ) : (
           <TableCard className="max-h-none overflow-visible p-5">
             <p className="m-0 text-sm text-brand-muted">No assigned branch found for this account.</p>
@@ -867,6 +1289,37 @@ export default function ManagerPromos() {
         )
       ) : (
         <>
+      {pendingRequests.length > 0 && (
+        <TableCard className="mb-4 max-h-none overflow-visible p-5">
+          <Eyebrow>Pending promo requests · {pendingRequests.length}</Eyebrow>
+          <p className="m-0 mt-1 text-xs text-brand-muted">
+            {managerView ? 'Waiting on your approval.' : 'Waiting on manager approval.'}
+          </p>
+          <div className="mt-3 flex flex-col gap-2">
+            {pendingRequests.map((r) => (
+              <div
+                key={r.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded border border-brand-line p-2.5"
+              >
+                <div>
+                  <div className="text-xs font-bold text-brand-ink">{r.name}</div>
+                  {r.description && <div className="text-[11px] text-brand-subtle">{r.description}</div>}
+                </div>
+                {managerView && (
+                  <div className="flex gap-2">
+                    <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveCreate(r.id)}>
+                      Approve
+                    </PrimaryButton>
+                    <SecondaryButton compact type="button" disabled={busy} onClick={() => setRejectTarget({ id: r.id, name: r.name })}>
+                      Reject
+                    </SecondaryButton>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </TableCard>
+      )}
       <TableCard className="mb-4 max-h-none overflow-visible p-5">
         <div className="grid gap-4 sm:grid-cols-2 sm:items-start">
           <div>
@@ -899,12 +1352,10 @@ export default function ManagerPromos() {
                 </SelectField>
 
                 {/* No "Active" badge: everything in this dropdown is live by definition, and
-                    the option label already spells out Active vs Stop pending. */}
+                    the option label already spells out Active vs Stop pending. Rename lives
+                    only in Promo History now — not duplicated here. */}
                 {managedEvent && (
                   <>
-                    <SecondaryButton compact type="button" disabled={busy} onClick={() => onStartRenameEvent(managedEvent.event)}>
-                      Rename
-                    </SecondaryButton>
                     {managedEvent.event.status === 'active' && (
                       <PrimaryButton compact type="button" disabled={busy} onClick={() => setStopTarget(managedEvent.event)}>
                         {managerView ? 'Stop promo' : 'Request stop'}
@@ -969,6 +1420,7 @@ export default function ManagerPromos() {
                 <input
                   type="datetime-local"
                   value={startsAt}
+                  min={localDateTimeValue(new Date())}
                   onChange={(e) => setStartsAt(e.target.value)}
                   className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
                 />
@@ -1005,7 +1457,7 @@ export default function ManagerPromos() {
                 <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveCreate(workingEvent.event.id)}>
                   Activate
                 </PrimaryButton>
-                <SecondaryButton compact type="button" disabled={busy} onClick={() => onRejectCreate(workingEvent.event.id)}>
+                <SecondaryButton compact type="button" disabled={busy} onClick={() => setRejectTarget({ id: workingEvent.event.id, name: workingEvent.event.name })}>
                   Discard
                 </SecondaryButton>
               </div>
@@ -1014,13 +1466,207 @@ export default function ManagerPromos() {
         </TableCard>
       )}
 
+      <TableCard className="mb-4 max-h-none overflow-visible p-5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="m-0 text-base">Rules</h2>
+            <p className="m-0 mt-1 text-xs text-brand-subtle">
+              {eventForRules?.rules?.length
+                ? `${eventForRules.rules.length} rule(s) on ${eventForRules.event?.status || 'event'}`
+                : 'Add rules to the pending or live event.'}
+            </p>
+          </div>
+        </div>
+
+        {eventForRules?.rules?.length ? (
+          // Full-bleed to the card edges, same treatment as Promo history below.
+          <div className="-mx-5 -mb-5 mt-4 overflow-x-auto overflow-y-visible">
+            <table className="min-w-full text-left text-xs [&_td:first-child]:pl-5 [&_td:last-child]:pr-5 [&_th:first-child]:pl-5 [&_th:last-child]:pr-5">
+              <thead className={tableHeadClass}>
+                <tr>
+                  <th className="px-3 py-2.5">Rule type</th>
+                  <th className="px-3 py-2.5">Discount %</th>
+                  <th className="px-3 py-2.5">Products in rule</th>
+                  <th className="px-3 py-2.5 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {eventForRules.rules.map((r) => (
+                  <tr key={r.id} className="border-t border-brand-softline">
+                    <td className="px-3 py-3 font-bold text-brand-ink">
+                      {r.ruleType}
+                      {r.bundleName && (
+                        <span className="block font-normal text-brand-subtle">{r.bundleName}</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3">
+                      {r.discountPct}% off
+                    </td>
+                    <td className="px-3 py-3">
+                      {r.products
+                        .map((p) => `${p.productName || p.productId}${p.sku ? ` (${p.sku})` : ''}`)
+                        .join(', ')}
+                      {r.ruleType === 'pair_pct' && r.products.length >= 2 && (
+                        <span className="text-brand-subtle"> (pair)</span>
+                      )}
+                      {r.ruleType === 'bundle_pct' && r.products.length >= 2 && (
+                        <span className="text-brand-subtle"> (bundle)</span>
+                      )}
+                      {r.ruleType === 'bogo_pct' && r.products[0] && (
+                        <span className="text-brand-subtle">
+                          {' '}
+                          (buy {r.buyQty || 1} get {r.getQty || 1})
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      <button
+                        type="button"
+                        className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                        disabled={busy || eventForRules?.event?.status === 'stop_pending'}
+                        onClick={() =>
+                          openDeleteConfirm({
+                            kind: 'rule',
+                            id: r.id,
+                            label: r.ruleType,
+                          })}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="mt-4 text-xs text-brand-subtle">No rules yet.</div>
+        )}
+      </TableCard>
+
+      <TableCard className="max-h-none overflow-visible p-5">
+        <h2 className="m-0 text-base">Add promo rule</h2>
+        <p className="m-0 mt-1 text-xs text-brand-muted">
+          Applied only when cashier did not select PWD/Senior (no stacking).
+        </p>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <SelectField label="Rule type" value={ruleType} onChange={(e) => setRuleType(e.target.value)}>
+            <option value="item_pct">Individual item % off</option>
+            <option value="pair_pct">Pair % off (both items)</option>
+            <option value="bundle_pct">Bundle % off (all bundle items)</option>
+            <option value="bogo_pct">Buy 1 Take 1 % off second (B1T1)</option>
+          </SelectField>
+
+          <Field
+            label="Discount % (0-100)"
+            inputMode="decimal"
+            value={String(discountPct)}
+            onChange={(e) => setDiscountPct(Number(e.target.value.replace(/[^\d.]/g, '')))}
+          />
+
+          {/* item_pct applies its % to every product on the rule, so one rule covers as
+              many items as you tick — no need for one rule per product. */}
+          {ruleType === 'item_pct' && (
+            <ProductMultiSelect
+              label="Products on this promo"
+              products={products}
+              selected={itemSelected}
+              onChange={setItemSelected}
+              hint="Every ticked product gets this % off. One rule covers them all."
+            />
+          )}
+
+          {/* BOGO stays single: buy/get quantities are counted against one product. */}
+          {ruleType === 'bogo_pct' && (
+            <SelectField
+              label="Product"
+              value={productSingle || ''}
+              onChange={(e) => setProductSingle(e.target.value || null)}
+            >
+              {eligibleProducts.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.sku})
+                </option>
+              ))}
+            </SelectField>
+          )}
+
+          {ruleType === 'pair_pct' && (
+            <>
+              <SelectField label="Product A" value={productA || ''} onChange={(e) => setProductA(e.target.value || null)}>
+                {eligibleProducts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.sku})
+                  </option>
+                ))}
+              </SelectField>
+              <SelectField label="Product B" value={productB || ''} onChange={(e) => setProductB(e.target.value || null)}>
+                {eligibleProducts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.sku})
+                  </option>
+                ))}
+              </SelectField>
+            </>
+          )}
+
+          {ruleType === 'bundle_pct' && (
+            <>
+              <div>
+                <Field
+                  label="Bundle name"
+                  value={bundleName}
+                  onChange={(e) => setBundleName(e.target.value)}
+                  placeholder="e.g. Meryenda Bundle"
+                />
+                <p className="col-span-full m-0 mt-1 text-[11px] text-brand-subtle">
+                  Shown on the POS quick-add button and promo badge — a name for this
+                  specific set of items, not the promo event.
+                </p>
+              </div>
+              <ProductMultiSelect
+                label="Select bundle products"
+                products={eligibleProducts}
+                selected={bundleSelected}
+                onChange={setBundleSelected}
+                hint={bundleSelected.length < 2 ? 'Select at least 2 products for a bundle.' : null}
+              />
+            </>
+          )}
+
+          {(ruleType === 'pair_pct' || ruleType === 'bundle_pct' || ruleType === 'bogo_pct') && (
+            <p className="col-span-full m-0 text-xs text-brand-subtle">
+              Weighed (kg) items aren&apos;t eligible for pair/bundle/BOGO promos.
+            </p>
+          )}
+        </div>
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <SecondaryButton
+            compact
+            type="button"
+            disabled={
+              busy ||
+              !eventForRules?.event?.id ||
+              !selectedProductsForRule.length ||
+              (ruleType === 'bundle_pct' && !bundleName.trim())
+            }
+            onClick={onAddRule}
+          >
+            <FiPlus className="mr-1" />
+            {busy ? 'Adding…' : 'Add rule'}
+          </SecondaryButton>
+        </div>
+      </TableCard>
+
       {/*
-        Promo sales/performance lives on the History row's "Sales" action (below) — a
+        Promo sales/performance lives on the History row's "Sales" action below — a
         separate always-visible stats card for the currently-managed promo duplicated that
-        same data, so it was removed. Rules / Add rule live further below, full width —
-        editing a promo's structure needs room, not a half-width column.
+        same data, so it was removed. Kept last on the page: Rules / Add rule (above) are
+        the working area, History is the reference table underneath.
       */}
-      <TableCard className="mb-4 max-h-none p-5">
+      <TableCard className="mb-4 max-h-none p-5 mt-4">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <h2 className="m-0 text-base">Promo history</h2>
@@ -1077,7 +1723,7 @@ export default function ManagerPromos() {
               // cells get that padding back individually so text still lines up with the title.
               <div className="-mx-5 mt-4 overflow-x-auto overflow-y-visible">
                 <table className="min-w-full text-left text-xs [&_td:first-child]:pl-5 [&_td:last-child]:pr-5 [&_th:first-child]:pl-5 [&_th:last-child]:pr-5">
-                  <thead className="bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
+                  <thead className={tableHeadClass}>
                     <tr>
                       <th className="px-3 py-2.5">Promo name</th>
                       <th className="px-3 py-2.5">Description</th>
@@ -1111,9 +1757,14 @@ export default function ManagerPromos() {
                           <td className="px-3 py-3 font-bold text-brand-ink">{e.name}</td>
                           <td className="px-3 py-3">
                             {(() => {
-                              // Why it ended lives here, not in Status — it's context about the
-                              // promo itself, appended after whatever description it already has.
-                              const combined = [e.description, e.stop_reason ? `— Reason for ending: ${e.stop_reason}` : null]
+                              // Why it ended/was rejected lives here, not in Status — it's context
+                              // about the promo itself, appended after whatever description it
+                              // already has.
+                              const combined = [
+                                e.description,
+                                e.stop_reason ? `— Reason for ending: ${e.stop_reason}` : null,
+                                e.reject_reason ? `— Reason for rejecting: ${e.reject_reason}` : null,
+                              ]
                                 .filter(Boolean)
                                 .join(' ')
                               return combined ? (
@@ -1155,12 +1806,24 @@ export default function ManagerPromos() {
                                 aria-label="Actions"
                                 aria-haspopup="true"
                                 aria-expanded={openActionsId === e.id}
-                                onClick={() => setOpenActionsId((prev) => (prev === e.id ? null : e.id))}
+                                onClick={(event) => {
+                                  if (openActionsId === e.id) {
+                                    setOpenActionsId(null)
+                                    setActionsAnchor(null)
+                                    return
+                                  }
+                                  const rect = event.currentTarget.getBoundingClientRect()
+                                  setActionsAnchor({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+                                  setOpenActionsId(e.id)
+                                }}
                               >
                                 <FiMoreHorizontal />
                               </button>
-                              {openActionsId === e.id && (
-                                <div className="absolute right-0 top-full z-20 mt-1 flex min-w-[170px] flex-col rounded-md border border-brand-line bg-white p-1 text-left shadow-lg">
+                              {openActionsId === e.id && actionsAnchor && createPortal(
+                                <div
+                                  className="fixed z-50 flex min-w-[170px] flex-col rounded-md border border-brand-line bg-white p-1 text-left shadow-lg"
+                                  style={{ top: actionsAnchor.top, right: actionsAnchor.right }}
+                                >
                                   <button
                                     type="button"
                                     className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-danger hover:bg-brand-n100"
@@ -1191,7 +1854,7 @@ export default function ManagerPromos() {
                                         disabled={busy}
                                         onClick={() => {
                                           setOpenActionsId(null)
-                                          onRejectCreate(e.id)
+                                          setRejectTarget({ id: e.id, name: e.name })
                                         }}
                                       >
                                         Reject
@@ -1277,7 +1940,8 @@ export default function ManagerPromos() {
                                       Delete
                                     </button>
                                   )}
-                                </div>
+                                </div>,
+                                document.body,
                               )}
                             </div>
                           </td>
@@ -1306,175 +1970,18 @@ export default function ManagerPromos() {
             )}
       </TableCard>
 
-      <TableCard className="mb-4 max-h-none overflow-visible p-5">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="m-0 text-base">Rules</h2>
-            <p className="m-0 mt-1 text-xs text-brand-subtle">
-              {eventForRules?.rules?.length
-                ? `${eventForRules.rules.length} rule(s) on ${eventForRules.event?.status || 'event'}`
-                : 'Add rules to the pending or live event.'}
-            </p>
-          </div>
-        </div>
-
-        {eventForRules?.rules?.length ? (
-          // Full-bleed to the card edges, same treatment as Promo history above.
-          <div className="-mx-5 -mb-5 mt-4 overflow-x-auto overflow-y-visible">
-            <table className="min-w-full text-left text-xs [&_td:first-child]:pl-5 [&_td:last-child]:pr-5 [&_th:first-child]:pl-5 [&_th:last-child]:pr-5">
-              <thead className="bg-brand-dark text-[9px] tracking-[1px] text-brand-ondark uppercase">
-                <tr>
-                  <th className="px-3 py-2.5">Rule type</th>
-                  <th className="px-3 py-2.5">Discount %</th>
-                  <th className="px-3 py-2.5">Products in rule</th>
-                  <th className="px-3 py-2.5 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {eventForRules.rules.map((r) => (
-                  <tr key={r.id} className="border-t border-brand-softline">
-                    <td className="px-3 py-3 font-bold text-brand-ink">{r.ruleType}</td>
-                    <td className="px-3 py-3">
-                      {r.discountPct}% off
-                    </td>
-                    <td className="px-3 py-3">
-                      {r.ruleType === 'item_pct' && r.products[0]?.productName
-                        ? `${r.products[0].productName}${r.products[0].sku ? ` (${r.products[0].sku})` : ''}`
-                        : r.products.map((p) => p.productName || p.productId).join(', ')}
-                      {r.ruleType === 'pair_pct' && r.products.length >= 2 && (
-                        <span className="text-brand-subtle"> (pair)</span>
-                      )}
-                      {r.ruleType === 'bundle_pct' && r.products.length >= 2 && (
-                        <span className="text-brand-subtle"> (bundle)</span>
-                      )}
-                      {r.ruleType === 'bogo_pct' && r.products[0] && (
-                        <span className="text-brand-subtle">
-                          {' '}
-                          (buy {r.buyQty || 1} get {r.getQty || 1})
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-3 text-right">
-                      <button
-                        type="button"
-                        className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                        disabled={busy || eventForRules?.event?.status === 'stop_pending'}
-                        onClick={() =>
-                          openDeleteConfirm({
-                            kind: 'rule',
-                            id: r.id,
-                            label: r.ruleType,
-                          })}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="mt-4 text-xs text-brand-subtle">No rules yet.</div>
-        )}
-      </TableCard>
-
-      <TableCard className="max-h-none overflow-visible p-5">
-        <h2 className="m-0 text-base">Add promo rule</h2>
-        <p className="m-0 mt-1 text-xs text-brand-muted">
-          Applied only when cashier did not select PWD/Senior (no stacking).
-        </p>
-
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <SelectField label="Rule type" value={ruleType} onChange={(e) => setRuleType(e.target.value)}>
-            <option value="item_pct">Individual item % off</option>
-            <option value="pair_pct">Pair % off (both items)</option>
-            <option value="bundle_pct">Bundle % off (all bundle items)</option>
-            <option value="bogo_pct">Buy 1 Take 1 % off second (B1T1)</option>
-          </SelectField>
-
-          <Field
-            label="Discount % (0-100)"
-            inputMode="decimal"
-            value={String(discountPct)}
-            onChange={(e) => setDiscountPct(Number(e.target.value.replace(/[^\d.]/g, '')))}
-          />
-
-          {/* item_pct applies its % to every product on the rule, so one rule covers as
-              many items as you tick — no need for one rule per product. */}
-          {ruleType === 'item_pct' && (
-            <ProductMultiSelect
-              label="Products on this promo"
-              products={products}
-              selected={itemSelected}
-              onChange={setItemSelected}
-              hint="Every ticked product gets this % off. One rule covers them all."
-            />
-          )}
-
-          {/* BOGO stays single: buy/get quantities are counted against one product. */}
-          {ruleType === 'bogo_pct' && (
-            <SelectField
-              label="Product"
-              value={productSingle || ''}
-              onChange={(e) => setProductSingle(e.target.value || null)}
-            >
-              {products.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.sku})
-                </option>
-              ))}
-            </SelectField>
-          )}
-
-          {ruleType === 'pair_pct' && (
-            <>
-              <SelectField label="Product A" value={productA || ''} onChange={(e) => setProductA(e.target.value || null)}>
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.sku})
-                  </option>
-                ))}
-              </SelectField>
-              <SelectField label="Product B" value={productB || ''} onChange={(e) => setProductB(e.target.value || null)}>
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.sku})
-                  </option>
-                ))}
-              </SelectField>
-            </>
-          )}
-
-          {ruleType === 'bundle_pct' && (
-            <ProductMultiSelect
-              label="Select bundle products"
-              products={products}
-              selected={bundleSelected}
-              onChange={setBundleSelected}
-              hint={bundleSelected.length < 2 ? 'Select at least 2 products for a bundle.' : null}
-            />
-          )}
-        </div>
-
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <SecondaryButton
-            compact
-            type="button"
-            disabled={busy || !eventForRules?.event?.id || !selectedProductsForRule.length}
-            onClick={onAddRule}
-          >
-            <FiPlus className="mr-1" />
-            {busy ? 'Adding…' : 'Add rule'}
-          </SecondaryButton>
-        </div>
-      </TableCard>
         </>
       )}
 
-      {/* Click-away for the "..." row menu — sits below the menu's z-20. */}
+      {/* Click-away for the "..." row menu — sits below the portal menu's z-50. */}
       {openActionsId && (
-        <div className="fixed inset-0 z-10" onClick={() => setOpenActionsId(null)} />
+        <div
+          className="fixed inset-0 z-10"
+          onClick={() => {
+            setOpenActionsId(null)
+            setActionsAnchor(null)
+          }}
+        />
       )}
 
       {editingEventId && (
@@ -1617,6 +2124,30 @@ export default function ManagerPromos() {
             </SecondaryButton>
             <PrimaryButton compact type="button" disabled={busy || !stopReason.trim()} onClick={onRequestStop}>
               {busy ? (managerView ? 'Stopping…' : 'Submitting…') : managerView ? 'Stop now' : 'Submit stop request'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {rejectTarget && (
+        <Modal onClose={() => !busy && setRejectTarget(null)}>
+          <Eyebrow>REJECT PROMO</Eyebrow>
+          <h2 className="m-0 mb-2 text-lg">Reject {rejectTarget.name}?</h2>
+          <p className="m-0 mb-3 text-xs text-brand-muted">
+            This declines the promo request. It stays on record with the reason below.
+          </p>
+          <Field
+            label="Reason (required)"
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value.replace(/[<>]/g, ''))}
+            placeholder="Why reject this promo?"
+          />
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={busy} onClick={() => setRejectTarget(null)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton compact type="button" disabled={busy || !rejectReason.trim()} onClick={onSubmitReject}>
+              {busy ? 'Rejecting…' : 'Reject promo'}
             </PrimaryButton>
           </ModalActions>
         </Modal>

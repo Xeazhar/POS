@@ -9,6 +9,7 @@ import {
   PageHeader,
   PageSkeleton,
   Pager,
+  PrimaryButton,
   SearchBox,
   SecondaryButton,
   SkeletonRows,
@@ -20,13 +21,17 @@ import {
   tableRowClass,
 } from '../components/ui'
 import {
+  cancelRefundRequest,
   fetchBranchFiscalHeader,
+  fetchRefundRequestById,
   fetchRefundSummary,
   fetchTransactionDetail,
   hasSupabase,
+  requestRefundApproval,
 } from '../lib/api'
 import { isDeviceEnabled, receiptPrinter } from '../devices'
 import { getLocalTransactionDetail } from '../offline'
+import { subscribeTable } from '../offline/realtime'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { formatSupportError } from '../utils/errors'
 import { isBusinessDayLocked, money, qty, today } from '../utils/format'
@@ -102,6 +107,8 @@ function Transactions() {
   const [refundedByItem, setRefundedByItem] = useState({})
   const [refundSummary, setRefundSummary] = useState(null)
   const [pendingApproval, setPendingApproval] = useState(null)
+  const [notifyManager, setNotifyManager] = useState(false)
+  const [remoteRequest, setRemoteRequest] = useState(null) // refund_requests row while waiting on a remote manager
   const [detail, setDetail] = useState(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [error, setError] = useState('')
@@ -204,6 +211,8 @@ function Transactions() {
     setRefundMode(null)
     setRefundLines([])
     setPendingApproval(null)
+    setNotifyManager(false)
+    setRemoteRequest(null)
     setBusy(false)
   }
 
@@ -217,6 +226,8 @@ function Transactions() {
     setRefundMode(null)
     setRefundLines([])
     setPendingApproval(null)
+    setNotifyManager(false)
+    setRemoteRequest(null)
     try {
       let lines = item.lines || []
       let refunded = {}
@@ -291,8 +302,46 @@ function Transactions() {
     }
   }
 
+  // No supervisor on site: create a pending refund_requests row instead of
+  // showing SupervisorApprove's PIN form, and wait for a remote manager to
+  // act on it (approve_refund_request executes the actual void/refund).
+  const requestManagerApproval = async (reason) => {
+    if (!refunding || !refundMode) return
+    const items =
+      refundMode === 'items'
+        ? refundLines
+            .filter((line) => line.selected && Number(line.refundQty) > 0)
+            .map((line) => ({ item_id: line.id, quantity: Number(line.refundQty) }))
+        : null
+    if (refundMode === 'items' && !items.length) {
+      setError('Select at least one item and quantity to refund.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      const row = await requestRefundApproval({
+        transactionId: refunding.id,
+        staffId: user.id,
+        branchId: user.branchId,
+        mode: refundMode,
+        reason,
+        items,
+      })
+      setRemoteRequest(row)
+    } catch (err) {
+      setError(formatSupportError(err, 'SALE06'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const requestRefund = (reason) => {
     if (!refunding || !refundMode) return
+    if (notifyManager) {
+      void requestManagerApproval(reason)
+      return
+    }
     const payload = { item: refunding, reason, mode: refundMode }
     if (canApproveDirect) {
       // Self-approved: the signed-in supervisor/manager IS the approver on record.
@@ -303,6 +352,59 @@ function Transactions() {
       setPendingApproval(payload)
     }
   }
+
+  const cancelRemoteRequest = async () => {
+    if (!remoteRequest?.id) return
+    setBusy(true)
+    try {
+      await cancelRefundRequest({ id: remoteRequest.id, staffId: user.id })
+    } catch (err) {
+      setError(formatSupportError(err, 'SALE06'))
+    } finally {
+      closeRefund()
+    }
+  }
+
+  // A manager acting remotely (not at this terminal) flips refund_requests.status —
+  // picked up here via realtime, with a 5s poll as a fallback in case the channel
+  // never connects (e.g. migrate_refund_requests.sql's publication grant not applied yet).
+  useEffect(() => {
+    if (!remoteRequest?.id || remoteRequest.status !== 'pending') return undefined
+    const requestId = remoteRequest.id
+
+    const applyUpdate = (row) => {
+      if (!row || row.status === 'pending') return
+      if (row.status === 'approved') {
+        void useProductStore
+          .getState()
+          .loadBranch(user.branchId)
+          .then(() => {
+            closeRefund()
+            setDetail(null)
+          })
+      } else if (row.status === 'cancelled') {
+        closeRefund()
+      } else {
+        setRemoteRequest((prev) =>
+          prev && prev.id === requestId ? { ...prev, status: row.status, reject_reason: row.reject_reason } : prev,
+        )
+      }
+    }
+
+    const unsubscribe = subscribeTable({
+      table: 'refund_requests',
+      filter: `id=eq.${requestId}`,
+      onChange: (payload) => applyUpdate(payload?.new),
+    })
+    const poll = window.setInterval(() => {
+      fetchRefundRequestById(requestId).then(applyUpdate).catch(() => {})
+    }, 5000)
+    return () => {
+      unsubscribe()
+      window.clearInterval(poll)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteRequest?.id, remoteRequest?.status])
 
   if (productsLoading && !transactions.length) {
     return <PageSkeleton variant="table" />
@@ -554,7 +656,7 @@ function Transactions() {
         />
       )}
 
-      {refunding && !refundMode && !pendingApproval && (
+      {refunding && !refundMode && !pendingApproval && !remoteRequest && (
         <Modal onClose={closeRefund}>
           <Eyebrow>REFUND</Eyebrow>
           <h2 className="mb-[5px] text-[22px]">
@@ -588,7 +690,7 @@ function Transactions() {
         </Modal>
       )}
 
-      {refunding && refundMode === 'items' && !pendingApproval && (
+      {refunding && refundMode === 'items' && !pendingApproval && !remoteRequest && (
         <Modal wide onClose={closeRefund}>
           <Eyebrow>SELECT ITEMS</Eyebrow>
           <h2 className="mb-2 text-[20px]">
@@ -643,6 +745,18 @@ function Transactions() {
             )}
           </div>
           <p className="mt-3 text-[12px] text-brand-muted">Choose a reason to continue.</p>
+          {!canApproveDirect && (
+            <label className="mt-3 flex items-start gap-2 text-xs text-brand-muted">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={notifyManager}
+                onChange={(e) => setNotifyManager(e.target.checked)}
+              />
+              No supervisor available — notify manager instead
+            </label>
+          )}
+          {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
           <div className="mt-3 grid gap-2">
             {REFUND_REASONS.map((reason) => (
               <button
@@ -664,7 +778,7 @@ function Transactions() {
         </Modal>
       )}
 
-      {refunding && refundMode === 'full' && !pendingApproval && (
+      {refunding && refundMode === 'full' && !pendingApproval && !remoteRequest && (
         <Modal onClose={closeRefund}>
           <Eyebrow>FULL REFUND</Eyebrow>
           <h2 className="mb-[5px] text-[22px]">
@@ -675,6 +789,18 @@ function Transactions() {
               ? 'This voids the whole sale and restocks all items. Choose a reason.'
               : 'This voids the whole sale. Choose a reason — supervisor PIN required next.'}
           </p>
+          {!canApproveDirect && (
+            <label className="mt-3 flex items-start gap-2 text-xs text-brand-muted">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={notifyManager}
+                onChange={(e) => setNotifyManager(e.target.checked)}
+              />
+              No supervisor available — notify manager instead
+            </label>
+          )}
+          {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
           <div className="mt-5 grid gap-2">
             {REFUND_REASONS.map((reason) => (
               <button
@@ -692,6 +818,43 @@ function Transactions() {
             <SecondaryButton compact type="button" onClick={() => setRefundMode(null)}>
               Back
             </SecondaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {remoteRequest && (
+        <Modal onClose={remoteRequest.status === 'pending' ? undefined : closeRefund}>
+          <Eyebrow>MANAGER APPROVAL</Eyebrow>
+          <h2 className="mb-2 text-[20px]">
+            {remoteRequest.status === 'rejected' ? 'Refund rejected' : 'Waiting for manager…'}
+          </h2>
+          {remoteRequest.status === 'pending' && (
+            <p className="text-[13px] text-brand-muted">
+              The manager has been notified and can approve this refund from anywhere. This
+              screen updates automatically once they respond — no need to reload.
+            </p>
+          )}
+          {remoteRequest.status === 'rejected' && (
+            <p className="text-[13px] text-brand-danger">
+              {remoteRequest.reject_reason || 'No reason given.'}
+            </p>
+          )}
+          {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
+          <ModalActions>
+            {remoteRequest.status === 'pending' ? (
+              <SecondaryButton compact type="button" disabled={busy} onClick={() => void cancelRemoteRequest()}>
+                Cancel request
+              </SecondaryButton>
+            ) : (
+              <>
+                <SecondaryButton compact type="button" onClick={closeRefund}>
+                  Close
+                </SecondaryButton>
+                <PrimaryButton compact type="button" onClick={() => setRemoteRequest(null)}>
+                  Try again
+                </PrimaryButton>
+              </>
+            )}
           </ModalActions>
         </Modal>
       )}

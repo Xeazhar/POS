@@ -52,8 +52,13 @@ export function staffLinksFor(user) {
   return base.filter(([path, , , moduleId]) => {
     if (!canAccessModule(user, moduleId)) return false
     // Managers already get these under the manager nav below (avoid duplicate tabs) —
-    // shifts/promos share a moduleId with their manager-nav counterpart.
-    if ((moduleId === 'shifts' || moduleId === 'manager_promos') && isManagerRole(user.role)) return false
+    // shifts/promos/catalog all render the exact same page as their manager-nav counterpart
+    // ('catalog' here and 'manager_data' below both route to Data.jsx).
+    if (
+      (moduleId === 'shifts' || moduleId === 'manager_promos' || moduleId === 'catalog') &&
+      isManagerRole(user.role)
+    )
+      return false
     return true
   })
 }

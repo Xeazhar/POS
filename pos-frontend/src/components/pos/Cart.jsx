@@ -107,6 +107,10 @@ function Cart({
     // block at the top of that file before changing anything here.
     const promoDiscount = computePromoDiscounts(items, promoRules)
     const linePromoNames = promoDiscount?.linePromoNames || items.map(() => null)
+    // Display-only — a bundle's own name (e.g. "Meryenda Bundle"), never persisted.
+    // linePromoNames (the event name) is what transaction_items.promo_name gets, so promo
+    // sales stats keep matching against the event, not the bundle.
+    const lineBundleNames = promoDiscount?.lineBundleNames || items.map(() => null)
 
     const vat = computeVatBreakdown({
       vatRate,
@@ -143,6 +147,7 @@ function Cart({
       lineDiscounts,
       lineVatCategories,
       linePromoNames,
+      lineBundleNames,
       promoLabel,
       appliedDiscountSource,
       isPwdSenior,
@@ -214,27 +219,39 @@ function Cart({
             scPwdDiscountAmount: Number(line.scPwdDiscountAmount || 0),
             netAmount: Number(line.netAmount || 0),
             isExempt: line.vatCategory === 'exempt',
-            promoName: pricing.linePromoNames[index] || null,
+            // Display only, prefers the bundle's own name — pricing.linePromoNames (the
+            // event name) is the one that gets persisted, see checkout below.
+            promoName: pricing.lineBundleNames[index] || pricing.linePromoNames[index] || null,
             // Headline tag for the row: what actually produced this line's discount.
-            promo: line.vatCategory === 'exempt' ? scPwdLabel : pricing.linePromoNames[index] || pricing.promoLabel,
+            promo:
+              line.vatCategory === 'exempt'
+                ? scPwdLabel
+                : pricing.lineBundleNames[index] || pricing.linePromoNames[index] || pricing.promoLabel,
           }
         })
         .filter((row) => row.amount > 0 || row.promoDiscountAmount > 0),
-    [items, pricing.lineBreakdown, pricing.lineDiscounts, pricing.linePromoNames, pricing.promoLabel, discountType],
+    [
+      items,
+      pricing.lineBreakdown,
+      pricing.lineDiscounts,
+      pricing.linePromoNames,
+      pricing.lineBundleNames,
+      pricing.promoLabel,
+      discountType,
+    ],
   )
   // Net line figures come straight from the VAT engine — never re-derived here as
   // "price − discount/qty", which silently breaks on exempt lines where the VAT strip
   // is part of the reduction but is not a discount.
   const lineNetTotal = (index, item) => Number(pricing.lineBreakdown[index]?.netAmount ?? lineTotal(item))
-  const lineNetUnitPrice = (index, item) => {
-    const units = item.pricingMode === 'kg' ? Number(item.weight || 1) : Number(item.quantity || 1)
-    return Number((lineNetTotal(index, item) / Math.max(1, units)).toFixed(2))
-  }
   const lineTag = (index) => {
     const row = pricing.lineBreakdown[index]
     if (!row) return null
     if (row.vatCategory === 'exempt') return discountType === 'pwd' ? 'PWD 20%' : 'Senior 20%'
-    return pricing.linePromoNames[index] || pricing.promoLabel || 'Promo'
+    // Bundle name on screen (what a cashier recognizes), event name persisted separately
+    // for promo sales stats (see pricing.linePromoNames / promoName below) — the two can
+    // legitimately differ and that's fine, only the display prefers the bundle.
+    return pricing.lineBundleNames[index] || pricing.linePromoNames[index] || pricing.promoLabel || 'Promo'
   }
 
   const needsCash = paymentMethod === 'cash'
@@ -486,6 +503,165 @@ function Cart({
       checkoutOpen || paying || Boolean(paidResult) || dayEndNudge || removeIndex != null,
     )
   }, [checkoutOpen, paying, paidResult, dayEndNudge, removeIndex, onOverlayChange])
+
+  /**
+   * One sale-ticket-style row per cart line — name/qty/tags on top, price right-aligned,
+   * qty stepper + remove below. Shared by both barcode and normal layouts so the two
+   * never drift into two different cart designs (they used to be two near-identical
+   * spreadsheet-table blocks).
+   */
+  const renderCartLine = (item, index) => {
+    const showTier = isRestaurant && hasBudgetTier(item.menuKind) && item.budgetPrice != null
+    const qtyLabel =
+      item.pricingMode === 'kg'
+        ? qty(item.weight, 'kg')
+        : `${Number(item.quantity).toFixed(0)} ${Number(item.quantity) > 1 ? 'pcs' : 'pc'}`
+    const discounted = lineNetTotal(index, item) < lineTotal(item)
+    return (
+      <div
+        key={`${item.id}-${item.priceTier || 'regular'}-${index}`}
+        className="border-t border-brand-n150 px-3 py-2.5 text-xs first:border-t-0"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <strong className="block truncate text-brand-ink">{item.name}</strong>
+            <span className="text-[10px] text-brand-cart-muted">
+              {qtyLabel}
+              {showTier && item.priceTier === 'budget' ? ' · budget' : ''}
+            </span>
+            {pricing.lineDiscounts[index] > 0 && (
+              <span className="mt-0.5 block text-[10px] font-bold text-brand-danger">
+                {lineTag(index)} −{money(pricing.lineDiscounts[index])}
+              </span>
+            )}
+            {pricing.lineBreakdown[index]?.vatCategory === 'exempt' && (
+              <span className="mt-0.5 block text-[10px] font-bold text-brand-success-text">VAT-exempt</span>
+            )}
+            {(discountType === 'pwd' || discountType === 'senior') &&
+              pricing.lineBreakdown[index]?.vatCategory !== 'exempt' && (
+                <span className="mt-0.5 block text-[10px] text-brand-subtle">Not discount eligible</span>
+              )}
+            {showTier && (
+              <div className="mt-1 flex gap-1">
+                {[
+                  { id: 'regular', label: `Reg ${money(item.regularPrice ?? item.price)}` },
+                  { id: 'budget', label: `Bud ${money(item.budgetPrice)}` },
+                ].map((tier) => (
+                  <button
+                    key={tier.id}
+                    type="button"
+                    className={`rounded border px-1.5 py-0.5 text-[9px] font-bold ${
+                      (item.priceTier || 'regular') === tier.id
+                        ? 'border-brand-gold bg-brand-gold/25 text-brand-gold'
+                        : 'border-brand-cart-border text-brand-ondark-dim'
+                    }`}
+                    onClick={() => setPriceTier(index, tier.id)}
+                  >
+                    {tier.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className={`shrink-0 text-right ${moneyClass}`}>
+            {discounted ? (
+              <>
+                <span className="block text-[10px] text-brand-subtle line-through">{money(lineTotal(item))}</span>
+                <span className="text-sm font-bold text-brand-danger">{money(lineNetTotal(index, item))}</span>
+              </>
+            ) : (
+              <span className="text-sm font-bold text-brand-ink">{money(lineTotal(item))}</span>
+            )}
+          </div>
+        </div>
+        <div className="mt-2 flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-brand-n500"
+              onClick={() => bumpQty(index, -1)}
+              aria-label="Decrease quantity"
+            >
+              <FiMinus size={12} />
+            </button>
+            <span className="min-w-[3.3rem] text-center text-[11px] font-bold tabular-nums text-brand-ink">
+              {qtyLabel}
+            </span>
+            <button
+              type="button"
+              className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-brand-n500"
+              onClick={() => bumpQty(index, 1)}
+              aria-label="Increase quantity"
+            >
+              <FiPlus size={12} />
+            </button>
+          </div>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 border-0 bg-transparent p-1 text-[11px] font-bold text-brand-cart-muted transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90 active:text-brand-ink"
+            onClick={() => requestRemove(index)}
+            title={canRemoveDirect ? 'Remove' : 'Remove (supervisor PIN)'}
+          >
+            <FiTrash2 size={14} />
+            Remove
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  /**
+   * Subtotal → discount → VAT → TOTAL, in that order — the same hierarchy the checkout
+   * modal uses. Shared so the pre-checkout summary never disagrees with itself between
+   * barcode and normal layouts.
+   */
+  const renderSaleSummary = () => (
+    <>
+      <div className="flex items-center justify-between text-xs text-brand-muted">
+        <span>Subtotal</span>
+        <strong className={`text-brand-ink ${moneyClass}`}>{money(rawSubtotal)}</strong>
+      </div>
+      {pricing.discountAmount > 0 && (
+        <div className="mt-2 flex items-center justify-between text-xs text-brand-muted">
+          <span>
+            Discount
+            {pricing.discountType ? ` (${pricing.discountType})` : ''}
+          </span>
+          <strong className={`text-brand-danger ${moneyClass}`}>−{money(pricing.discountAmount)}</strong>
+        </div>
+      )}
+      {pricing.appliedDiscountSource === 'promo' && discountedItemBreakdown.length > 0 && (
+        <div className="mt-2 space-y-1 border-t border-brand-n150 pt-2">
+          {discountedItemBreakdown.map((row, idx) => (
+            <div
+              key={`${row.name}-${idx}`}
+              className="flex items-center justify-between gap-2 text-[10px] text-brand-muted"
+            >
+              <span className="min-w-0 truncate">
+                {row.name}
+                {row.promo ? (
+                  <span className="mt-0.5 block truncate font-bold text-brand-danger">{row.promo}</span>
+                ) : null}
+              </span>
+              <strong className={`shrink-0 text-brand-danger ${moneyClass}`}>−{money(row.amount)}</strong>
+            </div>
+          ))}
+        </div>
+      )}
+      {vatRate > 0 && (
+        <div className="mt-2 flex items-center justify-between text-xs text-brand-muted">
+          <span>VAT incl.</span>
+          <strong className="text-brand-ink">{money(pricing.vatAmount)}</strong>
+        </div>
+      )}
+      <div className="mt-3 border-t border-brand-n150 pt-3">
+        <span className="block text-[11px] text-brand-ondark-dim">
+          {items.length} item{items.length === 1 ? '' : 's'}
+        </span>
+        <strong className={`mt-1 block text-2xl text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
+      </div>
+    </>
+  )
 
   return (
     <>
@@ -881,7 +1057,7 @@ function Cart({
         <div className="flex shrink-0 items-start justify-between gap-3 border-b border-brand-cart-line px-5 pt-5 pb-4 max-[700px]:px-3.5">
           <div>
             <Eyebrow className="text-brand-n500">CURRENT SALE</Eyebrow>
-            <h2 className="m-0 text-lg capitalize">Receipt / cart</h2>
+            <h2 className="m-0 text-lg">Current transaction</h2>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {headerActions}
@@ -954,128 +1130,11 @@ function Cart({
             {/* Cart lines slot (scrollable) */}
             <div className="min-h-0 overflow-auto px-5 py-2 max-[1050px]:min-h-[320px] max-[800px]:min-h-[340px] max-[700px]:px-3.5">
               {items.length ? (
-                <div className="overflow-hidden bg-white">
-                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-brand-dark px-3 py-2 text-[10px] font-bold tracking-wide text-brand-ondark uppercase">
-                    <span>Item</span>
-                    <span className="text-right">Price</span>
-                    <span className="text-center">Qty</span>
-                    <span className="text-right">Total</span>
-                    <span className="text-right">Action</span>
+                <div className="overflow-hidden rounded-[6px] border border-brand-n150 bg-white">
+                  <div className="border-b border-brand-n150 bg-brand-n50 px-3 py-1.5 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+                    Items ({items.length})
                   </div>
-                  {items.map((item, index) => {
-                    const showTier =
-                      isRestaurant && hasBudgetTier(item.menuKind) && item.budgetPrice != null
-                    const qtyLabel =
-                      item.pricingMode === 'kg'
-                        ? qty(item.weight, 'kg')
-                        : `${Number(item.quantity).toFixed(0)} ${Number(item.quantity) > 1 ? 'pcs' : 'pc'}`
-                    return (
-                      <div
-                        className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] items-center gap-2 border-t border-brand-n150 px-3 py-2.5 text-xs bg-white"
-                        key={`${item.id}-${item.priceTier || 'regular'}-${index}`}
-                      >
-                        <div className="min-w-0">
-                          <strong className="block truncate text-brand-ink">{item.name}</strong>
-                          <small className="block text-[10px] text-brand-cart-muted">
-                            {item.pricingMode === 'kg' ? 'Weigh-in item' : 'Piece item'}
-                            {showTier && item.priceTier === 'budget' ? ' · budget' : ''}
-                          </small>
-                          {pricing.lineDiscounts[index] > 0 && (
-                            <small className="mt-0.5 block text-[10px] font-bold text-brand-danger">
-                              {lineTag(index)} −{money(pricing.lineDiscounts[index])}
-                            </small>
-                          )}
-                          {pricing.lineBreakdown[index]?.vatCategory === 'exempt' && (
-                            <small className="mt-0.5 block text-[10px] font-bold text-brand-success-text">
-                              VAT-exempt
-                            </small>
-                          )}
-                          {(discountType === 'pwd' || discountType === 'senior') &&
-                            pricing.lineBreakdown[index]?.vatCategory !== 'exempt' && (
-                              <small className="mt-0.5 block text-[10px] text-brand-subtle">
-                                Not discount eligible
-                              </small>
-                            )}
-                          {showTier && (
-                            <div className="mt-1 flex gap-1">
-                              {[
-                                { id: 'regular', label: `Reg ${money(item.regularPrice ?? item.price)}` },
-                                { id: 'budget', label: `Bud ${money(item.budgetPrice)}` },
-                              ].map((tier) => (
-                                <button
-                                  key={tier.id}
-                                  type="button"
-                                  className={`rounded border px-1.5 py-0.5 text-[9px] font-bold ${
-                                    (item.priceTier || 'regular') === tier.id
-                                      ? 'border-brand-gold bg-brand-gold/25 text-brand-gold'
-                                      : 'border-brand-cart-border text-brand-ondark-dim'
-                                  }`}
-                                  onClick={() => setPriceTier(index, tier.id)}
-                                >
-                                  {tier.label}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                        <span className="text-right tabular-nums text-brand-ink">
-                          {lineNetTotal(index, item) < lineTotal(item) ? (
-                            <span className="block">
-                              <span className="block text-[10px] text-brand-subtle line-through">
-                                {money(item.price)}
-                              </span>
-                              <span className="font-bold text-brand-danger">
-                                {money(lineNetUnitPrice(index, item))}
-                              </span>
-                            </span>
-                          ) : (
-                            money(item.price)
-                          )}
-                        </span>
-                        <div className="flex items-center justify-center gap-1">
-                          <button
-                            type="button"
-                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-brand-n500"
-                            onClick={() => bumpQty(index, -1)}
-                            aria-label="Decrease quantity"
-                          >
-                            <FiMinus size={12} />
-                          </button>
-                          <span className="min-w-[3.3rem] text-center text-[11px] font-bold tabular-nums text-brand-ink">
-                            {qtyLabel}
-                          </span>
-                          <button
-                            type="button"
-                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-brand-n500"
-                            onClick={() => bumpQty(index, 1)}
-                            aria-label="Increase quantity"
-                          >
-                            <FiPlus size={12} />
-                          </button>
-                        </div>
-                        <b className="text-right tabular-nums text-brand-ink">
-                          {lineNetTotal(index, item) < lineTotal(item) ? (
-                            <span className="block">
-                              <span className="block text-[10px] font-normal text-brand-subtle line-through">
-                                {money(lineTotal(item))}
-                              </span>
-                              <span className="text-brand-danger">{money(lineNetTotal(index, item))}</span>
-                            </span>
-                          ) : (
-                            money(lineTotal(item))
-                          )}
-                        </b>
-                        <button
-                          type="button"
-                          className="justify-self-end border-0 bg-transparent p-1 text-brand-cart-muted transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90 active:text-brand-ink"
-                          onClick={() => requestRemove(index)}
-                          title={canRemoveDirect ? 'Remove' : 'Remove (supervisor PIN)'}
-                        >
-                          <FiTrash2 size={16} />
-                        </button>
-                      </div>
-                    )
-                  })}
+                  {items.map((item, index) => renderCartLine(item, index))}
                 </div>
               ) : (
                 <div className="mt-[140px] px-2 text-center text-sm leading-[1.8] text-brand-n500">
@@ -1089,51 +1148,7 @@ function Cart({
             <aside className="flex flex-col gap-3 bg-brand-n50 px-5 py-4 max-[700px]:px-3.5">
               <div className="bg-white px-3 py-3">
                 <span className="block text-[10px] font-bold tracking-wide text-brand-subtle uppercase">Sale summary</span>
-                <div className="mt-3 flex items-center justify-between text-xs text-brand-muted">
-                  <span>Subtotal</span>
-                  <strong className={`text-brand-ink ${moneyClass}`}>{money(rawSubtotal)}</strong>
-                </div>
-                {pricing.discountAmount > 0 && (
-                  <div className="mt-2 flex items-center justify-between text-xs text-brand-muted">
-                    <span>
-                      Discount
-                      {pricing.discountType ? ` (${pricing.discountType})` : ''}
-                    </span>
-                    <strong className={`text-brand-danger ${moneyClass}`}>−{money(pricing.discountAmount)}</strong>
-                  </div>
-                )}
-                {pricing.appliedDiscountSource === 'promo' && discountedItemBreakdown.length > 0 && (
-                  <div className="mt-2 space-y-1 border-t border-brand-n150 pt-2">
-                    {discountedItemBreakdown.map((row, idx) => (
-                      <div
-                        key={`${row.name}-${idx}`}
-                        className="flex items-center justify-between gap-2 text-[10px] text-brand-muted"
-                      >
-                        <span className="min-w-0 truncate">
-                          {row.name}
-                          {row.promo ? (
-                            <span className="mt-0.5 block truncate font-bold text-brand-danger">
-                              {row.promo}
-                            </span>
-                          ) : null}
-                        </span>
-                        <strong className={`shrink-0 text-brand-danger ${moneyClass}`}>−{money(row.amount)}</strong>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {vatRate > 0 && (
-                  <div className="mt-2 flex items-center justify-between text-xs text-brand-muted">
-                    <span>VAT incl.</span>
-                    <strong className="text-brand-ink">{money(pricing.vatAmount)}</strong>
-                  </div>
-                )}
-                <div className="mt-3 border-t border-brand-n150 pt-3">
-                  <span className="block text-[11px] text-brand-ondark-dim">
-                    {items.length} item{items.length === 1 ? '' : 's'}
-                  </span>
-                  <strong className={`mt-1 block text-2xl text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
-                </div>
+                <div className="mt-3">{renderSaleSummary()}</div>
               </div>
               <PrimaryButton
                 className="w-full justify-between"
@@ -1149,128 +1164,11 @@ function Cart({
           <>
             <div className="min-h-0 flex-1 overflow-auto px-5 py-2 max-[1050px]:min-h-[320px] max-[800px]:min-h-[340px] max-[700px]:px-3.5">
               {items.length ? (
-                <div className="overflow-hidden bg-white">
-                  <div className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] gap-2 bg-brand-dark px-3 py-2 text-[10px] font-bold tracking-wide text-brand-ondark uppercase">
-                    <span>Item</span>
-                    <span className="text-right">Price</span>
-                    <span className="text-center">Qty</span>
-                    <span className="text-right">Total</span>
-                    <span className="text-right">Action</span>
+                <div className="overflow-hidden rounded-[6px] border border-brand-n150 bg-white">
+                  <div className="border-b border-brand-n150 bg-brand-n50 px-3 py-1.5 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+                    Items ({items.length})
                   </div>
-                  {items.map((item, index) => {
-                    const showTier =
-                      isRestaurant && hasBudgetTier(item.menuKind) && item.budgetPrice != null
-                    const qtyLabel =
-                      item.pricingMode === 'kg'
-                        ? qty(item.weight, 'kg')
-                        : `${Number(item.quantity).toFixed(0)} ${Number(item.quantity) > 1 ? 'pcs' : 'pc'}`
-                    return (
-                      <div
-                        className="grid grid-cols-[1.6fr_0.8fr_0.8fr_0.8fr_auto] items-center gap-2 border-t border-brand-n150 px-3 py-2.5 text-xs bg-white"
-                        key={`${item.id}-${item.priceTier || 'regular'}-${index}`}
-                      >
-                        <div className="min-w-0">
-                          <strong className="block truncate text-brand-ink">{item.name}</strong>
-                          <small className="block text-[10px] text-brand-cart-muted">
-                            {item.pricingMode === 'kg' ? 'Weigh-in item' : 'Piece item'}
-                            {showTier && item.priceTier === 'budget' ? ' · budget' : ''}
-                          </small>
-                          {pricing.lineDiscounts[index] > 0 && (
-                            <small className="mt-0.5 block text-[10px] font-bold text-brand-danger">
-                              {lineTag(index)} −{money(pricing.lineDiscounts[index])}
-                            </small>
-                          )}
-                          {pricing.lineBreakdown[index]?.vatCategory === 'exempt' && (
-                            <small className="mt-0.5 block text-[10px] font-bold text-brand-success-text">
-                              VAT-exempt
-                            </small>
-                          )}
-                          {(discountType === 'pwd' || discountType === 'senior') &&
-                            pricing.lineBreakdown[index]?.vatCategory !== 'exempt' && (
-                              <small className="mt-0.5 block text-[10px] text-brand-subtle">
-                                Not discount eligible
-                              </small>
-                            )}
-                          {showTier && (
-                            <div className="mt-1 flex gap-1">
-                              {[
-                                { id: 'regular', label: `Reg ${money(item.regularPrice ?? item.price)}` },
-                                { id: 'budget', label: `Bud ${money(item.budgetPrice)}` },
-                              ].map((tier) => (
-                                <button
-                                  key={tier.id}
-                                  type="button"
-                                  className={`rounded border px-1.5 py-0.5 text-[9px] font-bold ${
-                                    (item.priceTier || 'regular') === tier.id
-                                      ? 'border-brand-gold bg-brand-gold/25 text-brand-gold'
-                                      : 'border-brand-cart-border text-brand-ondark-dim'
-                                  }`}
-                                  onClick={() => setPriceTier(index, tier.id)}
-                                >
-                                  {tier.label}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                        <span className="text-right tabular-nums text-brand-ink">
-                          {lineNetTotal(index, item) < lineTotal(item) ? (
-                            <span className="block">
-                              <span className="block text-[10px] text-brand-subtle line-through">
-                                {money(item.price)}
-                              </span>
-                              <span className="font-bold text-brand-danger">
-                                {money(lineNetUnitPrice(index, item))}
-                              </span>
-                            </span>
-                          ) : (
-                            money(item.price)
-                          )}
-                        </span>
-                        <div className="flex items-center justify-center gap-1">
-                          <button
-                            type="button"
-                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-brand-n500"
-                            onClick={() => bumpQty(index, -1)}
-                            aria-label="Decrease quantity"
-                          >
-                            <FiMinus size={12} />
-                          </button>
-                          <span className="min-w-[3.3rem] text-center text-[11px] font-bold tabular-nums text-brand-ink">
-                            {qtyLabel}
-                          </span>
-                          <button
-                            type="button"
-                            className="grid h-7 w-7 place-items-center rounded border border-brand-cart-border text-brand-n500"
-                            onClick={() => bumpQty(index, 1)}
-                            aria-label="Increase quantity"
-                          >
-                            <FiPlus size={12} />
-                          </button>
-                        </div>
-                        <b className="text-right tabular-nums text-brand-ink">
-                          {lineNetTotal(index, item) < lineTotal(item) ? (
-                            <span className="block">
-                              <span className="block text-[10px] font-normal text-brand-subtle line-through">
-                                {money(lineTotal(item))}
-                              </span>
-                              <span className="text-brand-danger">{money(lineNetTotal(index, item))}</span>
-                            </span>
-                          ) : (
-                            money(lineTotal(item))
-                          )}
-                        </b>
-                        <button
-                          type="button"
-                          className="justify-self-end border-0 bg-transparent p-1 text-brand-cart-muted transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90 active:text-brand-ink"
-                          onClick={() => requestRemove(index)}
-                          title={canRemoveDirect ? 'Remove' : 'Remove (supervisor PIN)'}
-                        >
-                          <FiTrash2 size={16} />
-                        </button>
-                      </div>
-                    )
-                  })}
+                  {items.map((item, index) => renderCartLine(item, index))}
                 </div>
               ) : (
                 <div className="mt-[140px] px-2 text-center text-sm leading-[1.8] text-brand-n500">
@@ -1282,25 +1180,14 @@ function Cart({
             </div>
 
             <footer className="shrink-0 border-t border-brand-cart-line bg-white px-5 py-4 max-[700px]:px-3.5">
-              <div className="mb-3 flex items-end justify-between gap-3">
-                <div>
-                  <span className="block text-[11px] text-brand-ondark-dim">
-                    {items.length} item{items.length === 1 ? '' : 's'}
-                    {pricing.discountAmount > 0 ? ` · −${money(pricing.discountAmount)} disc.` : ''}
-                  </span>
-                  <strong className={`mt-0.5 block text-xl text-brand-ink ${moneyClass}`}>{money(payTotal)}</strong>
-                </div>
-                {vatRate > 0 && (
-                  <span className="text-[10px] text-brand-n700">VAT incl. {money(pricing.vatAmount)}</span>
-                )}
-              </div>
+              {renderSaleSummary()}
               <PrimaryButton
-                className="w-full justify-between"
+                className="mt-3 w-full justify-between"
                 disabled={!items.length || tillClosed || paying}
                 onClick={openCheckout}
               >
                 <span>Checkout</span>
-                <span aria-hidden>{'\u2192'}</span>
+                <span aria-hidden>{'→'}</span>
               </PrimaryButton>
             </footer>
           </>

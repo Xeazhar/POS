@@ -1,7 +1,7 @@
 {
   "name": "calepos",
   "private": true,
-  "version": "0.15.0",
+  "version": "0.18.0",
   "type": "module",
   "description": "CalePOS — offline-first multi-branch point of sale by Jazper Bustria",
   "author": "Jazper Bustria",

@@ -66,6 +66,24 @@ export const businessDate = (value = new Date(), openHour = DEFAULT_OPEN_HOUR) =
 /** Alias used by day-end / till — business date. */
 export const today = (openHour) => businessDate(new Date(), openHour ?? DEFAULT_OPEN_HOUR)
 
+/**
+ * The BUSINESS date a transaction / stock movement belongs to.
+ *
+ * A row's `date` is the CALENDAR date (`localDateKey(created_at)`) — it knows nothing about
+ * the branch's open hour, so it must never be compared against a `businessDate()` key
+ * directly. A business day runs open-hour to open-hour, so anything rung between midnight
+ * and `openHour` carries the NEXT calendar date while still belonging to the CURRENT
+ * business day. Comparing the two keys drops those sales from the day's totals and pulls in
+ * the previous day's early-hours sales instead — wrong in both directions, on money.
+ *
+ * Derived from `createdAt` (the actual instant) when present. Without it there is nothing
+ * better than the calendar date the row already carries, so that is returned unchanged
+ * rather than re-deriving a business date from a bare date string, which would roll a
+ * midnight-parsed value back a day for any branch opening after 08:00.
+ */
+export const rowBusinessDate = (row, openHour = DEFAULT_OPEN_HOUR) =>
+  row?.createdAt ? businessDate(row.createdAt, openHour) : row?.date || null
+
 export function dayEndForBusinessDate(dayEnds, date) {
   return (dayEnds || []).find((item) => item.date === date) || null
 }

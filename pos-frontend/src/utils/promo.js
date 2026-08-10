@@ -38,11 +38,41 @@ export function buildPromoByProductId(rules = [], fallbackEventName = '') {
           buyQty: Number(rule.buyQty ?? 1),
           getQty: Number(rule.getQty ?? 1),
           eventName: rule.eventName || fallbackEventName || '',
+          // A bundle rule's own name (e.g. "Meryenda Bundle") — distinct from eventName,
+          // the event that carries it. Null for every other rule type.
+          bundleName: rule.ruleType === 'bundle_pct' ? rule.bundleName || null : null,
+          // The other product(s) on this same rule — lets a pair/bundle tile tell the
+          // cashier/customer what to grab alongside it for the discount to apply.
+          partners: (rule.products || [])
+            .filter((p2) => p2.productId !== productId)
+            .map((p2) => ({ productId: p2.productId, productName: p2.productName })),
         })
       }
     }
   }
   return map
+}
+
+/**
+ * Named bundles ready for a POS quick-add button — one entry per `bundle_pct` rule that
+ * was given a name (unnamed bundles are still valid promo rules, they just don't get a
+ * button; nothing else here needs a name to work). Each rule already represents one
+ * complete bundle (a manager picks its full product set in one rule), so this is a
+ * straight filter + reshape, not a cross-rule grouping.
+ */
+export function collectPromoBundles(rules = []) {
+  return (rules || [])
+    .filter((rule) => rule.ruleType === 'bundle_pct' && rule.bundleName && (rule.products || []).length >= 2)
+    .map((rule) => ({
+      ruleId: rule.id,
+      bundleName: rule.bundleName,
+      eventName: rule.eventName || '',
+      discountPct: Number(rule.discountPct || 0),
+      products: rule.products.map((p) => ({
+        productId: p.productId || p.product_id,
+        productName: p.productName || null,
+      })),
+    }))
 }
 
 /** For item_% promos, the per-unit sale price. Other rule types need cart context. */
@@ -55,6 +85,15 @@ export function promoUnitPrice(listPrice, info) {
   return Number((price * (1 - pct / 100)).toFixed(2))
 }
 
+/**
+ * The label to show next to a promo badge — a bundle's own name when it has one (what a
+ * cashier actually needs to recognize "this is part of the Meryenda Bundle"), the promo
+ * event's name otherwise.
+ */
+export function promoDisplayName(info) {
+  return info?.bundleName || info?.eventName || ''
+}
+
 export function promoBadgeLabel(info) {
   if (!info) return null
   if (info.ruleType === 'item_pct') return `${info.discountPct}% OFF`
@@ -62,6 +101,21 @@ export function promoBadgeLabel(info) {
   if (info.ruleType === 'pair_pct') return `Pair ${info.discountPct}%`
   if (info.ruleType === 'bundle_pct') return `Bundle ${info.discountPct}%`
   return 'PROMO'
+}
+
+/** Which product(s) this pair/bundle discount needs alongside it — short label + full title. */
+export function promoPartnerLabel(info) {
+  if (!info?.partners?.length) return null
+  if (info.ruleType === 'pair_pct') {
+    const name = info.partners[0]?.productName
+    return name ? { text: `w/ ${name}`, title: name } : null
+  }
+  if (info.ruleType === 'bundle_pct') {
+    const names = info.partners.map((p) => p.productName).filter(Boolean)
+    if (!names.length) return null
+    return { text: `+${names.length} item${names.length > 1 ? 's' : ''}`, title: names.join(', ') }
+  }
+  return null
 }
 
 function lineQtyForPromo(item, { allowKg = false } = {}) {
@@ -94,6 +148,7 @@ export function computePromoDiscounts(items = [], promoRules = []) {
 
   const lineDiscounts = items.map(() => 0)
   const linePromoNames = items.map(() => null)
+  const lineBundleNames = items.map(() => null)
 
   const indicesByProductId = {}
   const indicesBySku = {}
@@ -210,7 +265,14 @@ export function computePromoDiscounts(items = [], promoRules = []) {
     for (let i = 0; i < ruleDiscounts.length; i += 1) {
       if (ruleDiscounts[i] > lineDiscounts[i]) {
         lineDiscounts[i] = ruleDiscounts[i]
+        // linePromoNames stays the EVENT name — it's what gets persisted to
+        // transaction_items.promo_name and fetchPromoSalesStats matches on that exact
+        // string (see migrate_promo_line_attribution.sql). lineBundleNames is a parallel,
+        // display-only array: a bundle's own name identifies "what this line is part of"
+        // better than the event's on-screen, but must never leak into the persisted value
+        // or a bundle's sales stop counting against its own promo event.
         linePromoNames[i] = rule.eventName || null
+        lineBundleNames[i] = rule.bundleName || null
       }
     }
   }
@@ -218,12 +280,21 @@ export function computePromoDiscounts(items = [], promoRules = []) {
   for (let i = 0; i < lineDiscounts.length; i += 1) {
     const maxDiscount = lineTotal(items[i])
     lineDiscounts[i] = Math.min(lineDiscounts[i], maxDiscount)
-    if (lineDiscounts[i] <= 0) linePromoNames[i] = null
+    if (lineDiscounts[i] <= 0) {
+      linePromoNames[i] = null
+      lineBundleNames[i] = null
+    }
     if (linePromoNames[i]) appliedEventNames.add(linePromoNames[i])
   }
 
   const promoDiscountAmount = Number(lineDiscounts.reduce((sum, v) => sum + v, 0).toFixed(2))
   return promoDiscountAmount > 0
-    ? { lineDiscounts, promoDiscountAmount, linePromoNames, appliedEventNames: [...appliedEventNames] }
+    ? {
+        lineDiscounts,
+        promoDiscountAmount,
+        linePromoNames,
+        lineBundleNames,
+        appliedEventNames: [...appliedEventNames],
+      }
     : null
 }

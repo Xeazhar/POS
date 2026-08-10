@@ -35,7 +35,14 @@ import {
   isTillClosed,
   money,
 } from '../utils/format'
-import { buildPromoByProductId, promoBadgeLabel, promoUnitPrice } from '../utils/promo'
+import {
+  buildPromoByProductId,
+  collectPromoBundles,
+  promoBadgeLabel,
+  promoDisplayName,
+  promoPartnerLabel,
+  promoUnitPrice,
+} from '../utils/promo'
 import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 import { formatSupportError } from '../utils/errors'
 
@@ -97,6 +104,9 @@ function POS() {
     ? new Set(promoRules.flatMap((r) => (r.products || []).map((p) => p.productId)).filter(Boolean))
     : new Set()
   const promoByProductId = useMemo(() => buildPromoByProductId(promoRules), [promoRules])
+  // Named bundle rules (e.g. "Meryenda Bundle") — one quick-add button per bundle, so a
+  // cashier doesn't have to find and tap every item in it separately.
+  const activeBundles = useMemo(() => collectPromoBundles(promoRules), [promoRules])
   const categories = [
     'All',
     ...(promoProductIds.size ? ['Promos'] : []),
@@ -201,6 +211,17 @@ function POS() {
     }
     if (product.pricingMode === 'kg') setWeighted(product)
     else addItem(product)
+  }
+
+  // Adds one of every product in a named bundle in a single tap — same guards and same
+  // per-item add path as tapping each tile individually (`select`), so stock/till/inquiry
+  // rules never diverge between the two. Bundle rules already exclude kg products at
+  // creation time (Promos.jsx), so every member here is a plain piece add.
+  const addBundle = (bundle) => {
+    for (const p of bundle.products) {
+      const product = products.find((item) => item.id === p.productId)
+      if (product) select(product)
+    }
   }
 
   const applyPriceChange = async (approvedBy = null, approver = null) => {
@@ -315,13 +336,9 @@ function POS() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <PageHeader
-        className="mb-3 shrink-0"
-        eyebrow={isRestaurant ? 'CARINDERIA' : 'SALES FLOOR'}
-        title={isRestaurant ? (manageMenu ? "Today's potahe" : 'Menu sale') : 'New sale'}
-      >
-        {isRestaurant &&
-          (manageMenu ? (
+      {isRestaurant && (
+        <div className="mb-3 flex shrink-0 justify-end">
+          {manageMenu ? (
             <PrimaryButton compact type="button" className="max-[700px]:w-full" onClick={finishMenuSetup}>
               {menuOnCount === 0 ? 'Skip for now' : 'Start selling'} <span aria-hidden>{'\u2192'}</span>
             </PrimaryButton>
@@ -333,8 +350,9 @@ function POS() {
             >
               Edit potahe
             </button>
-          ))}
-      </PageHeader>
+          )}
+        </div>
+      )}
       {tillClosed && (
         <p className="mb-3 rounded-md bg-brand-danger-bg px-3 py-2.5 text-xs text-brand-danger">
           Business day {bizDate} is closed. Sales are locked until a manager reopens the till, or
@@ -363,7 +381,7 @@ function POS() {
             ? 'grid-cols-1'
             : barcodeTableMode
               ? 'grid-cols-1'
-              : 'grid-cols-[minmax(0,1fr)_minmax(400px,440px)] max-[1100px]:grid-cols-[minmax(0,1fr)_380px]'
+              : 'grid-cols-[minmax(0,1fr)_minmax(340px,380px)] max-[1100px]:grid-cols-[minmax(0,1fr)_320px]'
         }`}
       >
         {!barcodeTableMode && (
@@ -439,6 +457,25 @@ function POS() {
                 ))}
               </div>
             )}
+            {!barcodeTableMode && !manageMenu && activeBundles.length > 0 && (
+              <div className="-mx-1 flex gap-[7px] overflow-x-auto px-1 pb-1 [scrollbar-width:thin]">
+                {activeBundles.map((bundle) => (
+                  <button
+                    key={bundle.ruleId}
+                    type="button"
+                    disabled={tillClosed}
+                    className="shrink-0 rounded-[5px] border border-brand-danger bg-brand-danger-bg px-[11px] py-2 text-left text-xs whitespace-nowrap text-brand-danger transition-[filter] duration-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    title={bundle.products.map((p) => p.productName).filter(Boolean).join(', ')}
+                    onClick={() => addBundle(bundle)}
+                  >
+                    <strong>{bundle.bundleName}</strong>
+                    <span className="ml-1 font-normal">
+                      +{bundle.products.length} items · {bundle.discountPct}% off
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           {barcodeTableMode ? (
             !String(search || '').trim() ? (
@@ -469,6 +506,7 @@ function POS() {
                       const promoInfo = promoByProductId.get(product.id)
                       const salePrice = promoUnitPrice(product.price, promoInfo)
                       const badge = promoBadgeLabel(promoInfo)
+                      const partner = promoPartnerLabel(promoInfo)
                       return (
                       <tr
                         key={product.id}
@@ -483,7 +521,13 @@ function POS() {
                           {badge && (
                             <div className="mt-0.5 text-[10px] font-bold text-brand-danger">
                               {badge}
-                              {promoInfo?.eventName ? ` · ${promoInfo.eventName}` : ''}
+                              {promoDisplayName(promoInfo) ? ` · ${promoDisplayName(promoInfo)}` : ''}
+                              {partner && (
+                                <span className="font-normal text-brand-subtle" title={partner.title}>
+                                  {' '}
+                                  ({partner.text})
+                                </span>
+                              )}
                             </div>
                           )}
                         </td>
@@ -518,10 +562,10 @@ function POS() {
             )
           ) : (
             <div
-              className={`grid min-h-0 flex-1 content-start gap-3 overflow-auto px-0.5 pt-1.5 pb-1 pr-1 ${
+              className={`grid min-h-0 flex-1 content-start gap-2 overflow-auto px-0.5 pt-1.5 pb-1 pr-1 ${
                 manageMenu && isRestaurant
-                  ? 'grid-cols-3 max-[1050px]:grid-cols-2 max-[700px]:grid-cols-1'
-                  : 'grid-cols-5 max-[1050px]:grid-cols-3 max-[800px]:max-h-[52vh] max-[700px]:grid-cols-2'
+                  ? 'grid-cols-4 max-[1050px]:grid-cols-3 max-[700px]:grid-cols-2'
+                  : 'grid-cols-6 max-[1200px]:grid-cols-5 max-[1050px]:grid-cols-4 max-[800px]:grid-cols-3 max-[800px]:max-h-[52vh] max-[520px]:grid-cols-2'
               }`}
             >
               {visible.map((product) => {
@@ -530,12 +574,13 @@ function POS() {
                 const promoInfo = promoByProductId.get(product.id)
                 const salePrice = promoUnitPrice(product.price, promoInfo)
                 const badge = promoBadgeLabel(promoInfo)
+                const partner = promoPartnerLabel(promoInfo)
                 return (
                   <div key={product.id} className="relative">
                     <button
                       type="button"
                       disabled={tillClosed || (isRestaurant && !manageMenu && offToday)}
-                      className={`tap-target flex min-h-[168px] w-full flex-col items-start rounded-[8px] border p-4 text-left transition-[border-color,box-shadow,transform,filter,opacity,background-color] duration-150 disabled:cursor-not-allowed ${
+                      className={`tap-target flex h-[104px] w-full flex-col items-start gap-0.5 overflow-hidden rounded-[6px] border p-2.5 text-left transition-[border-color,box-shadow,transform,filter,opacity,background-color] duration-150 disabled:cursor-not-allowed max-[800px]:h-[124px] max-[800px]:p-3 ${
                         manageMenu && isRestaurant
                           ? offToday
                             ? `border-brand-danger-line bg-brand-danger-tint-alt ${flashing ? 'scale-[0.98]' : ''}`
@@ -563,43 +608,45 @@ function POS() {
                         select(product)
                       }}
                     >
-                      {badge && !(isRestaurant && manageMenu) && (
-                        <span className="mb-1 rounded bg-brand-danger px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-white uppercase">
-                          {badge}
-                        </span>
-                      )}
-                      {isRestaurant && manageMenu ? (
-                        <span
-                          className={`rounded px-2 py-1 text-[10px] font-bold tracking-wide uppercase ${
-                            offToday
-                              ? 'bg-brand-danger-bg text-brand-danger'
-                              : 'bg-brand-success-bg text-brand-success-text'
-                          }`}
-                        >
-                          {offToday ? 'Not available' : 'Serving'}
-                        </span>
-                      ) : isRestaurant ? (
-                        <div
-                          className={`grid h-14 w-14 place-items-center rounded-lg text-xs font-bold ${
-                            product.menuKind === 'veggie'
-                              ? 'bg-brand-success-bg text-brand-success-text'
-                              : product.menuKind === 'drink' || product.menuKind === 'rice'
-                                ? 'bg-brand-info-bg text-brand-info'
-                                : 'bg-brand-meat text-brand-meat-text'
-                          }`}
-                        >
-                          {(product.menuKind || 'ON').slice(0, 4).toUpperCase()}
-                        </div>
-                      ) : (
-                        <UnitBadge mode={product.pricingMode} size="tile" />
-                      )}
-                      <strong className="mt-auto line-clamp-2 text-[15px] leading-snug">{product.name}</strong>
-                      {promoInfo?.eventName && !(isRestaurant && manageMenu) && (
-                        <span className="mt-0.5 line-clamp-1 text-[10px] font-bold text-brand-danger">
-                          {promoInfo.eventName}
-                        </span>
-                      )}
-                      <span className={`mt-1.5 text-[12px] text-brand-n600 ${moneyClass}`}>
+                      <div className="flex w-full shrink-0 items-center gap-1">
+                        {isRestaurant && manageMenu ? (
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[9px] font-bold tracking-wide uppercase ${
+                              offToday
+                                ? 'bg-brand-danger-bg text-brand-danger'
+                                : 'bg-brand-success-bg text-brand-success-text'
+                            }`}
+                          >
+                            {offToday ? 'Not available' : 'Serving'}
+                          </span>
+                        ) : badge ? (
+                          <span
+                            className="truncate rounded bg-brand-danger px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-white uppercase"
+                            title={[promoDisplayName(promoInfo), partner?.title].filter(Boolean).join(' · ') || undefined}
+                          >
+                            {badge}
+                            {partner ? ` · ${partner.text}` : ''}
+                          </span>
+                        ) : isRestaurant ? (
+                          <span
+                            className={`inline-flex min-w-[2rem] items-center justify-center rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
+                              product.menuKind === 'veggie'
+                                ? 'bg-brand-success-bg text-brand-success-text'
+                                : product.menuKind === 'drink' || product.menuKind === 'rice'
+                                  ? 'bg-brand-info-bg text-brand-info'
+                                  : 'bg-brand-meat text-brand-meat-text'
+                            }`}
+                          >
+                            {(product.menuKind || 'ON').slice(0, 4).toUpperCase()}
+                          </span>
+                        ) : (
+                          <UnitBadge mode={product.pricingMode} />
+                        )}
+                      </div>
+                      <strong className="line-clamp-2 min-h-0 flex-1 text-[13px] leading-snug max-[800px]:text-sm">
+                        {product.name}
+                      </strong>
+                      <span className={`shrink-0 text-[11px] text-brand-n600 max-[800px]:text-xs ${moneyClass}`}>
                         {salePrice != null ? (
                           <>
                             <span className="mr-1.5 text-brand-n500 line-through">{money(product.price)}</span>
@@ -612,13 +659,13 @@ function POS() {
                         {isRestaurant ? '' : ` / ${product.pricingMode === 'kg' ? 'kg' : 'pc'}`}
                       </span>
                       {isRestaurant && (
-                        <span className="mt-1 text-[10px] font-bold text-brand-subtle">
+                        <span className="line-clamp-1 shrink-0 text-[9px] font-bold text-brand-subtle">
                           {product.category}
                           {product.menuKind ? ` - ${product.menuKind}` : ''}
                         </span>
                       )}
                       {isRestaurant && manageMenu && (
-                        <span className="mt-2 text-[10px] text-brand-muted">
+                        <span className="shrink-0 text-[9px] text-brand-muted">
                           Tap to mark {offToday ? 'serving' : 'unavailable'}
                         </span>
                       )}
@@ -627,7 +674,7 @@ function POS() {
                       <button
                         type="button"
                         title="Change price"
-                        className="absolute top-2 right-2 rounded border border-brand-border bg-white/95 px-1.5 py-0.5 text-[10px] font-bold text-brand-ink"
+                        className="absolute top-1.5 right-1.5 rounded border border-brand-border bg-white/95 px-1.5 py-0.5 text-[10px] font-bold text-brand-ink"
                         onClick={(e) => {
                           e.stopPropagation()
                           setPriceTarget(product)
@@ -760,6 +807,7 @@ function POS() {
                     const promoInfo = promoByProductId.get(product.id)
                     const salePrice = promoUnitPrice(product.price, promoInfo)
                     const badge = promoBadgeLabel(promoInfo)
+                    const partner = promoPartnerLabel(promoInfo)
                     return (
                     <tr
                       key={product.id}
@@ -777,7 +825,13 @@ function POS() {
                         {badge ? (
                           <div className="text-[10px] font-bold text-brand-danger">
                             {badge}
-                            {promoInfo?.eventName ? ` · ${promoInfo.eventName}` : ''}
+                            {promoDisplayName(promoInfo) ? ` · ${promoDisplayName(promoInfo)}` : ''}
+                            {partner && (
+                              <span className="font-normal text-brand-subtle" title={partner.title}>
+                                {' '}
+                                ({partner.text})
+                              </span>
+                            )}
                           </div>
                         ) : (
                           <div className="text-[10px] text-brand-subtle">
@@ -881,12 +935,19 @@ function POS() {
             const promoInfo = promoByProductId.get(inquiryProduct.id)
             const salePrice = promoUnitPrice(inquiryProduct.price, promoInfo)
             const badge = promoBadgeLabel(promoInfo)
+            const partner = promoPartnerLabel(promoInfo)
             return (
               <>
                 {badge && (
                   <p className="mt-2 mb-0 text-xs font-bold text-brand-danger">
                     {badge}
-                    {promoInfo?.eventName ? ` · ${promoInfo.eventName}` : ''}
+                    {promoDisplayName(promoInfo) ? ` · ${promoDisplayName(promoInfo)}` : ''}
+                    {partner && (
+                      <span className="font-normal text-brand-subtle" title={partner.title}>
+                        {' '}
+                        ({partner.text})
+                      </span>
+                    )}
                   </p>
                 )}
                 <div className="mt-4 grid grid-cols-2 gap-2 text-xs">

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import AuditSummary from '../../components/dashboard/AuditSummary'
 import RevenueChart from '../../components/dashboard/RevenueChart'
 import SalesMixBar from '../../components/dashboard/SalesMixBar'
+import StatTiles from '../../components/dashboard/StatTiles'
 import {
   DeltaBadge,
   PageHeader,
@@ -12,13 +14,15 @@ import {
 } from '../../components/ui'
 import {
   branchSummary,
+  fetchBranchCashImpact,
   fetchBranches,
   fetchNetworkDashboard,
   fetchPeriodComparison,
+  fetchSaleEvents,
   hasSupabase,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
-import { greetingFor, money } from '../../utils/format'
+import { businessDate, greetingFor, money } from '../../utils/format'
 
 const PERIODS = [
   { id: 'day', label: 'Day', days: 1 },
@@ -26,6 +30,15 @@ const PERIODS = [
   { id: 'month', label: 'Month', days: 30 },
   { id: 'year', label: 'Year', days: 365 },
 ]
+
+// LOCAL calendar date, not toISOString() (UTC) — see the same note on branchSummary's
+// `start` above.
+function dateKey(d) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 /** What each period is being compared against, spelled out under the KPI. */
 const COMPARISON_LABEL = {
@@ -51,11 +64,12 @@ function ManagerOverview() {
   const [branches, setBranches] = useState([])
   const [summaries, setSummaries] = useState({})
   const [linePoints, setLinePoints] = useState([])
-  const [branchBars, setBranchBars] = useState([])
   const [paymentMix, setPaymentMix] = useState([])
   const [topProducts, setTopProducts] = useState([])
   const [topCategories, setTopCategories] = useState([])
   const [comparison, setComparison] = useState(null)
+  const [cashImpactTotals, setCashImpactTotals] = useState(null)
+  const [auditEvents, setAuditEvents] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -91,7 +105,6 @@ function ManagerOverview() {
             }
           })
           setLinePoints(demoLine)
-          setBranchBars([{ category: 'Bayombong Branch #001', value: 86 }])
           setPaymentMix([
             { id: 'cash', label: 'Cash', value: 48 },
             { id: 'card', label: 'Card', value: 22 },
@@ -111,6 +124,8 @@ function ManagerOverview() {
             previous: { revenue: 74, orders: 2 },
             hasPrevious: true,
           })
+          setCashImpactTotals(null)
+          setAuditEvents([])
           setLoading(false)
           return
         }
@@ -127,22 +142,58 @@ function ManagerOverview() {
         // query and serialising it would add a round trip to every period switch.
         // It must never take the dashboard down: a missing delta badge is a far smaller
         // problem than a blank page, so a failure here degrades to no badge.
-        const [charts, periodComparison] = await Promise.all([
+        const periodStart = new Date()
+        periodStart.setHours(0, 0, 0, 0)
+        periodStart.setDate(periodStart.getDate() - (meta.days - 1))
+        const [charts, periodComparison, cashRows, events] = await Promise.all([
           fetchNetworkDashboard(period),
           fetchPeriodComparison(period).catch(() => null),
+          // Cash impact is always TODAY per branch (a drawer is counted once a day, not
+          // summed over a period), summed across every branch a manager can see.
+          Promise.all(
+            rows.map((branch) => {
+              const openHour = Number(branch.day_open_hour ?? 7)
+              return fetchBranchCashImpact(branch.id, businessDate(new Date(), openHour), openHour).catch(
+                () => null,
+              )
+            }),
+          ),
+          // No branchId — RLS already scopes a manager to branches they can see, same
+          // pattern fetchNetworkDashboard/fetchPeriodComparison rely on.
+          fetchSaleEvents({ start: dateKey(periodStart), end: dateKey(new Date()) }).catch(() => []),
         ])
         if (!active) return
         setComparison(periodComparison)
         setSummaries(next)
         setLinePoints(charts.linePoints)
-        setBranchBars(
-          charts.branchBars.length
-            ? charts.branchBars
-            : rows.map((b) => ({ category: b.name, value: next[b.id]?.revenue || 0 })),
-        )
         setPaymentMix(charts.paymentMix || [])
         setTopProducts(charts.topProducts || [])
         setTopCategories(charts.topCategories || [])
+        setCashImpactTotals(
+          cashRows.reduce(
+            (acc, row) => ({
+              cashSales: acc.cashSales + (row?.cashSales || 0),
+              cardSales: acc.cardSales + (row?.cardSales || 0),
+              ewalletSales: acc.ewalletSales + (row?.ewalletSales || 0),
+              cashRefunds: acc.cashRefunds + (row?.cashRefunds || 0),
+              changeFund: acc.changeFund + (row?.changeFund || 0),
+              pickup: acc.pickup + (row?.pickup || 0),
+              paidOut: acc.paidOut + (row?.paidOut || 0),
+              expectedCash: acc.expectedCash + (row?.expectedCash || 0),
+            }),
+            {
+              cashSales: 0,
+              cardSales: 0,
+              ewalletSales: 0,
+              cashRefunds: 0,
+              changeFund: 0,
+              pickup: 0,
+              paidOut: 0,
+              expectedCash: 0,
+            },
+          ),
+        )
+        setAuditEvents((events || []).filter((e) => e.event_type === 'void' || e.event_type === 'refund'))
         setLoading(false)
       })
       .catch((err) => {
@@ -162,14 +213,51 @@ function ManagerOverview() {
       orders: acc.orders + (row.orders || 0),
       lowStock: acc.lowStock + (row.lowStock || 0),
       menuOn: acc.menuOn + (row.menuOn || 0),
+      grossSales: acc.grossSales + (row.grossSales || 0),
+      netSales: acc.netSales + (row.netSales || 0),
+      discounts: acc.discounts + (row.discounts || 0),
+      refunds: acc.refunds + (row.refunds || 0),
+      voidedSales: acc.voidedSales + (row.voidedSales || 0),
     }),
-    { revenue: 0, orders: 0, lowStock: 0, menuOn: 0 },
+    {
+      revenue: 0,
+      orders: 0,
+      lowStock: 0,
+      menuOn: 0,
+      grossSales: 0,
+      netSales: 0,
+      discounts: 0,
+      refunds: 0,
+      voidedSales: 0,
+    },
   )
 
   const periodLabel = PERIODS.find((p) => p.id === period)?.label || 'Week'
 
-  // One branch means "Revenue by branch" is a single bar restating the KPI above it.
-  const showBranchPanel = branches.length > 1
+  // Lead item (first) is the number that matters most — StatTiles renders it larger.
+  const salesPerformanceItems = [
+    { label: 'Net sales', value: money(totals.netSales) },
+    { label: 'Gross sales', value: money(totals.grossSales) },
+    { label: 'Discounts', value: money(totals.discounts), tone: 'danger' },
+    { label: 'Refunds', value: money(totals.refunds), tone: 'danger' },
+    { label: 'Voided sales', value: money(totals.voidedSales), tone: 'danger' },
+  ]
+  // Expected cash leads — the one figure that's actually actionable network-wide. Card/
+  // E-wallet sales are informational only (never part of Expected cash) — always TODAY,
+  // network-wide, distinct from the period-scoped "Payment methods" mix card below.
+  const cashImpactItems = cashImpactTotals
+    ? [
+        { label: 'Expected cash', value: money(cashImpactTotals.expectedCash) },
+        { label: 'Cash sales', value: money(cashImpactTotals.cashSales) },
+        { label: 'Card sales', value: money(cashImpactTotals.cardSales) },
+        { label: 'E-wallet sales', value: money(cashImpactTotals.ewalletSales) },
+        {
+          label: 'Cash in / out',
+          value: money(cashImpactTotals.changeFund - cashImpactTotals.pickup - cashImpactTotals.paidOut),
+          hint: `${money(cashImpactTotals.changeFund)} in · ${money(cashImpactTotals.pickup + cashImpactTotals.paidOut)} out`,
+        },
+      ]
+    : []
 
   // Payment mix reuses the shared bar list. Zero-value methods are dropped: a shop that
   // takes no cards should not carry a permanent empty "Card" row implying it does.
@@ -266,31 +354,30 @@ function ManagerOverview() {
         ))}
       </div>
 
-      {/* Revenue by branch is meaningless with one branch — it is a bar chart of a single
-          bar restating the KPI above it. Dropped from the grid entirely rather than
-          hidden in place, so the remaining panels widen instead of leaving a gap. */}
-      <div
-        className={`mb-4 grid items-stretch gap-3.5 max-[1100px]:grid-cols-1 ${
-          showBranchPanel
-            ? 'grid-cols-[minmax(0,1.4fr)_minmax(200px,0.75fr)_minmax(220px,0.9fr)]'
-            : 'grid-cols-[minmax(0,1.6fr)_minmax(240px,0.9fr)]'
-        }`}
-      >
-        <RevenueChart points={linePoints} period={`Network - ${periodLabel}`} />
-        <SalesMixBar
-          mix={paymentMixBars}
-          title="Payment methods"
-          subtitle={`${periodLabel} · PHP`}
-          showShare
-          barClassFor={(item) => PAYMENT_BAR_CLASS[item.category] || 'bg-brand-gold'}
-          emptyMessage="No payments taken in this period yet."
-        />
-        {showBranchPanel && (
-          <SalesMixBar mix={branchBars} title="Revenue by branch" subtitle={`${periodLabel} - PHP`} />
-        )}
+      {/* Revenue chart leads — it's the primary "how's the network doing" read. Sales
+          performance / Cash impact / Audit stack beside it rather than above it, so the
+          chart isn't pushed down the page by supporting numbers. Chart height is raised
+          to roughly match that 3-card stack instead of the default (a 2-card stack's) height. */}
+      <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(240px,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
+        <RevenueChart points={linePoints} period={`Network - ${periodLabel}`} height={300} />
+        <div className="flex flex-col gap-2.5">
+          <StatTiles title="Sales performance" subtitle={periodLabel} items={salesPerformanceItems} />
+          <StatTiles
+            title="Payment & cash impact"
+            subtitle={`${businessDate(new Date())} · today, network-wide`}
+            items={cashImpactItems}
+          />
+          <AuditSummary
+            events={auditEvents}
+            linkHref="/manager/reports"
+            subtitle={`Network-wide · ${periodLabel}`}
+          />
+        </div>
       </div>
 
-      <div className="mb-4 grid grid-cols-2 items-stretch gap-3.5 max-[900px]:grid-cols-1">
+      {/* Top products, Top categories, Payment methods — one row of supporting detail,
+          same visual weight, so none reads as more important than another. */}
+      <div className="mb-4 grid grid-cols-3 items-start gap-3.5 max-[900px]:grid-cols-1">
         <SalesMixBar
           mix={topProducts}
           title="Top products"
@@ -300,6 +387,14 @@ function ManagerOverview() {
           mix={topCategories}
           title="Top categories"
           subtitle={`Network-wide · ${periodLabel} · PHP`}
+        />
+        <SalesMixBar
+          mix={paymentMixBars}
+          title="Payment methods"
+          subtitle={`${periodLabel} · PHP`}
+          showShare
+          barClassFor={(item) => PAYMENT_BAR_CLASS[item.category] || 'bg-brand-gold'}
+          emptyMessage="No payments taken in this period yet."
         />
       </div>
 

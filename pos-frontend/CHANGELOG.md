@@ -17,6 +17,96 @@ computation, OR numbering).
 
 ---
 
+## 0.18.0 — 2026-08-10
+
+### Added: Card/e-wallet sales on the "Payment & cash impact" dashboards + Day End; fixed a false "Short" on Day End
+
+"Cash impact" (Dashboard, BranchDashboard, manager Overview) is renamed "Payment & cash
+impact" and now shows Card sales and E-wallet sales alongside Cash sales and Expected cash
+— previously only cash was visible there, so a manager had to cross-check the separate
+period-scoped "Payment methods" chart (or nothing, on the branch dashboard, which never had
+one) to see how much of the day came in by card/e-wallet. Card/e-wallet sales are net of
+same-tender refunds, same as Cash sales, so the three reconcile to the day's net sales — but
+neither ever enters `expectedCash`, since a card/e-wallet payment or refund never touches the
+physical drawer. Dropped the standalone "Cash refunds" tile (redundant — already folded into
+Expected cash, and Sales performance already carries a general "Refunds" figure).
+
+DayEnd.jsx's "Today's sales report" now shows the same Cash/Card/E-wallet split under "All
+sales (POS)" instead of just Cash.
+
+Also fixed: SupervisorDayEnd's "Variance vs expected" used to read the blank "Cash on hand"
+field as ₱0 and immediately show a false "₱X Short" before anyone had counted the drawer. It
+now shows "— Enter cash on hand to compare" until a value is typed. "Close day" was already
+correctly disabled on a blank field before this fix — only the on-screen variance was
+misleading, nothing could actually be submitted with an uncounted drawer.
+
+`api.fetchBranchCashImpact()` gained `cardSales`/`ewalletSales` fields to back this;
+`expectedCash` itself is unchanged.
+
+---
+
+## 0.17.1 — 2026-08-10
+
+### Fixed: Top products/categories and DayEnd's sales report showing stale, mispriced data
+
+Dashboard's "Top products"/"Top categories" and DayEnd's "Today's sales report" (+ restock
+suggestions) were reading `stock_movements` instead of the actual sale — a transaction's
+`itemsList` is never populated once it's loaded from the server (`BOOTSTRAP_TX_COLS` only
+counts items, doesn't fetch them), so both silently fell back to the stock movement log,
+priced at *today's* live product price rather than what was actually charged. Since
+`stock_movements` rows are deliberately never deleted when a transaction is (debug reset
+scripts leave them on purpose), an old test sale's movement row kept counting as "sold today"
+indefinitely — phantom orders and revenue that didn't match the Transactions list or Reports.
+Both now read `transaction_items` directly (new `fetchSoldLineItems` in `api.js`, same query
+shape the network-wide manager Overview page already used correctly), using each line's
+recorded `line_total`. This is a network fetch, so DayEnd shows a "reconnect to see today's
+sales breakdown" notice when offline instead of silently wrong numbers — cash counting and
+Submit/Close Day are unaffected and still work offline exactly as before.
+
+---
+
+## 0.17.0 — 2026-08-10
+
+### Added: Remote manager approval for refunds when no supervisor is on site
+
+A refund/void previously required a supervisor (or manager) to type their code + PIN in
+person at `Transactions.jsx`. For a branch whose manager is never on site, that meant
+relaying a PIN over the phone. The refund reason step now offers a checkbox — "No
+supervisor available — notify manager instead" — that sends the request to the manager
+instead: it shows up in the header bell and on `Manager → Branches → [branch]`'s new
+"Refund requests" section from wherever the manager is, and the cashier's screen
+auto-resolves once they approve or reject, with a reason shown on reject and a Cancel
+option while waiting. New `refund_requests` table + `request_refund_approval` /
+`approve_refund_request` / `reject_refund_request` / `cancel_refund_request` RPCs
+(`migrate_refund_requests.sql`), mirroring promo dual-control. Manager-only — a supervisor
+who is actually on site keeps using the existing in-person PIN flow.
+
+---
+
+## 0.16.0 — 2026-08-10
+
+### Added: Sales performance, Cash impact, and Audit on the manager and supervisor dashboards
+
+**Manager Overview, Manager → Branches → [a branch], and the supervisor home dashboard** now
+each show three consistent metric groups instead of a handful of ad-hoc figures:
+
+- **Sales performance** — Gross sales, Net sales, Discounts, Refunds, Voided sales.
+- **Cash impact** — Cash sales, Cash refunds, Cash in/out, Expected cash. Always today's
+  business day (a drawer is counted once a day, not summed over a week), and computed with
+  the exact same formula Day End's own "Expected" figure uses, so the two can never disagree.
+- **Audit** — void/refund counts and value, with a small paginated recent list (who performed
+  each one, who approved it, why), linking to the existing Reports → "Void / Refund Log" for
+  the full history.
+
+The revenue-over-time chart, sales performance, cash impact and audit now sit together in one
+row (chart on the left, the three metric cards stacked on the right); Top products, Top
+categories and Payment methods sit in their own row below. "Revenue by branch" was removed
+from Manager Overview (redundant once a network only has a couple of branches). No schema or
+RPC changes — everything reads existing `transactions`, `cash_drawer_entries`, `staff_shifts`
+and `sale_events` data.
+
+---
+
 ## 0.15.0 — 2026-08-10
 
 **Action required, once per database:** re-run `migrate_enable_realtime.sql` in the Supabase

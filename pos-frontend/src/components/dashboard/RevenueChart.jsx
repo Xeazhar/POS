@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { money } from '../../utils/format'
 import { SectionHeading, TableCard } from '../ui'
 
@@ -17,12 +17,34 @@ import { SectionHeading, TableCard } from '../ui'
  * screen reader and a native long-press actually surface, and they keep working if the
  * pointer handlers do not.
  */
-function RevenueChart({ points = [], period }) {
+function RevenueChart({ points = [], period, height: minHeight = 220 }) {
   const [hoverIndex, setHoverIndex] = useState(null)
+  const containerRef = useRef(null)
+  // Measured in pixels so the chart fills whatever box its card actually has — both axes —
+  // instead of sitting pinned at a fixed size. The card sits in a `items-stretch` grid next
+  // to a sidebar of variable height (Sales performance / Cash impact / Audit stack), so a
+  // fixed pixel height either clips or leaves blank space under the chart depending on how
+  // tall that sidebar is. Falls back to 640x`minHeight` before the first measurement.
+  const [measuredSize, setMeasuredSize] = useState({ width: 640, height: minHeight })
+
+  useEffect(() => {
+    const node = containerRef.current
+    if (!node || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      setMeasuredSize({
+        width: Math.round(entry.contentRect.width),
+        height: Math.round(entry.contentRect.height),
+      })
+    })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
 
   const max = Math.max(...points.map((item) => item.total), 1)
-  const width = 640
-  const height = 220
+  const width = Math.max(280, measuredSize.width)
+  const height = Math.max(minHeight, measuredSize.height)
   const left = 56
   const bottom = 28
   const top = 16
@@ -41,16 +63,19 @@ function RevenueChart({ points = [], period }) {
   const tooltipFlips = active ? active.x + tooltipWidth + 12 > width : false
 
   return (
-    <TableCard className="h-auto max-h-none overflow-hidden p-0">
+    <TableCard className="flex h-full max-h-none flex-col overflow-hidden p-0">
       <SectionHeading title="Revenue over time" subtitle={`${period} · PHP`} />
-      <div className="px-4 pt-3 pb-4">
+      <div className="flex min-h-0 flex-1 flex-col px-4 pt-3 pb-4">
         {points.length === 0 ? (
-          <div className="py-9 text-xs text-brand-muted">No paid sales in this period.</div>
+          <div className="flex flex-1 items-center justify-center text-xs text-brand-muted">
+            No paid sales in this period.
+          </div>
         ) : (
-          <div className="w-full max-w-[640px]">
+          <div ref={containerRef} className="min-h-0 w-full flex-1">
             <svg
               viewBox={`0 0 ${width} ${height}`}
-              className="line-chart block aspect-[640/220] h-auto w-full"
+              className="line-chart block w-full"
+              height={height}
               preserveAspectRatio="xMidYMid meet"
               role="img"
               aria-label="Revenue over time"
