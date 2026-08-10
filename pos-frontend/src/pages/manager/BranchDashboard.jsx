@@ -3,6 +3,8 @@ import { FiX } from 'react-icons/fi'
 import { Link, useParams } from 'react-router-dom'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
 import { DayEndReportPanels } from '../../components/dayend/DayEndReportPanels'
+import AuditSummary from '../../components/dashboard/AuditSummary'
+import StatTiles from '../../components/dashboard/StatTiles'
 import {
   ErrorBanner,
   Eyebrow,
@@ -27,10 +29,12 @@ import {
 import {
   approverLabel,
   bootstrapBranchData,
+  fetchBranchCashImpact,
   fetchBranchTelemetry,
   fetchBranches,
   fetchPettyCashTimeline,
   fetchRefundSummary,
+  fetchSaleEvents,
   fetchStaffShifts,
   fetchTransactionDetail,
   hasSupabase,
@@ -46,7 +50,7 @@ import { useLiveData } from '../../hooks/useLiveData'
 import { useAuthStore } from '../../stores/posStore'
 import { previousDayRestockReport } from '../../utils/dayEndReport'
 import { formatSupportError } from '../../utils/errors'
-import { businessDate, formatOpenHourLabel, money, qty } from '../../utils/format'
+import { businessDate, formatOpenHourLabel, money, qty, rowBusinessDate } from '../../utils/format'
 import { isSupervisorOrAbove } from '../../utils/roles'
 import { discountSourceLabel, isPromoDiscountType } from '../../utils/promo'
 import { isUuid } from '../../utils/transactionDetail'
@@ -139,6 +143,8 @@ function ManagerBranchDashboard() {
   const [pettyBusyId, setPettyBusyId] = useState(null)
   const [staffShifts, setStaffShifts] = useState([])
   const [loading, setLoading] = useState(true)
+  const [cashImpact, setCashImpact] = useState(null)
+  const [auditEvents, setAuditEvents] = useState([])
 
   useEffect(() => {
     let active = true
@@ -164,9 +170,11 @@ function ManagerBranchDashboard() {
         if (!active) return
         setBranch(branches.find((row) => row.id === branchId) || null)
         const payload = await bootstrapBranchData(branchId)
+        const openHourForFetch = Number(payload.dayOpenHour ?? 7)
+        const todayForFetch = businessDate(new Date(), openHourForFetch)
         const pettyTimeline = await fetchPettyCashTimeline(branchId, {
-          startDate: businessDate(new Date(), Number(payload.dayOpenHour ?? 7)),
-          endDate: businessDate(new Date(), Number(payload.dayOpenHour ?? 7)),
+          startDate: todayForFetch,
+          endDate: todayForFetch,
         }).catch(() => [])
         const tel = await fetchBranchTelemetry([branchId])
         // Staff roster + hours comes from the shift log — the same clock-in/out records
@@ -175,12 +183,18 @@ function ManagerBranchDashboard() {
         const shiftRows = await fetchStaffShifts({
           branchId,
           start: daysAgoKey(STAFF_LOG_DAYS),
-          end: businessDate(new Date(), Number(payload.dayOpenHour ?? 7)),
+          end: todayForFetch,
         }).catch(() => [])
+        const [cashImpactRow, auditRows] = await Promise.all([
+          fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
+          fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
+        ])
         if (active) {
           setData({ ...payload, pettyTimeline })
           setTelemetry({ devices: tel.devices[branchId] || [] })
           setStaffShifts(shiftRows || [])
+          setCashImpact(cashImpactRow)
+          setAuditEvents(auditRows || [])
           setLoading(false)
         }
       })
@@ -212,11 +226,19 @@ function ManagerBranchDashboard() {
     const branches = await fetchBranches()
     setBranch(branches.find((row) => row.id === branchId) || null)
     const payload = await bootstrapBranchData(branchId)
+    const openHourForFetch = Number(payload.dayOpenHour ?? 7)
+    const todayForFetch = businessDate(new Date(), openHourForFetch)
     const pettyTimeline = await fetchPettyCashTimeline(branchId, {
-      startDate: businessDate(new Date(), Number(payload.dayOpenHour ?? 7)),
-      endDate: businessDate(new Date(), Number(payload.dayOpenHour ?? 7)),
+      startDate: todayForFetch,
+      endDate: todayForFetch,
     }).catch(() => [])
+    const [cashImpactRow, auditRows] = await Promise.all([
+      fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
+      fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
+    ])
     setData({ ...payload, pettyTimeline })
+    setCashImpact(cashImpactRow)
+    setAuditEvents(auditRows || [])
   }
 
   const loadStaffShifts = async () => {
@@ -256,7 +278,10 @@ function ManagerBranchDashboard() {
   const openHour = Number(branch?.day_open_hour ?? 7)
   const isRestaurant = branch?.branch_type === 'restaurant'
   const todayKey = businessDate(new Date(), openHour)
-  const todayTx = data.transactions.filter((item) => item.status === 'Paid' && item.date === todayKey)
+  // rowBusinessDate, not item.date — item.date is the calendar date and todayKey is a
+  // business date; see rowBusinessDate in utils/format.js.
+  const inToday = (item) => rowBusinessDate(item, openHour) === todayKey
+  const todayTx = data.transactions.filter((item) => item.status === 'Paid' && inToday(item))
   const revenue = todayTx.reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
   /**
    * Money handed back today, across ALL of today's receipts — not just the ones still
@@ -267,7 +292,7 @@ function ManagerBranchDashboard() {
    * a smaller refund figure the more completely a sale was refunded. A void also does not
    * always write `refunded_amount`, so the whole total counts when it is absent.
    */
-  const todayAll = data.transactions.filter((item) => item.date === todayKey)
+  const todayAll = data.transactions.filter(inToday)
   const refundedRows = todayAll.filter(
     (item) => item.status === 'Voided' || Number(item.refundedAmount || 0) > 0,
   )
@@ -329,6 +354,48 @@ function ManagerBranchDashboard() {
         sum + Math.abs(item.quantityChange) * (data.products.find((p) => p.id === item.productId)?.price || 0),
       0,
     )
+  // Same reductions terminalReports.js uses for the X/Z reading (Gross/Net/Discounts/
+  // Refunds/Voided) — reused rather than re-derived so this row and a printed reading for
+  // the same day can never quietly disagree.
+  const todayVoided = todayAll.filter((item) => item.status === 'Voided')
+  // Lead item (first) is the number that matters most — StatTiles renders it larger.
+  // Net sales, not Gross: it's what the business actually kept, so it leads.
+  const salesPerformanceItems = [
+    { label: 'Net sales', value: money(revenue) },
+    {
+      label: 'Gross sales',
+      value: money(todayTx.reduce((sum, t) => sum + Number(t.total || 0) + Number(t.discountAmount || 0), 0)),
+    },
+    {
+      label: 'Discounts',
+      value: money(todayTx.reduce((sum, t) => sum + Number(t.discountAmount || 0), 0)),
+      tone: 'danger',
+    },
+    {
+      label: 'Refunds',
+      value: money(todayTx.reduce((sum, t) => sum + Number(t.refundedAmount || 0), 0)),
+      tone: 'danger',
+    },
+    {
+      label: 'Voided sales',
+      value: money(todayVoided.reduce((sum, t) => sum + Number(t.total || 0), 0)),
+      tone: 'danger',
+    },
+  ]
+  // Expected cash leads — it's the one figure a manager actually needs to act on
+  // (does the drawer match). The rest is how it was arrived at.
+  const cashImpactItems = cashImpact
+    ? [
+        { label: 'Expected cash', value: money(cashImpact.expectedCash) },
+        { label: 'Cash sales', value: money(cashImpact.cashSales) },
+        { label: 'Cash refunds', value: money(cashImpact.cashRefunds), tone: 'danger' },
+        {
+          label: 'Cash in / out',
+          value: money(cashImpact.changeFund - cashImpact.pickup - cashImpact.paidOut),
+          hint: `${money(cashImpact.changeFund)} in · ${money(cashImpact.pickup + cashImpact.paidOut)} out`,
+        },
+      ]
+    : []
   const todayEntry = (data.dayEnds || []).find((entry) => entry.date === todayKey)
   const submittedToday = todayEntry?.status === 'submitted'
   const closedToday = todayEntry?.status === 'closed'
@@ -599,6 +666,9 @@ function ManagerBranchDashboard() {
           </div>
         ))}
       </div>
+
+      <StatTiles title="Sales performance" subtitle={`${todayKey}`} items={salesPerformanceItems} />
+      <StatTiles title="Cash impact" subtitle={`${todayKey} · this branch's drawer`} items={cashImpactItems} />
 
       <div className="mb-4 grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
         <TableCard className="max-h-none overflow-hidden">
@@ -884,6 +954,8 @@ function ManagerBranchDashboard() {
           </div>
         )}
       </TableCard>
+
+      <AuditSummary events={auditEvents} linkHref="/manager/reports" subtitle={`Voids & refunds · ${todayKey}`} />
 
       {isRestaurant && plateMix.byCategory.length > 0 && (
         <TableCard className="mb-4 max-h-none overflow-hidden">

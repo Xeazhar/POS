@@ -1,13 +1,24 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import AuditSummary from '../components/dashboard/AuditSummary'
 import RevenueChart from '../components/dashboard/RevenueChart'
 import SalesMixBar from '../components/dashboard/SalesMixBar'
+import StatTiles from '../components/dashboard/StatTiles'
 import { DayEndReportPanels } from '../components/dayend/DayEndReportPanels'
 import { PageHeader, PageSkeleton, PrimaryButton, SectionHeading, TableCard, moneyClass } from '../components/ui'
-import { hasSupabase } from '../lib/api'
+import { fetchBranchCashImpact, fetchSaleEvents, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { previousDayRestockReport } from '../utils/dayEndReport'
-import { businessDate, greetingFor, money, qty, stockTone } from '../utils/format'
+import { businessDate, greetingFor, money, stockTone } from '../utils/format'
+import { canAccessModule } from '../utils/roles'
+
+/** Payment mix keeps its own colours — cash / card / e-wallet are genuinely distinct
+ * categories, unlike the ranking panels where colour would just be noise. */
+const PAYMENT_BAR_CLASS = {
+  Cash: 'bg-brand-success',
+  Card: 'bg-brand-info',
+  'E-wallet': 'bg-brand-gold',
+}
 
 function startOfDay(date) {
   const next = new Date(date)
@@ -189,8 +200,11 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const [period, setPeriod] = useState('Today')
   const [bootingPage, setBootingPage] = useState(Boolean(hasSupabase))
+  const [cashImpact, setCashImpact] = useState(null)
+  const [auditEvents, setAuditEvents] = useState([])
   const loadBranch = useProductStore((state) => state.loadBranch)
   const hydrate = useInventoryStore((state) => state.hydrate)
+  const branchIdForFetch = scopedBranchId || user?.branchId
 
   useEffect(() => {
     if (!hasSupabase) {
@@ -211,6 +225,24 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
       .finally(() => setBootingPage(false))
   }, [scopedBranchId, user?.branchId, loadBranch, hydrate])
 
+  // Cash impact is always TODAY's business day, regardless of the Today/Week/Month toggle
+  // above — an "expected cash" figure is a once-per-day drawer count (see DayEnd.jsx), not
+  // something that means anything summed over a week.
+  useEffect(() => {
+    if (!hasSupabase || !branchIdForFetch) return undefined
+    let active = true
+    fetchBranchCashImpact(branchIdForFetch, businessDate(new Date(), dayOpenHour), dayOpenHour)
+      .then((row) => {
+        if (active) setCashImpact(row)
+      })
+      .catch(() => {
+        if (active) setCashImpact(null)
+      })
+    return () => {
+      active = false
+    }
+  }, [branchIdForFetch, dayOpenHour])
+
   const products = storeProducts
   const transactions = storeTransactions
   const movements = storeMovements
@@ -220,7 +252,27 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const filtered = transactions.filter(
     (item) => item.status === 'Paid' && inPeriod(item.date, cutoff),
   )
+  const voidedInPeriod = transactions.filter(
+    (item) => item.status === 'Voided' && inPeriod(item.date, cutoff),
+  )
   const revenue = filtered.reduce((sum, item) => sum + item.total, 0)
+
+  // Audit follows the same Today/Week/Month toggle as Sales performance.
+  useEffect(() => {
+    if (!hasSupabase || !branchIdForFetch) return undefined
+    let active = true
+    fetchSaleEvents({ branchId: branchIdForFetch, start: toDateKey(cutoff), end: toDateKey(new Date()) })
+      .then((rows) => {
+        if (active) setAuditEvents((rows || []).filter((e) => e.event_type === 'void' || e.event_type === 'refund'))
+      })
+      .catch(() => {
+        if (active) setAuditEvents([])
+      })
+    return () => {
+      active = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchIdForFetch, period])
   const low = products.filter((product) => stockTone(product) === 'low')
   const menuOn = products.filter((p) => p.availableToday !== false)
   const menuOff = products.filter((p) => p.availableToday === false)
@@ -249,6 +301,50 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const greeting = greetingFor(user)
   const todayKey = businessDate(new Date(), dayOpenHour)
   const restockEntry = !isRestaurant ? previousDayRestockReport(dayEnds, todayKey) : null
+
+  // Same reductions terminalReports.js uses for the X/Z reading — reused rather than
+  // re-derived so this row and a printed reading for the same range can never disagree.
+  // Lead item (first) is the number that matters most — StatTiles renders it larger.
+  const salesPerformanceItems = [
+    {
+      label: 'Net sales',
+      value: money(filtered.reduce((sum, t) => sum + Number(t.total || 0) - Number(t.refundedAmount || 0), 0)),
+    },
+    {
+      label: 'Gross sales',
+      value: money(filtered.reduce((sum, t) => sum + Number(t.total || 0) + Number(t.discountAmount || 0), 0)),
+    },
+    {
+      label: 'Discounts',
+      value: money(filtered.reduce((sum, t) => sum + Number(t.discountAmount || 0), 0)),
+      tone: 'danger',
+    },
+    {
+      label: 'Refunds',
+      value: money(filtered.reduce((sum, t) => sum + Number(t.refundedAmount || 0), 0)),
+      tone: 'danger',
+    },
+    {
+      label: 'Voided sales',
+      value: money(voidedInPeriod.reduce((sum, t) => sum + Number(t.total || 0), 0)),
+      tone: 'danger',
+    },
+  ]
+  // Expected cash leads — the one figure that's actually actionable ("does the drawer
+  // match"); the rest is how it was arrived at.
+  const cashImpactItems = cashImpact
+    ? [
+        { label: 'Expected cash', value: money(cashImpact.expectedCash) },
+        { label: 'Cash sales', value: money(cashImpact.cashSales) },
+        { label: 'Cash refunds', value: money(cashImpact.cashRefunds), tone: 'danger' },
+        {
+          label: 'Cash in / out',
+          value: money(cashImpact.changeFund - cashImpact.pickup - cashImpact.paidOut),
+          hint: `${money(cashImpact.changeFund)} in · ${money(cashImpact.pickup + cashImpact.paidOut)} out`,
+        },
+      ]
+    : []
+  const canOpenReports = canAccessModule(user, 'manager_reports')
 
   if (bootingPage || (productsLoading && !products.length)) {
     return <PageSkeleton variant="dashboard" />
@@ -335,118 +431,92 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
         </div>
       )}
 
+      {/* Revenue chart leads — it's the primary read on this page. Sales performance /
+          Cash impact / Audit stack beside it rather than above it, so the chart isn't
+          pushed down the page by supporting numbers. Chart height is raised to roughly
+          match that 3-card stack instead of the default (a 2-card stack's) height. */}
       <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(220px,0.9fr)] items-stretch gap-3.5 max-[900px]:grid-cols-1">
-        <RevenueChart points={buildChartPoints(filtered, period)} period={period} />
-        <SalesMixBar mix={mix} />
-      </div>
-      <div
-        className={`grid gap-4 max-[900px]:grid-cols-1 ${isRestaurant ? 'grid-cols-3' : 'grid-cols-2'}`}
-      >
-        {isRestaurant ? (
-          <TableCard className="max-h-none overflow-hidden p-0">
-            <SectionHeading
-              title="Today's potahe"
-              meta={
-                <Link to="/pos?menu=1" className="text-xs font-bold text-brand-ink no-underline hover:underline">
-                  Edit menu
-                </Link>
-              }
-            />
-            <div className="px-4 py-3">
-              <div className="mb-2 flex gap-2 text-[11px]">
-                <span className="rounded bg-brand-success-bg px-2 py-1 font-bold text-brand-success-text">
-                  Serving {menuOn.length}
-                </span>
-                <span className="rounded border border-brand-line bg-white px-2 py-1 font-bold text-brand-muted">
-                  Off {menuOff.length}
-                </span>
-              </div>
-              {products.length === 0 ? (
-                <div className="border-t border-brand-softline py-2.5 text-xs text-brand-muted">
-                  No menu items yet. Ask a manager to import potahe.
-                </div>
-              ) : (
-                products.slice(0, 8).map((product) => {
-                  const on = product.availableToday !== false
-                  return (
-                    <div
-                      key={product.id}
-                      className="flex items-center justify-between border-t border-brand-softline py-2.5 text-xs"
-                    >
-                      <div>
-                        <strong className="block text-brand-ink">{product.name}</strong>
-                        <small className="mt-1 block text-[10px] text-brand-muted">
-                          {product.category}
-                          {product.productCode ? ` · ${product.productCode}` : ''}
-                        </small>
-                      </div>
-                      <strong className={on ? 'text-brand-success-text' : 'text-brand-muted'}>
-                        {on ? 'Serving' : 'Off'}
-                      </strong>
-                    </div>
-                  )
-                })
-              )}
-            </div>
-          </TableCard>
-        ) : null}
-        <TableCard className="max-h-none overflow-hidden p-0">
-          <SectionHeading
-            title={isRestaurant ? 'Top dishes' : 'Top products'}
-            subtitle={`By sales · ${period}`}
+        <RevenueChart points={buildChartPoints(filtered, period)} period={period} height={300} />
+        <div className="flex flex-col gap-2.5">
+          <StatTiles title="Sales performance" subtitle={period} items={salesPerformanceItems} />
+          <StatTiles title="Cash impact" subtitle={`${todayKey} · today`} items={cashImpactItems} />
+          <AuditSummary
+            events={auditEvents}
+            linkHref={canOpenReports ? '/manager/reports' : null}
+            subtitle={period}
           />
-          <div className="px-4 py-1">
-            {top.length === 0 ? (
-              <div className="border-t border-brand-softline py-3 text-xs text-brand-muted">
-                No sales in this period yet.
+        </div>
+      </div>
+
+      {isRestaurant && (
+        <TableCard className="mb-3.5 max-h-none overflow-hidden p-0">
+          <SectionHeading
+            title="Today's potahe"
+            meta={
+              <Link to="/pos?menu=1" className="text-xs font-bold text-brand-ink no-underline hover:underline">
+                Edit menu
+              </Link>
+            }
+          />
+          <div className="px-4 py-3">
+            <div className="mb-2 flex gap-2 text-[11px]">
+              <span className="rounded bg-brand-success-bg px-2 py-1 font-bold text-brand-success-text">
+                Serving {menuOn.length}
+              </span>
+              <span className="rounded border border-brand-line bg-white px-2 py-1 font-bold text-brand-muted">
+                Off {menuOff.length}
+              </span>
+            </div>
+            {products.length === 0 ? (
+              <div className="border-t border-brand-softline py-2.5 text-xs text-brand-muted">
+                No menu items yet. Ask a manager to import potahe.
               </div>
             ) : (
-              top.map((product, index) => (
-                <div
-                  key={product.id}
-                  className="flex items-center justify-between border-t border-brand-softline py-2.5 text-xs"
-                >
-                  <div>
-                    <strong className="block text-brand-ink">
-                      {index + 1}. {product.name}
+              products.slice(0, 8).map((product) => {
+                const on = product.availableToday !== false
+                return (
+                  <div
+                    key={product.id}
+                    className="flex items-center justify-between border-t border-brand-softline py-2.5 text-xs"
+                  >
+                    <div>
+                      <strong className="block text-brand-ink">{product.name}</strong>
+                      <small className="mt-1 block text-[10px] text-brand-muted">
+                        {product.category}
+                        {product.productCode ? ` · ${product.productCode}` : ''}
+                      </small>
+                    </div>
+                    <strong className={on ? 'text-brand-success-text' : 'text-brand-muted'}>
+                      {on ? 'Serving' : 'Off'}
                     </strong>
-                    <small className="mt-1 block text-[10px] text-brand-muted">
-                      {product.category} · {qty(product.qty, product.pricingMode === 'kg' ? 'kg' : 'pc')}
-                    </small>
                   </div>
-                  <strong className={`text-brand-ink ${moneyClass}`}>{money(product.revenue)}</strong>
-                </div>
-              ))
+                )
+              })
             )}
           </div>
         </TableCard>
-        <TableCard className="max-h-none overflow-hidden p-0">
-          <SectionHeading title="Payment methods" subtitle={`By tender · ${period}`} />
-          <div className="px-4 py-1">
-            {paymentMethods.length === 0 ? (
-              <div className="border-t border-brand-softline py-3 text-xs text-brand-muted">
-                No sales in this period yet.
-              </div>
-            ) : (
-              paymentMethods.map((row) => (
-                <div
-                  key={row.method}
-                  className="flex items-center justify-between border-t border-brand-softline py-2.5 text-xs"
-                >
-                  <div>
-                    <strong className="block text-brand-ink">
-                      {paymentMethodLabels[row.method] || row.method}
-                    </strong>
-                    <small className="mt-1 block text-[10px] text-brand-muted">
-                      {row.count} {row.count === 1 ? 'transaction' : 'transactions'}
-                    </small>
-                  </div>
-                  <strong className={`text-brand-ink ${moneyClass}`}>{money(row.amount)}</strong>
-                </div>
-              ))
-            )}
-          </div>
-        </TableCard>
+      )}
+
+      {/* Top products, Top categories, Payment methods — one row of supporting detail,
+          same visual weight, so none of these reads as more important than another. */}
+      <div className="mb-4 grid grid-cols-3 items-start gap-3.5 max-[900px]:grid-cols-1">
+        <SalesMixBar
+          mix={top.map((product) => ({ category: product.name, value: product.revenue }))}
+          title={isRestaurant ? 'Top dishes' : 'Top products'}
+          subtitle={`By sales · ${period}`}
+        />
+        <SalesMixBar mix={mix} title="Top categories" subtitle={`By sales · ${period}`} />
+        <SalesMixBar
+          mix={paymentMethods.map((row) => ({
+            category: paymentMethodLabels[row.method] || row.method,
+            value: row.amount,
+          }))}
+          title="Payment methods"
+          subtitle={`By tender · ${period}`}
+          showShare
+          barClassFor={(item) => PAYMENT_BAR_CLASS[item.category] || 'bg-brand-gold'}
+          emptyMessage="No sales in this period yet."
+        />
       </div>
     </div>
   )

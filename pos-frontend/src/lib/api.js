@@ -1,7 +1,7 @@
 import { allowDemoMode, supabase } from './supabase'
 import { mapDayReport } from '../utils/dayEndReport'
 import { appError } from '../utils/errors'
-import { localDateKey, today } from '../utils/format'
+import { localDateKey, rowBusinessDate, today } from '../utils/format'
 import { pinAuthEmail } from '../utils/roles'
 import { normalizeMenuKind } from '../utils/ulam'
 import { clearUnlockSecret, loadUnlockSecret, saveUnlockSecret } from '../offline/session'
@@ -38,6 +38,9 @@ export function mapDayEndRow(row) {
     requestedAt: row.requested_at || null,
     requestedBy: row.requested_by || null,
     requestManager: row.request_manager === true,
+    rejectedAt: row.rejected_at || null,
+    rejectedBy: row.rejected_by || null,
+    rejectReason: row.reject_reason || '',
   }
 }
 
@@ -212,6 +215,13 @@ export function mapTransaction(row) {
     date: localDateKey(row.created_at),
     createdAt,
     branchId: row.branch_id,
+    // Was never selected here at all, so every transaction lost its shift attribution the
+    // moment it round-tripped through a server pull (bootstrapBranchData / putTransactions
+    // both flow through this mapping). shiftClientId is deliberately NOT restored here — it
+    // only ever existed as a same-session local-optimistic hint before the shift itself had
+    // synced; once a row reaches the server, shiftId is the only attribution that means
+    // anything, and BOOTSTRAP_TX_COLS now selects it.
+    shiftId: row.shift_id || null,
     voidReason: row.void_reason,
     voidedAt: row.voided_at || null,
     voidedBy: row.voided_by || null,
@@ -631,7 +641,7 @@ export function clearDeviceSessionId() {
 const BOOTSTRAP_PRODUCT_COLS =
   'id, branch_id, name, sku, barcode, category_id, menu_kind, pricing_mode, price, unit_cost, budget_price, low_stock_threshold, available_today, discount_eligible, product_no, created_at, categories(name)'
 const BOOTSTRAP_TX_COLS =
-  'id, or_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, discount_amount, discount_type, discount_id_note, transaction_items(id)'
+  'id, or_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, shift_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, discount_amount, discount_type, discount_id_note, transaction_items(id)'
 // Pre migrate_vat_breakdown.sql fallback (see bootstrapBranchData / fetchTerminalReportSource).
 const BOOTSTRAP_TX_COLS_LEGACY =
   'id, or_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, discount_amount, discount_type, discount_id_note, transaction_items(id)'
@@ -1418,7 +1428,7 @@ function isDuplicateClientIdError(error) {
   return error?.code === '23505' && msg.includes('uq_transactions_branch_client')
 }
 
-async function loadTransactionByClientId(branchId, clientId) {
+export async function loadTransactionByClientId(branchId, clientId) {
   let { data, error } = await supabase
     .from('transactions')
     .select(BOOTSTRAP_TX_COLS)
@@ -1730,6 +1740,22 @@ export async function fetchTransactionDetail(id) {
   }
 }
 
+/**
+ * "Transaction already voided" (void_sale_secure's own idempotency guard) means the
+ * VOID has already been achieved, by an EARLIER attempt at this exact same op — not a
+ * conflicting one. The offline queue retries a failed push until it succeeds; if the
+ * first attempt's RPC actually committed server-side but the response never made it back
+ * (connection dropped mid-round-trip, tab closed), the queue item stays un-DONE and
+ * retries. That retry then correctly finds the sale already voided, throws, and — treated
+ * as an ordinary failure — increments the attempt counter every cycle until it hits
+ * MAX_SYNC_ATTEMPTS and gets quarantined ("Sync issue"), even though the desired end state
+ * was reached on attempt one. Same shape as COMPLETE_SALE's duplicate-client-id handling
+ * just above: recognize "this exact op already landed" and treat it as done, not failed.
+ */
+function isAlreadyVoidedError(error) {
+  return /already voided|voided transactions are locked/i.test(String(error?.message || ''))
+}
+
 export async function voidSale(id, reason, staffId = null, approvedBy = null) {
   if (staffId) {
     const { data, error } = await supabase.rpc('void_sale_secure', {
@@ -1748,6 +1774,10 @@ export async function voidSale(id, reason, staffId = null, approvedBy = null) {
           })
       }
       return data
+    }
+    if (isAlreadyVoidedError(error)) {
+      const { data: current } = await supabase.from('transactions').select('*').eq('id', id).maybeSingle()
+      return current
     }
     if (!String(error.message || '').includes('Could not find the function')) throw error
   }
@@ -1770,6 +1800,13 @@ export async function voidSale(id, reason, staffId = null, approvedBy = null) {
   if (error && isMissingColumnError(error, 'void_approved_by')) {
     delete updatePayload.void_approved_by
     ;({ error } = await supabase.from('transactions').update(updatePayload).eq('id', id))
+  }
+  // Same idempotency case as the RPC branch above, reached here only on a pre-void_sale_secure
+  // database — guard_transaction_updates() (migrate_bir_pos_compliance.sql) rejects the update
+  // with "voided transactions are locked" once it already landed.
+  if (error && isAlreadyVoidedError(error)) {
+    const { data: current } = await supabase.from('transactions').select('*').eq('id', id).maybeSingle()
+    return current
   }
   if (error) throw error
 
@@ -1891,6 +1928,17 @@ export async function reopenDayEnd({ id, staffId, reason }) {
     p_day_end_id: id,
     p_staff_id: staffId,
     p_reason: reason,
+  })
+  if (error) throw error
+  return data
+}
+
+/** Supervisor/manager declines a cashier's "Request day end" made by mistake. */
+export async function rejectDayEndRequest({ id, staffId, reason }) {
+  const { data, error } = await supabase.rpc('reject_day_end_request', {
+    p_day_end_id: id,
+    p_staff_id: staffId,
+    p_reason: reason || null,
   })
   if (error) throw error
   return data
@@ -3459,6 +3507,92 @@ export async function fetchPettyCashTimeline(branchId, { startDate, endDate } = 
   }))
 }
 
+/**
+ * Today's cash-drawer impact for one branch — cash actually taken in, cash handed back,
+ * and the resulting expected-cash figure. This is the EXACT formula `SupervisorDayEnd`
+ * (`DayEnd.jsx`) uses for its own "Expected" line, reused here rather than re-derived, so a
+ * dashboard tile can never quietly disagree with the real Day End screen.
+ *
+ * Always scoped to one business day (`date`) — an expected-cash figure is a once-per-day
+ * drawer count, not something that means anything summed over a week.
+ */
+export async function fetchBranchCashImpact(branchId, date, openHour = 7) {
+  const empty = { cashSales: 0, cashRefunds: 0, changeFund: 0, pickup: 0, paidOut: 0, expectedCash: 0 }
+  if (!branchId || !date || !supabase) return empty
+
+  // A generous calendar-day buffer around the business date, narrowed precisely afterward
+  // with rowBusinessDate — never compare a business date to a calendar date directly (see
+  // the same rule in DayEnd.jsx / BranchDashboard.jsx).
+  const windowStart = new Date(`${date}T00:00:00`)
+  windowStart.setDate(windowStart.getDate() - 1)
+  const windowEnd = new Date(`${date}T00:00:00`)
+  windowEnd.setDate(windowEnd.getDate() + 2)
+
+  const [txRes, pettyRows, shiftRows] = await Promise.all([
+    fetchAllRows((from, to) =>
+      supabase
+        .from('transactions')
+        .select('total_amount, refunded_amount, status, payment_method, created_at')
+        .eq('branch_id', branchId)
+        .gte('created_at', windowStart.toISOString())
+        .lt('created_at', windowEnd.toISOString())
+        .order('created_at', { ascending: true })
+        .range(from, to),
+    ),
+    fetchPettyCashTimeline(branchId, { startDate: date, endDate: date }).catch(() => []),
+    fetchStaffShifts({ branchId, start: date, end: date }).catch(() => []),
+  ])
+  if (txRes.error) throw txRes.error
+
+  const cashToday = (txRes.data || [])
+    .map((row) => ({
+      total: Number(row.total_amount || 0),
+      refundedAmount: Number(row.refunded_amount || 0),
+      status: row.status === 'voided' ? 'Voided' : 'Paid',
+      paymentMethod: row.payment_method || 'cash',
+      createdAt: row.created_at,
+    }))
+    .filter((row) => row.paymentMethod === 'cash' && rowBusinessDate(row, openHour) === date)
+
+  const cashSales = cashToday
+    .filter((row) => row.status === 'Paid')
+    .reduce((sum, row) => sum + Math.max(0, row.total - row.refundedAmount), 0)
+  // Cash actually handed back: a partial refund's refunded_amount, or the full total of a
+  // cash sale that was voided outright (its cash never counted in cashSales above, so this
+  // is informational here rather than something expectedCash needs to subtract twice).
+  const cashRefunds = cashToday.reduce(
+    (sum, row) => sum + (row.status === 'Voided' ? row.total : row.refundedAmount),
+    0,
+  )
+
+  const drawerShifts = (shiftRows || []).filter((row) => row.holdsDrawer !== false)
+  const shiftFloatTotal = drawerShifts.reduce((sum, row) => sum + Number(row.startingCash || 0), 0)
+  // The float moved from cash_drawer_entries (`change_fund` rows) to staff_shifts.starting_cash
+  // mid-project — both sources are summed, same as DayEnd.jsx, so a pre-migration business
+  // day still counts its float correctly.
+  const legacyFloatTotal = (pettyRows || [])
+    .filter((row) => row.kind === 'change_fund')
+    .reduce((sum, row) => sum + Number(row.amount || 0), 0)
+  const changeFund = shiftFloatTotal + legacyFloatTotal
+  const pickup = (pettyRows || [])
+    .filter((row) => row.kind === 'pickup')
+    .reduce((sum, row) => sum + Number(row.amount || 0), 0)
+  // Only cash that has actually left the drawer — an approved-but-unfulfilled paid-out is
+  // still sitting in the till (same rule DayEnd.jsx applies).
+  const paidOut = (pettyRows || [])
+    .filter((row) => row.kind === 'paid_out' && row.status === 'fulfilled')
+    .reduce((sum, row) => sum + Number(row.amount || 0), 0)
+
+  return {
+    cashSales: Number(cashSales.toFixed(2)),
+    cashRefunds: Number(cashRefunds.toFixed(2)),
+    changeFund: Number(changeFund.toFixed(2)),
+    pickup: Number(pickup.toFixed(2)),
+    paidOut: Number(paidOut.toFixed(2)),
+    expectedCash: Number((changeFund + cashSales - paidOut - pickup).toFixed(2)),
+  }
+}
+
 export async function branchSummary(branchId, { days = 1 } = {}) {
   // LOCAL midnight, not toISOString(). In UTC+8 `toISOString().slice(0,10)` on a
   // day=1 window resolves to the previous local calendar day for any time before 08:00,
@@ -3481,7 +3615,7 @@ export async function branchSummary(branchId, { days = 1 } = {}) {
   const { data: txs, error: txErr } = await fetchAllRows((from, to) =>
     supabase
       .from('transactions')
-      .select('total_amount, status')
+      .select('total_amount, discount_amount, refunded_amount, status')
       .eq('branch_id', branchId)
       .gte('created_at', startIso)
       .order('created_at', { ascending: true })
@@ -3490,6 +3624,21 @@ export async function branchSummary(branchId, { days = 1 } = {}) {
   )
   if (txErr) throw txErr
   const paid = (txs || []).filter((t) => t.status === 'completed')
+  const voided = (txs || []).filter((t) => t.status === 'voided')
+  // Same reductions terminalReports.js uses for the X/Z reading — Gross/Net/Discounts/
+  // Refunds/Voided must read the same everywhere or the dashboard and the printed reading
+  // will disagree over the same sales.
+  const grossSales = paid.reduce(
+    (sum, t) => sum + Number(t.total_amount || 0) + Number(t.discount_amount || 0),
+    0,
+  )
+  const netSales = paid.reduce(
+    (sum, t) => sum + Number(t.total_amount || 0) - Number(t.refunded_amount || 0),
+    0,
+  )
+  const discounts = paid.reduce((sum, t) => sum + Number(t.discount_amount || 0), 0)
+  const refunds = paid.reduce((sum, t) => sum + Number(t.refunded_amount || 0), 0)
+  const voidedSales = voided.reduce((sum, t) => sum + Number(t.total_amount || 0), 0)
 
   let lowStock = 0
   let menuOn = 0
@@ -3529,6 +3678,11 @@ export async function branchSummary(branchId, { days = 1 } = {}) {
     menuOn,
     menuOff,
     branchType: isRestaurant ? 'restaurant' : 'retail',
+    grossSales: Number(grossSales.toFixed(2)),
+    netSales: Number(netSales.toFixed(2)),
+    discounts: Number(discounts.toFixed(2)),
+    refunds: Number(refunds.toFixed(2)),
+    voidedSales: Number(voidedSales.toFixed(2)),
   }
 }
 

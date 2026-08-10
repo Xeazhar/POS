@@ -17,12 +17,11 @@ import { SectionHeading, TableCard } from '../ui'
  * screen reader and a native long-press actually surface, and they keep working if the
  * pointer handlers do not.
  */
-function RevenueChart({ points = [], period }) {
+function RevenueChart({ points = [], period, height = 220 }) {
   const [hoverIndex, setHoverIndex] = useState(null)
 
   const max = Math.max(...points.map((item) => item.total), 1)
   const width = 640
-  const height = 220
   const left = 56
   const bottom = 28
   const top = 16
@@ -50,7 +49,8 @@ function RevenueChart({ points = [], period }) {
           <div className="w-full max-w-[640px]">
             <svg
               viewBox={`0 0 ${width} ${height}`}
-              className="line-chart block aspect-[640/220] h-auto w-full"
+              style={{ aspectRatio: `${width} / ${height}` }}
+              className="line-chart block h-auto w-full"
               preserveAspectRatio="xMidYMid meet"
               role="img"
               aria-label="Revenue over time"

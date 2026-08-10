@@ -17,6 +17,30 @@ computation, OR numbering).
 
 ---
 
+## 0.16.0 — 2026-08-10
+
+### Added: Sales performance, Cash impact, and Audit on the manager and supervisor dashboards
+
+**Manager Overview, Manager → Branches → [a branch], and the supervisor home dashboard** now
+each show three consistent metric groups instead of a handful of ad-hoc figures:
+
+- **Sales performance** — Gross sales, Net sales, Discounts, Refunds, Voided sales.
+- **Cash impact** — Cash sales, Cash refunds, Cash in/out, Expected cash. Always today's
+  business day (a drawer is counted once a day, not summed over a week), and computed with
+  the exact same formula Day End's own "Expected" figure uses, so the two can never disagree.
+- **Audit** — void/refund counts and value, with a small paginated recent list (who performed
+  each one, who approved it, why), linking to the existing Reports → "Void / Refund Log" for
+  the full history.
+
+The revenue-over-time chart, sales performance, cash impact and audit now sit together in one
+row (chart on the left, the three metric cards stacked on the right); Top products, Top
+categories and Payment methods sit in their own row below. "Revenue by branch" was removed
+from Manager Overview (redundant once a network only has a couple of branches). No schema or
+RPC changes — everything reads existing `transactions`, `cash_drawer_entries`, `staff_shifts`
+and `sale_events` data.
+
+---
+
 ## 0.15.0 — 2026-08-10
 
 **Action required, once per database:** re-run `migrate_enable_realtime.sql` in the Supabase
