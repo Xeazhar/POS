@@ -1129,4 +1129,41 @@ export const useInventoryStore = create((set, get) => ({
       useSyncStore.getState().refresh(user.branchId)
     }
   },
+  /**
+   * Supervisor/manager declines a cashier's "Request day end" made by mistake. Keeps the
+   * row (status 'rejected') rather than deleting it, for the audit trail — the cashier's
+   * screen falls back to the normal "Request day end" form on its own once status is no
+   * longer 'requested'.
+   */
+  rejectDayRequest: async (id, reason) => {
+    const user = useAuthStore.getState().user
+    set((state) => ({
+      dayEnds: state.dayEnds.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              status: 'rejected',
+              rejectedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              rejectReason: reason || '',
+            }
+          : item,
+      ),
+    }))
+    if (api.hasSupabase && user) {
+      if (isOnline()) {
+        const row = await api.rejectDayEndRequest({ id, staffId: user.id, reason })
+        const mapped = api.mapDayEndRow(row)
+        set((state) => ({
+          dayEnds: state.dayEnds.map((item) => (item.id === id ? mapped : item)),
+        }))
+        return mapped
+      }
+      await enqueue(
+        QUEUE_TYPES.REJECT_DAY_REQUEST,
+        { id, staffId: user.id, reason },
+        { branchId: user.branchId },
+      )
+      useSyncStore.getState().refresh(user.branchId)
+    }
+  },
 }))

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Eyebrow, Field, Modal, ModalActions, PrimaryButton, SecondaryButton, moneyClass } from '../ui'
-import { useShiftStore } from '../../stores/shiftStore'
+import { cashPositionNotice, useShiftStore } from '../../stores/shiftStore'
 import { formatSupportError } from '../../utils/errors'
 import { money } from '../../utils/format'
 
@@ -38,7 +38,7 @@ function ShiftCashOut({ user, shift, onCancel, onDone }) {
     }
   }, [cashPosition])
 
-  const estimateOnly = position?.source === 'local'
+  const notice = cashPositionNotice(position)
 
   const submit = async () => {
     setBusy(true)
@@ -90,9 +90,13 @@ function ShiftCashOut({ user, shift, onCancel, onDone }) {
         </div>
       )}
 
-      {estimateOnly && (
-        <p className="mb-3 rounded-md bg-brand-warn-bg px-2.5 py-2 text-[11px] text-brand-warn">
-          Offline — this total covers sales made on this device only.
+      {notice && (
+        <p
+          className={`mb-3 rounded-md px-2.5 py-2 text-[11px] ${
+            notice.tone === 'warn' ? 'bg-brand-warn-bg text-brand-warn' : 'bg-brand-n50 text-brand-muted'
+          }`}
+        >
+          {notice.text}
         </p>
       )}
 

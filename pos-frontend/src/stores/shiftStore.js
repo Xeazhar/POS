@@ -9,6 +9,7 @@ import {
   markShiftSynced,
   newShiftClientId,
   QUEUE_TYPES,
+  resolveShiftServerId,
   saveLocalShift,
   syncBranch,
 } from '../offline'
@@ -187,15 +188,66 @@ export const useShiftStore = create((set, get) => ({
     return local
   },
 
-  /** What the drawer should hold right now, for the cash-out screen. */
-  cashPosition: async () => {
+  /**
+   * Freshen `shift.serverId` from IndexedDB, where the sync engine stamps it once the
+   * OPEN_SHIFT push completes (`markShiftSynced`, `offline/shifts.js`). The in-memory
+   * `shift` object is otherwise never touched again after `startShift()` sets it — so a
+   * shift that was still mid-sync at that moment reads `serverId: null` for the rest of
+   * the session, even minutes later once it has long since synced. Anything that gates on
+   * "has this shift synced" (cashPosition's server branch, a petty-cash request's shiftId)
+   * must go through this first rather than read `shift.serverId` off the store directly.
+   * A no-op once it has resolved once.
+   */
+  syncShiftServerId: async () => {
     const shift = get().shift
     if (!shift) return null
+    if (shift.serverId) return shift.serverId
+    const serverId = await resolveShiftServerId(shift.clientId).catch(() => null)
+    if (serverId) {
+      set((state) => (state.shift ? { shift: { ...state.shift, serverId } } : {}))
+    }
+    return serverId
+  },
+
+  /**
+   * What the drawer should hold right now, for the cash-out screen.
+   *
+   * The server RPC only knows about a sale once it has synced — a sale just rung up is
+   * written locally first and pushed in the background, so trusting the RPC alone left a
+   * real window where a just-made sale read as ₱0.00. `pendingLocalDelta` covers that gap:
+   * whatever this device has rung up but not yet synced gets added on top of the server's
+   * (multi-terminal-aware) figure, and naturally stops double-counting once syncStatus
+   * flips to 'synced' and the RPC picks it up itself.
+   */
+  cashPosition: async () => {
+    await get().syncShiftServerId()
+    const shift = get().shift
+    if (!shift) return null
+    const delta = await pendingLocalDelta(shift)
     if (api.hasSupabase && isOnline() && shift.serverId) {
       const remote = await api.fetchShiftCashSummary(shift.serverId).catch(() => null)
-      if (remote) return { ...remote, source: 'server' }
+      if (remote) {
+        const cashSales = Number((remote.cashSales + delta.sales).toFixed(2))
+        const cashRefunds = Number((remote.cashRefunds + delta.refunds).toFixed(2))
+        const expectedCash = Number(
+          (
+            remote.startingCash +
+            cashSales -
+            cashRefunds -
+            remote.cashPaidOut -
+            remote.cashPickups
+          ).toFixed(2),
+        )
+        return {
+          ...remote,
+          cashSales,
+          cashRefunds,
+          expectedCash,
+          source: delta.sales || delta.refunds ? 'server+pending' : 'server',
+        }
+      }
     }
-    return { ...(await localCashPosition(shift)), source: 'local' }
+    return { ...(await localCashPosition(shift)), source: 'local', reasonOffline: !isOnline() }
   },
 
   /**
@@ -245,6 +297,29 @@ export const useShiftStore = create((set, get) => ({
    *  that is what lets a re-login resume instead of asking for the float again. */
   forget: () => set({ shift: null, gate: 'checking', blocker: null, handoff: null, error: '' }),
 }))
+
+/**
+ * Copy + tone for the banner under a cash position figure, keyed off `source`/`reasonOffline`
+ * from `cashPosition()`. Shared by ShiftCashOut and CashierEndShift so the two screens never
+ * drift into saying different things about the same figure.
+ */
+export function cashPositionNotice(position) {
+  if (!position) return null
+  if (position.source === 'local') {
+    const lead = position.reasonOffline ? 'Offline' : 'Estimate'
+    return {
+      tone: 'warn',
+      text: `${lead} — this total covers sales made on this device only. Paid-out and pickup activity is not included.`,
+    }
+  }
+  if (position.source === 'server+pending') {
+    return {
+      tone: 'muted',
+      text: "Includes sale(s) made on this device that haven't finished syncing yet.",
+    }
+  }
+  return null
+}
 
 async function upsertFromRemote(remote, local) {
   if (local?.clientId) {
@@ -316,34 +391,64 @@ async function findHandoff(user, drawerId) {
   return getLastClosedShiftOnDrawer({ branchId: user.branchId, drawerId })
 }
 
-/**
- * Offline estimate of the drawer's expected contents, from what this device knows.
- * Marked `source: 'local'` by the caller so the UI can say the count may be incomplete —
- * a sale rung on another terminal against this shift is not in here.
- */
-async function localCashPosition(shift) {
+/** This shift's cash transactions recorded on this device, regardless of sync state. */
+async function shiftCashRows(shift) {
   const rows = await db.transactions.where('branchId').equals(shift.branchId).toArray()
-  const mine = rows.filter(
+  return rows.filter(
     (row) =>
       (row.shiftClientId && row.shiftClientId === shift.clientId) ||
       (shift.serverId && row.shiftId === shift.serverId),
   )
+}
+
+/**
+ * A voided sale nets to zero — whatever cash it put in the drawer, the void takes back out,
+ * so it must contribute nothing to either `sales` or `refunds`. Adding its total to `refunds`
+ * (as this used to) double-subtracted cash that was already excluded from `sales`, making the
+ * shift read short by every voided sale's amount. Mirrors the server-side fix in
+ * migrate_shift_cash_void_fix.sql — keep both in sync.
+ */
+function sumCash(rows) {
   let sales = 0
   let refunds = 0
-  for (const row of mine) {
+  for (const row of rows) {
     if ((row.paymentMethod || 'cash') !== 'cash') continue
-    if (row.status === 'Voided') {
-      refunds += Number(row.total || 0)
-      continue
-    }
+    if (row.status === 'Voided') continue
     sales += Number(row.total || 0)
     refunds += Number(row.refundedAmount || 0)
   }
+  return { sales: Number(sales.toFixed(2)), refunds: Number(refunds.toFixed(2)) }
+}
+
+/**
+ * Sales/refunds this device knows about that the server does NOT yet — i.e. still
+ * `syncStatus: 'pending'` or `'local'`. Added on top of the server's own figure in
+ * `cashPosition()` so a just-rung sale shows up before it has finished syncing. Once a row
+ * syncs (`syncStatus` flips to `'synced'`), it drops out of this delta and the server figure
+ * already includes it — no double count.
+ */
+async function pendingLocalDelta(shift) {
+  const rows = (await shiftCashRows(shift)).filter(
+    (row) => row.syncStatus === 'pending' || row.syncStatus === 'local',
+  )
+  return sumCash(rows)
+}
+
+/**
+ * Offline estimate of the drawer's expected contents, from what this device knows.
+ * Marked `source: 'local'` by the caller so the UI can say the count may be incomplete —
+ * a sale rung on another terminal against this shift is not in here. Paid-out/pickups are
+ * always 0 here: petty cash is not mirrored to IndexedDB, so this device has no way to know
+ * about it while offline.
+ */
+async function localCashPosition(shift) {
+  const mine = await shiftCashRows(shift)
+  const { sales, refunds } = sumCash(mine)
   const startingCash = Number(shift.startingCash || 0)
   return {
     startingCash,
-    cashSales: Number(sales.toFixed(2)),
-    cashRefunds: Number(refunds.toFixed(2)),
+    cashSales: sales,
+    cashRefunds: refunds,
     cashPaidOut: 0,
     cashPickups: 0,
     expectedCash: Number((startingCash + sales - refunds).toFixed(2)),

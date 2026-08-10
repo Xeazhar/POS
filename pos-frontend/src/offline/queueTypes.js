@@ -9,6 +9,7 @@ export const QUEUE_TYPES = {
   CLOSE_DAY: 'close_day',
   REOPEN_DAY: 'reopen_day',
   REQUEST_DAY_END: 'request_day_end',
+  REJECT_DAY_REQUEST: 'reject_day_request',
   CREATE_PRODUCT: 'create_product',
   UPDATE_PRODUCT: 'update_product',
   PRICE_CHANGE: 'price_change',

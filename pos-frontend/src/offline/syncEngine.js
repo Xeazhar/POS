@@ -127,8 +127,38 @@ async function requireShiftServerId(clientId) {
   return null
 }
 
+/**
+ * Server uuid for a sale voided before its own COMPLETE_SALE had synced.
+ *
+ * `voidTransaction()` (posStore.js) enqueues VOID_SALE with whatever `id` the sale had on
+ * the device at that moment — for a sale rung offline (or just before its push completed),
+ * that is still the client-generated `txn_...` id, not a real uuid. Passing that straight to
+ * `void_sale_secure`'s `p_transaction_id uuid` parameter fails hard with "invalid input
+ * syntax for type uuid" — the sale's own COMPLETE_SALE resolves its shift the same way
+ * (`requireShiftServerId`) but nothing resolved the sale's OWN id before this was found.
+ *
+ * Same shape as `requireShiftServerId`: throw to keep this item first in the FIFO queue
+ * until the COMPLETE_SALE ahead of it lands (`loadTransactionByClientId` finds it once
+ * `transactions.client_id` is set), or return null once that COMPLETE_SALE is BLOCKED and
+ * will never land — nothing to void against, this item is dropped rather than retried
+ * forever.
+ */
+async function requireTransactionServerId(clientId, branchId) {
+  const txn = await api.loadTransactionByClientId(branchId, clientId).catch(() => null)
+  if (txn?.id) return txn.id
+  const saleOp = await db.syncQueue.where('clientId').equals(clientId).first()
+  if (saleOp && saleOp.status !== QUEUE_STATUS.BLOCKED) {
+    throw new Error(`Sale ${clientId} has not synced yet — retrying after it does.`)
+  }
+  return null
+}
+
+function isLocalTransactionId(id) {
+  return typeof id === 'string' && id.startsWith('txn_')
+}
+
 async function pushOne(item) {
-  const { type, payload } = item
+  const { type, payload, branchId } = item
   switch (type) {
     case QUEUE_TYPES.OPEN_SHIFT: {
       const shift = await api.openShift(payload)
@@ -181,7 +211,12 @@ async function pushOne(item) {
       return
     }
     case QUEUE_TYPES.VOID_SALE: {
-      await api.voidSale(payload.id, payload.reason, payload.staffId || null, payload.approvedBy || null)
+      const transactionId = isLocalTransactionId(payload.id)
+        ? await requireTransactionServerId(payload.id, branchId)
+        : payload.id
+      // The sale never reached the server and never will (quarantined) — nothing to void.
+      if (!transactionId) return
+      await api.voidSale(transactionId, payload.reason, payload.staffId || null, payload.approvedBy || null)
       return
     }
     case QUEUE_TYPES.ADJUST_STOCK: {
@@ -204,6 +239,10 @@ async function pushOne(item) {
     }
     case QUEUE_TYPES.REOPEN_DAY: {
       await api.reopenDayEnd(payload)
+      return
+    }
+    case QUEUE_TYPES.REJECT_DAY_REQUEST: {
+      await api.rejectDayEndRequest(payload)
       return
     }
     case QUEUE_TYPES.REQUEST_DAY_END: {

@@ -25,7 +25,7 @@ There is no test suite/framework configured in this repo (no `*.test.*`/`*.spec.
 
 Env vars go in `pos-frontend/.env.local` (copy from `.env.example`): `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` are required to talk to a real backend. Without them, the app falls back to an in-memory offline demo mode (`npm run dev` only — production builds refuse demo login unless `VITE_ALLOW_DEMO=true`).
 
-Database is Supabase Postgres + RLS. Schema lives in `pos-frontend/supabase/schema.sql`; incremental changes are `pos-frontend/supabase/migrate_*.sql`, applied by hand in the Supabase SQL editor (no migration runner) — check file comments for ordering/dependencies before applying.
+Database is Supabase Postgres + RLS. Schema lives in `pos-frontend/supabase/schema.sql`; incremental changes are `pos-frontend/supabase/migrate_*.sql`, applied by hand in the Supabase SQL editor (no migration runner) — check file comments for ordering/dependencies before applying. **`schema.sql` is currently stale** (whole subsystems — shifts, cash drawer, day-end request/reject, PIN lockout, promo dual control — exist only as migrations); do not bootstrap a fresh environment from `schema.sql` alone until this is resolved — see `pos-frontend/supabase/README.md`'s "Known drift" / "Full apply order" / "Generating a verified schema.sql" sections.
 
 ## Architecture
 

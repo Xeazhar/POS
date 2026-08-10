@@ -18,10 +18,16 @@ import {
 } from '../components/ui'
 import { addPettyCash, closeShift, fetchPettyCash, fetchStaffShifts, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
-import { useShiftStore } from '../stores/shiftStore'
+import { cashPositionNotice, useShiftStore } from '../stores/shiftStore'
 import { buildDayEndReport } from '../utils/dayEndReport'
 import { formatSupportError } from '../utils/errors'
-import { businessDate, dayEndForBusinessDate, formatOpenHourLabel, money } from '../utils/format'
+import {
+  businessDate,
+  dayEndForBusinessDate,
+  formatOpenHourLabel,
+  money,
+  rowBusinessDate,
+} from '../utils/format'
 import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 import { decimalOnly } from '../utils/validate'
 
@@ -124,6 +130,9 @@ function CashierEndShift() {
   const cashPosition = useShiftStore((state) => state.cashPosition)
   const dayEnds = useInventoryStore((state) => state.dayEnds)
   const requestDay = useInventoryStore((state) => state.requestDay)
+  // Live sale activity on this device — a dependency here (not just shift/petty) is what
+  // makes a just-rung sale show up without navigating away and back.
+  const transactions = useInventoryStore((state) => state.transactions)
 
   const { petty, loading, reload } = useDayEndData(user, date)
   const [position, setPosition] = useState(null)
@@ -148,7 +157,7 @@ function CashierEndShift() {
     return () => {
       active = false
     }
-  }, [shift, cashPosition, petty])
+  }, [shift, cashPosition, petty, transactions])
 
   // Only this cashier's own requests. Scoped in the UI as well as by intent: the branch
   // read returns every row, and a cashier must not see what other staff asked for.
@@ -162,9 +171,27 @@ function CashierEndShift() {
     [petty, user?.id],
   )
 
+  // Informational only, same as SupervisorDayEnd's version — `cashSales` above is already
+  // net of discount (the customer only ever hands over the discounted amount), so this does
+  // not change the "Drawer should hold" total. Scoped to this shift the same way
+  // shiftStore's shiftCashRows() is, so it lines up with `position.cashSales`.
+  const cashDiscounts = useMemo(() => {
+    if (!shift) return 0
+    return transactions
+      .filter(
+        (row) =>
+          (row.shiftClientId && row.shiftClientId === shift.clientId) ||
+          (shift.serverId && row.shiftId === shift.serverId),
+      )
+      .filter((row) => row.status === 'Paid' && (row.paymentMethod || 'cash') === 'cash')
+      .reduce((sum, row) => sum + Number(row.discountAmount || 0), 0)
+  }, [transactions, shift])
+
   if (loading) return <PageSkeleton variant="dashboard" />
 
   const expected = position ? Number(position.expectedCash || 0) : null
+  const cashSalesGross = position ? Number((Number(position.cashSales || 0) + cashDiscounts).toFixed(2)) : null
+  const shiftNotice = cashPositionNotice(position)
   const todayEntry = dayEnds.find((item) => item.date === date)
   const dayRequested = todayEntry?.status === 'requested'
   const dayInProgress = todayEntry?.status === 'submitted' || todayEntry?.status === 'closed'
@@ -192,49 +219,62 @@ function CashierEndShift() {
       <TableCard className="mb-3.5 max-h-none p-5">
         <h2 className="m-0 mb-1 text-base">Your shift so far</h2>
         <p className="m-0 mb-3 text-xs text-brand-muted">
-          These figures are informational — the drawer itself is counted once for the whole
-          business day, at Day End, not per shift.
+          These figures cover YOUR shift only — the drawer itself is counted once for the
+          whole business day, at Day End, not per shift. If another shift used this drawer
+          today too, Day End's "Expected in drawer" covers the whole day and will not match
+          this total; that is expected, not an error.
         </p>
         {!shift ? (
           <p className="m-0 text-xs text-brand-subtle">No open shift on this drawer.</p>
         ) : (
           <>
-            <div className="grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2 border-y border-brand-n300 py-3 text-[13px]">
-              <span>Change fund in</span>
+            <div className="grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-1.5 rounded-md border border-brand-softline px-3.5 py-3 text-[13px]">
+              <span className="text-brand-subtle">Change fund in</span>
               <strong className={`text-right ${moneyClass}`}>
                 {money(position?.startingCash ?? shift.startingCash)}
               </strong>
-              <span>Cash sales</span>
+              <span className="text-brand-subtle">+ Cash sales</span>
               <strong className={`text-right ${moneyClass}`}>{money(position?.cashSales)}</strong>
+              {cashDiscounts > 0 && (
+                <span className="col-span-2 -mt-1 text-[11px] text-brand-subtle">
+                  ({money(cashSalesGross)} before discounts − {money(cashDiscounts)} in
+                  discounts — already reflected in Cash sales above, not deducted again)
+                </span>
+              )}
               {Number(position?.cashRefunds || 0) > 0 && (
                 <>
-                  <span>Refunds / voids</span>
+                  <span className="text-brand-subtle">− Refunds / voids</span>
                   <strong className={`text-right ${moneyClass}`}>
                     −{money(position?.cashRefunds)}
                   </strong>
                 </>
               )}
-              {Number(position?.cashPaidOut || 0) > 0 && (
-                <>
-                  <span>Paid out (handed over)</span>
-                  <strong className={`text-right ${moneyClass}`}>
-                    −{money(position?.cashPaidOut)}
-                  </strong>
-                </>
-              )}
-              {Number(position?.cashPickups || 0) > 0 && (
-                <>
-                  <span>Pickups to safe</span>
-                  <strong className={`text-right ${moneyClass}`}>
-                    −{money(position?.cashPickups)}
-                  </strong>
-                </>
-              )}
-              <span className="font-bold">Drawer should hold</span>
-              <strong className={`text-right font-bold ${moneyClass}`}>
+              <span className="text-brand-subtle">− Paid out (handed over)</span>
+              <strong className={`text-right ${moneyClass}`}>
+                −{money(position?.cashPaidOut)}
+              </strong>
+              <span className="text-brand-subtle">− Pickups to safe</span>
+              <strong className={`text-right ${moneyClass}`}>
+                −{money(position?.cashPickups)}
+              </strong>
+              <span className="border-t border-brand-softline pt-1.5 font-bold">
+                = Drawer should hold
+              </span>
+              <strong className={`border-t border-brand-softline pt-1.5 text-right font-bold ${moneyClass}`}>
                 {expected == null ? '—' : money(expected)}
               </strong>
             </div>
+            {shiftNotice && (
+              <p
+                className={`mt-3 rounded-md px-2.5 py-2 text-[11px] ${
+                  shiftNotice.tone === 'warn'
+                    ? 'bg-brand-warn-bg text-brand-warn'
+                    : 'bg-brand-n50 text-brand-muted'
+                }`}
+              >
+                {shiftNotice.text}
+              </p>
+            )}
             <PrimaryButton compact type="button" className="mt-3" onClick={() => setCashOutOpen(true)}>
               End shift
             </PrimaryButton>
@@ -257,6 +297,14 @@ function CashierEndShift() {
           </p>
         ) : (
           <>
+            {todayEntry?.status === 'rejected' && (
+              <p className="m-0 mb-3 rounded-md bg-brand-warn-bg px-2.5 py-2 text-[11px] text-brand-warn">
+                Your last request was declined
+                {todayEntry.rejectedAt ? ` at ${todayEntry.rejectedAt}` : ''}
+                {todayEntry.rejectReason ? `: ${todayEntry.rejectReason}` : '.'} Request again
+                once ready.
+              </p>
+            )}
             <p className="m-0 mb-3 text-xs text-brand-muted">
               Done selling for the day? Request day end — a supervisor counts the drawer and
               closes it, or a manager if none is available.
@@ -325,21 +373,32 @@ function SupervisorDayEnd() {
   const submitDay = useInventoryStore((state) => state.submitDay)
   const approveDay = useInventoryStore((state) => state.approveDay)
   const reopenDay = useInventoryStore((state) => state.reopenDay)
-  const activeShift = useShiftStore((state) => state.shift)
+  const rejectDayRequest = useInventoryStore((state) => state.rejectDayRequest)
   const isManager = isManagerRole(user?.role)
 
   const date = businessDate(new Date(), dayOpenHour)
   const { petty, shifts, loading, reload } = useDayEndData(user, date)
 
+  // rowBusinessDate, NOT item.date: `date` here is a business date, and item.date is the
+  // plain calendar date. Comparing them drops every sale rung between midnight and the open
+  // hour out of its own business day (and counts the previous day's early hours instead) —
+  // which is exactly how this screen's total could disagree with the cashier's shift figure,
+  // since shift_cash_summary() scopes by shift_id and applies no date filter at all.
+  const inBusinessDay = (item) => rowBusinessDate(item, dayOpenHour) === date
   const recorded = transactions
-    .filter((item) => item.status === 'Paid' && item.date === date)
+    .filter((item) => item.status === 'Paid' && inBusinessDay(item))
     .reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
-  const cashSales = transactions
-    .filter(
-      (item) =>
-        item.status === 'Paid' && item.date === date && (item.paymentMethod || 'cash') === 'cash',
-    )
-    .reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
+  const cashTransactions = transactions.filter(
+    (item) =>
+      item.status === 'Paid' && inBusinessDay(item) && (item.paymentMethod || 'cash') === 'cash',
+  )
+  const cashSales = cashTransactions.reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
+  // Informational only — `total`/`netTotal` are already net of discount (the customer only
+  // ever hands over the discounted amount), so this does not change any cash figure above.
+  // It exists so "why is cash sales lower than the sticker prices would suggest" has an
+  // answer on this screen instead of only in the separate Discount Report.
+  const cashDiscounts = cashTransactions.reduce((sum, item) => sum + Number(item.discountAmount || 0), 0)
+  const cashSalesGross = Number((cashSales + cashDiscounts).toFixed(2))
 
   const existing = dayEndForBusinessDate(dayEnds, date)
   const isSubmitted = existing?.status === 'submitted'
@@ -362,6 +421,10 @@ function SupervisorDayEnd() {
   const [confirmApprove, setConfirmApprove] = useState(false)
   const [reopenOpen, setReopenOpen] = useState(false)
   const [reopenReason, setReopenReason] = useState('')
+  const [declineOpen, setDeclineOpen] = useState(false)
+  const [declineReason, setDeclineReason] = useState('')
+  const [declineBusy, setDeclineBusy] = useState(false)
+  const [declineError, setDeclineError] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [pickupAmount, setPickupAmount] = useState('')
@@ -379,6 +442,14 @@ function SupervisorDayEnd() {
   // recorded before migrate_shift_cash_accountability.sql — the two never overlap, because
   // the new flow writes no change_fund entry at all.
   const drawerShifts = shifts.filter((row) => row.holdsDrawer !== false)
+  // Whoever is actually holding the drawer right now — NOT the viewing supervisor's own
+  // shift (`activeShift`). A supervisor recording a pickup or requesting petty cash from
+  // this screen is usually a different person than the cashier on the till, often with no
+  // drawer shift of their own at all. Attributing to `activeShift` silently charged the
+  // entry to the wrong shift (or none), so the cashier's shift-scoped RPC never saw it while
+  // this page's own day-wide total did — a real source of "cashier and supervisor numbers
+  // don't match" independent of shift count.
+  const drawerHolderShift = drawerShifts.find((row) => row.open)
   const shiftFloatTotal = drawerShifts.reduce((sum, row) => sum + Number(row.startingCash || 0), 0)
   const legacyFloatTotal = changeFundRows.reduce((sum, row) => sum + Number(row.amount || 0), 0)
   const changeFundTotal = shiftFloatTotal + legacyFloatTotal
@@ -400,13 +471,20 @@ function SupervisorDayEnd() {
   const noteRequired = variance !== 0
 
   const liveReport = useMemo(
-    () => buildDayEndReport({ date, transactions, movements, products, isRestaurant }),
-    [date, transactions, movements, products, isRestaurant],
+    () => buildDayEndReport({ date, transactions, movements, products, isRestaurant, dayOpenHour }),
+    [date, transactions, movements, products, isRestaurant, dayOpenHour],
   )
   const report = isLocked && existing?.dayReport ? existing.dayReport : liveReport
 
   const buildEntry = () => {
-    const dayReport = buildDayEndReport({ date, transactions, movements, products, isRestaurant })
+    const dayReport = buildDayEndReport({
+      date,
+      transactions,
+      movements,
+      products,
+      isRestaurant,
+      dayOpenHour,
+    })
     return {
       id: existing?.id,
       date,
@@ -476,6 +554,22 @@ function SupervisorDayEnd() {
     }
   }
 
+  // Reason is optional — unlike reopen, this undoes something that never took effect (no
+  // numbers were ever recorded, the till never locked), so there is less to explain.
+  const handleDecline = async () => {
+    setDeclineError('')
+    setDeclineBusy(true)
+    try {
+      await rejectDayRequest(existing.id, declineReason.trim())
+      setDeclineOpen(false)
+      setDeclineReason('')
+    } catch (err) {
+      setDeclineError(formatSupportError(err, 'TILL02'))
+    } finally {
+      setDeclineBusy(false)
+    }
+  }
+
   if (loading || (productsLoading && !products.length)) {
     return <PageSkeleton variant="dashboard" />
   }
@@ -504,9 +598,19 @@ function SupervisorDayEnd() {
       )}
 
       {isRequested && (
-        <div className="mb-3.5 rounded-md bg-brand-warn-bg px-4 py-3 text-xs text-brand-warn">
-          A cashier requested day end{existing.requestManager ? ' — a manager was specifically asked for' : ''}.
-          Count the drawer below and close when ready. Sales stay open until then.
+        <div className="mb-3.5 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-4 py-3 text-xs text-brand-warn">
+          <span>
+            A cashier requested day end{existing.requestManager ? ' — a manager was specifically asked for' : ''}.
+            Count the drawer below and close when ready. Sales stay open until then.
+          </span>
+          {/* Only whoever could act on this request can also decline it — a plain
+              supervisor can't close a manager-specifically-requested day, so they can't
+              decline one either. */}
+          {!waitingForManager && (
+            <SecondaryButton compact type="button" onClick={() => setDeclineOpen(true)}>
+              Decline request
+            </SecondaryButton>
+          )}
         </div>
       )}
 
@@ -652,7 +756,7 @@ function SupervisorDayEnd() {
                           status: 'recorded',
                           // Charged to the shift holding the drawer, so it lands in that
                           // cashier's expected cash rather than only the day's.
-                          shiftId: activeShift?.serverId || null,
+                          shiftId: drawerHolderShift?.id || null,
                         })
                         await reload()
                       }
@@ -693,7 +797,7 @@ function SupervisorDayEnd() {
         user={user}
         branchId={user?.branchId}
         businessDate={date}
-        shiftId={activeShift?.serverId || null}
+        shiftId={drawerHolderShift?.id || null}
         canApprove
         canRequest
         locked={isLocked}
@@ -711,8 +815,7 @@ function SupervisorDayEnd() {
             <span className="block text-[11px] text-brand-subtle">All sales (POS)</span>
             <strong className={`my-2 block text-[22px] ${moneyClass} text-brand-gold`}>{money(recorded)}</strong>
             <small className="block text-[11px] text-brand-subtle">
-              Cash sales {money(cashSales)} · Float {money(changeFundTotal)} · Pickups{' '}
-              {money(pickupTotal)} · Paid-out {money(paidOutTotal)} · Expected {money(expectedCash)}
+              Cash sales {money(cashSales)} of this total
             </small>
           </div>
           <Field
@@ -732,6 +835,31 @@ function SupervisorDayEnd() {
               {variance === 0 ? 'Balanced' : variance < 0 ? 'Short' : 'Over'} (after petty cash)
             </small>
           </div>
+        </div>
+
+        {/* How "Expected" is derived — spelled out instead of packed into one line, since
+            this is the number cash on hand gets checked against. */}
+        <div className="grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-1.5 rounded-md border border-brand-softline px-3.5 py-3 text-[13px]">
+          <span className="text-brand-subtle">Change fund (float)</span>
+          <strong className={`text-right ${moneyClass}`}>{money(changeFundTotal)}</strong>
+          <span className="text-brand-subtle">+ Cash sales</span>
+          <strong className={`text-right ${moneyClass}`}>{money(cashSales)}</strong>
+          {cashDiscounts > 0 && (
+            <span className="col-span-2 -mt-1 text-[11px] text-brand-subtle">
+              ({money(cashSalesGross)} before discounts − {money(cashDiscounts)} in discounts —
+              already reflected in Cash sales above, not deducted again)
+            </span>
+          )}
+          <span className="text-brand-subtle">− Paid out (handed over)</span>
+          <strong className={`text-right ${moneyClass}`}>−{money(paidOutTotal)}</strong>
+          <span className="text-brand-subtle">− Pickups to safe</span>
+          <strong className={`text-right ${moneyClass}`}>−{money(pickupTotal)}</strong>
+          <span className="border-t border-brand-softline pt-1.5 font-bold">
+            = Expected in drawer
+          </span>
+          <strong className={`border-t border-brand-softline pt-1.5 text-right font-bold ${moneyClass}`}>
+            {money(expectedCash)}
+          </strong>
         </div>
         {approvedUnfulfilled > 0 && (
           <p className="m-0 rounded-md bg-brand-n50 px-3 py-2 text-[11px] text-brand-muted">
@@ -880,6 +1008,33 @@ function SupervisorDayEnd() {
             </SecondaryButton>
             <PrimaryButton compact type="button" disabled={busy || !reopenReason.trim()} onClick={handleReopen}>
               {busy ? 'Reopening…' : 'Reopen day'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {declineOpen && (
+        <Modal onClose={() => !declineBusy && setDeclineOpen(false)}>
+          <Eyebrow>DECLINE REQUEST</Eyebrow>
+          <h2 className="mb-2 text-lg">Decline this day-end request?</h2>
+          <p className="m-0 text-xs text-brand-muted">
+            The cashier who requested it will see the request form again — nothing is counted
+            or locked, so this is safe if the request was made by mistake.
+          </p>
+          <Field
+            className="mt-3"
+            label="Reason (optional)"
+            value={declineReason}
+            onChange={(e) => setDeclineReason(e.target.value.replace(/[<>]/g, ''))}
+            placeholder="Why is this being declined?"
+          />
+          {declineError && <p className="mt-2 text-xs text-brand-danger">{declineError}</p>}
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={declineBusy} onClick={() => setDeclineOpen(false)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton compact type="button" disabled={declineBusy} onClick={handleDecline}>
+              {declineBusy ? 'Declining…' : 'Decline request'}
             </PrimaryButton>
           </ModalActions>
         </Modal>

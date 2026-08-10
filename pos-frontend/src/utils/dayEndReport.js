@@ -1,5 +1,7 @@
 /** Build sold / restock snapshot for day-end close + next-day alerts. */
 
+import { rowBusinessDate } from './format'
+
 function lineQty(line) {
   if (!line) return 0
   if (line.pricingMode === 'kg') return Number(line.weight || 0)
@@ -30,7 +32,12 @@ function bumpSold(map, key, patch) {
  *   movements?: object[],
  *   products?: object[],
  *   isRestaurant?: boolean,
+ *   dayOpenHour?: number,
  * }} args
+ *
+ * `date` is a BUSINESS date, so rows are matched with `rowBusinessDate(row, dayOpenHour)`
+ * rather than their calendar `date` field — see that helper for why the two differ and why
+ * comparing them directly loses money either side of midnight.
  */
 export function buildDayEndReport({
   date,
@@ -38,8 +45,10 @@ export function buildDayEndReport({
   movements = [],
   products = [],
   isRestaurant = false,
+  dayOpenHour = undefined,
 }) {
-  const paid = (transactions || []).filter((txn) => txn.status === 'Paid' && txn.date === date)
+  const inDay = (row) => rowBusinessDate(row, dayOpenHour) === date
+  const paid = (transactions || []).filter((txn) => txn.status === 'Paid' && inDay(txn))
   const orderCount = paid.length
   const revenue = Number(
     paid.reduce((sum, txn) => sum + Number(txn.netTotal ?? txn.total ?? 0), 0).toFixed(2),
@@ -71,7 +80,7 @@ export function buildDayEndReport({
   // Retail: sale movements fill gaps when synced txs lack itemsList
   if (!isRestaurant) {
     ;(movements || []).forEach((move) => {
-      if (move.date !== date) return
+      if (!inDay(move)) return
       if (move.movementType !== 'sale' && move.type !== 'Sale') return
       const qty = Math.abs(Number(move.quantityChange || 0))
       if (!qty || !move.productId) return
