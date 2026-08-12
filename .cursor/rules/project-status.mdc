@@ -1,0 +1,32 @@
+---
+description: CalePOS project stage, shipped features, and current gotchas for session context
+alwaysApply: true
+---
+
+# CalePOS — project status
+
+**Stage:** `0.19.0`, pre-1.0, in testing — not live for real money. Branch `Development`. Read `pos-frontend/docs/CODEMAP.md` + `CHANGELOG.md` before non-trivial work. App lives in `pos-frontend/`.
+
+## Shipped (do not re-build as backlog)
+
+- Offline-first POS + sync queue; shifts / change fund; day-end dual control; cash drawer / petty
+- BIR VAT + SC/PWD; **multi-concurrent promos** (highest discount/line wins; line `promo_name` attribution)
+- Network catalog cascades to adopted branches: Discountable + identity/price
+- Dashboards (Overview / BranchDashboard / supervisor home): Sales performance, Payment & cash impact (cash/card/e-wallet), Audit
+- Remote manager refund approval (`refund_requests`) when no supervisor on site
+- **Private Realtime Broadcast** (branch topics) + poll/focus fallback; PBKDF2 offline lock; offline supervisor PIN
+- **Meat + retail focus** — restaurant/carinderia UI archived (`RESTAURANT_FEATURES_ENABLED = false`)
+- **Schema/load overhaul:** `migrate_schema_cleanup_v1.sql` + `migrate_network_manager_overview.sql`; split bootstrap (`bootstrapPosCatalog` / `bootstrapBranchActivity`); Overview one-RPC metrics; no promo expire-on-read; no `petty_cash` / void direct-update fallbacks
+
+## Open / fragile
+
+- `supabase/schema.sql` still needs a **post-cleanup dump** from scratch DB (README) to be bootstrap-canonical again
+- Apply wipe (`wipe_non_user_data.sql`) only on DEV — never touches staff/auth
+- Unbounded queries → `fetchAllRows` (silent 1000-row PostgREST cap)
+- UI never talks to Supabase except via `src/lib/api.js`
+- Version bumps only when user asks; every behaviour commit needs CHANGELOG
+- Realtime Authorization must be ON in Supabase Dashboard for private Broadcast; apply `migrate_realtime_broadcast_v1.sql`
+
+## Working tree note
+
+Prefer CODEMAP over chat history for what is done. After cleanup migrations are applied in Supabase, dump `schema.sql`.

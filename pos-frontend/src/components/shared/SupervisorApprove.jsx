@@ -38,7 +38,7 @@ function SupervisorApprove({
         via: 'manager_session',
       })
     } catch (err) {
-      setError(formatSupportError(err, 'AUTH06'))
+      setError(formatSupportError(err, 'AUTH09'))
       setBusy(false)
     }
   }
@@ -68,6 +68,9 @@ function SupervisorApprove({
       )}
 
       <form
+        autoComplete="off"
+        data-lpignore="true"
+        data-1p-ignore="true"
         onSubmit={async (event) => {
           event.preventDefault()
           setError('')
@@ -79,20 +82,24 @@ function SupervisorApprove({
             }
             const result = await verifySupervisorPin(branchId, loginCode, pin)
             const row = Array.isArray(result) ? result[0] : result
-            const staffId = typeof row === 'string' ? row : row?.staff_id || row?.id
+            const staffId =
+              typeof row === 'string' ? row : row?.staffId || row?.staff_id || row?.id
             if (!staffId) {
               throw new Error('Invalid supervisor code or PIN')
             }
             onApproved({
               staffId,
-              name: (typeof row === 'object' && (row?.full_name || row?.name)) || 'Supervisor',
+              name:
+                (typeof row === 'object' &&
+                  (row?.fullName || row?.full_name || row?.name)) ||
+                'Supervisor',
               // The verify RPC does not always return the role; when it doesn't, the
               // approver's role is resolved from `staff` on the next read of the record.
               role: (typeof row === 'object' && row?.role) || null,
               via: 'pin',
             })
           } catch (err) {
-            setError(formatSupportError(err, 'AUTH06'))
+            setError(formatSupportError(err, 'AUTH09'))
           } finally {
             setBusy(false)
           }
@@ -105,19 +112,26 @@ function SupervisorApprove({
         )}
         <Field
           label="Staff code"
+          name="cale-supervisor-code"
           value={loginCode}
           onChange={(e) => setLoginCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
           inputMode="numeric"
+          autoComplete="off"
+          data-lpignore="true"
+          data-1p-ignore="true"
           autoFocus={!managerCanApprove}
           required
         />
         <Field
           label="PIN"
           className="mt-3"
+          name="cale-supervisor-pin"
           value={pin}
           onChange={(e) => setPin(sanitizePinInput(e.target.value))}
           type="password"
-          autoComplete="current-password"
+          autoComplete="new-password"
+          data-lpignore="true"
+          data-1p-ignore="true"
           required
         />
         {error && <ErrorBanner className="mt-3 mb-0" error={error} />}

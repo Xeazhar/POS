@@ -1,5 +1,6 @@
 import { FiBarChart2, FiClipboard, FiCpu, FiDatabase, FiGrid, FiMoon, FiPackage, FiUsers, FiMapPin, FiFileText, FiCoffee, FiTag } from 'react-icons/fi'
 import { canAccessModule, isManagerRole, isSupervisorOrAbove } from '../utils/roles'
+import { isRestaurantBranchType } from '../utils/features'
 
 export const staffLinks = [
   ['/', 'Dashboard', FiBarChart2, 'dashboard'],
@@ -16,7 +17,7 @@ export const staffLinks = [
 
 export function staffLinksFor(user) {
   const base =
-    user?.branchType === 'restaurant'
+    isRestaurantBranchType(user?.branchType)
       ? [
           ['/', 'Dashboard', FiBarChart2, 'dashboard'],
           ['/pos', 'POS', FiGrid, 'pos'],
@@ -54,8 +55,13 @@ export function staffLinksFor(user) {
     // Managers already get these under the manager nav below (avoid duplicate tabs) —
     // shifts/promos/catalog all render the exact same page as their manager-nav counterpart
     // ('catalog' here and 'manager_data' below both route to Data.jsx).
+    // Day end stays reachable via /day-end when a cashier requested a manager close, but
+    // managers work day ops from Branch dashboard — no Day end sidebar tab.
     if (
-      (moduleId === 'shifts' || moduleId === 'manager_promos' || moduleId === 'catalog') &&
+      (moduleId === 'shifts' ||
+        moduleId === 'manager_promos' ||
+        moduleId === 'catalog' ||
+        moduleId === 'day_end') &&
       isManagerRole(user.role)
     )
       return false
@@ -99,7 +105,7 @@ export function staffHomePath(user) {
   if (!user) return '/'
   // Cashiers open POS when they have access
   if (user.role === 'cashier' && canAccessModule(user, 'pos')) {
-    return user.branchType === 'restaurant' ? '/pos?menu=1' : '/pos'
+    return isRestaurantBranchType(user.branchType) ? '/pos?menu=1' : '/pos'
   }
   const first = navLinksFor(user)[0]?.[0]
   return first || '/'

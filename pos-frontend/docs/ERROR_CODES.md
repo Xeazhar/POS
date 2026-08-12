@@ -54,7 +54,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The Auth user exists but no row in `staff` has a matching auth_user_id, so the app cannot tell which branch or role they have.
 - **First action:** Manager → Staff: re-save the person to relink, or recreate the login.
-- **Raised from:** `src/stores/posStore.js:92`
+- **Raised from:** `src/stores/posStore.js:94`
 
 ### AUTH03 — Offline and no saved session — connect once to sign in.
 
@@ -63,7 +63,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** First sign-in on this device with no network. There is nothing cached to verify against.
 - **First action:** Get the device online once. After that, sign-in works offline.
-- **Raised from:** `src/stores/posStore.js:86`
+- **Raised from:** `src/stores/posStore.js:88`
 
 ### AUTH04 — Day was closed — sign in again with password to open the till.
 
@@ -72,7 +72,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** A Z-Read / day-end closed the trading day. Reopening deliberately requires a full sign-in.
 - **First action:** Sign in with the email + password account, not the PIN.
-- **Raised from:** `src/stores/posStore.js:77`
+- **Raised from:** `src/stores/posStore.js:79`
 
 ### AUTH05 — App not configured — missing Supabase environment keys.
 
@@ -81,7 +81,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY is absent from the build.
 - **First action:** Set both in the deploy environment and rebuild. Never use the service role key here.
-- **Raised from:** `src/pages/Login.jsx:87`, `src/stores/posStore.js:51`
+- **Raised from:** `src/pages/Login.jsx:87`, `src/stores/posStore.js:53`
 
 ### AUTH06 — Complete the captcha, then try signing in again.
 
@@ -90,7 +90,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** Turnstile/captcha challenge not solved or expired.
 - **First action:** Solve the challenge. If it never appears, check the captcha domain is allowed in the CSP.
-- **Raised from:** `src/components/shared/SupervisorApprove.jsx:41`, `src/components/shared/SupervisorApprove.jsx:95`, `src/lib/api.js:2306`, `src/pages/Login.jsx:192`
+- **Raised from:** `src/components/shared/SupervisorApprove.jsx:41`, `src/components/shared/SupervisorApprove.jsx:95`, `src/lib/api.js:2551`, `src/pages/Login.jsx:192`
 
 ### AUTH07 — Too many failed PIN attempts — wait and try again.
 
@@ -99,7 +99,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The brute-force lockout in migrate_pin_security_hardening.sql tripped: 5 failed attempts within 15 minutes for this login code.
 - **First action:** Wait out the lockout, or have a manager reveal/reset the PIN on Manager → Staff.
-- **Raised from:** _not yet used in code_
+- **Raised from:** `src/pages/Transactions.jsx:223`
 
 ### AUTH08 — Session expired — sign in again.
 
@@ -110,6 +110,15 @@ Read the columns in this order:
 - **First action:** Sign in again. If it recurs constantly, check the device clock is correct.
 - **Raised from:** _not yet used in code_
 
+### AUTH09 — Invalid supervisor code or PIN.
+
+- **Severity:** `blocking`
+- **Sale impact:** `none`
+- **Safe to retry:** yes
+- **Likely cause:** Staff code / PIN did not match an active supervisor or manager for this branch (or a caller checked the wrong response field).
+- **First action:** Re-enter the supervisor staff code and PIN.
+- **Raised from:** `OpenDrawer.jsx`, `CartRemoveApprove.jsx`, `SupervisorApprove.jsx`
+
 ## CAT
 
 ### CAT01 — Could not adopt this catalog item into the branch.
@@ -119,7 +128,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** Copying a catalog_products template into this branch’s products table failed — commonly a SKU already used locally.
 - **First action:** Check whether the branch already has that SKU. If so, edit the existing product instead of adopting again.
-- **Raised from:** `src/components/catalog/SupervisorCatalogAdopt.jsx:180`
+- **Raised from:** `src/components/catalog/SupervisorCatalogAdopt.jsx:195`
 
 ### CAT02 — Could not add the item to the network catalog.
 
@@ -128,7 +137,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The catalog_products insert was rejected — usually a duplicate SKU across the network.
 - **First action:** Search the catalog for that SKU first; network SKUs must be unique.
-- **Raised from:** `src/components/catalog/ManagerNetworkCatalog.jsx:299`
+- **Raised from:** `src/components/catalog/ManagerNetworkCatalog.jsx:315`
 
 ### CAT03 — Could not save catalog changes.
 
@@ -146,7 +155,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** A multi-row catalog write failed partway. Rows before the failure are already saved.
 - **First action:** Re-run the same selection. The update is idempotent, so re-applying it is safe.
-- **Raised from:** `src/components/catalog/ManagerNetworkCatalog.jsx:439`
+- **Raised from:** `src/components/catalog/ManagerNetworkCatalog.jsx:478`
 
 ### CAT05 — Could not load the network catalog.
 
@@ -155,7 +164,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The catalog_products read failed or timed out.
 - **First action:** Check the connection and retry.
-- **Raised from:** `src/components/catalog/ManagerNetworkCatalog.jsx:213`, `src/components/catalog/SupervisorCatalogAdopt.jsx:214`
+- **Raised from:** `src/components/catalog/ManagerNetworkCatalog.jsx:229`, `src/components/catalog/SupervisorCatalogAdopt.jsx:229`
 
 ### CAT06 — Could not import the catalog file.
 
@@ -164,7 +173,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The import was rejected during validation, so nothing was written — the file is checked in full before any row is saved.
 - **First action:** Fix the row named in the message and import the whole file again.
-- **Raised from:** `src/components/catalog/ManagerNetworkCatalog.jsx:237`
+- **Raised from:** `src/components/catalog/ManagerNetworkCatalog.jsx:253`
 
 ### CAT07 — Could not re-sync discountable settings to branches.
 
@@ -173,7 +182,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The cascade from catalog_products.discount_eligible down to adopted products failed, so some branches still hold the old value.
 - **First action:** Retry from Manager → Data. If branches stay out of step, run migrate_sync_discount_eligible.sql.
-- **Raised from:** `src/components/catalog/ManagerNetworkCatalog.jsx:466`
+- **Raised from:** `src/components/catalog/ManagerNetworkCatalog.jsx:505`
 
 ## DATA
 
@@ -231,7 +240,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The branch_devices/device settings columns do not exist in this database yet.
 - **First action:** Apply migrate_device_settings.sql in the Supabase SQL editor.
-- **Raised from:** `src/lib/api.js:2117`, `src/lib/api.js:2118`, `src/lib/api.js:2131`, `src/lib/api.js:2132`
+- **Raised from:** `src/lib/api.js:2362`, `src/lib/api.js:2363`, `src/lib/api.js:2376`, `src/lib/api.js:2377`
 
 ### DEV02 — Could not save device on/off setting.
 
@@ -240,7 +249,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The device settings write was rejected.
 - **First action:** Retry. Confirm the signed-in user manages this branch.
-- **Raised from:** `src/lib/api.js:2123`, `src/pages/manager/BranchDashboard.jsx:389`
+- **Raised from:** `src/lib/api.js:2368`, `src/pages/manager/BranchDashboard.jsx:555`
 
 ### DEV03 — Receipt printer is disabled for this branch.
 
@@ -249,7 +258,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Deliberate configuration — printing is switched off in Devices.
 - **First action:** Enable the printer in Settings → Devices if a receipt is required.
-- **Raised from:** `src/pages/Transactions.jsx:532`, `src/pages/Transactions.jsx:535`
+- **Raised from:** `src/pages/Transactions.jsx:636`, `src/pages/Transactions.jsx:639`
 
 ### DEV04 — Receipt print failed.
 
@@ -258,7 +267,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The print window was refused or the printer did not respond. The SALE IS STILL RECORDED.
 - **First action:** Reprint from Transactions. Never re-ring the sale to get a receipt.
-- **Raised from:** `src/pages/Transactions.jsx:547`
+- **Raised from:** `src/pages/Transactions.jsx:651`
 
 ### DEV05 — Could not reach the device.
 
@@ -278,7 +287,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** An unclassified failure. If this is common, the failing path needs its own code.
 - **First action:** Screenshot the whole screen and send it to support with what you were doing.
-- **Raised from:** `src/lib/api.js:2123`
+- **Raised from:** `src/lib/api.js:2368`
 
 ## IMP
 
@@ -345,7 +354,16 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The stock_movements read failed. Stock counts themselves are unaffected.
 - **First action:** Retry, or narrow the date range. Selling and stock adjustments still work.
-- **Raised from:** `src/components/inventory/MovementHistoryPanel.jsx:101`
+- **Raised from:** `src/components/inventory/MovementHistoryPanel.jsx:142`
+
+### INV06 — Could not export the movement history.
+
+- **Severity:** `degraded` — Degraded — carried on in a reduced mode, nothing lost
+- **Sale impact:** `none`
+- **Safe to retry:** yes
+- **Likely cause:** The xlsx library failed to load, or the file could not be written.
+- **First action:** Retry. The movements already on screen are unaffected either way.
+- **Raised from:** `src/components/inventory/MovementHistoryPanel.jsx:221`
 
 ## PETTY
 
@@ -355,8 +373,8 @@ Read the columns in this order:
 - **Sale impact:** `none`
 - **Safe to retry:** yes
 - **Likely cause:** The cash_drawer_entries write was rejected. On older databases this table is still named petty_cash.
-- **First action:** Retry. If it keeps failing, apply migrate_rename_petty_cash_to_cash_drawer_entries.sql.
-- **Raised from:** `src/components/dayend/PettyCashPanel.jsx:98`, `src/pages/DayEnd.jsx:638`
+- **First action:** Retry. Apply migrate_rename_petty_cash_to_cash_drawer_entries.sql and migrate_schema_cleanup_v1.sql — the app no longer falls back to petty_cash.
+- **Raised from:** legacy change-fund / `addPettyCash` paths (Day End Petty cash UI removed)
 
 ### PETTY02 — Could not load cash drawer entries.
 
@@ -365,16 +383,93 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The cash drawer history read failed. Recorded entries are unaffected.
 - **First action:** Retry. The day-end count can still be entered without this list.
-- **Raised from:** `src/components/dayend/PettyCashPanel.jsx:194`, `src/components/dayend/PettyCashPanel.jsx:204`, `src/pages/manager/BranchDashboard.jsx:941`, `src/pages/manager/BranchDashboard.jsx:960`
+- **Raised from:** `fetchPettyCash` / timeline consumers (`DayEnd.jsx`, Branch dashboard)
 
 ### PETTY03 — Cannot hand over cash without an approval.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
 - **Safe to retry:** no
-- **Likely cause:** Petty cash can only be marked as handed over once a supervisor or manager has approved it, and only once.
-- **First action:** Get the request approved first, or refresh — it may already be marked as handed over.
-- **Raised from:** `src/components/dayend/PettyCashPanel.jsx:234`, `src/lib/api.js:3072`, `src/lib/api.js:3076`, `src/pages/manager/BranchDashboard.jsx:984`
+- **Likely cause:** Legacy fulfill path (UI removed). New paid-outs use Open Drawer / `cash_movements`.
+- **First action:** N/A in current UI — use POS → Open Drawer for new movements.
+- **Raised from:** (removed — `fulfillPettyCash` deleted)
+
+## MOVE
+
+### MOVE01 — Could not record the cash movement.
+
+- **Severity:** `blocking`
+- **Sale impact:** `none`
+- **Safe to retry:** yes
+- **Likely cause:** create/approve RPC for cash_movements failed or migrate_cash_movements.sql is missing.
+- **First action:** Retry. Apply migrate_cash_movements.sql in the Supabase SQL editor.
+
+### MOVE02 — Enter a positive amount.
+
+- **Severity:** `config`
+- **Sale impact:** `none`
+- **Safe to retry:** no
+- **Likely cause:** Amount was missing or not greater than zero.
+- **First action:** Enter the cash amount leaving the drawer.
+
+### MOVE03 — A reason is required.
+
+- **Severity:** `config`
+- **Sale impact:** `none`
+- **Safe to retry:** no
+- **Likely cause:** Cash movements always need a free-text reason.
+- **First action:** Type why the cash is leaving the drawer.
+
+### MOVE04 — Supervisor or manager approval is required.
+
+- **Severity:** `config`
+- **Sale impact:** `none`
+- **Safe to retry:** no
+- **Likely cause:** Cannot approve your own request; a different supervisor/manager must act.
+- **First action:** Have a supervisor enter their PIN, or notify a manager.
+
+### MOVE15 — Confirm you understand this movement is unapproved.
+
+- **Severity:** `config`
+- **Sale impact:** `none`
+- **Safe to retry:** no
+- **Likely cause:** Self-record requires the acknowledgment checkbox.
+- **First action:** Tick the acknowledgment, then submit.
+
+### MOVE19 — You cannot review your own cash movement.
+
+- **Severity:** `config`
+- **Sale impact:** `none`
+- **Safe to retry:** no
+- **Likely cause:** reviewed_by must differ from requested_by.
+- **First action:** Ask another supervisor or manager to Mark Resolved or Flag.
+
+### MOVE21 — Only a manager can resolve a flagged cash movement.
+
+- **Severity:** `config`
+- **Sale impact:** `none`
+- **Safe to retry:** no
+- **Likely cause:** `resolve_flagged_cash_movement` requires `is_manager()`.
+- **First action:** Have a manager mark the flagged row Resolved. Apply `migrate_cash_movement_resolve_flagged.sql` if missing.
+
+### MOVE22 — Only flagged movements can be marked Resolved this way.
+
+- **Severity:** `config`
+- **Sale impact:** `none`
+- **Safe to retry:** no
+- **Likely cause:** Movement status is not `flagged_for_investigation`.
+- **First action:** Use Mark Resolved / Flag on Unauthorized rows, or refresh the log.
+
+## TILL_ACT
+
+### TILL_ACT01 — Could not send or resolve the till approval request.
+
+- **Severity:** `blocking`
+- **Sale impact:** `none`
+- **Safe to retry:** yes
+- **Likely cause:** till_action_requests RPC failed or migrate_till_action_requests.sql is missing.
+- **First action:** Retry. Apply migrate_till_action_requests.sql in the Supabase SQL editor.
+- **Raised from:** `CartRemoveApprove.jsx`, `RequestNotifications.jsx`, `BranchDashboard.jsx`
 
 ## PRICE
 
@@ -385,7 +480,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The override was rejected, usually because supervisor approval was missing or expired.
 - **First action:** Get supervisor approval and try again. Check the price on screen before taking payment.
-- **Raised from:** `src/pages/POS.jsx:237`
+- **Raised from:** `src/pages/POS.jsx:263`
 
 ## PRINT
 
@@ -407,7 +502,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The transaction insert was rejected before any row was written.
 - **First action:** Ring the sale up again. It is safe — nothing was saved.
-- **Raised from:** `src/components/pos/Cart.jsx:411`
+- **Raised from:** `src/components/pos/Cart.jsx:447`
 
 ### SALE02 — Sale queued offline — will sync when online.
 
@@ -425,7 +520,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The refund write was rejected. It may or may not have partially applied.
 - **First action:** Open the transaction and check whether the refund is already listed BEFORE refunding again.
-- **Raised from:** `src/pages/Transactions.jsx:248`, `src/pages/Transactions.jsx:260`, `src/pages/Transactions.jsx:287`
+- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1102`, `src/pages/Transactions.jsx:261`, `src/pages/Transactions.jsx:273`, `src/pages/Transactions.jsx:300`
 
 ### SALE04 — Void failed — the sale is unchanged.
 
@@ -445,6 +540,15 @@ Read the columns in this order:
 - **First action:** Nothing to do — this is the protection working. The customer was charged once.
 - **Raised from:** _not yet used in code_
 
+### SALE06 — Refund request failed.
+
+- **Severity:** `warning` — Warning — informational, the user can proceed
+- **Sale impact:** `none`
+- **Safe to retry:** yes
+- **Likely cause:** Creating, cancelling, or rejecting the remote manager approval request was rejected.
+- **First action:** Nothing has been refunded yet — retry, or fall back to in-person supervisor approval.
+- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1151`, `src/pages/Transactions.jsx:335`, `src/pages/Transactions.jsx:364`
+
 ## SEC
 
 ### SEC01 — You cannot assign a role at or above your own.
@@ -454,7 +558,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The role ceiling in migrate_role_assignment_ceiling.sql refused the write. Managers may only create roles strictly below their own.
 - **First action:** Ask an admin or master to create this account. This is working as intended.
-- **Raised from:** `src/pages/manager/Staff.jsx:1171`
+- **Raised from:** `src/pages/manager/Staff.jsx:1148`
 
 ### SEC02 — You cannot modify an account at or above your own role.
 
@@ -463,7 +567,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The role ceiling refused an edit to a peer or senior account.
 - **First action:** Ask someone above that account’s role to make the change.
-- **Raised from:** `src/pages/manager/Staff.jsx:1165`
+- **Raised from:** `src/pages/manager/Staff.jsx:1142`
 
 ### SEC03 — You cannot change your own role, access, branch or active status.
 
@@ -472,7 +576,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Self-service privilege change is blocked outright — it is the shortest escalation path there is.
 - **First action:** Ask someone above you to make the change. This is working as intended.
-- **Raised from:** `src/pages/manager/Staff.jsx:1164`
+- **Raised from:** `src/pages/manager/Staff.jsx:1141`
 
 ### SEC04 — A supervisor must approve this action.
 
@@ -492,7 +596,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The admin session functions from migrate_admin_session_release.sql are missing.
 - **First action:** Run migrate_admin_session_release.sql in the Supabase SQL editor.
-- **Raised from:** `src/lib/api.js:2219`, `src/lib/api.js:2249`, `src/lib/api.js:2266`, `src/pages/manager/Staff.jsx:422`
+- **Raised from:** `src/lib/api.js:2464`, `src/lib/api.js:2494`, `src/lib/api.js:2511`, `src/pages/manager/Staff.jsx:444`
 
 ### SESS02 — Only a master account can force someone to sign out.
 
@@ -501,7 +605,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Forcing a sign-out can eject a cashier mid-sale, so it is restricted to master accounts.
 - **First action:** Ask a master account to clear the session, or wait 15 minutes for it to expire on its own.
-- **Raised from:** `src/lib/api.js:2246`, `src/lib/api.js:2263`, `src/pages/manager/Staff.jsx:1037`, `src/pages/manager/Staff.jsx:1070`
+- **Raised from:** `src/lib/api.js:2491`, `src/lib/api.js:2508`, `src/pages/manager/Staff.jsx:950`, `src/pages/manager/Staff.jsx:983`
 
 ## SHIFT
 
@@ -512,7 +616,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The staff_shifts read or write failed.
 - **First action:** Retry. If starting a shift will not save, note the time and your change fund on paper and tell a manager.
-- **Raised from:** `src/components/shared/Shell.jsx:191`, `src/components/shared/ShiftCashOut.jsx:66`, `src/components/shared/ShiftGate.jsx:93`, `src/pages/manager/Staff.jsx:480`
+- **Raised from:** `src/components/shared/Shell.jsx:217`, `src/components/shared/ShiftCashOut.jsx:50`, `src/components/shared/ShiftGate.jsx:130`, `src/pages/manager/Staff.jsx:502`
 
 ### SHIFT02 — This drawer still has an open shift for another cashier.
 
@@ -521,7 +625,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** One drawer holds one shift at a time — otherwise a shortage cannot be traced to whoever was actually holding the cash.
 - **First action:** The previous cashier cashes out on this terminal. If they have gone, a supervisor counts the drawer and closes their shift.
-- **Raised from:** `src/components/shared/ShiftGate.jsx:192`, `src/lib/api.js:2499`
+- **Raised from:** `src/lib/api.js:2752`, `src/pages/DayEnd.jsx:1193`, `src/pages/manager/Staff.jsx:1102`
 
 ### SHIFT03 — Enter the counted cash amount.
 
@@ -530,7 +634,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** A change fund or ending count was missing, negative, or an adjustment had no reason written.
 - **First action:** Count the drawer and type the figure. Zero is allowed; blank is not.
-- **Raised from:** `src/lib/api.js:2503`, `src/pages/manager/Staff.jsx:1131`, `src/stores/shiftStore.js:135`, `src/stores/shiftStore.js:211`
+- **Raised from:** `src/lib/api.js:2756`, `src/pages/manager/Staff.jsx:1044`, `src/stores/shiftStore.js:135`
 
 ### SHIFT04 — That shift is closed — record an adjustment instead of editing it.
 
@@ -539,7 +643,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Closed shift figures are frozen, like sales records: the original count has to stay readable for BIR and for any dispute about it.
 - **First action:** Manager → Shifts: use Adjust on that shift. The old value, the new value and your reason are all kept.
-- **Raised from:** `src/lib/api.js:2500`
+- **Raised from:** `src/lib/api.js:2753`
 
 ### SHIFT05 — Only a supervisor or manager can change a shift’s cash figures.
 
@@ -548,7 +652,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** adjust_shift_cash() refused the caller — either the role is too low or the shift is at another branch.
 - **First action:** Ask a supervisor at that branch, or a manager.
-- **Raised from:** `src/lib/api.js:2501`
+- **Raised from:** `src/lib/api.js:2754`
 
 ## SYNC
 
@@ -559,7 +663,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The queue push or remote pull failed. Local data is intact; the queue preserves order and will resume.
 - **First action:** Check the connection. Sync retries by itself — no action needed unless it persists for hours.
-- **Raised from:** _not yet used in code_
+- **Raised from:** `src/stores/posStore.js:1195`
 
 ### SYNC02 — Could not load branch data.
 
@@ -577,7 +681,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** A queue item hit MAX_SYNC_ATTEMPTS and was blocked so it cannot stall everything behind it. These are completed sales that never reached Supabase.
 - **First action:** Use "Retry now" on the banner. DO NOT clear browser data or reinstall — that destroys the only copy. Call support.
-- **Raised from:** `src/components/shared/Shell.jsx:435`
+- **Raised from:** `src/components/shared/Shell.jsx:491`
 
 ## TILL
 
@@ -588,7 +692,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Day-end has been run for this branch and business date. Selling into a closed day would corrupt the Z-Read.
 - **First action:** Manager reopens the till from Day end, or start the next business day.
-- **Raised from:** `src/components/pos/Cart.jsx:266`, `src/components/pos/Cart.jsx:267`, `src/stores/posStore.js:666`
+- **Raised from:** `src/components/pos/Cart.jsx:302`, `src/components/pos/Cart.jsx:303`, `src/stores/posStore.js:684`
 
 ### TILL02 — Could not reopen till.
 
@@ -597,7 +701,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The day_ends update was rejected — usually RLS (wrong branch) or a missing dual-control column.
 - **First action:** Confirm the manager is scoped to this branch, then run migrate_day_end_dual_control.sql if it is not yet applied.
-- **Raised from:** `src/pages/DayEnd.jsx:371`, `src/pages/DayEnd.jsx:385`, `src/pages/manager/BranchDashboard.jsx:295`, `src/pages/manager/BranchDashboard.jsx:317`
+- **Raised from:** `src/pages/DayEnd.jsx:212`, `src/pages/DayEnd.jsx:585`, `src/pages/DayEnd.jsx:599`, `src/pages/DayEnd.jsx:623`
 
 ### TILL03 — Day end failed to save.
 
@@ -606,4 +710,13 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** Writing the day_ends row failed. The count is still on screen and has not been lost.
 - **First action:** Retry. If it keeps failing, screenshot the counted figures before leaving the page.
-- **Raised from:** _not yet used in code_
+- **Raised from:** `src/components/shared/ShiftGate.jsx:74`
+
+### TILL04 — Refund/void not allowed — this business day is closed. No sales or refunds until a manager reopens the till, or the next business day opens.
+
+- **Severity:** `blocking` — Blocking — the task cannot continue
+- **Sale impact:** `none`
+- **Safe to retry:** no
+- **Likely cause:** assert_business_day_mutable() (or the client lock check) refused the void/refund because that sale’s business day is submitted or closed. Trading into a closed day would corrupt the Z-Read.
+- **First action:** Manager reopens the till from Day end if the same business day must stay open, otherwise wait until the next business day opens and handle the customer then.
+- **Raised from:** `src/components/transactions/TransactionDetailModal.jsx:250`, `src/pages/Transactions.jsx:222`, `src/pages/Transactions.jsx:224`, `src/pages/Transactions.jsx:224`

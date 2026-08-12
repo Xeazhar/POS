@@ -29,7 +29,26 @@ Database is Supabase Postgres + RLS. Schema lives in `pos-frontend/supabase/sche
 
 ## Architecture
 
-**There is an existing, actively-maintained architecture doc — read** **`pos-frontend/docs/CODEMAP.md`** **before making non-trivial changes.** It documents the full route map, store ownership, feature data-flow diagrams (POS sale, day-end, promos, refunds, offline sync), a "what file do I edit for X" cheat sheet, and an in-progress backlog item (multi-concurrent promos) with an implementation sketch. Keep it updated when you change flows it documents.
+**There is an existing, actively-maintained architecture doc — read** **`pos-frontend/docs/CODEMAP.md`** **before making non-trivial changes.** It documents the full route map, store ownership, feature data-flow diagrams (POS sale, day-end, promos, refunds, offline sync), and a "what file do I edit for X" cheat sheet. Keep it updated when you change flows it documents.
+
+## Project stage (as of 2026-08)
+
+**Version `0.19.0`, pre-1.0 — in testing, not live for real sales.** Branch: `Development`. Do not cut `1.0.0` until trusted for money.
+
+Shipped capability (treat as current, not backlog):
+- Offline-first POS, shifts/change fund, day-end dual control, cash drawer / petty workflow
+- BIR VAT + SC/PWD, multi-concurrent promos (highest discount per line wins), promo dual-control + auto-expire + line attribution
+- Network catalog with cascades to adopted branches (Discountable + identity/price via `cascadeDiscountEligibleToBranches` / `cascadeCatalogFieldsToBranches`)
+- Manager/supervisor dashboards: Sales performance, Payment & cash impact (cash/card/e-wallet), Audit
+- Remote manager refund approval (`refund_requests`) when no supervisor on site
+- **Private Realtime Broadcast** (branch-scoped) + poll/focus fallback; PBKDF2 offline lock unlock; offline supervisor PIN verifiers
+- **Meat + retail focus** — restaurant/carinderia UI archived (`RESTAURANT_FEATURES_ENABLED`)
+- **Schema/load overhaul:** apply `wipe_non_user_data.sql` (DEV, keeps staff) → `migrate_schema_cleanup_v1.sql` → `migrate_network_manager_overview.sql`; app uses split bootstrap + Overview RPC
+
+Still true / watch-outs:
+- `supabase/schema.sql` is stale until dumped after cleanup migrations — apply `migrate_*.sql` per `supabase/README.md`
+- Unbounded selects must use `fetchAllRows` (PostgREST silent 1000-row cap)
+- Detail lives in `CODEMAP.md` + `CHANGELOG.md`; don't re-implement features already marked done there
 
 Summary of the layering (detail in CODEMAP.md):
 
@@ -219,5 +238,5 @@ different bundles, so that token must stay build-based, not semver-based.
 * Restaurant-type branches (`branchType === 'restaurant'`) get different nav labels/order and menu-pricing logic (`src/utils/ulam.js` handles ulam/budget-tier combo detection) vs. retail branches — don't assume retail terminology (SKU/barcode) applies everywhere.
 * Supervisor-gated actions (void line, price override, etc.) go through `src/components/shared/SupervisorApprove.jsx`; managers can "approve as manager" cross-branch per `migrate_manager_can_approve_any_branch.sql`.
 * Never put the Supabase **service role** key in frontend code or Cloudflare env — only the publishable/anon key; access control is RLS, not key secrecy.
-* **Network catalog (`catalog_products`) vs. a branch's live product (`products`) are different tables** — `manager/Data.jsx`'s `ManagerNetworkCatalog` edits the shared template (`api.updateCatalogProduct`), which sets defaults for *future* adoptions and does **not** change a product a branch already adopted. **Exception:** the "Discountable" toggle specifically also cascades to every branch that already adopted the item (`api.cascadeDiscountEligibleToBranches`, matched via `products.catalog_product_id`), because that's the page managers actually use for this and a silent no-op there was a real bug. Other fields (price, name, etc.) are still template-only — use that branch's own Catalog/Inventory page (`Products.jsx` for managers, `SupervisorCatalogAdopt.jsx` for supervisors, both via `api.updateProductRow`) to change those on an already-adopted item.
+* **Network catalog (`catalog_products`) vs. a branch's live product (`products`) are different tables** — `ManagerNetworkCatalog` writes the shared template (`api.updateCatalogProduct`) and **also cascades to already-adopted branches**: Discountable via `cascadeDiscountEligibleToBranches`, and name/SKU/barcode/category/price/budgetPrice via `cascadeCatalogFieldsToBranches` (price changes also `recordPriceChange` per branch). To edit **one branch only** without touching siblings, use that branch's Catalog/Inventory (`Products.jsx` / `SupervisorCatalogAdopt.jsx` → `api.updateProductRow`).
 * `api.updateProductRow`'s payload only includes `discount_eligible` when the caller explicitly passes `discountEligible` — a partial update (e.g. a stock-only adjustment) must never silently clear it. Any *other* field added to that function later needs the same guard, or a caller that only means to touch one field will blank out the rest.

@@ -1,5 +1,9 @@
 import { useEffect, useRef } from 'react'
-import { debounce, subscribeMany } from '../offline/realtime'
+import {
+  debounce,
+  subscribeBroadcastMany,
+  subscribeMany,
+} from '../offline/realtime'
 
 /**
  * Keep one piece of server data fresh in an open tab, using every signal available
@@ -9,43 +13,42 @@ import { debounce, subscribeMany } from '../offline/realtime'
  * a manager's price/promo/discount edit has to reach the counter *now*. Each layer
  * below covers a different way the layer above fails:
  *
- *   1. realtime subscription  — the fast path (sub-second), but silently dead if the
- *      table isn't in the `supabase_realtime` publication, or if the socket dropped
- *      while the laptop was asleep.
- *   2. visibility / online    — refetch the moment the tab is looked at again or the
- *      network returns. Covers everything realtime missed while disconnected, since
- *      postgres_changes does not replay events from the gap.
- *   3. interval poll          — last-resort safety net (minutes, not seconds). Only
- *      matters when 1 and 2 have both failed.
+ *   1. private Broadcast     — preferred fast path (migrate_realtime_broadcast_v1.sql).
+ *      Minimal payloads; always followed by a secured refetch. Not a source of truth.
+ *   2. postgres_changes      — secondary path for tables without Broadcast triggers
+ *      (e.g. promo_rules). Still RLS-gated.
+ *   3. visibility / online   — refetch when the tab is looked at again or the network
+ *      returns. Covers gaps: neither Broadcast nor postgres_changes replay missed events.
+ *   4. interval poll         — last-resort safety net (minutes, not seconds).
  *
  * Not a data store: the caller owns where the fetched data goes. This only decides
  * *when* to call `fetch`.
  *
  * @param {object}   options
  * @param {Function} options.fetch     async () => void — does the refetch + state write
- * @param {Array}    options.tables    [{ table, filter }] to subscribe to
+ * @param {Array}    [options.broadcasts] [{ topic, events? }] private Broadcast topics
+ * @param {Array}    [options.tables]  [{ table, filter }] postgres_changes (optional fallback)
  * @param {boolean}  options.enabled   skip everything when false (no branch/session yet)
  * @param {number}   options.pollMs    fallback interval; 0 disables
- * @param {number}   options.debounceMs coalesce bursts (a promo + its rules insert together)
+ * @param {number}   options.debounceMs coalesce bursts
  */
 export function useLiveData({
   fetch,
+  broadcasts = [],
   tables = [],
   enabled = true,
   pollMs = 5 * 60_000,
   debounceMs = 400,
 }) {
-  // Keep the latest fetch in a ref so an inline arrow from the caller doesn't tear
-  // down and rebuild the subscription on every render.
   const fetchRef = useRef(fetch)
   useEffect(() => {
     fetchRef.current = fetch
   }, [fetch])
 
-  // Subscriptions are keyed off table+filter only: re-subscribing is expensive
-  // (new websocket channel + re-auth) and must not happen just because a parent
-  // re-rendered with a fresh array literal.
   const tableKey = JSON.stringify(tables.map((t) => [t?.table, t?.filter || '']))
+  const broadcastKey = JSON.stringify(
+    broadcasts.map((b) => [b?.topic || '', ...(b?.events || [])]),
+  )
 
   useEffect(() => {
     if (!enabled) return undefined
@@ -53,6 +56,13 @@ export function useLiveData({
       table,
       filter: filter || undefined,
     }))
+    const bcSubs = JSON.parse(broadcastKey).map((entry) => {
+      const [topic, ...events] = entry
+      return {
+        topic,
+        events: events.length ? events : undefined,
+      }
+    }).filter((b) => b.topic)
 
     let disposed = false
     const run = async () => {
@@ -67,15 +77,22 @@ export function useLiveData({
     void run()
 
     const debouncedRun = debounce(run, debounceMs)
-    const unsubscribe = subscribeMany(
+    const onStatus = (status) => {
+      if (status === 'SUBSCRIBED') debouncedRun()
+    }
+
+    const unsubTables = subscribeMany(
       subs.map((sub) => ({
         ...sub,
         onChange: debouncedRun,
-        // A reconnect means we were deaf for a while — pull once immediately rather
-        // than waiting for the next change event, which may never come.
-        onStatus: (status) => {
-          if (status === 'SUBSCRIBED') debouncedRun()
-        },
+        onStatus,
+      })),
+    )
+    const unsubBroadcast = subscribeBroadcastMany(
+      bcSubs.map((sub) => ({
+        ...sub,
+        onEvent: debouncedRun,
+        onStatus,
       })),
     )
 
@@ -95,9 +112,10 @@ export function useLiveData({
       window.removeEventListener('focus', onVisible)
       window.removeEventListener('online', run)
       debouncedRun.cancel()
-      unsubscribe()
+      unsubTables()
+      unsubBroadcast()
     }
-  }, [enabled, tableKey, pollMs, debounceMs])
+  }, [enabled, tableKey, broadcastKey, pollMs, debounceMs])
 }
 
 export default useLiveData

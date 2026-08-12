@@ -36,6 +36,17 @@ db.version(2).stores({
   shifts: 'clientId, serverId, branchId, staffId, drawerId, status, businessDate',
 })
 
+/** v3 — cash movements (petty / pickup) mirrored for offline self-record & expected cash. */
+db.version(3).stores({
+  cashMovements: 'clientId, serverId, branchId, shiftClientId, shiftId, status, requestedAt',
+})
+
+/** v4 — offline supervisor PIN verifiers + durable approval audit outbox. */
+db.version(4).stores({
+  supervisorVerifiers: 'staffId, branchId, loginCode',
+  offlineAuditEvents: 'clientId, branchId, syncStatus, createdAt',
+})
+
 export const META_KEYS = {
   lastPullAt: 'lastPullAt',
   lastPushAt: 'lastPushAt',

@@ -18,6 +18,8 @@ import {
   fetchAuditEvents,
   fetchBirDailyBreakdown,
   fetchBranches,
+  fetchCashMovements,
+  fetchCartRemoveReport,
   fetchDiscountReport,
   fetchElectronicJournal,
   fetchFiscalBackup,
@@ -127,6 +129,18 @@ const REPORTS = [
     title: 'Gross Margin (COGS)',
     note: 'Management report — costs are current, not frozen at sale time.',
   },
+  {
+    id: 'cash-movements',
+    group: 'Audit',
+    title: 'Cash Movements',
+    note: 'Petty cash and pickups from POS Open Drawer — cross-session history.',
+  },
+  {
+    id: 'cart-removes',
+    group: 'Audit',
+    title: 'Cart Item Removals',
+    note: 'Every line removed before checkout — approved, self-allowed, denied, or pending. For fraud review.',
+  },
   { id: 'void-log', group: 'Audit', title: 'Void / Refund Log' },
   { id: 'audit-trail', group: 'Audit', title: 'Login & Audit Trail' },
   {
@@ -201,6 +215,10 @@ function ManagerReports() {
     end: today(),
     branchId: '',
     staffId: '',
+    moveType: '',
+    moveStatus: '',
+    drawerId: '',
+    cartRemoveOutcome: '',
   })
   const [rangeMode, setRangeMode] = useState('today')
   const [rangeNote, setRangeNote] = useState('')
@@ -499,8 +517,6 @@ function ManagerReports() {
     }
 
     if (selected === 'void-log') {
-      // limit: null — an audit report must cover its whole date range, not the most
-      // recent 500 events within it.
       const events = await fetchSaleEvents({
         start: filters.start,
         end: filters.end,
@@ -544,6 +560,46 @@ function ManagerReports() {
             branch: e.branches?.name,
           })),
           'No audit events in this range.',
+        ),
+      )
+      return
+    }
+
+    if (selected === 'cart-removes') {
+      const OUTCOME_LABEL = {
+        removed: 'Removed (approved)',
+        removed_unapproved: 'Removed (unapproved)',
+        denied: 'Denied',
+        cancelled: 'Cancelled',
+        pending: 'Pending',
+      }
+      const data = await fetchCartRemoveReport({
+        start: filters.start,
+        end: filters.end,
+        branchId,
+        requestedBy: filters.staffId || null,
+        outcome: filters.cartRemoveOutcome || null,
+      })
+      const unapproved = data.filter((r) => r.outcome === 'removed_unapproved').length
+      setNote(
+        unapproved > 0
+          ? `${unapproved} removal(s) proceeded without manager approval — review self-allowed rows first.`
+          : 'Supervisor PIN, manager remote, or on-site approval is required before a line leaves the cart.',
+      )
+      setRows(
+        ensureRows(
+          data.map((row) => ({
+            when: row.when ? new Date(row.when).toLocaleString() : '',
+            branch: row.branch,
+            item: row.item,
+            quantity: row.quantity,
+            cashier: row.cashier,
+            approved_by: row.approved_by,
+            outcome: OUTCOME_LABEL[row.outcome] || row.outcome,
+            method: row.method,
+            detail: row.detail,
+          })),
+          'No cart removals in this range.',
         ),
       )
       return
@@ -646,6 +702,49 @@ function ManagerReports() {
     if (selected === 'tender-summary') {
       const data = await fetchTenderSummary({ start: filters.start, end: filters.end, branchId })
       setRows(ensureRows(data, 'No completed sales in this range.'))
+      return
+    }
+
+    if (selected === 'cash-movements') {
+      const data = await fetchCashMovements({
+        branchId,
+        start: filters.start,
+        end: filters.end,
+        type: filters.moveType || null,
+        status: filters.moveStatus || null,
+        requestedBy: filters.staffId || null,
+        drawerId: filters.drawerId || null,
+      })
+      setNote(
+        'Self-recorded and flagged rows surface here for investigation. Creation is only on POS → Open Drawer.',
+      )
+      setRows(
+        ensureRows(
+          data.map((row) => ({
+            when: row.requestedAt
+              ? new Date(row.requestedAt).toLocaleString()
+              : '',
+            branch_id: row.branchId,
+            type:
+              row.type === 'pickup'
+                ? 'Pickup'
+                : row.type === 'cash_in'
+                  ? 'Cash in'
+                  : row.type === 'opening_float'
+                    ? 'Opening float'
+                    : 'Petty cash',
+            amount: row.amount,
+            status: row.status,
+            drawer: row.drawerLabel || row.drawerId,
+            cashier: row.requestedByName || row.requestedBy,
+            reason: row.reason,
+            approved_by: row.approvedByName || '',
+            reviewed_by: row.reviewedByName || '',
+            review_action: row.reviewAction || '',
+          })),
+          'No cash movements in this range.',
+        ),
+      )
       return
     }
 
@@ -948,6 +1047,81 @@ function ManagerReports() {
                 </option>
               ))}
             </SelectField>
+          )}
+          {selected === 'cart-removes' && (
+            <>
+              <SelectField
+                label="Cashier"
+                value={filters.staffId}
+                onChange={(e) => setFilters({ ...filters, staffId: e.target.value })}
+              >
+                <option value="">All cashiers</option>
+                {cashiers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.full_name}
+                  </option>
+                ))}
+              </SelectField>
+              <SelectField
+                label="Outcome"
+                value={filters.cartRemoveOutcome || ''}
+                onChange={(e) => setFilters({ ...filters, cartRemoveOutcome: e.target.value })}
+              >
+                <option value="">All outcomes</option>
+                <option value="removed">Removed (approved)</option>
+                <option value="removed_unapproved">Removed (unapproved)</option>
+                <option value="denied">Denied</option>
+                <option value="cancelled">Cancelled</option>
+                <option value="pending">Pending</option>
+              </SelectField>
+            </>
+          )}
+          {selected === 'cash-movements' && (
+            <>
+              <SelectField
+                label="Cashier"
+                value={filters.staffId}
+                onChange={(e) => setFilters({ ...filters, staffId: e.target.value })}
+              >
+                <option value="">All cashiers</option>
+                {cashiers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.full_name}
+                  </option>
+                ))}
+              </SelectField>
+              <SelectField
+                label="Type"
+                value={filters.moveType}
+                onChange={(e) => setFilters({ ...filters, moveType: e.target.value })}
+              >
+                <option value="">All types</option>
+                <option value="petty_cash">Petty cash</option>
+                <option value="pickup">Pickup</option>
+                <option value="cash_in">Cash in</option>
+                <option value="opening_float">Opening float</option>
+              </SelectField>
+              <SelectField
+                label="Status"
+                value={filters.moveStatus}
+                onChange={(e) => setFilters({ ...filters, moveStatus: e.target.value })}
+              >
+                <option value="">All statuses</option>
+                <option value="pending_remote">Pending remote</option>
+                <option value="approved">Approved</option>
+                <option value="remote_approved">Approved (remote)</option>
+                <option value="denied">Denied</option>
+                <option value="self_recorded">Unauthorized</option>
+                <option value="confirmed">Resolved</option>
+                <option value="flagged_for_investigation">Flagged</option>
+              </SelectField>
+              <Field
+                label="Drawer id"
+                value={filters.drawerId}
+                onChange={(e) => setFilters({ ...filters, drawerId: e.target.value })}
+                placeholder="e.g. main"
+              />
+            </>
           )}
         </div>
 

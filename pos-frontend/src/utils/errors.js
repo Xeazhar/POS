@@ -151,6 +151,14 @@ export const ERROR_CATALOG = {
     cause: 'The Supabase access token could not be refreshed (token revoked, or offline past its lifetime).',
     fix: 'Sign in again. If it recurs constantly, check the device clock is correct.',
   },
+  AUTH09: {
+    message: 'Invalid supervisor code or PIN.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'Staff code / PIN did not match an active supervisor or manager for this branch.',
+    fix: 'Re-enter the supervisor staff code and PIN. If the PIN is correct but keeps failing, have a manager re-save that staff member\'s PIN in Staff (refreshes offline verifiers), and confirm migrate_manager_can_approve_any_branch.sql is applied.',
+  },
 
   // ── TILL — opening and closing the drawer ────────────────────────────────
   TILL01: {
@@ -176,6 +184,16 @@ export const ERROR_CATALOG = {
     retry: true,
     cause: 'Writing the day_ends row failed. The count is still on screen and has not been lost.',
     fix: 'Retry. If it keeps failing, screenshot the counted figures before leaving the page.',
+  },
+  TILL04: {
+    message:
+      'Refund/void not allowed — this business day is closed. No sales or refunds until a manager reopens the till, or the next business day opens.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause:
+      'assert_business_day_mutable() (or the client lock check) refused the void/refund because that sale’s business day is submitted or closed. Trading into a closed day would corrupt the Z-Read.',
+    fix: 'Manager reopens the till from Day end if the same business day must stay open, otherwise wait until the next business day opens and handle the customer then.',
   },
 
   // ── SALE — taking money ──────────────────────────────────────────────────
@@ -227,6 +245,14 @@ export const ERROR_CATALOG = {
     retry: true,
     cause: 'Creating, cancelling, or rejecting the remote manager approval request was rejected.',
     fix: 'Nothing has been refunded yet — retry, or fall back to in-person supervisor approval.',
+  },
+  SALE07: {
+    message: 'Refunds are not available offline.',
+    severity: W,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'Refunds change inventory, cash accountability, and audit records — they need a server connection.',
+    fix: 'Make a physical list of items to refund and record them when the system is back online.',
   },
 
   // ── INV — products and stock ─────────────────────────────────────────────
@@ -479,7 +505,7 @@ export const ERROR_CATALOG = {
     retry: true,
     cause:
       'The cash_drawer_entries write was rejected. On older databases this table is still named petty_cash.',
-    fix: 'Retry. If it keeps failing, apply migrate_rename_petty_cash_to_cash_drawer_entries.sql.',
+    fix: 'Retry. Apply migrate_rename_petty_cash_to_cash_drawer_entries.sql and migrate_schema_cleanup_v1.sql — the app no longer falls back to petty_cash.',
   },
   PETTY02: {
     message: 'Could not load cash drawer entries.',
@@ -497,6 +523,98 @@ export const ERROR_CATALOG = {
     cause:
       'Petty cash can only be marked as handed over once a supervisor or manager has approved it, and only once.',
     fix: 'Get the request approved first, or refresh — it may already be marked as handed over.',
+  },
+
+  // ── MOVE — cash_movements (POS Open Drawer) ───────────────────────────────
+  MOVE01: {
+    message: 'Could not record the cash movement.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'create/approve RPC for cash_movements failed or migrate_cash_movements.sql is missing.',
+    fix: 'Retry. Apply migrate_cash_movements.sql in the Supabase SQL editor.',
+  },
+  MOVE02: {
+    message: 'Enter a positive amount.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'Amount was missing or not greater than zero.',
+    fix: 'Enter the cash amount leaving the drawer.',
+  },
+  MOVE03: {
+    message: 'A reason is required.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'Cash movements always need a free-text reason.',
+    fix: 'Type why the cash is leaving the drawer.',
+  },
+  MOVE04: {
+    message: 'Supervisor or manager approval is required.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'Cannot approve your own request; a different supervisor/manager must act.',
+    fix: 'Have a supervisor enter their PIN, or notify a manager.',
+  },
+  MOVE15: {
+    message: 'Confirm you understand this movement is unapproved.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'Self-record requires the acknowledgment checkbox.',
+    fix: 'Tick the acknowledgment, then submit.',
+  },
+  MOVE19: {
+    message: 'You cannot review your own cash movement.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'reviewed_by must differ from requested_by.',
+    fix: 'Ask another supervisor or manager to Confirm or Flag.',
+  },
+  MOVE20: {
+    message: 'Opening float already set on this shift.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'starting_cash is no longer zero — opening float is one-time per shift.',
+    fix: 'Use Cash in / Additional float instead.',
+  },
+  MOVE21: {
+    message: 'Only a manager can resolve a flagged cash movement.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'resolve_flagged_cash_movement requires is_manager().',
+    fix: 'Have a manager mark the flagged row Resolved.',
+  },
+  MOVE22: {
+    message: 'Only flagged movements can be marked Resolved this way.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'Movement status is not flagged_for_investigation.',
+    fix: 'Use Confirm/Flag on Unauthorized rows, or refresh the log.',
+  },
+  MOVE23: {
+    message: 'Notify manager needs a connection.',
+    severity: W,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'Remote manager alerts require the server. Offline Open Drawer still works with a supervisor PIN on this device.',
+    fix: 'Use Supervisor PIN on this terminal, or reconnect to notify a remote manager.',
+  },
+
+  // ── TILL_ACT — cart remove / till gates (remote notify) ───────────────────
+  TILL_ACT01: {
+    message: 'Could not send or resolve the till approval request.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'till_action_requests RPC failed or migrate_till_action_requests.sql is missing.',
+    fix: 'Retry. Apply migrate_till_action_requests.sql in the Supabase SQL editor.',
   },
 
   // ── SESS — active-session locks (single sign-in per staff) ───────────────
@@ -700,7 +818,16 @@ export function formatSupportError(err, fallbackCode = 'GEN01') {
     const msg = raw || errorMessage('AUTH06')
     return `${msg} · Code AUTH06`
   }
-  if (/Too many failed PIN|locked/i.test(raw)) {
+  // Till / day-end lock — must run before the PIN "locked" matcher below, or
+  // "This business day is locked…" is mis-quoted as AUTH07.
+  if (
+    /business day is locked|Till is locked for this business day|voids and refunds require|TILL04/i.test(
+      raw,
+    )
+  ) {
+    return `${errorMessage('TILL04')} · Code TILL04`
+  }
+  if (/Too many failed PIN|PIN.*locked|locked out|login.*locked/i.test(raw)) {
     return `${errorMessage('AUTH07')} · Code AUTH07`
   }
   // Role-ceiling refusals arrive as raw Postgres exceptions carrying their own code.
@@ -722,8 +849,18 @@ export function classifyError(err, fallbackCode = 'GEN01') {
   if (/device_settings|migrate_device_settings/i.test(raw)) return appError('DEV01', raw)
   if (/Invalid login|invalid_credentials|Email not confirmed/i.test(raw)) return appError('AUTH01', raw)
   if (/captcha|turnstile/i.test(raw)) return appError('AUTH06', raw)
-  if (/Too many failed PIN|locked/i.test(raw)) return appError('AUTH07', raw)
+  if (
+    /business day is locked|Till is locked for this business day|voids and refunds require|TILL04/i.test(
+      raw,
+    )
+  ) {
+    return appError('TILL04', raw)
+  }
+  if (/Too many failed PIN|PIN.*locked|locked out|login.*locked/i.test(raw)) {
+    return appError('AUTH07', raw)
+  }
   if (/JWT expired|refresh_token_not_found|invalid JWT/i.test(raw)) return appError('AUTH08', raw)
+  if (/Invalid supervisor|Invalid.*PIN|wrong (code|pin)/i.test(raw)) return appError('AUTH09', raw)
   // Database-side authorisation refusals from migrate_role_assignment_ceiling.sql.
   if (/SEC01|Role ceiling.*assign/i.test(raw)) return appError('SEC01', raw)
   if (/SEC02|Role ceiling.*modify/i.test(raw)) return appError('SEC02', raw)

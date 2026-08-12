@@ -226,8 +226,9 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const voidedInPeriod = transactions.filter(
     (item) => item.status === 'Voided' && inPeriod(item.date, cutoff),
   )
-  // Net of refunds — this is the KPI card's "Net sales" figure (renamed from "Revenue" once
-  // it started equaling Net sales; the Sales performance list below no longer repeats it).
+  // Net of refunds — headline KPI is labelled "Revenue" (gross−refunds for paid sales).
+  // Keep "Net sales" for the Sales performance tile on manager Overview, where Gross/Net
+  // are shown side by side; here a single KPI saying "Net sales" confused staff.
   const revenue = filtered.reduce((sum, item) => sum + item.total - Number(item.refundedAmount || 0), 0)
 
   // Audit follows the same Today/Week/Month toggle as Sales performance.
@@ -397,12 +398,12 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
       <div className="mb-4 grid grid-cols-3 gap-3.5 max-[700px]:grid-cols-1">
         {(isRestaurant
           ? [
-              [`Net sales · ${period}`, money(revenue), `${filtered.length} paid orders`],
+              [`Revenue · ${period}`, money(revenue), `${filtered.length} paid orders`],
               [`Orders · ${period}`, filtered.length, 'Completed sales'],
               ['Serving today', menuOn.length, `${menuOff.length} marked off`],
             ]
           : [
-              [`Net sales · ${period}`, money(revenue), `${filtered.length} paid transactions`],
+              [`Revenue · ${period}`, money(revenue), `${filtered.length} paid transactions`],
               [`Orders · ${period}`, filtered.length, 'Completed sales'],
               ['Low-stock items', low.length, 'This branch'],
             ]
@@ -445,13 +446,11 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
         </div>
       )}
 
-      {/* Revenue chart leads — it's the primary read on this page. Sales performance /
-          Cash impact / Audit stack beside it rather than above it, so the chart isn't
-          pushed down the page by supporting numbers. Chart height is raised to roughly
-          match that 3-card stack instead of the default (a 2-card stack's) height. */}
-      <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(240px,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
-        <RevenueChart points={buildChartPoints(filtered, period)} period={period} height={300} />
-        <div className="flex flex-col gap-2.5">
+      <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
+        <div className="min-h-0 min-w-0">
+          <RevenueChart points={buildChartPoints(filtered, period)} period={period} fill />
+        </div>
+        <div className="flex min-w-0 flex-col gap-2.5">
           <StatTiles title="Sales performance" subtitle={period} items={salesPerformanceItems} />
           <StatTiles title="Payment & cash impact" subtitle={`${todayKey} · today`} items={cashImpactItems} />
           <AuditSummary

@@ -249,15 +249,25 @@ export function buildImportPreview(rawRows, existingProducts, { restaurant = fal
       const nextStock = restaurant
         ? Number(existing.stock || 0)
         : Number((Number(existing.stock) + values.stock).toFixed(2))
-      updates.push({
-        index,
-        action: restaurant ? 'update' : 'restock',
-        values,
-        existing,
-        quantityAdded: restaurant ? 0 : values.stock,
-        currentStock: Number(existing.stock),
-        nextStock,
-      })
+      updates.push(
+        attachImportChanges(
+          {
+            index,
+            action: restaurant ? 'update' : 'restock',
+            values,
+            existing,
+            quantityAdded: restaurant ? 0 : values.stock,
+            currentStock: Number(existing.stock),
+            nextStock,
+          },
+          {
+            restaurant,
+            stockDelta: restaurant
+              ? null
+              : { current: Number(existing.stock), next: nextStock, added: values.stock },
+          },
+        ),
+      )
     } else {
       creates.push({
         index,
@@ -284,12 +294,14 @@ export function buildImportPreview(rawRows, existingProducts, { restaurant = fal
 
 /**
  * Manager network-catalog import.
- * Creates new catalog rows; skips only when SKU (or barcode) already exists in catalog,
- * or the row is invalid / duplicate in the file.
+ * Creates new catalog rows; updates existing when SKU (or barcode) already matches —
+ * so a manager can export/edit/re-import for bulk price or identity changes. Unchanged
+ * rows and invalid/duplicate-in-file rows are skipped.
  */
 export function buildCatalogImportPreview(rawRows, existingCatalog, { restaurant = false } = {}) {
   const seen = new Set()
   const creates = []
+  const updates = []
   const skipped = []
 
   rawRows.forEach((raw, index) => {
@@ -337,13 +349,27 @@ export function buildCatalogImportPreview(rawRows, existingCatalog, { restaurant
         (values.barcode && String(item.barcode || '') === values.barcode),
     )
     if (existing) {
-      skipped.push({
-        index,
-        reason: 'Already in network catalog',
-        values,
-        action: 'skip',
-        existing,
-      })
+      if (!catalogImportRowChanged(existing, values, { restaurant })) {
+        skipped.push({
+          index,
+          reason: 'No changes',
+          values,
+          action: 'skip',
+          existing,
+        })
+        return
+      }
+      updates.push(
+        attachImportChanges(
+          {
+            index,
+            action: 'update',
+            values,
+            existing,
+          },
+          { restaurant },
+        ),
+      )
       return
     }
 
@@ -356,13 +382,95 @@ export function buildCatalogImportPreview(rawRows, existingCatalog, { restaurant
 
   return {
     creates,
-    updates: [],
+    updates,
     skipped,
     rowCount: rawRows.length,
     createCount: creates.length,
-    updateCount: 0,
+    updateCount: updates.length,
     skippedCount: skipped.length,
-    lines: creates,
+    lines: [...creates, ...updates],
     restaurant,
+  }
+}
+
+/** True when the import row differs from the live catalog item on any editable field. */
+function catalogImportRowChanged(existing, values, { restaurant = false } = {}) {
+  return describeImportFieldChanges(existing, values, { restaurant }).length > 0
+}
+
+/**
+ * Human-readable field diffs for bulk-import preview (catalog + branch inventory).
+ * Returns [{ field, label, from, to, format?, note? }] — UI formats money/qty.
+ */
+export function describeImportFieldChanges(
+  existing,
+  values,
+  { restaurant = false, stockDelta = null } = {},
+) {
+  if (!existing || !values) return []
+  const changes = []
+
+  const push = (field, label, prev, next, { format = 'text' } = {}) => {
+    if (format === 'bool') {
+      const p = prev === true
+      const n = next === true
+      if (p === n) return
+      changes.push({ field, label, from: p, to: n, format: 'bool' })
+      return
+    }
+    const p = prev ?? ''
+    const n = next ?? ''
+    if (String(p).trim() === String(n).trim()) return
+    if (typeof prev === 'number' && typeof next === 'number' && prev === next) return
+    changes.push({ field, label, from: prev, to: next, format })
+  }
+
+  push('name', 'Name', existing.name, values.name)
+  push('sku', 'SKU', existing.sku, values.sku)
+  push('barcode', 'Barcode', existing.barcode || '', values.barcode || '')
+  push('category', 'Category', existing.category, values.category)
+  push('price', 'Price', Number(existing.price), Number(values.price), { format: 'money' })
+  push('discountEligible', 'Discountable', existing.discountEligible === true, values.discountEligible === true, {
+    format: 'bool',
+  })
+
+  if (!restaurant) {
+    push('pricingMode', 'Pricing mode', existing.pricingMode || 'pc', values.pricingMode || 'pc')
+  }
+  if (restaurant) {
+    const prevBudget = existing.budgetPrice == null ? null : Number(existing.budgetPrice)
+    const nextBudget =
+      values.budgetPrice == null || values.budgetPrice === '' ? null : Number(values.budgetPrice)
+    if (prevBudget !== nextBudget) {
+      changes.push({
+        field: 'budgetPrice',
+        label: 'Budget price',
+        from: prevBudget,
+        to: nextBudget,
+        format: 'money',
+      })
+    }
+    push('menuKind', 'Menu kind', existing.menuKind || '', values.menuKind || '')
+  }
+
+  if (stockDelta && Number(stockDelta.added) > 0) {
+    changes.push({
+      field: 'stock',
+      label: 'Stock',
+      from: Number(stockDelta.current),
+      to: Number(stockDelta.next),
+      format: 'qty',
+      note: `+${stockDelta.added} restock`,
+    })
+  }
+
+  return changes
+}
+
+function attachImportChanges(line, { restaurant = false, stockDelta = null } = {}) {
+  if (!line.existing) return line
+  return {
+    ...line,
+    changes: describeImportFieldChanges(line.existing, line.values, { restaurant, stockDelta }),
   }
 }

@@ -1,18 +1,9 @@
 -- =============================================================================
--- CalePOS — canonical schema (new installs)
--- Existing DBs: apply migrate_*.sql patches instead of re-running this whole file.
--- See supabase/README.md for table map + apply order.
---
--- Sections:
---   1. Core org (branches, roles, staff)
---   2. Catalog (categories, products, inventory, movements)
---   3. Sales (transactions, items)
---   4. Promos
---   5. Day-end & imports
---   6. RLS helpers + policies
---   7. Business functions / triggers
---   8. Presence / devices
---   9. PIN lockout (auth hardening)
+-- CalePOS — schema bootstrap (STALE until regenerated)
+-- Existing DBs: apply migrate_*.sql in README order — do NOT use this file alone.
+-- After migrate_schema_cleanup_v1.sql + migrate_network_manager_overview.sql,
+-- dump a verified schema.sql from a scratch project (see README "Generating a
+-- verified schema.sql") so this file can become canonical again.
 -- =============================================================================
 
 create extension if not exists pgcrypto;

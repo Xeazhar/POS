@@ -82,6 +82,7 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
   const [shiftPeriod, setShiftPeriod] = useState(defaultShiftPeriod)
   const [amount, setAmount] = useState('')
   const [confirmedCount, setConfirmedCount] = useState(false)
+  const [confirmNoFund, setConfirmNoFund] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   // Supervisor-gated escape hatch: 'override_drawer' (start here while their own shift is
@@ -126,11 +127,20 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
         holdsDrawer,
         ...opts,
       })
+      setConfirmNoFund(false)
     } catch (err) {
       setError(formatSupportError(err, 'SHIFT01'))
     } finally {
       setBusy(false)
     }
+  }
+
+  const onStartClick = () => {
+    if (holdsDrawer && amountNumber === 0) {
+      setConfirmNoFund(true)
+      return
+    }
+    void doStart()
   }
 
   // Just cashed out on this session. Shell lets the End shift screen itself
@@ -142,6 +152,27 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
   // open the NEXT shift under THIS cashier's still-open session — the next person has to
   // authenticate as themselves first.
   if (gate === 'ended') {
+    if (!holdsDrawer) {
+      return (
+        <Modal>
+          <Eyebrow>SHIFT ENDED</Eyebrow>
+          <h2 className="mb-1 text-lg">Floor shift closed</h2>
+          <p className="m-0 text-xs text-brand-muted">
+            Confirm received handoff and close the day before signing out. You can stay on this
+            terminal until the business day is filed.
+          </p>
+          {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={busy} onClick={onSignOut}>
+              Sign out
+            </SecondaryButton>
+            <PrimaryButton compact type="button" disabled={busy} onClick={() => navigate('/day-end')}>
+              Continue day end
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )
+    }
     return (
       <Modal>
         <Eyebrow>SHIFT ENDED</Eyebrow>
@@ -287,6 +318,7 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
   }
 
   return (
+    <>
     <Modal>
       <Eyebrow>START SHIFT</Eyebrow>
       <h2 className="mb-1 text-lg">
@@ -377,11 +409,31 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
         <SecondaryButton compact type="button" disabled={busy} onClick={onSignOut}>
           Sign out
         </SecondaryButton>
-        <PrimaryButton compact type="button" disabled={busy || !canStart} onClick={() => void doStart()}>
+        <PrimaryButton compact type="button" disabled={busy || !canStart} onClick={onStartClick}>
           {busy ? 'Starting…' : `Start shift · ${shiftPeriod.toUpperCase()}`}
         </PrimaryButton>
       </ModalActions>
     </Modal>
+    {confirmNoFund && (
+      <Modal onClose={() => !busy && setConfirmNoFund(false)}>
+        <Eyebrow>CONFIRM</Eyebrow>
+        <h2 className="m-0 text-lg">No change fund?</h2>
+        <p className="m-0 mt-2 text-xs text-brand-muted">
+          You entered <strong className="text-brand-ink">{money(0)}</strong> as the starting cash in{' '}
+          {drawerLabel || 'the drawer'}. Are you sure there is no change fund?
+        </p>
+        {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
+        <ModalActions>
+          <SecondaryButton compact type="button" disabled={busy} onClick={() => setConfirmNoFund(false)}>
+            Go back
+          </SecondaryButton>
+          <PrimaryButton compact type="button" disabled={busy} onClick={() => void doStart()}>
+            {busy ? 'Starting…' : 'Yes, start with no change fund'}
+          </PrimaryButton>
+        </ModalActions>
+      </Modal>
+    )}
+    </>
   )
 }
 

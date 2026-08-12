@@ -20,6 +20,8 @@ export function detailFromLocalTxn(item, lines = null) {
           quantity: Number(line.quantity ?? 0),
           unitPrice: Number(line.unitPrice ?? line.price ?? 0),
           lineTotal: Number(line.lineTotal ?? 0),
+          promoGroupId: line.promoGroupId || null,
+          promoGroupName: line.promoGroupName || null,
         }
       }
       const quantity = line.pricingMode === 'kg' ? Number(line.weight || line.quantity || 0) : Number(line.quantity || 0)
@@ -32,6 +34,8 @@ export function detailFromLocalTxn(item, lines = null) {
         quantity,
         unitPrice,
         lineTotal: line.lineTotal != null ? Number(line.lineTotal) : unitPrice * quantity,
+        promoGroupId: line.promoGroupId || null,
+        promoGroupName: line.promoGroupName || null,
       }
     }),
   }

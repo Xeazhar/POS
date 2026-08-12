@@ -13,12 +13,40 @@ import { moneyClass } from '../ui'
  * label sits in row 1, every value in row 2, no matter how tall any one cell's hint text
  * makes that single cell.
  */
-function StatTiles({ title = null, subtitle = null, items = [] }) {
+function StatTiles({ title = null, subtitle = null, items = [], embedded = false }) {
   if (!items.length) return null
   const toneClass = (tone) => (tone === 'danger' ? 'text-brand-danger' : 'text-brand-ink')
 
+  if (embedded) {
+    return (
+      <div>
+        {(title || subtitle) && (
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            {title && <h3 className="m-0 text-sm font-bold text-brand-ink">{title}</h3>}
+            {subtitle && <span className="text-[11px] text-brand-muted">{subtitle}</span>}
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+          {items.map((item) => (
+            <div key={item.label} className="min-w-0">
+              <span className="block text-[9px] font-semibold tracking-wide text-brand-subtle uppercase">
+                {item.label}
+              </span>
+              <strong className={`mt-0.5 block text-sm font-bold tabular-nums ${toneClass(item.tone)}`}>
+                {item.value}
+              </strong>
+              {item.hint ? (
+                <span className="mt-0.5 block text-[9px] font-normal text-brand-subtle">{item.hint}</span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="mb-2.5 rounded-[10px] border border-brand-line bg-white px-3.5 py-2.5">
+    <div className="mb-2.5 min-w-0 rounded-[10px] border border-brand-line bg-white px-3.5 py-2.5">
       {(title || subtitle) && (
         <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
           {title && <h3 className="m-0 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">{title}</h3>}

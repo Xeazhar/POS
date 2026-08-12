@@ -99,10 +99,10 @@ function noteReference(row) {
  * is the log where restock vs sale vs adjustment vs waste is the whole point, unlike the
  * sold-quantity list where those words were noise.
  */
-function MovementHistoryPanel({ branchId, products = [] }) {
-  const [preset, setPreset] = useState('week')
-  const [start, setStart] = useState(() => presetRange('week').start)
-  const [end, setEnd] = useState(() => presetRange('week').end)
+function MovementHistoryPanel({ branchId, products = [], compact = false }) {
+  const [preset, setPreset] = useState(compact ? 'today' : 'week')
+  const [start, setStart] = useState(() => presetRange(compact ? 'today' : 'week').start)
+  const [end, setEnd] = useState(() => presetRange(compact ? 'today' : 'week').end)
   const [productId, setProductId] = useState('')
   const [movementType, setMovementType] = useState('')
   const [query, setQuery] = useState('')
@@ -111,6 +111,7 @@ function MovementHistoryPanel({ branchId, products = [] }) {
   const [error, setError] = useState('')
   const [page, setPage] = useState(0)
   const [exporting, setExporting] = useState(false)
+  const pageSize = compact ? 10 : PAGE_SIZE
 
   const applyPreset = (id) => {
     setPreset(id)
@@ -165,9 +166,9 @@ function MovementHistoryPanel({ branchId, products = [] }) {
     )
   }, [rows, query])
 
-  const pageCount = Math.max(1, Math.ceil(visible.length / PAGE_SIZE))
+  const pageCount = Math.max(1, Math.ceil(visible.length / pageSize))
   const pageIndex = Math.min(page, pageCount - 1)
-  const pageRows = visible.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
+  const pageRows = visible.slice(pageIndex * pageSize, pageIndex * pageSize + pageSize)
 
   const sortedProducts = useMemo(
     () => [...products].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))),
@@ -313,17 +314,19 @@ function MovementHistoryPanel({ branchId, products = [] }) {
           >
             <FiRefreshCw className={`text-[14px] ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />
           </SecondaryButton>
-          <SecondaryButton
-            compact
-            type="button"
-            className="px-2.5"
-            disabled={exporting || !visible.length}
-            aria-label={exporting ? 'Exporting movements' : 'Export movements to CSV'}
-            title={exporting ? 'Exporting…' : 'Export to CSV'}
-            onClick={() => void handleExport()}
-          >
-            <FiDownload className="text-[14px]" aria-hidden="true" />
-          </SecondaryButton>
+          {!compact && (
+            <SecondaryButton
+              compact
+              type="button"
+              className="px-2.5"
+              disabled={exporting || !visible.length}
+              aria-label={exporting ? 'Exporting movements' : 'Export movements to CSV'}
+              title={exporting ? 'Exporting…' : 'Export to CSV'}
+              onClick={() => void handleExport()}
+            >
+              <FiDownload className="text-[14px]" aria-hidden="true" />
+            </SecondaryButton>
+          )}
           <span className="text-[11px] text-brand-subtle">
             {visible.length} movement{visible.length === 1 ? '' : 's'}
           </span>

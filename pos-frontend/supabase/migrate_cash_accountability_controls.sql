@@ -1,7 +1,11 @@
+-- DO NOT RUN on a fresh install.
+-- Superseded by migrate_rename_petty_cash_to_cash_drawer_entries.sql — that migration
+-- creates cash_drawer_entries from scratch when petty_cash is absent. Running BOTH on a
+-- fresh DB is redundant; later migrations assume the rename migration is the source of truth.
+-- Kept only for older apply orders that already referenced this filename.
+--
 -- Change fund at shift start + petty cash request/approve workflow.
 -- Prefer cash_drawer_entries; create/rename from petty_cash when needed.
--- Prefer running migrate_rename_petty_cash_to_cash_drawer_entries.sql instead —
--- this file remains for older apply orders and is idempotent against either table name.
 
 do $$
 begin

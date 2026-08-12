@@ -22,6 +22,8 @@ import {
 } from '../components/ui'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { hasSupabase, logAuditEvent, bootstrapBranchData, fetchBranches } from '../lib/api'
+import { isOnline, readBranchSnapshot } from '../offline'
+import { withTimeout } from '../utils/withTimeout'
 import { isDayFullyClosed, money, qty, today, formatDate, stockTone } from '../utils/format'
 import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 import InventoryImportPanel from '../components/inventory/InventoryImportPanel'
@@ -96,11 +98,17 @@ function Products() {
 
   const reloadProducts = async () => {
     if (!hasSupabase || !user?.branchId) return
+    if (!isOnline()) {
+      const local = await readBranchSnapshot(user.branchId)
+      useProductStore.getState().setProducts(local.products || [])
+      return
+    }
     try {
-      const data = await bootstrapBranchData(user.branchId)
+      const data = await withTimeout(bootstrapBranchData(user.branchId), 15000, 'Inventory sync')
       useProductStore.getState().setProducts(data.products || [])
     } catch {
-      /* keep local */
+      const local = await readBranchSnapshot(user.branchId)
+      useProductStore.getState().setProducts(local.products || [])
     }
   }
 
@@ -138,7 +146,20 @@ function Products() {
     }
     let active = true
     setRemoteLoading(true)
-    bootstrapBranchData(viewBranchId)
+    if (!isOnline()) {
+      readBranchSnapshot(viewBranchId)
+        .then((data) => {
+          if (!active) return
+          setRemote({ products: data.products || [], movements: data.movements || [] })
+        })
+        .finally(() => {
+          if (active) setRemoteLoading(false)
+        })
+      return () => {
+        active = false
+      }
+    }
+    withTimeout(bootstrapBranchData(viewBranchId), 15000, 'Branch view')
       .then((data) => {
         if (!active) return
         setRemote({ products: data.products || [], movements: data.movements || [] })

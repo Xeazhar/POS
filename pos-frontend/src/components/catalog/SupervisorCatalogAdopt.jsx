@@ -23,6 +23,13 @@ import {
   hasSupabase,
   updateProductRow,
 } from '../../lib/api'
+import {
+  isOnline,
+  readBranchSnapshot,
+  readCatalogCache,
+  writeCatalogCache,
+} from '../../offline'
+import { withTimeout } from '../../utils/withTimeout'
 import { useAuthStore, useProductStore } from '../../stores/posStore'
 import { money, qty } from '../../utils/format'
 import { formatSupportError } from '../../utils/errors'
@@ -64,13 +71,31 @@ export default function SupervisorCatalogAdopt() {
       setLoading(false)
       return
     }
-    const [branch, catRows] = await Promise.all([
-      bootstrapBranchData(user.branchId),
-      fetchCatalogProducts({ branchType }),
-    ])
-    setProducts(branch.products || [])
-    setStoreProducts(branch.products || [])
-    setCatalog(catRows || [])
+    if (!isOnline()) {
+      const local = await readBranchSnapshot(user.branchId)
+      const cachedCatalog = (await readCatalogCache(branchType)) || []
+      setProducts(local.products || [])
+      setStoreProducts(local.products || [])
+      setCatalog(cachedCatalog)
+      setLoading(false)
+      return
+    }
+    try {
+      const [branch, catRows] = await Promise.all([
+        withTimeout(bootstrapBranchData(user.branchId), 15000, 'Branch catalog'),
+        withTimeout(fetchCatalogProducts({ branchType }), 15000, 'Network catalog'),
+      ])
+      setProducts(branch.products || [])
+      setStoreProducts(branch.products || [])
+      setCatalog(catRows || [])
+      await writeCatalogCache(branchType, catRows || [])
+    } catch {
+      const local = await readBranchSnapshot(user.branchId)
+      const cachedCatalog = (await readCatalogCache(branchType)) || []
+      setProducts(local.products || [])
+      setStoreProducts(local.products || [])
+      setCatalog(cachedCatalog)
+    }
     setLoading(false)
   }
 

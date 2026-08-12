@@ -4,7 +4,9 @@ import { Link, useParams } from 'react-router-dom'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
 import { DayEndReportPanels } from '../../components/dayend/DayEndReportPanels'
 import AuditSummary from '../../components/dashboard/AuditSummary'
+import RevenueChart from '../../components/dashboard/RevenueChart'
 import StatTiles from '../../components/dashboard/StatTiles'
+import MovementHistoryPanel from '../../components/inventory/MovementHistoryPanel'
 import {
   ErrorBanner,
   Eyebrow,
@@ -24,12 +26,14 @@ import {
   statusToneFromTxn,
   StatusBadge,
   tableRowDenseClass,
+  Tabs,
   varianceToneClass,
 } from '../../components/ui'
 import {
   approverLabel,
   approveRefundRequest,
   bootstrapBranchData,
+  bootstrapBranchActivity,
   fetchBranchCashImpact,
   fetchBranchTelemetry,
   fetchBranches,
@@ -41,19 +45,33 @@ import {
   fetchTransactionDetail,
   hasSupabase,
   approveDayEnd,
-  approvePettyCash,
-  fulfillPettyCash,
-  rejectPettyCash,
+  approveCashMovementManager,
+  CASH_MOVEMENT_COUNTING_STATUSES,
+  denyCashMovement,
+  fetchCashMovements,
+  fetchPendingCashMovements,
+  fetchPendingTillActionRequests,
   rejectRefundRequest,
   reopenDayEnd,
+  resolveTillActionRequest,
+  reviewCashMovement,
+  resolveFlaggedCashMovement,
   saveBranch,
 } from '../../lib/api'
 import { BRANCH_DEVICES, normalizeDeviceSettings } from '../../devices'
 import { useLiveData } from '../../hooks/useLiveData'
 import { useAuthStore } from '../../stores/posStore'
+import {
+  isOnline,
+  readBranchSnapshot,
+  readBranchesCache,
+  writeBranchesCache,
+} from '../../offline'
+import { withTimeout } from '../../utils/withTimeout'
 import { previousDayRestockReport } from '../../utils/dayEndReport'
 import { formatSupportError } from '../../utils/errors'
 import { businessDate, formatOpenHourLabel, money, qty, rowBusinessDate } from '../../utils/format'
+import { buildRevenueChartPoints, inRevenueChartPeriod, revenueChartPeriodDays } from '../../utils/revenueChartPoints'
 import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { discountSourceLabel, isPromoDiscountType } from '../../utils/promo'
 import { isUuid } from '../../utils/transactionDetail'
@@ -129,12 +147,17 @@ function ManagerBranchDashboard() {
     movements: [],
     dayEnds: [],
     pettyTimeline: [],
+    cashMovements: [],
     refundRequests: [],
   })
+  const [reviewingMove, setReviewingMove] = useState(null)
+  const [reviewMoveNotes, setReviewMoveNotes] = useState('')
+  const [reviewMoveBusy, setReviewMoveBusy] = useState(false)
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
   const [invPage, setInvPage] = useState(0)
+  const [invTab, setInvTab] = useState('stock') // stock | movements
   const [receiptsPage, setReceiptsPage] = useState(0)
   const [receiptDateFilter, setReceiptDateFilter] = useState('all') // all | today | date
   const [receiptDateValue, setReceiptDateValue] = useState('')
@@ -150,18 +173,23 @@ function ManagerBranchDashboard() {
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState(null)
   const [deviceBusy, setDeviceBusy] = useState(null)
-  const [pettyBusyId, setPettyBusyId] = useState(null)
   const [refundBusyId, setRefundBusyId] = useState(null)
+  const [cashMoveBusyId, setCashMoveBusyId] = useState(null)
+  const [pendingCashMoves, setPendingCashMoves] = useState([])
+  const [tillActionBusyId, setTillActionBusyId] = useState(null)
+  const [pendingTillActions, setPendingTillActions] = useState([])
   const [rejectingRefund, setRejectingRefund] = useState(null)
   const [rejectRefundReason, setRejectRefundReason] = useState('')
   const [staffShifts, setStaffShifts] = useState([])
   const [loading, setLoading] = useState(true)
   const [cashImpact, setCashImpact] = useState(null)
   const [auditEvents, setAuditEvents] = useState([])
+  const [chartPeriod, setChartPeriod] = useState('Week')
 
   useEffect(() => {
     let active = true
     setInvPage(0)
+    setInvTab('stock')
     setReceiptsPage(0)
     setReceiptDateFilter('all')
     setReceiptDateValue('')
@@ -179,15 +207,48 @@ function ManagerBranchDashboard() {
           setLoading(false)
           return
         }
-        const branches = await fetchBranches()
+        if (!isOnline()) {
+          const [cachedBranches, local] = await Promise.all([
+            readBranchesCache(),
+            readBranchSnapshot(branchId),
+          ])
+          if (!active) return
+          const branchRow =
+            (cachedBranches || []).find((row) => row.id === branchId) ||
+            (user?.branchId === branchId
+              ? { id: branchId, name: user.branchName, day_open_hour: user.dayOpenHour ?? 7, is_active: true }
+              : { id: branchId, name: local.branchName || 'Branch', day_open_hour: local.dayOpenHour ?? 7, is_active: true })
+          setBranch(branchRow)
+          setData({
+            ...local,
+            pettyTimeline: [],
+            cashMovements: [],
+            refundRequests: [],
+          })
+          setTelemetry({ devices: [] })
+          setStaffShifts([])
+          setCashImpact(null)
+          setAuditEvents([])
+          setPendingCashMoves([])
+          setPendingTillActions([])
+          setLoading(false)
+          return
+        }
+        const branches = await withTimeout(fetchBranches(), 15000, 'Branches')
         if (!active) return
+        await writeBranchesCache(branches)
         setBranch(branches.find((row) => row.id === branchId) || null)
-        const payload = await bootstrapBranchData(branchId)
+        const payload = await withTimeout(bootstrapBranchData(branchId), 20000, 'Branch data')
         const openHourForFetch = Number(payload.dayOpenHour ?? 7)
         const todayForFetch = businessDate(new Date(), openHourForFetch)
         const pettyTimeline = await fetchPettyCashTimeline(branchId, {
           startDate: todayForFetch,
           endDate: todayForFetch,
+        }).catch(() => [])
+        const dayCashMovements = await fetchCashMovements({
+          branchId,
+          start: todayForFetch,
+          end: todayForFetch,
         }).catch(() => [])
         const tel = await fetchBranchTelemetry([branchId])
         // Staff roster + hours comes from the shift log — the same clock-in/out records
@@ -198,17 +259,26 @@ function ManagerBranchDashboard() {
           start: daysAgoKey(STAFF_LOG_DAYS),
           end: todayForFetch,
         }).catch(() => [])
-        const [cashImpactRow, auditRows, refundRequests] = await Promise.all([
+        const [cashImpactRow, auditRows, refundRequests, cashMoves, tillActs] = await Promise.all([
           fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
           fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
           fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
+          fetchPendingCashMovements({ branchId, manager: true }).catch(() => []),
+          fetchPendingTillActionRequests({ branchId, manager: true }).catch(() => []),
         ])
         if (active) {
-          setData({ ...payload, pettyTimeline, refundRequests })
+          setData({
+            ...payload,
+            pettyTimeline,
+            cashMovements: dayCashMovements,
+            refundRequests,
+          })
           setTelemetry({ devices: tel.devices[branchId] || [] })
           setStaffShifts(shiftRows || [])
           setCashImpact(cashImpactRow)
           setAuditEvents(auditRows || [])
+          setPendingCashMoves(cashMoves || [])
+          setPendingTillActions(tillActs || [])
           setLoading(false)
         }
       })
@@ -235,6 +305,46 @@ function ManagerBranchDashboard() {
     }
   }, [branchId])
 
+  const reloadOps = async () => {
+    if (!hasSupabase) return
+    const openHourForFetch = Number(branch?.day_open_hour ?? data?.dayOpenHour ?? 7)
+    const todayForFetch = businessDate(new Date(), openHourForFetch)
+    const activity = await bootstrapBranchActivity(branchId).catch(() => null)
+    const pettyTimeline = await fetchPettyCashTimeline(branchId, {
+      startDate: todayForFetch,
+      endDate: todayForFetch,
+    }).catch(() => [])
+    const dayCashMovements = await fetchCashMovements({
+      branchId,
+      start: todayForFetch,
+      end: todayForFetch,
+    }).catch(() => [])
+    const [cashImpactRow, auditRows, refundRequests, cashMoves, tillActs] = await Promise.all([
+      fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
+      fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
+      fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
+      fetchPendingCashMovements({ branchId, manager: true }).catch(() => []),
+      fetchPendingTillActionRequests({ branchId, manager: true }).catch(() => []),
+    ])
+    setData((prev) => ({
+      ...prev,
+      ...(activity
+        ? {
+            transactions: activity.transactions,
+            movements: activity.movements,
+            dayEnds: activity.dayEnds,
+          }
+        : {}),
+      pettyTimeline,
+      cashMovements: dayCashMovements,
+      refundRequests,
+    }))
+    setCashImpact(cashImpactRow)
+    setAuditEvents(auditRows || [])
+    setPendingCashMoves(cashMoves || [])
+    setPendingTillActions(tillActs || [])
+  }
+
   const reload = async () => {
     if (!hasSupabase) return
     const branches = await fetchBranches()
@@ -246,14 +356,28 @@ function ManagerBranchDashboard() {
       startDate: todayForFetch,
       endDate: todayForFetch,
     }).catch(() => [])
-    const [cashImpactRow, auditRows, refundRequests] = await Promise.all([
+    const dayCashMovements = await fetchCashMovements({
+      branchId,
+      start: todayForFetch,
+      end: todayForFetch,
+    }).catch(() => [])
+    const [cashImpactRow, auditRows, refundRequests, cashMoves, tillActs] = await Promise.all([
       fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
       fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
       fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
+      fetchPendingCashMovements({ branchId, manager: true }).catch(() => []),
+      fetchPendingTillActionRequests({ branchId, manager: true }).catch(() => []),
     ])
-    setData({ ...payload, pettyTimeline, refundRequests })
+    setData({
+      ...payload,
+      pettyTimeline,
+      cashMovements: dayCashMovements,
+      refundRequests,
+    })
     setCashImpact(cashImpactRow)
     setAuditEvents(auditRows || [])
+    setPendingCashMoves(cashMoves || [])
+    setPendingTillActions(tillActs || [])
   }
 
   const loadStaffShifts = async () => {
@@ -267,28 +391,23 @@ function ManagerBranchDashboard() {
   }
 
   /**
-   * This page used to fetch everything once at mount and never again — a day-end close,
-   * a change-fund/petty-cash entry, or a shift clock-out from another terminal never
-   * reached an already-open dashboard tab. `day_ends`/`cash_drawer_entries` are realtime-
-   * enabled (`migrate_enable_realtime.sql`); `staff_shifts` is added to that publication
-   * alongside this fix. Even without realtime reaching a given deploy yet, `useLiveData`'s
-   * visibility/focus and 5-minute poll layers mean reopening or refocusing the tab is
-   * enough to pick up a change made elsewhere.
+   * Private Broadcast on branch operations — refetch authoritative state.
+   * Poll / focus cover gaps (Broadcast does not replay missed events).
    */
   useLiveData({
     enabled: hasSupabase && Boolean(branchId),
-    fetch: reload,
-    tables: [
-      { table: 'day_ends', filter: `branch_id=eq.${branchId}` },
-      { table: 'cash_drawer_entries', filter: `branch_id=eq.${branchId}` },
-      { table: 'refund_requests', filter: `branch_id=eq.${branchId}` },
-    ],
-  })
-
-  useLiveData({
-    enabled: hasSupabase && Boolean(branchId),
-    fetch: loadStaffShifts,
-    tables: [{ table: 'staff_shifts', filter: `branch_id=eq.${branchId}` }],
+    fetch: async () => {
+      await reloadOps()
+      await loadStaffShifts()
+    },
+    broadcasts: branchId
+      ? [
+          {
+            topic: `pos:branch:${branchId}:operations`,
+            events: ['OPERATIONS_CHANGED'],
+          },
+        ]
+      : [],
   })
 
   const openHour = Number(branch?.day_open_hour ?? 7)
@@ -298,6 +417,23 @@ function ManagerBranchDashboard() {
   // business date; see rowBusinessDate in utils/format.js.
   const inToday = (item) => rowBusinessDate(item, openHour) === todayKey
   const todayTx = data.transactions.filter((item) => item.status === 'Paid' && inToday(item))
+  const chartCutoff = useMemo(() => {
+    const cutoff = new Date()
+    cutoff.setHours(0, 0, 0, 0)
+    cutoff.setDate(cutoff.getDate() - revenueChartPeriodDays(chartPeriod) + 1)
+    return cutoff
+  }, [chartPeriod])
+  const chartTx = useMemo(
+    () =>
+      data.transactions.filter(
+        (item) => item.status === 'Paid' && inRevenueChartPeriod(item.date, chartCutoff),
+      ),
+    [data.transactions, chartCutoff],
+  )
+  const chartPoints = useMemo(
+    () => buildRevenueChartPoints(chartTx, chartPeriod),
+    [chartTx, chartPeriod],
+  )
   const revenue = todayTx.reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
   /**
    * Money handed back today, across ALL of today's receipts — not just the ones still
@@ -579,24 +715,75 @@ function ManagerBranchDashboard() {
   }, [data.movements, selectedProduct])
 
   const pettyTimeline = useMemo(() => data.pettyTimeline || [], [data.pettyTimeline])
+  const cashMovements = useMemo(
+    () => (data.cashMovements || []).filter((row) => row && row.status !== 'voided'),
+    [data.cashMovements],
+  )
+  const unauthorizedMoves = useMemo(
+    () => cashMovements.filter((row) => row.status === 'self_recorded'),
+    [cashMovements],
+  )
+  const drawerLogRows = useMemo(() => {
+    const moveRows = cashMovements.map((movement) => ({
+      key: `m-${movement.id}`,
+      sortAt: movement.requestedAt || movement.createdAt || '',
+      source: 'movement',
+      movement,
+    }))
+    const legacyRows = pettyTimeline.map((row) => ({
+      key: `p-${row.id}`,
+      sortAt: row.createdAt || '',
+      source: 'legacy',
+      row,
+    }))
+    return [...moveRows, ...legacyRows].sort((a, b) =>
+      String(b.sortAt || '').localeCompare(String(a.sortAt || '')),
+    )
+  }, [cashMovements, pettyTimeline])
   const refundRequests = useMemo(() => data.refundRequests || [], [data.refundRequests])
   const cashStats = useMemo(() => {
-    return pettyTimeline.reduce(
-      (acc, row) => {
-        if (row.kind === 'change_fund') acc.changeFund += Number(row.amount || 0)
-        else if (row.kind === 'pickup') acc.pickup += Number(row.amount || 0)
+    const acc = pettyTimeline.reduce(
+      (next, row) => {
+        if (row.kind === 'change_fund') next.changeFund += Number(row.amount || 0)
+        else if (row.kind === 'pickup') next.pickup += Number(row.amount || 0)
         // Only cash actually handed over has left the drawer. 'approved' is now an
         // intermediate state where the money is still in the till.
         else if (row.kind === 'paid_out' && row.status === 'fulfilled') {
-          acc.paidOut += Number(row.amount || 0)
+          next.paidOut += Number(row.amount || 0)
         } else if (row.kind === 'paid_out' && row.status === 'approved') {
-          acc.approvedUnfulfilled += Number(row.amount || 0)
+          next.approvedUnfulfilled += Number(row.amount || 0)
         }
-        return acc
+        return next
       },
       { changeFund: 0, pickup: 0, paidOut: 0, approvedUnfulfilled: 0 },
     )
-  }, [pettyTimeline])
+    for (const row of cashMovements) {
+      if (!CASH_MOVEMENT_COUNTING_STATUSES.includes(row.status)) continue
+      if (row.type === 'pickup') acc.pickup += Number(row.amount || 0)
+      else if (row.type === 'petty_cash') acc.paidOut += Number(row.amount || 0)
+      else if (row.type === 'cash_in') acc.changeFund += Number(row.amount || 0)
+    }
+    return acc
+  }, [pettyTimeline, cashMovements])
+
+  const movementTypeLabel = (type) => {
+    if (type === 'pickup') return 'Cash pickup'
+    if (type === 'cash_in') return 'Cash in'
+    if (type === 'opening_float') return 'Opening float'
+    return 'Paid-out'
+  }
+  const movementStatusLabel = (status) => {
+    const map = {
+      pending_remote: 'Waiting manager',
+      approved: 'Approved',
+      remote_approved: 'Approved',
+      denied: 'Denied',
+      self_recorded: 'Unauthorized',
+      confirmed: 'Resolved',
+      flagged_for_investigation: 'Flagged',
+    }
+    return map[status] || status
+  }
 
   const promoSalesToday = useMemo(() => {
     const byPromo = {}
@@ -640,6 +827,22 @@ function ManagerBranchDashboard() {
         title={branch?.name || 'Branch'}
       >
         <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {['Today', 'Week', 'Month'].map((item) => (
+              <button
+                key={item}
+                type="button"
+                className={`rounded-[5px] border px-3 py-2 text-xs font-bold max-[700px]:px-1.5 max-[700px]:py-1.5 max-[700px]:text-[10px] ${
+                  chartPeriod === item
+                    ? 'border-brand-dark bg-brand-dark text-white'
+                    : 'border-brand-border bg-white text-brand-n700'
+                }`}
+                onClick={() => setChartPeriod(item)}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
           <SecondaryButton compact type="button" onClick={() => { setForm(branch); setEditing(true) }}>
             Branch settings
           </SecondaryButton>
@@ -687,8 +890,16 @@ function ManagerBranchDashboard() {
         ))}
       </div>
 
-      <StatTiles title="Sales performance" subtitle={`${todayKey}`} items={salesPerformanceItems} />
-      <StatTiles title="Payment & cash impact" subtitle={`${todayKey} · this branch's drawer`} items={cashImpactItems} />
+      <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
+        <div className="min-h-0 min-w-0">
+          <RevenueChart points={chartPoints} period={chartPeriod} fill />
+        </div>
+        <div className="flex min-w-0 flex-col gap-2.5">
+          <StatTiles title="Sales performance" subtitle={`${todayKey}`} items={salesPerformanceItems} />
+          <StatTiles title="Payment & cash impact" subtitle={`${todayKey} · this branch's drawer`} items={cashImpactItems} />
+          <AuditSummary events={auditEvents} linkHref="/manager/reports" subtitle={chartPeriod} />
+        </div>
+      </div>
 
       <div className="mb-4 grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
         <TableCard className="max-h-none overflow-hidden">
@@ -1018,6 +1229,164 @@ function ManagerBranchDashboard() {
         </TableCard>
       )}
 
+      {isManagerRole(user?.role) && pendingCashMoves.length > 0 && (
+        <TableCard className="mb-4 max-h-none overflow-hidden">
+          <SectionHeading
+            title="Cash movements"
+            subtitle="POS Open Drawer — remote Approve / Deny (stops cashier countdown)"
+            meta={`${pendingCashMoves.length} pending`}
+          />
+          <div className="grid grid-cols-[0.8fr_0.7fr_0.9fr_1.2fr_1fr_1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[1fr_1fr_1fr]">
+            <span>Type</span>
+            <span>Amount</span>
+            <span className="max-[900px]:hidden">Drawer</span>
+            <span>Reason</span>
+            <span className="max-[900px]:hidden">Cashier</span>
+            <span>Action</span>
+          </div>
+          {pendingCashMoves.map((row) => (
+            <div
+              key={row.id}
+              className="grid grid-cols-[0.8fr_0.7fr_0.9fr_1.2fr_1fr_1fr] items-center gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[1fr_1fr_1fr]"
+            >
+              <span className="capitalize text-brand-ink">
+                {row.type === 'pickup'
+                  ? 'Pickup'
+                  : row.type === 'cash_in'
+                    ? 'Cash in'
+                    : row.type === 'opening_float'
+                      ? 'Float'
+                      : 'Petty'}
+              </span>
+              <strong className={moneyClass}>{money(row.amount)}</strong>
+              <span className="truncate text-brand-slate max-[900px]:hidden">
+                {row.drawerLabel || row.drawerId}
+              </span>
+              <span className="truncate text-brand-slate" title={row.reason || ''}>
+                {row.reason || '—'}
+              </span>
+              <span className="truncate text-brand-slate max-[900px]:hidden">
+                {row.requestedByName || '—'}
+              </span>
+              <span className="flex flex-wrap gap-1.5 max-[900px]:col-span-full">
+                <SecondaryButton
+                  compact
+                  type="button"
+                  disabled={cashMoveBusyId === row.id}
+                  onClick={async () => {
+                    try {
+                      setCashMoveBusyId(row.id)
+                      setError('')
+                      await denyCashMovement({ id: row.id, deniedBy: user.id })
+                      await reload()
+                    } catch (err) {
+                      setError(formatSupportError(err, 'MOVE01'))
+                    } finally {
+                      setCashMoveBusyId(null)
+                    }
+                  }}
+                >
+                  Deny
+                </SecondaryButton>
+                <PrimaryButton
+                  compact
+                  type="button"
+                  disabled={cashMoveBusyId === row.id}
+                  onClick={async () => {
+                    try {
+                      setCashMoveBusyId(row.id)
+                      setError('')
+                      await approveCashMovementManager({ id: row.id, approvedBy: user.id })
+                      await reload()
+                    } catch (err) {
+                      setError(formatSupportError(err, 'MOVE01'))
+                    } finally {
+                      setCashMoveBusyId(null)
+                    }
+                  }}
+                >
+                  Approve
+                </PrimaryButton>
+              </span>
+            </div>
+          ))}
+        </TableCard>
+      )}
+
+      {isManagerRole(user?.role) && pendingTillActions.length > 0 && (
+        <TableCard className="mb-4 max-h-none overflow-hidden">
+          <SectionHeading
+            title="Cart remove requests"
+            subtitle="POS line remove — remote Approve / Deny (stops 30s cashier wait)"
+            meta={`${pendingTillActions.length} pending`}
+          />
+          <div className="grid grid-cols-[1.4fr_1fr_1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
+            <span>Detail</span>
+            <span>Cashier</span>
+            <span>Action</span>
+          </div>
+          {pendingTillActions.map((row) => (
+            <div
+              key={row.id}
+              className="grid grid-cols-[1.4fr_1fr_1fr] items-center gap-2 border-t border-brand-softline px-4 py-2.5 text-xs"
+            >
+              <span className="truncate text-brand-ink" title={row.detail || ''}>
+                {row.detail || 'Remove item'}
+              </span>
+              <span className="truncate text-brand-slate">{row.requestedByName || '—'}</span>
+              <span className="flex flex-wrap gap-1.5">
+                <SecondaryButton
+                  compact
+                  type="button"
+                  disabled={tillActionBusyId === row.id}
+                  onClick={async () => {
+                    try {
+                      setTillActionBusyId(row.id)
+                      setError('')
+                      await resolveTillActionRequest({
+                        id: row.id,
+                        resolvedBy: user.id,
+                        status: 'denied',
+                      })
+                      await reload()
+                    } catch (err) {
+                      setError(formatSupportError(err, 'TILL_ACT01'))
+                    } finally {
+                      setTillActionBusyId(null)
+                    }
+                  }}
+                >
+                  Deny
+                </SecondaryButton>
+                <PrimaryButton
+                  compact
+                  type="button"
+                  disabled={tillActionBusyId === row.id}
+                  onClick={async () => {
+                    try {
+                      setTillActionBusyId(row.id)
+                      setError('')
+                      await resolveTillActionRequest({
+                        id: row.id,
+                        resolvedBy: user.id,
+                        status: 'approved',
+                      })
+                      await reload()
+                    } catch (err) {
+                      setError(formatSupportError(err, 'TILL_ACT01'))
+                    } finally {
+                      setTillActionBusyId(null)
+                    }
+                  }}
+                >
+                  Approve
+                </PrimaryButton>
+              </span>
+            </div>
+          ))}
+        </TableCard>
+      )}
+
       {isManagerRole(user?.role) && refundRequests.length > 0 && (
         <TableCard className="mb-4 max-h-none overflow-hidden">
           <SectionHeading
@@ -1134,6 +1503,27 @@ function ManagerBranchDashboard() {
           title="Cash drawer log"
           subtitle={`Change fund, cash pickups, and petty paid-outs · ${todayKey}`}
         />
+        {unauthorizedMoves.length > 0 && (
+          <button
+            type="button"
+            className="block w-full border-0 border-b border-brand-warn bg-brand-warn-bg px-4 py-2.5 text-left text-xs font-bold text-brand-warn hover:brightness-95"
+            onClick={() => {
+              const next = unauthorizedMoves.find(
+                (row) => row.requestedBy && row.requestedBy !== user?.id,
+              )
+              if (!next) return
+              setReviewMoveNotes('')
+              setReviewingMove(next)
+            }}
+          >
+            {unauthorizedMoves.length === 1
+              ? '1 unauthorized cash movement needs Confirm or Flag.'
+              : `${unauthorizedMoves.length} unauthorized cash movements need Confirm or Flag.`}
+            <span className="mt-0.5 block text-[10px] font-normal">
+              Tap to review the first one you can resolve
+            </span>
+          </button>
+        )}
         <div className="grid grid-cols-3 gap-2 border-b border-brand-line bg-white px-4 py-3 text-xs max-[700px]:grid-cols-1">
           <div>
             <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Change fund</span>
@@ -1156,110 +1546,321 @@ function ManagerBranchDashboard() {
           <span className="max-[900px]:hidden">Note</span>
           <span className="max-[900px]:hidden">Action</span>
         </div>
-        {pettyTimeline.map((row) => (
-          <div
-            key={row.id}
-            className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr_1.1fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]"
-          >
-            <span className="text-brand-slate">
-              {row.createdAt ? new Date(row.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
-            </span>
-            <strong className="capitalize text-brand-ink">
-              {row.kind === 'change_fund'
-                ? 'Change fund'
-                : row.kind === 'pickup'
-                  ? 'Cash pickup'
-                  : row.status === 'pending'
-                    ? 'Petty (pending)'
-                    : row.status === 'rejected'
-                      ? 'Petty (rejected)'
-                      : row.status === 'approved'
-                        ? 'Petty (approved, not handed over)'
-                        : 'Paid-out'}
-            </strong>
-            <span className="text-right tabular-nums">{money(row.amount)}</span>
-            <span className="truncate max-[900px]:hidden">{row.staffName}</span>
-            <span className="truncate text-brand-slate max-[900px]:hidden" title={row.reason || ''}>
-              {row.reason || '—'}
-              {row.receiptRef ? ` · ${row.receiptRef}` : ''}
-            </span>
-            <span className="max-[900px]:col-span-full">
-              {row.kind === 'paid_out' && row.status === 'pending' && isSupervisorOrAbove(user?.role) ? (
-                <span className="flex flex-wrap gap-1.5">
-                  <SecondaryButton
-                    compact
-                    type="button"
-                    disabled={pettyBusyId === row.id}
-                    onClick={async () => {
-                      try {
-                        setPettyBusyId(row.id)
-                        setError('')
-                        await rejectPettyCash({ id: row.id, approvedBy: user.id })
-                        await reload()
-                      } catch (err) {
-                        setError(formatSupportError(err, 'PETTY02'))
-                      } finally {
-                        setPettyBusyId(null)
-                      }
-                    }}
-                  >
-                    Reject
-                  </SecondaryButton>
-                  <PrimaryButton
-                    compact
-                    type="button"
-                    disabled={pettyBusyId === row.id}
-                    onClick={async () => {
-                      try {
-                        setPettyBusyId(row.id)
-                        setError('')
-                        await approvePettyCash({ id: row.id, approvedBy: user.id })
-                        await reload()
-                      } catch (err) {
-                        setError(formatSupportError(err, 'PETTY02'))
-                      } finally {
-                        setPettyBusyId(null)
-                      }
-                    }}
-                  >
-                    Approve
-                  </PrimaryButton>
+        {drawerLogRows.map((entry) => {
+          if (entry.source === 'movement') {
+            const row = entry.movement
+            const canReview =
+              isSupervisorOrAbove(user?.role) &&
+              row.status === 'self_recorded' &&
+              row.requestedBy &&
+              row.requestedBy !== user?.id
+            const ownUnauthorized =
+              row.status === 'self_recorded' && row.requestedBy === user?.id
+            return (
+              <div
+                key={entry.key}
+                className={`grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr_1.1fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[0.9fr_0.9fr_1fr] ${
+                  row.status === 'self_recorded' || row.status === 'flagged_for_investigation'
+                    ? 'bg-brand-warn-bg/40'
+                    : ''
+                }`}
+              >
+                <span className="text-brand-slate">
+                  {row.requestedAt
+                    ? new Date(row.requestedAt).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })
+                    : '—'}
                 </span>
-              ) : row.kind === 'paid_out' && row.status === 'approved' ? (
-                /* Fulfilment is not role-gated — whoever is on site hands the cash over,
-                   including the cashier who raised it. The approval already happened. */
-                <PrimaryButton
-                  compact
-                  type="button"
-                  disabled={pettyBusyId === row.id}
-                  title="Confirm the cash has physically left the drawer"
-                  onClick={async () => {
-                    try {
-                      setPettyBusyId(row.id)
-                      setError('')
-                      await fulfillPettyCash({ id: row.id, confirmedBy: user.id })
-                      await reload()
-                    } catch (err) {
-                      setError(formatSupportError(err, 'PETTY03'))
-                    } finally {
-                      setPettyBusyId(null)
-                    }
-                  }}
-                >
-                  Mark handed over
-                </PrimaryButton>
-              ) : (
+                <strong className="text-brand-ink">
+                  {movementTypeLabel(row.type)}
+                  <span className="mt-0.5 block text-[10px] font-bold text-brand-warn">
+                    {movementStatusLabel(row.status)}
+                  </span>
+                </strong>
+                <span className="text-right tabular-nums">{money(row.amount)}</span>
+                <span className="truncate max-[900px]:hidden">{row.requestedByName || '—'}</span>
+                <span className="truncate text-brand-slate max-[900px]:hidden" title={row.reason || ''}>
+                  {row.reason || '—'}
+                  {row.reviewNotes ? ` · Review: ${row.reviewNotes}` : ''}
+                </span>
+                <span className="max-[900px]:col-span-full">
+                  {canReview ? (
+                    <span className="flex flex-wrap gap-1.5">
+                      <SecondaryButton
+                        compact
+                        type="button"
+                        className="!border-brand-danger !text-brand-danger"
+                        disabled={reviewMoveBusy}
+                        onClick={() => {
+                          setReviewMoveNotes('')
+                          setReviewingMove(row)
+                        }}
+                      >
+                        Flag
+                      </SecondaryButton>
+                      <PrimaryButton
+                        compact
+                        type="button"
+                        disabled={reviewMoveBusy}
+                        onClick={() => {
+                          setReviewMoveNotes('')
+                          setReviewingMove(row)
+                        }}
+                      >
+                        Mark Resolved
+                      </PrimaryButton>
+                    </span>
+                  ) : ownUnauthorized ? (
+                    <span className="text-[10px] font-bold text-brand-warn">
+                      Waiting for another reviewer
+                    </span>
+                  ) : row.status === 'flagged_for_investigation' && isManagerRole(user?.role) ? (
+                    <PrimaryButton
+                      compact
+                      type="button"
+                      disabled={reviewMoveBusy}
+                      onClick={() => {
+                        setReviewMoveNotes('')
+                        setReviewingMove(row)
+                      }}
+                    >
+                      Mark Resolved
+                    </PrimaryButton>
+                  ) : row.status === 'flagged_for_investigation' ? (
+                    <span className="text-[10px] font-bold text-brand-danger">
+                      Flagged · manager resolves
+                    </span>
+                  ) : row.status === 'confirmed' ? (
+                    <span className="text-brand-subtle max-[900px]:hidden">Resolved</span>
+                  ) : row.status === 'approved' || row.status === 'remote_approved' ? (
+                    <span className="text-brand-subtle max-[900px]:hidden">Approved</span>
+                  ) : (
+                    <span className="text-brand-subtle max-[900px]:hidden">—</span>
+                  )}
+                </span>
+              </div>
+            )
+          }
+
+          const row = entry.row
+          return (
+            <div
+              key={entry.key}
+              className="grid grid-cols-[0.9fr_0.9fr_0.9fr_1fr_1.2fr_1.1fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[0.9fr_0.9fr_1fr]"
+            >
+              <span className="text-brand-slate">
+                {row.createdAt
+                  ? new Date(row.createdAt).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : '—'}
+              </span>
+              <strong className="capitalize text-brand-ink">
+                {row.kind === 'change_fund'
+                  ? 'Change fund'
+                  : row.kind === 'pickup'
+                    ? 'Cash pickup'
+                    : row.status === 'pending'
+                      ? 'Petty (pending)'
+                      : row.status === 'rejected'
+                        ? 'Petty (rejected)'
+                        : row.status === 'approved'
+                          ? 'Petty (approved, not handed over)'
+                          : 'Paid-out'}
+              </strong>
+              <span className="text-right tabular-nums">{money(row.amount)}</span>
+              <span className="truncate max-[900px]:hidden">{row.staffName}</span>
+              <span className="truncate text-brand-slate max-[900px]:hidden" title={row.reason || ''}>
+                {row.reason || '—'}
+                {row.receiptRef ? ` · ${row.receiptRef}` : ''}
+              </span>
+              <span className="max-[900px]:col-span-full">
                 <span className="text-brand-subtle max-[900px]:hidden">—</span>
-              )}
-            </span>
-          </div>
-        ))}
-        {pettyTimeline.length === 0 && (
+              </span>
+            </div>
+          )
+        })}
+        {drawerLogRows.length === 0 && (
           <div className="px-4 py-6 text-xs text-brand-subtle">
             No cash accountability entries recorded for this business day yet.
           </div>
         )}
       </TableCard>
+
+      {reviewingMove && (
+        <Modal onClose={() => !reviewMoveBusy && setReviewingMove(null)}>
+          <Eyebrow>
+            {reviewingMove.status === 'flagged_for_investigation'
+              ? 'FLAGGED MOVEMENT'
+              : 'UNAUTHORIZED MOVEMENT'}
+          </Eyebrow>
+          <h2 className="m-0 mb-3 text-lg">
+            {reviewingMove.status === 'flagged_for_investigation'
+              ? 'Mark Resolved'
+              : 'Review unauthorized movement'}
+          </h2>
+
+          <div className="mb-3 rounded-lg border border-brand-softline bg-brand-n50 px-3.5 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <strong className="block text-sm text-brand-ink">
+                  {movementTypeLabel(reviewingMove.type)}
+                </strong>
+                <span className="mt-0.5 block text-[11px] text-brand-muted">
+                  {reviewingMove.requestedAt
+                    ? new Date(reviewingMove.requestedAt).toLocaleString([], {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })
+                    : '—'}
+                  {' · '}
+                  {reviewingMove.requestedByName || 'Cashier'}
+                </span>
+              </div>
+              <strong className={`shrink-0 text-base text-brand-ink ${moneyClass}`}>
+                {money(reviewingMove.amount)}
+              </strong>
+            </div>
+            <div className="mt-2.5 border-t border-brand-softline pt-2.5">
+              <span className="block text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+                Reason
+              </span>
+              <p className="m-0 mt-0.5 text-sm text-brand-ink">{reviewingMove.reason || '—'}</p>
+            </div>
+          </div>
+
+          {reviewingMove.status === 'self_recorded' && reviewingMove.requestedBy === user?.id && (
+            <p className="mb-3 text-xs text-brand-danger">
+              You cannot review your own request. Ask another supervisor or manager.
+            </p>
+          )}
+          <Field
+            label="Review notes (optional)"
+            value={reviewMoveNotes}
+            onChange={(e) => setReviewMoveNotes(e.target.value.replace(/[<>]/g, '').slice(0, 300))}
+          />
+          <ModalActions className="!flex-col !items-stretch !justify-stretch gap-2.5">
+            {reviewingMove.status === 'flagged_for_investigation' ? (
+              <>
+                <PrimaryButton
+                  type="button"
+                  className="w-full"
+                  disabled={reviewMoveBusy || !isManagerRole(user?.role)}
+                  onClick={async () => {
+                    try {
+                      setReviewMoveBusy(true)
+                      setError('')
+                      await resolveFlaggedCashMovement({
+                        id: reviewingMove.id,
+                        resolvedBy: user.id,
+                        notes: reviewMoveNotes,
+                      })
+                      setReviewingMove(null)
+                      setReviewMoveNotes('')
+                      await reloadOps()
+                    } catch (err) {
+                      setError(formatSupportError(err, 'MOVE21'))
+                    } finally {
+                      setReviewMoveBusy(false)
+                    }
+                  }}
+                >
+                  {reviewMoveBusy ? 'Saving…' : 'Mark Resolved'}
+                </PrimaryButton>
+                <SecondaryButton
+                  compact
+                  type="button"
+                  className="w-full"
+                  disabled={reviewMoveBusy}
+                  onClick={() => setReviewingMove(null)}
+                >
+                  Cancel
+                </SecondaryButton>
+              </>
+            ) : (
+              <>
+                <PrimaryButton
+                  type="button"
+                  className="w-full"
+                  disabled={
+                    reviewMoveBusy ||
+                    reviewingMove.requestedBy === user?.id ||
+                    !isSupervisorOrAbove(user?.role)
+                  }
+                  onClick={async () => {
+                    try {
+                      setReviewMoveBusy(true)
+                      setError('')
+                      await reviewCashMovement({
+                        id: reviewingMove.id,
+                        reviewedBy: user.id,
+                        action: 'confirmed',
+                        notes: reviewMoveNotes,
+                      })
+                      setReviewingMove(null)
+                      setReviewMoveNotes('')
+                      await reloadOps()
+                    } catch (err) {
+                      setError(formatSupportError(err, 'MOVE19'))
+                    } finally {
+                      setReviewMoveBusy(false)
+                    }
+                  }}
+                >
+                  {reviewMoveBusy ? 'Saving…' : 'Mark Resolved'}
+                </PrimaryButton>
+                <div className="grid grid-cols-2 gap-2">
+                  <SecondaryButton
+                    compact
+                    type="button"
+                    className="w-full"
+                    disabled={reviewMoveBusy}
+                    onClick={() => setReviewingMove(null)}
+                  >
+                    Cancel
+                  </SecondaryButton>
+                  <SecondaryButton
+                    compact
+                    type="button"
+                    className="w-full !border-brand-danger !text-brand-danger"
+                    disabled={
+                      reviewMoveBusy ||
+                      reviewingMove.requestedBy === user?.id ||
+                      !isSupervisorOrAbove(user?.role)
+                    }
+                    onClick={async () => {
+                      try {
+                        setReviewMoveBusy(true)
+                        setError('')
+                        await reviewCashMovement({
+                          id: reviewingMove.id,
+                          reviewedBy: user.id,
+                          action: 'flagged_for_investigation',
+                          notes: reviewMoveNotes,
+                        })
+                        setReviewingMove(null)
+                        setReviewMoveNotes('')
+                        await reloadOps()
+                      } catch (err) {
+                        setError(formatSupportError(err, 'MOVE19'))
+                      } finally {
+                        setReviewMoveBusy(false)
+                      }
+                    }}
+                  >
+                    Flag
+                  </SecondaryButton>
+                </div>
+              </>
+            )}
+          </ModalActions>
+        </Modal>
+      )}
 
       <TableCard className="mb-4 max-h-none overflow-hidden">
         <SectionHeading
@@ -1317,81 +1918,111 @@ function ManagerBranchDashboard() {
         />
       )}
 
-      <TableCard className="mb-4 max-h-none overflow-hidden">
+      <div className="mb-4">
         <SectionHeading
           title={isRestaurant ? "Today's menu / potahe" : 'Inventory'}
           meta={`${data.products.length} ${isRestaurant ? 'items' : 'SKUs'}`}
         />
-        <div
-          className={`grid gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase ${
-            isRestaurant ? 'grid-cols-[2.5rem_1.6fr_1fr_0.7fr_0.7fr]' : 'grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr]'
-          }`}
-        >
-          <span>#</span>
-          <span>{isRestaurant ? 'Potahe' : 'Product'}</span>
-          <span>{isRestaurant ? 'Plate' : 'SKU'}</span>
-          <span>{isRestaurant ? 'Price' : 'On hand'}</span>
-          <span>{isRestaurant ? 'Today' : 'Status'}</span>
-        </div>
-        {invSlice.map((product, index) => (
-          <div
-            key={product.id}
-            role={isRestaurant ? undefined : 'button'}
-            tabIndex={isRestaurant ? undefined : 0}
-            className={`grid gap-2 text-xs ${tableRowDenseClass} ${
-              isRestaurant
-                ? 'grid-cols-[2.5rem_1.6fr_1fr_0.7fr_0.7fr]'
-                : 'tap-row cursor-pointer grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr]'
-            }`}
-            onClick={isRestaurant ? undefined : () => setSelectedProduct(product)}
-            onKeyDown={
-              isRestaurant
-                ? undefined
-                : (event) => {
-                    if (event.key === 'Enter' || event.key === ' ') setSelectedProduct(product)
-                  }
-            }
-          >
-            <span className={`${moneyClass} text-brand-subtle`}>{pageIndex * PAGE_SIZE + index + 1}</span>
-            <strong className="truncate text-brand-ink">{product.name}</strong>
-            <span className="truncate text-brand-subtle">
-              {isRestaurant ? product.category : product.sku}
-            </span>
-            {isRestaurant ? (
-              <>
-                <span className={moneyClass}>{money(product.price)}</span>
-                <span className={product.availableToday !== false ? 'text-brand-success' : 'text-brand-muted'}>
-                  {product.availableToday !== false ? 'On' : 'Off'}
+        <Tabs
+          value={invTab}
+          onChange={setInvTab}
+          tabs={[
+            { id: 'stock', label: isRestaurant ? 'Menu' : 'On hand' },
+            { id: 'movements', label: 'Movement history' },
+          ]}
+        />
+        {invTab === 'movements' ? (
+          <MovementHistoryPanel branchId={branchId} products={data.products} compact />
+        ) : (
+          <TableCard className="max-h-none overflow-hidden rounded-t-none">
+            <div
+              className={`grid gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase ${
+                isRestaurant
+                  ? 'grid-cols-[2.5rem_1.6fr_1fr_0.7fr_0.7fr]'
+                  : 'grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr]'
+              }`}
+            >
+              <span>#</span>
+              <span>{isRestaurant ? 'Potahe' : 'Product'}</span>
+              <span>{isRestaurant ? 'Plate' : 'SKU'}</span>
+              <span>{isRestaurant ? 'Price' : 'On hand'}</span>
+              <span>{isRestaurant ? 'Today' : 'Status'}</span>
+            </div>
+            {invSlice.map((product, index) => (
+              <div
+                key={product.id}
+                role={isRestaurant ? undefined : 'button'}
+                tabIndex={isRestaurant ? undefined : 0}
+                className={`grid gap-2 text-xs ${tableRowDenseClass} ${
+                  isRestaurant
+                    ? 'grid-cols-[2.5rem_1.6fr_1fr_0.7fr_0.7fr]'
+                    : 'tap-row cursor-pointer grid-cols-[2.5rem_1.6fr_0.7fr_0.6fr_0.5fr]'
+                }`}
+                onClick={isRestaurant ? undefined : () => setSelectedProduct(product)}
+                onKeyDown={
+                  isRestaurant
+                    ? undefined
+                    : (event) => {
+                        if (event.key === 'Enter' || event.key === ' ') setSelectedProduct(product)
+                      }
+                }
+              >
+                <span className={`${moneyClass} text-brand-subtle`}>
+                  {pageIndex * PAGE_SIZE + index + 1}
                 </span>
-              </>
-            ) : (
-              <>
-                <span className={moneyClass}>{qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}</span>
-                <span className={product.stock <= Number(product.lowStockAt ?? 5) ? 'text-brand-danger' : 'text-brand-success'}>
-                  {product.stock <= Number(product.lowStockAt ?? 5) ? 'Low' : 'OK'}
+                <strong className="truncate text-brand-ink">{product.name}</strong>
+                <span className="truncate text-brand-subtle">
+                  {isRestaurant ? product.category : product.sku}
                 </span>
-              </>
+                {isRestaurant ? (
+                  <>
+                    <span className={moneyClass}>{money(product.price)}</span>
+                    <span
+                      className={
+                        product.availableToday !== false ? 'text-brand-success' : 'text-brand-muted'
+                      }
+                    >
+                      {product.availableToday !== false ? 'On' : 'Off'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className={moneyClass}>
+                      {qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}
+                    </span>
+                    <span
+                      className={
+                        product.stock <= Number(product.lowStockAt ?? 5)
+                          ? 'text-brand-danger'
+                          : 'text-brand-success'
+                      }
+                    >
+                      {product.stock <= Number(product.lowStockAt ?? 5) ? 'Low' : 'OK'}
+                    </span>
+                  </>
+                )}
+              </div>
+            ))}
+            {data.products.length === 0 && (
+              <div className="px-4 py-6 text-xs text-brand-subtle">
+                {isRestaurant
+                  ? 'No menu items yet. Add or import potahe from Data.'
+                  : 'No inventory rows yet.'}
+              </div>
             )}
-          </div>
-        ))}
-        {data.products.length === 0 && (
-          <div className="px-4 py-6 text-xs text-brand-subtle">
-            {isRestaurant
-              ? 'No menu items yet. Add or import potahe from Data.'
-              : 'No inventory rows yet.'}
-          </div>
+            {invPages > 1 && (
+              <Pager
+                page={pageIndex + 1}
+                pageCount={invPages}
+                total={data.products.length}
+                label={isRestaurant ? 'items' : 'SKUs'}
+                onPrev={() => setInvPage((p) => Math.max(0, p - 1))}
+                onNext={() => setInvPage((p) => Math.min(invPages - 1, p + 1))}
+              />
+            )}
+          </TableCard>
         )}
-        {invPages > 1 && (
-          <Pager
-            page={pageIndex + 1}
-            pageCount={invPages}
-            total={data.products.length}
-            label={isRestaurant ? 'items' : 'SKUs'}
-            onPrev={() => setInvPage((p) => Math.max(0, p - 1))}
-            onNext={() => setInvPage((p) => Math.min(invPages - 1, p + 1))}
-          />
-        )}
-      </TableCard>
+      </div>
 
       {editing && form && (
         <Modal onClose={() => setEditing(false)}>
@@ -1416,11 +2047,19 @@ function ManagerBranchDashboard() {
             <h2 className="mb-4 text-lg">Branch settings</h2>
             <div className="grid gap-3">
               <Field label="Branch name" required value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-              <Field label="Business name (receipt)" value={form.business_name || ''} onChange={(e) => setForm({ ...form, business_name: e.target.value })} />
+              <div className="rounded-md border border-brand-softline bg-brand-n50 px-3 py-2.5">
+                <span className="block text-[10px] font-bold tracking-wide text-brand-label uppercase">
+                  Business name (receipt)
+                </span>
+                <strong className="block text-sm text-brand-ink">
+                  {branch?.company_business_name || form.business_name || '—'}
+                </strong>
+                <span className="mt-0.5 block text-[10px] text-brand-subtle">
+                  From company profile (Manager → Branches). Legacy branch override is no longer editable here.
+                </span>
+              </div>
               <Field label="Address" value={form.address || ''} onChange={(e) => setForm({ ...form, address: e.target.value })} />
-              {/* Two-level TIN: the business has one TIN, each branch has a BIR branch
-                  code appended to it. The main TIN is edited once on Branches, not here,
-                  so two branches cannot end up claiming different company TINs. */}
+              {/* Two-level TIN: company_profile.tin + branch_tin_code. branches.tin is legacy read-only. */}
               <div className="rounded-md border border-brand-softline bg-brand-n50 px-3 py-2.5">
                 <span className="block text-[10px] font-bold tracking-wide text-brand-label uppercase">
                   Main company TIN
@@ -1431,7 +2070,7 @@ function ManagerBranchDashboard() {
                 <span className="mt-0.5 block text-[10px] text-brand-subtle">
                   {branch?.company_tin
                     ? 'Shared by every branch. Change it on Manager → Branches.'
-                    : 'Set it on Manager → Branches. Until then this branch prints its own TIN below.'}
+                    : 'Set it on Manager → Branches. Until then receipts may show a legacy branch TIN if one was stored.'}
                 </span>
               </div>
               <Field
@@ -1451,11 +2090,6 @@ function ManagerBranchDashboard() {
                     : form.tin || '—'}
                 </strong>
               </p>
-              <Field
-                label="Branch TIN override (only if this branch is registered separately)"
-                value={form.tin || ''}
-                onChange={(e) => setForm({ ...form, tin: e.target.value })}
-              />
               <Field label="BIR permit no." value={form.bir_permit_no || ''} onChange={(e) => setForm({ ...form, bir_permit_no: e.target.value })} />
               <Field label="Machine ID (MIN)" value={form.machine_identification_no || ''} onChange={(e) => setForm({ ...form, machine_identification_no: e.target.value })} />
               <Field label="Serial number" value={form.serial_number || ''} onChange={(e) => setForm({ ...form, serial_number: e.target.value })} />

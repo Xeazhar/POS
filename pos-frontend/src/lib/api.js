@@ -1,8 +1,9 @@
 import { allowDemoMode, supabase } from './supabase'
 import { mapDayReport } from '../utils/dayEndReport'
 import { appError } from '../utils/errors'
+import { normalizeBranchType, isRestaurantBranchType, RESTAURANT_FEATURES_ENABLED } from '../utils/features'
 import { localDateKey, rowBusinessDate, today } from '../utils/format'
-import { pinAuthEmail } from '../utils/roles'
+import { pinAuthEmail, isSupervisorOrAbove, isManagerRole } from '../utils/roles'
 import { normalizeMenuKind } from '../utils/ulam'
 import { clearUnlockSecret, loadUnlockSecret, saveUnlockSecret } from '../offline/session'
 import { createVerifier, isVerifierExpired, verifyAgainst } from '../utils/unlockVerifier'
@@ -401,6 +402,20 @@ function readableReference(row, orNumbers) {
   return UUID_RE.test(raw) ? '' : raw
 }
 
+/** Minimal round-trip to verify Supabase is reachable (not just navigator.onLine). */
+export async function pingBackend() {
+  if (!supabase) throw new Error('Backend not configured')
+  const { error } = await supabase.from('branches').select('id').limit(1)
+  if (error) throw error
+}
+
+/** True when sessionStorage still holds a Supabase auth session (works offline). */
+export async function hasAuthSession() {
+  if (!supabase) return false
+  const { data } = await supabase.auth.getSession()
+  return Boolean(data?.session)
+}
+
 export async function fetchSessionStaff() {
   const { data: auth } = await supabase.auth.getUser()
   if (!auth?.user) return null
@@ -433,7 +448,7 @@ export async function fetchSessionStaff() {
     branchId: data.branch_id,
     branchName: data.branches?.name || 'Branch',
     branchAddress: data.branches?.address || '',
-    branchType: data.branches?.branch_type === 'restaurant' ? 'restaurant' : 'retail',
+    branchType: normalizeBranchType(data.branches?.branch_type),
     dayOpenHour: Number(data.branches?.day_open_hour ?? 7),
     deviceSettings: data.branches?.device_settings || null,
     vatRate: Number(data.branches?.vat_rate ?? 0.12),
@@ -467,25 +482,185 @@ export async function signInWithPin(loginCode, pin, { captchaToken } = {}) {
   if (error) throw error
   const row = Array.isArray(data) ? data[0] : data
   if (!row?.auth_email) throw new Error('Invalid staff code or PIN')
-  // RPC no longer returns Auth password — sign in with the till PIN after server validated it.
-  return signIn(row.auth_email, pinVal, { captchaToken })
+  const user = await signIn(row.auth_email, pinVal, { captchaToken })
+  if (row.staff_id && (isSupervisorOrAbove(row.role) || isManagerRole(row.role))) {
+    try {
+      const { cacheSupervisorVerifierFromPin } = await import('../offline/supervisorPin')
+      await cacheSupervisorVerifierFromPin(
+        {
+          staffId: row.staff_id,
+          fullName: row.full_name,
+          role: row.role,
+          branchId: row.branch_id,
+        },
+        code,
+        pinVal,
+      )
+    } catch {
+      /* local cache optional */
+    }
+  }
+  return user
+}
+
+function parseSupervisorPinRpcResult(data) {
+  if (data == null) return null
+  let row
+  if (typeof data === 'string') {
+    row = { staff_id: data, staffId: data }
+  } else {
+    row = Array.isArray(data) ? data[0] : data
+  }
+  if (!row) return null
+  const staffId = row.staff_id || row.staffId || row.id || null
+  if (!staffId) return null
+  const fullName = row.full_name || row.fullName || row.name || null
+  return {
+    staffId,
+    staff_id: staffId,
+    fullName,
+    full_name: fullName,
+    name: fullName,
+    role: row.role || 'supervisor',
+  }
+}
+
+function isSupervisorPinAuthFailure(err) {
+  const raw = String(err?.message || err || '')
+  return /Invalid supervisor|Supervisor approval failed|Invalid.*PIN|wrong (code|pin)/i.test(raw)
 }
 
 export async function verifySupervisorPin(branchId, loginCode, pin) {
-  const { data, error } = await supabase.rpc('verify_supervisor_pin', {
-    p_branch_id: branchId,
-    p_login_code: String(loginCode || '').replace(/\D/g, ''),
-    p_pin: String(pin || '').trim(),
-  })
-  if (error) throw error
-  // Hardened RPC returns table rows; older builds returned a bare uuid string.
-  if (typeof data === 'string') return { staff_id: data, full_name: null }
-  const row = Array.isArray(data) ? data[0] : data
-  if (!row) return null
-  return {
-    staff_id: row.staff_id || row.id || null,
-    full_name: row.full_name || row.name || null,
+  const code = String(loginCode || '').replace(/\D/g, '')
+  const pinVal = String(pin || '').trim()
+  if (code.length < 4 || pinVal.length < 4) {
+    throw new Error('Invalid supervisor code or PIN')
   }
+
+  const { canSyncWithBackend, isDeviceOnline } = await import('../offline/reachability')
+  const { verifySupervisorPinOffline, cacheSupervisorVerifierFromPin } = await import('../offline/supervisorPin')
+
+  let onlineResult = null
+  let onlineError = null
+
+  if (hasSupabase && isDeviceOnline()) {
+    for (const force of [false, true]) {
+      if (!(await canSyncWithBackend(force))) continue
+      try {
+        const { data, error } = await supabase.rpc('verify_supervisor_pin', {
+          p_branch_id: branchId,
+          p_login_code: code,
+          p_pin: pinVal,
+        })
+        if (error) throw error
+        onlineResult = parseSupervisorPinRpcResult(data)
+        if (onlineResult?.staffId) break
+      } catch (err) {
+        onlineError = err
+        if (!isSupervisorPinAuthFailure(err)) throw err
+      }
+    }
+  }
+
+  if (onlineResult?.staffId) {
+    try {
+      await cacheSupervisorVerifierFromPin({ ...onlineResult, branchId, role: onlineResult.role }, code, pinVal)
+    } catch {
+      /* local cache optional */
+    }
+    return onlineResult
+  }
+
+  try {
+    return await verifySupervisorPinOffline(branchId, code, pinVal)
+  } catch (offlineErr) {
+    if (onlineError && isSupervisorPinAuthFailure(onlineError)) throw onlineError
+    throw offlineErr
+  }
+}
+
+export async function fetchSupervisorPinVerifiers(branchId) {
+  if (!supabase || !branchId) return []
+  const { data, error } = await supabase.rpc('fetch_branch_supervisor_verifiers', {
+    p_branch_id: branchId,
+  })
+  if (error) {
+    if (String(error.message || '').includes('Could not find the function')) return []
+    throw error
+  }
+  return (data || []).map((row) => ({
+    staffId: row.staff_id,
+    staff_id: row.staff_id,
+    loginCode: row.login_code,
+    login_code: row.login_code,
+    fullName: row.full_name,
+    full_name: row.full_name,
+    role: row.role,
+    branchId: row.branch_id,
+    branch_id: row.branch_id,
+    pinVerifier: row.pin_verifier,
+    pin_verifier: row.pin_verifier,
+  }))
+}
+
+export async function saveStaffPinVerifier(staffId, pinVerifier) {
+  if (!supabase || !staffId || !pinVerifier) return null
+  const { error } = await supabase.rpc('save_staff_pin_verifier', {
+    p_staff_id: staffId,
+    p_verifier: pinVerifier,
+  })
+  if (error) {
+    if (String(error.message || '').includes('Could not find the function')) return null
+    throw error
+  }
+  return true
+}
+
+/** Push a queued approval audit row (idempotent when clientId is set). */
+export async function logApprovalEventRemote({
+  branchId,
+  requestedBy,
+  approvedBy,
+  approverName = null,
+  approverRole = null,
+  action,
+  detail = null,
+  meta = {},
+  clientId = null,
+  deviceId = null,
+}) {
+  const eventType = action.startsWith('approval:') ? action : `approval:${action}`
+  const payloadMeta = {
+    ...meta,
+    action: meta.action || action,
+    requested_by: requestedBy || meta.requested_by || null,
+    approved_by: approvedBy || meta.approved_by || null,
+    approver_name: approverName ?? meta.approver_name ?? null,
+    approver_role: approverRole ?? meta.approver_role ?? null,
+    offline: meta.offline === true,
+    device_id: deviceId || meta.device_id || null,
+  }
+  if (supabase) {
+    const { data, error } = await supabase.rpc('log_audit_event_idempotent', {
+      p_branch_id: branchId || null,
+      p_staff_id: requestedBy || approvedBy || null,
+      p_event_type: eventType,
+      p_detail: detail || null,
+      p_meta: payloadMeta,
+      p_client_id: clientId || meta.offline_client_id || null,
+    })
+    if (!error) return data
+    if (!String(error.message || '').includes('Could not find the function')) {
+      throw error
+    }
+  }
+  return logAuditEvent({
+    branchId,
+    staffId: requestedBy || approvedBy || null,
+    eventType,
+    detail,
+    meta: payloadMeta,
+  })
 }
 
 export async function signOut() {
@@ -659,25 +834,17 @@ const BOOTSTRAP_PRODUCT_COLS =
   'id, branch_id, name, sku, barcode, category_id, menu_kind, pricing_mode, price, unit_cost, budget_price, low_stock_threshold, available_today, discount_eligible, product_no, created_at, categories(name)'
 const BOOTSTRAP_TX_COLS =
   'id, or_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, shift_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, discount_amount, discount_type, discount_id_note, transaction_items(id)'
-// Pre migrate_vat_breakdown.sql fallback (see bootstrapBranchData / fetchTerminalReportSource).
-const BOOTSTRAP_TX_COLS_LEGACY =
-  'id, or_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, discount_amount, discount_type, discount_id_note, transaction_items(id)'
 const BOOTSTRAP_MOVE_COLS =
   'id, created_at, product_id, movement_type, quantity_in, quantity_out, quantity_on_hand_after, old_price, new_price, detail, branch_id, products(name)'
 const BOOTSTRAP_DAY_END_COLS =
   'id, business_date, recorded_cash, cash_on_hand, variance, expected_cash, note, status, closed_at, submitted_at, approved_at, reopened_at, reopen_reason, day_report, staff_id, branch_id, staff!staff_id(full_name), requested_at, requested_by, request_manager, reopen_requested_at, reopen_requested_by, reopen_request_reason'
-const BOOTSTRAP_DAY_END_COLS_LEGACY =
-  'id, business_date, recorded_cash, cash_on_hand, variance, note, status, closed_at, staff_id, branch_id, staff!staff_id(full_name)'
 
-export async function bootstrapBranchData(branchId) {
-  // Everything that reads the store's dayEnds (DayEnd.jsx's today lookup, Dashboard's
-  // previous-day restock report) only ever needs recent days — unlike transactions/
-  // stock_movements above, this query had no bound at all, so it grew unbounded for the
-  // life of the branch. 90 days is generous headroom over "today"/"yesterday"; historical
-  // reporting goes through Reports.jsx's own date-ranged queries, not this snapshot.
-  const dayEndsCutoff = localDateKey(new Date(Date.now() - 90 * 86400000))
-  const [productsRes, inventoryRes, txRes, moveRes, dayResInitial, catsRes, branchRes] = await Promise.all([
-    // Paged: a branch with >1000 products would otherwise be silently truncated.
+/**
+ * POS cold-path: catalog + stock + categories only.
+ * Login/POS should wait on this; recent txs/movements/day-ends load separately.
+ */
+export async function bootstrapPosCatalog(branchId) {
+  const [productsRes, inventoryRes, catsRes, branchRes] = await Promise.all([
     fetchAllRows((from, to) =>
       supabase
         .from('products')
@@ -695,6 +862,46 @@ export async function bootstrapBranchData(branchId) {
         .order('product_id')
         .range(from, to),
     ),
+    supabase.from('categories').select('id, name').order('name'),
+    supabase
+      .from('branches')
+      .select(
+        'id, day_open_hour, or_prefix, or_next, name, address, business_name, tin, branch_tin_code, bir_permit_no, machine_identification_no, serial_number',
+      )
+      .eq('id', branchId)
+      .maybeSingle(),
+  ])
+  for (const res of [productsRes, inventoryRes, catsRes, branchRes]) {
+    if (res.error) throw res.error
+  }
+  const stockMap = Object.fromEntries(
+    (inventoryRes.data || []).map((row) => [
+      row.product_id,
+      { stock: Number(row.quantity_on_hand), updatedAt: row.updated_at },
+    ]),
+  )
+  return {
+    products: (productsRes.data || []).map((row) =>
+      mapProduct(row, stockMap[row.id]?.stock ?? 0, {
+        updatedAt: stockMap[row.id]?.updatedAt,
+        lastMovementAt: null,
+      }),
+    ),
+    categories: catsRes.data || [],
+    dayOpenHour: Number(branchRes.data?.day_open_hour ?? 7),
+    orPrefix: branchRes.data?.or_prefix || 'OR',
+    orNext: Number(branchRes.data?.or_next ?? 1),
+    fiscalHeader: branchRes.data ? mapBranchFiscalHeader(branchRes.data) : null,
+  }
+}
+
+/**
+ * Recent activity for a branch (txs / movements / day ends).
+ * Used by dashboards, sync, and inventory history — not required to paint POS tiles.
+ */
+export async function bootstrapBranchActivity(branchId) {
+  const dayEndsCutoff = localDateKey(new Date(Date.now() - 90 * 86400000))
+  const [txRes, moveRes, dayRes] = await Promise.all([
     supabase
       .from('transactions')
       .select(BOOTSTRAP_TX_COLS)
@@ -713,81 +920,51 @@ export async function bootstrapBranchData(branchId) {
       .eq('branch_id', branchId)
       .gte('business_date', dayEndsCutoff)
       .order('business_date', { ascending: false }),
-    supabase.from('categories').select('id, name').order('name'),
-    supabase.from('branches').select('id, day_open_hour').eq('id', branchId).maybeSingle(),
   ])
-
-  let dayRes = dayResInitial
-  if (
-    dayRes.error &&
-    /expected_cash|submitted_at|approved_at|reopened_at|reopen_reason|reopen_requested|day_report|schema cache|column/i.test(
-      String(dayRes.error.message || ''),
-    )
-  ) {
-    dayRes = await supabase
-      .from('day_ends')
-      .select(BOOTSTRAP_DAY_END_COLS_LEGACY)
-      .eq('branch_id', branchId)
-      .gte('business_date', dayEndsCutoff)
-      .order('business_date', { ascending: false })
-  }
-
-  let tx = txRes
-  if (
-    tx.error &&
-    /vat_exempt_sales|zero_rated_sales|sc_pwd_discount|vat_rate_applied|schema cache|column/i.test(
-      String(tx.error.message || ''),
-    )
-  ) {
-    // Frontend can deploy ahead of migrate_vat_breakdown.sql being run — degrade instead of
-    // failing the whole bootstrap (POS/inventory/etc. don't depend on these columns existing).
-    tx = await supabase
-      .from('transactions')
-      .select(BOOTSTRAP_TX_COLS_LEGACY)
-      .eq('branch_id', branchId)
-      .order('created_at', { ascending: false })
-      .limit(200)
-  }
-
-  for (const res of [productsRes, inventoryRes, tx, moveRes, dayRes, catsRes, branchRes]) {
+  for (const res of [txRes, moveRes, dayRes]) {
     if (res.error) throw res.error
   }
 
-  const staffNames = await staffNameById((tx.data || []).map((row) => row.staff_id))
-  // Approvers are resolved alongside cashiers so a voided/refunded receipt can name who
-  // signed it off in the list itself, not only after opening the detail modal.
+  const staffNames = await staffNameById((txRes.data || []).map((row) => row.staff_id))
   const approverIdentities = await fetchStaffIdentities(
-    (tx.data || []).map((row) => row.void_approved_by),
+    (txRes.data || []).map((row) => row.void_approved_by),
   ).catch(() => ({}))
 
-  const stockMap = Object.fromEntries(
-    (inventoryRes.data || []).map((row) => [
-      row.product_id,
-      {
-        stock: Number(row.quantity_on_hand),
-        updatedAt: row.updated_at,
-      },
-    ]),
-  )
   const lastMoveMap = {}
   ;(moveRes.data || []).forEach((row) => {
     if (!lastMoveMap[row.product_id]) lastMoveMap[row.product_id] = localDateKey(row.created_at)
   })
 
   return {
-    products: (productsRes.data || []).map((row) =>
-      mapProduct(row, stockMap[row.id]?.stock ?? 0, {
-        updatedAt: stockMap[row.id]?.updatedAt,
-        lastMovementAt: lastMoveMap[row.id] || null,
-      }),
-    ),
-    transactions: (tx.data || []).map((row) =>
+    transactions: (txRes.data || []).map((row) =>
       mapTransaction(withApprover(withCashierName(row, staffNames), approverIdentities)),
     ),
     movements: (moveRes.data || []).map(mapMovement),
     dayEnds: (dayRes.data || []).map((row) => mapDayEndRow(row)),
-    categories: catsRes.data || [],
-    dayOpenHour: Number(branchRes.data?.day_open_hour ?? 7),
+    lastMoveMap,
+  }
+}
+
+/** Full branch snapshot = catalog + activity (offline sync / pages that need both). */
+export async function bootstrapBranchData(branchId) {
+  const [catalog, activity] = await Promise.all([
+    bootstrapPosCatalog(branchId),
+    bootstrapBranchActivity(branchId),
+  ])
+  const products = (catalog.products || []).map((p) => ({
+    ...p,
+    lastMovementAt: activity.lastMoveMap?.[p.id] || p.lastMovementAt || null,
+  }))
+  return {
+    products,
+    categories: catalog.categories,
+    dayOpenHour: catalog.dayOpenHour,
+    orPrefix: catalog.orPrefix,
+    orNext: catalog.orNext,
+    fiscalHeader: catalog.fiscalHeader,
+    transactions: activity.transactions,
+    movements: activity.movements,
+    dayEnds: activity.dayEnds,
   }
 }
 
@@ -920,7 +1097,9 @@ export async function createCatalogProduct(values, categoryIds = null) {
       discount_eligible: values.discountEligible === true,
       low_stock_threshold: values.lowStockAt || 10,
       is_active: true,
-      branch_type: values.branchType === 'restaurant' || values.menuKind ? 'restaurant' : 'retail',
+      branch_type: normalizeBranchType(
+        values.branchType === 'restaurant' || values.menuKind ? 'restaurant' : 'retail',
+      ),
     })
     .select('*, categories(name)')
     .single()
@@ -928,15 +1107,19 @@ export async function createCatalogProduct(values, categoryIds = null) {
   return data
 }
 
-/** Bulk-create network catalog rows (manager import). Skips are already filtered client-side. */
+/** Bulk create/update network catalog rows (manager import). Skips are already filtered client-side. */
 export async function commitCatalogImport({
   preview,
   branchType = 'retail',
+  staffId = null,
   onProgress,
 }) {
   const lines = preview?.lines || []
   const total = lines.length || 1
   let created = 0
+  let updated = 0
+  const isRestaurant =
+    RESTAURANT_FEATURES_ENABLED && (preview?.restaurant || isRestaurantBranchType(branchType))
 
   // Validate the WHOLE file before writing anything. There is no transaction around this
   // loop, so a bad row discovered at #400 would otherwise leave 399 rows committed with no
@@ -953,6 +1136,11 @@ export async function commitCatalogImport({
     if (!String(values.name || '').trim() || !String(values.sku || '').trim()) {
       throw new Error(`Catalog import rejected before any changes: missing name/SKU on row ${i + 1}.`)
     }
+    if (line.action === 'update' && !line.existing?.id) {
+      throw new Error(
+        `Catalog import rejected before any changes: update row ${i + 1} has no matching catalog id.`,
+      )
+    }
   })
 
   // Resolve categories once, then PASS THE MAP DOWN. The result used to be discarded
@@ -967,20 +1155,74 @@ export async function commitCatalogImport({
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]
     const values = line.values || {}
-    await createCatalogProduct(
-      {
-        ...values,
-        branchType: preview?.restaurant || branchType === 'restaurant' ? 'restaurant' : 'retail',
-        menuKind: values.menuKind || null,
+    const payload = {
+      ...values,
+      branchType: isRestaurant ? 'restaurant' : 'retail',
+      menuKind: values.menuKind || null,
+      discountEligible: values.discountEligible === true,
+      lowStockAt: values.lowStockAt || 10,
+    }
+
+    if (line.action === 'update') {
+      const existing = line.existing
+      // Full-record merge (same as the bulk editor): updateCatalogProduct replaces the row,
+      // so a partial payload would blank omitted fields.
+      await updateCatalogProduct(existing.id, {
+        ...existing,
+        name: String(values.name || '').trim(),
+        sku: String(values.sku || '').trim(),
+        barcode: values.barcode || null,
+        category: values.category || existing.category,
+        pricingMode: values.pricingMode || existing.pricingMode || 'pc',
+        price: Number(values.price),
+        budgetPrice:
+          values.budgetPrice === '' || values.budgetPrice == null
+            ? null
+            : Number(values.budgetPrice),
+        menuKind: values.menuKind || existing.menuKind || null,
         discountEligible: values.discountEligible === true,
-        lowStockAt: values.lowStockAt || 10,
-      },
-      categoryIds,
-    )
-    created += 1
+      })
+      // Same cascade as saveEditor — otherwise re-import would only fix catalog_products
+      // and leave already-adopted branch shelves on the old price/name.
+      if ((values.discountEligible === true) !== (existing.discountEligible === true)) {
+        await cascadeDiscountEligibleToBranches(
+          existing.id,
+          values.discountEligible === true,
+          existing.sku,
+        )
+      }
+      const identityOrPriceChanged =
+        String(values.name || '').trim() !== String(existing.name || '').trim() ||
+        String(values.sku || '').trim() !== String(existing.sku || '').trim() ||
+        String(values.barcode || '') !== String(existing.barcode || '') ||
+        String(values.category || '') !== String(existing.category || '') ||
+        Number(values.price) !== Number(existing.price) ||
+        String(values.budgetPrice ?? '') !== String(existing.budgetPrice ?? '')
+      if (identityOrPriceChanged) {
+        await cascadeCatalogFieldsToBranches(
+          existing.id,
+          {
+            name: String(values.name || '').trim(),
+            sku: String(values.sku || '').trim(),
+            barcode: values.barcode || null,
+            category: values.category || existing.category,
+            price: Number(values.price),
+            budgetPrice:
+              values.budgetPrice === '' || values.budgetPrice == null
+                ? null
+                : Number(values.budgetPrice),
+          },
+          { matchSku: existing.sku, staffId },
+        )
+      }
+      updated += 1
+    } else {
+      await createCatalogProduct(payload, categoryIds)
+      created += 1
+    }
     onProgress?.(i + 1, total)
   }
-  return { created }
+  return { created, updated }
 }
 
 export async function updateCatalogProduct(id, values) {
@@ -1207,7 +1449,7 @@ export async function adoptCatalogProducts({ branchId, catalogIds, staffId }) {
 }
 
 export async function createProduct({ branchId, staffId, values, branchType = 'retail' }) {
-  const isRestaurant = branchType === 'restaurant'
+  const isRestaurant = isRestaurantBranchType(branchType)
   const { data: cat } = await supabase.from('categories').select('id').eq('name', values.category).maybeSingle()
   let categoryId = cat?.id
   if (!categoryId) {
@@ -1454,25 +1696,12 @@ function isDuplicateClientIdError(error) {
 }
 
 export async function loadTransactionByClientId(branchId, clientId) {
-  let { data, error } = await supabase
+  const { data, error } = await supabase
     .from('transactions')
     .select(BOOTSTRAP_TX_COLS)
     .eq('branch_id', branchId)
     .eq('client_id', clientId)
     .maybeSingle()
-  if (
-    error &&
-    /vat_exempt_sales|zero_rated_sales|sc_pwd_discount|vat_rate_applied|schema cache|column/i.test(
-      String(error.message || ''),
-    )
-  ) {
-    ;({ data, error } = await supabase
-      .from('transactions')
-      .select(BOOTSTRAP_TX_COLS_LEGACY)
-      .eq('branch_id', branchId)
-      .eq('client_id', clientId)
-      .maybeSingle())
-  }
   if (error) throw error
   return data
 }
@@ -1539,10 +1768,18 @@ export async function completeSale({
   discountType = null,
   discountIdNote = null,
   shiftId = null,
+  orNumber: clientOrNumber = null,
 }) {
-  // Run till check + OR allocate (+ branch type if unknown) together
+  if (clientId) {
+    const existing = await loadTransactionByClientId(branchId, clientId).catch(() => null)
+    if (existing?.id) return existing
+  }
+
+  // Run till check + OR reserve/allocate (+ branch type if unknown) together
   const tillPromise = supabase.rpc('assert_till_open', { p_branch_id: branchId })
-  const orPromise = supabase.rpc('allocate_or_number', { p_branch_id: branchId })
+  const orPromise = clientOrNumber
+    ? supabase.rpc('reserve_or_number', { p_branch_id: branchId, p_or_number: clientOrNumber })
+    : supabase.rpc('allocate_or_number', { p_branch_id: branchId })
   const branchPromise =
     branchType != null
       ? Promise.resolve({ data: { branch_type: branchType } })
@@ -1556,11 +1793,21 @@ export async function completeSale({
   if (tillError) throw tillError
 
   const isRestaurant =
-    branchType === 'restaurant' || branchRes?.data?.branch_type === 'restaurant'
+    isRestaurantBranchType(branchType) || isRestaurantBranchType(branchRes?.data?.branch_type)
 
   let orNumber = null
   if (!orRes.error) orNumber = orRes.data
-  else if (!String(orRes.error.message || '').includes('Could not find the function')) {
+  else if (
+    clientOrNumber &&
+    String(orRes.error.message || '').includes('Could not find the function')
+  ) {
+    // DB without migrate_offline_or_reserve.sql — fall back to server-side allocate.
+    const fallback = await supabase.rpc('allocate_or_number', { p_branch_id: branchId })
+    if (!fallback.error) orNumber = fallback.data
+    else if (!String(fallback.error.message || '').includes('Could not find the function')) {
+      throw fallback.error
+    }
+  } else if (!String(orRes.error.message || '').includes('Could not find the function')) {
     throw orRes.error
   }
 
@@ -1656,6 +1903,7 @@ export async function completeSale({
       discount_amount: Number(item.discountAmount ?? 0),
       // Which promo event won this line — see migrate_promo_line_attribution.sql.
       promo_name: item.promoName || null,
+      promo_group_id: item.promoGroupId || null,
       // 'vatable' | 'exempt' | 'zero_rated', frozen at sale time — see migrate_vat_breakdown.sql.
       vat_category: item.vatCategory || 'vatable',
     }
@@ -1671,12 +1919,14 @@ export async function completeSale({
       itemsError &&
       (isMissingColumnError(itemsError, 'price_tier') ||
         isMissingColumnError(itemsError, 'promo_name') ||
+        isMissingColumnError(itemsError, 'promo_group_id') ||
         isMissingColumnError(itemsError, 'vat_category'))
     ) {
       const strippedLines = lines.map((row) => {
         const rest = { ...row }
         delete rest.price_tier
         delete rest.promo_name
+        delete rest.promo_group_id
         delete rest.vat_category
         return rest
       })
@@ -1735,7 +1985,7 @@ export async function fetchTransactionDetail(id) {
   const { data, error } = await supabase
     .from('transactions')
     .select(
-      '*, transaction_items(id, quantity, unit_price, line_total, discount_eligible, discount_amount, products(id, name, sku, pricing_mode))',
+      '*, transaction_items(id, quantity, unit_price, line_total, discount_eligible, discount_amount, promo_name, promo_group_id, products(id, name, sku, pricing_mode))',
     )
     .eq('id', id)
     .single()
@@ -1761,6 +2011,9 @@ export async function fetchTransactionDetail(id) {
       lineTotal: Number(line.line_total),
       discountEligible: line.discount_eligible === true,
       discountAmount: Number(line.discount_amount ?? 0),
+      promoName: line.promo_name || null,
+      promoGroupId: line.promo_group_id || null,
+      promoGroupName: null,
     })),
   }
 }
@@ -1782,65 +2035,21 @@ function isAlreadyVoidedError(error) {
 }
 
 export async function voidSale(id, reason, staffId = null, approvedBy = null) {
-  if (staffId) {
-    // p_approved_by: migrate_void_sale_approved_by.sql. On an environment where that hasn't
-    // been applied yet, the old 3-arg signature doesn't match this call and PostgREST returns
-    // "Could not find the function" — falls through to the manual path below, which already
-    // records the approver correctly.
-    const { data, error } = await supabase.rpc('void_sale_secure', {
-      p_transaction_id: id,
-      p_staff_id: staffId,
-      p_reason: reason,
-      p_approved_by: approvedBy,
-    })
-    if (!error) return data
-    if (isAlreadyVoidedError(error)) {
-      const { data: current } = await supabase.from('transactions').select('*').eq('id', id).maybeSingle()
-      return current
-    }
-    if (!String(error.message || '').includes('Could not find the function')) throw error
+  if (!staffId) {
+    throw new Error('void_sale_secure requires staffId — direct transaction updates are not allowed')
   }
-
-  const { data: existing } = await supabase
-    .from('transactions')
-    .select('id, branch_id, or_number, total_amount')
-    .eq('id', id)
-    .maybeSingle()
-
-  const updatePayload = {
-    status: 'voided',
-    void_reason: reason,
-    voided_at: new Date().toISOString(),
-    voided_by: staffId,
-  }
-  if (approvedBy) updatePayload.void_approved_by = approvedBy
-
-  let { error } = await supabase.from('transactions').update(updatePayload).eq('id', id)
-  if (error && isMissingColumnError(error, 'void_approved_by')) {
-    delete updatePayload.void_approved_by
-    ;({ error } = await supabase.from('transactions').update(updatePayload).eq('id', id))
-  }
-  // Same idempotency case as the RPC branch above, reached here only on a pre-void_sale_secure
-  // database — guard_transaction_updates() (migrate_bir_pos_compliance.sql) rejects the update
-  // with "voided transactions are locked" once it already landed.
-  if (error && isAlreadyVoidedError(error)) {
+  const { data, error } = await supabase.rpc('void_sale_secure', {
+    p_transaction_id: id,
+    p_staff_id: staffId,
+    p_reason: reason,
+    p_approved_by: approvedBy,
+  })
+  if (!error) return data
+  if (isAlreadyVoidedError(error)) {
     const { data: current } = await supabase.from('transactions').select('*').eq('id', id).maybeSingle()
     return current
   }
-  if (error) throw error
-
-  if (existing?.branch_id) {
-    await supabase.from('sale_events').insert({
-      branch_id: existing.branch_id,
-      transaction_id: id,
-      staff_id: staffId,
-      event_type: 'void',
-      or_number: existing.or_number,
-      reason,
-      amount: existing.total_amount,
-      payload: { approved_by: approvedBy },
-    })
-  }
+  throw error
 }
 
 /** Partial or multi-item refund. items: [{ item_id, quantity }] */
@@ -1900,6 +2109,463 @@ export async function approveRefundRequest({ id, staffId }) {
   return data
 }
 
+function mapTillActionRequest(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    clientId: row.client_id || null,
+    branchId: row.branch_id,
+    action: row.action,
+    detail: row.detail || '',
+    meta: row.meta || {},
+    status: row.status,
+    requestedBy: row.requested_by,
+    requestedAt: row.requested_at || null,
+    resolvedBy: row.resolved_by || null,
+    resolvedAt: row.resolved_at || null,
+    selfRecordAck: Boolean(row.self_record_ack),
+  }
+}
+
+export async function createTillActionRequest({
+  branchId,
+  requestedBy,
+  action,
+  detail,
+  meta = {},
+  clientId = null,
+}) {
+  const { data, error } = await supabase.rpc('create_till_action_request', {
+    p_branch_id: branchId,
+    p_requested_by: requestedBy,
+    p_action: action,
+    p_detail: detail,
+    p_meta: meta,
+    p_client_id: clientId,
+  })
+  if (error) throw error
+  return mapTillActionRequest(data)
+}
+
+export async function resolveTillActionRequest({ id, resolvedBy, status, ack = false }) {
+  const { data, error } = await supabase.rpc('resolve_till_action_request', {
+    p_id: id,
+    p_resolved_by: resolvedBy,
+    p_status: status,
+    p_ack: Boolean(ack),
+  })
+  if (error) throw error
+  return mapTillActionRequest(data)
+}
+
+/**
+ * Clear pending cart-remove alerts once the till resolves on-site (supervisor PIN,
+ * manager session, self-allow after timeout). Best-effort — ignores already-resolved rows.
+ */
+export async function dismissPendingTillActionsOnSite({
+  requestId = null,
+  branchId,
+  requestedBy,
+  resolvedBy,
+  productId = null,
+  status = 'approved',
+  ack = false,
+} = {}) {
+  if (!hasSupabase || !branchId || !resolvedBy) return
+
+  const candidateIds = []
+  if (requestId && requestId !== 'demo') candidateIds.push(requestId)
+
+  let q = supabase
+    .from('till_action_requests')
+    .select('id, meta')
+    .eq('branch_id', branchId)
+    .eq('status', 'pending')
+    .eq('action', 'cart_line_remove')
+  if (requestedBy) q = q.eq('requested_by', requestedBy)
+  const { data: rows, error } = await q
+  if (!error) {
+    for (const row of rows || []) {
+      const metaProductId = row.meta?.product_id || row.meta?.productId || null
+      if (productId && metaProductId && metaProductId !== productId) continue
+      candidateIds.push(row.id)
+    }
+  }
+
+  const seen = new Set()
+  for (const id of candidateIds) {
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    try {
+      await resolveTillActionRequest({ id, resolvedBy, status, ack })
+    } catch (err) {
+      const msg = String(err?.message || '')
+      if (/TILL_ACT04|already resolved/i.test(msg)) continue
+      if (/TILL_ACT09|TILL_ACT05|TILL_ACT08/i.test(msg) && status !== 'denied') {
+        try {
+          await resolveTillActionRequest({ id, resolvedBy, status: 'denied', ack: false })
+        } catch {
+          /* inbox refresh will retry reconcile */
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Drop inbox rows whose underlying issue was already handled on the till but the
+ * pending DB flag was never cleared (supervisor PIN on-site, day closed, etc.).
+ */
+async function reconcileResolvedPendingApprovals({ branchId, staffId, manager } = {}) {
+  if (!hasSupabase || !staffId) return
+
+  try {
+    let tillQ = supabase
+      .from('till_action_requests')
+      .select('id, branch_id, requested_at, requested_by, meta, action, status')
+      .eq('status', 'pending')
+      .eq('action', 'cart_line_remove')
+    if (!manager && branchId) tillQ = tillQ.eq('branch_id', branchId)
+    const { data: pendingTill } = await tillQ
+    if (pendingTill?.length) {
+      const branchIds = [...new Set(pendingTill.map((r) => r.branch_id).filter(Boolean))]
+      const oldest = pendingTill.reduce((min, row) => {
+        const t = row.requested_at ? new Date(row.requested_at).getTime() : min
+        return t < min ? t : min
+      }, Date.now())
+      const { data: auditRows } = await supabase
+        .from('audit_events')
+        .select('event_type, meta, created_at, branch_id')
+        .in('branch_id', branchIds)
+        .gte('created_at', new Date(oldest - 60_000).toISOString())
+        .in('event_type', [
+          'cart_line_remove',
+          'cart_line_remove_self',
+          'till_action_approved',
+          'till_action_denied',
+          'till_action_self_allowed',
+          'till_action_cancelled',
+        ])
+      for (const row of pendingTill) {
+        const productId = row.meta?.product_id || row.meta?.productId || null
+        const requestedAt = row.requested_at ? new Date(row.requested_at).getTime() : 0
+        const resolvedOnSite = (auditRows || []).some((ev) => {
+          if (new Date(ev.created_at).getTime() < requestedAt - 1000) return false
+          if (ev.branch_id !== row.branch_id) return false
+          if (ev.meta?.till_action_id === row.id) return true
+          if (ev.event_type !== 'cart_line_remove' && ev.event_type !== 'cart_line_remove_self') {
+            return false
+          }
+          const evProduct = ev.meta?.product_id || ev.meta?.productId || null
+          if (productId && evProduct && evProduct !== productId) return false
+          return true
+        })
+        if (!resolvedOnSite) continue
+        try {
+          await resolveTillActionRequest({ id: row.id, resolvedBy: staffId, status: 'denied' })
+        } catch {
+          /* already gone or permission — next fetch will retry */
+        }
+      }
+    }
+  } catch {
+    /* till_action_requests may be missing */
+  }
+
+  try {
+    let dayQ = supabase
+      .from('day_ends')
+      .select(
+        'id, branch_id, business_date, status, requested_at, submitted_at, closed_at, approved_at, request_manager',
+      )
+      .eq('status', 'requested')
+    if (!manager && branchId) dayQ = dayQ.eq('branch_id', branchId)
+    const { data: pendingDays } = await dayQ
+    if (!pendingDays?.length) return
+
+    const branchIds = [...new Set(pendingDays.map((r) => r.branch_id).filter(Boolean))]
+    const { data: closedRows } = await supabase
+      .from('day_ends')
+      .select('branch_id, business_date, status')
+      .in('branch_id', branchIds)
+      .in('status', ['closed', 'submitted'])
+
+    const closedKeys = new Set(
+      (closedRows || []).map((r) => `${r.branch_id}:${r.business_date}`),
+    )
+
+    const oldestDay = pendingDays.reduce((min, row) => {
+      const t = row.requested_at ? new Date(row.requested_at).getTime() : min
+      return t < min ? t : min
+    }, Date.now())
+    const { data: dayAudits } = await supabase
+      .from('audit_events')
+      .select('event_type, meta, created_at, branch_id')
+      .in('branch_id', branchIds)
+      .gte('created_at', new Date(oldestDay - 60_000).toISOString())
+      .in('event_type', ['day_end_approved', 'day_end_submitted'])
+
+    for (const row of pendingDays) {
+      const requestedAt = row.requested_at ? new Date(row.requested_at).getTime() : 0
+      // status='requested' with a non-null closed_at used to be a false positive: the column
+      // defaulted to now() on insert (see migrate_day_end_request_notify_fix.sql). Only treat
+      // a request as already counted when submit/approve stamps exist or another closed row
+      // covers the same business date, or a matching day_end audit landed after the request.
+      const countedAlready =
+        row.submitted_at ||
+        row.approved_at ||
+        (row.status !== 'requested' && row.closed_at) ||
+        closedKeys.has(`${row.branch_id}:${row.business_date}`) ||
+        (dayAudits || []).some((ev) => {
+          if (ev.branch_id !== row.branch_id) return false
+          if (new Date(ev.created_at).getTime() < requestedAt - 1000) return false
+          const auditDate = ev.meta?.business_date || ev.meta?.businessDate || null
+          return auditDate === row.business_date || ev.meta?.day_end_id === row.id
+        })
+      if (!countedAlready) continue
+      try {
+        await clearResolvedDayEndRequest({ id: row.id, staffId })
+      } catch {
+        try {
+          await rejectDayEndRequest({
+            id: row.id,
+            staffId,
+            reason: 'Resolved on site',
+          })
+        } catch {
+          /* row may have moved — next refresh drops it */
+        }
+      }
+    }
+  } catch {
+    /* day_ends request columns may be missing */
+  }
+}
+
+export async function clearResolvedDayEndRequest({ id, staffId }) {
+  const { data, error } = await supabase.rpc('clear_resolved_day_end_request', {
+    p_day_end_id: id,
+    p_staff_id: staffId,
+  })
+  if (error) throw error
+  return data
+}
+
+export async function fetchTillActionRequestById(id) {
+  if (!hasSupabase || !id) return null
+  const { data, error } = await supabase
+    .from('till_action_requests')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle()
+  if (error) {
+    if (/till_action_requests|schema cache|does not exist/i.test(String(error.message || ''))) {
+      return null
+    }
+    throw error
+  }
+  const mapped = mapTillActionRequest(data)
+  if (!mapped) return null
+  const who = await fetchStaffIdentities([mapped.requestedBy, mapped.resolvedBy]).catch(() => ({}))
+  return {
+    ...mapped,
+    requestedByName: mapped.requestedBy ? who[mapped.requestedBy]?.name || null : null,
+    resolvedByName: mapped.resolvedBy ? who[mapped.resolvedBy]?.name || null : null,
+  }
+}
+
+const CART_REMOVE_AUDIT_TYPES = [
+  'approval:cart_line_remove',
+  'approval:cart_line_remove_self',
+  'till_action_denied',
+  'till_action_cancelled',
+]
+
+function cartRemoveOutcomeFromAudit(eventType) {
+  if (eventType === 'approval:cart_line_remove_self') return 'removed_unapproved'
+  if (eventType === 'approval:cart_line_remove') return 'removed'
+  if (eventType === 'till_action_denied') return 'denied'
+  if (eventType === 'till_action_cancelled') return 'cancelled'
+  return 'other'
+}
+
+function cartRemoveMethodLabel(via) {
+  const map = {
+    pin: 'Supervisor PIN',
+    remote: 'Manager remote',
+    manager_session: 'Manager on-site',
+    self_allowed: 'Self-allowed (timeout)',
+  }
+  return map[via] || via || '—'
+}
+
+/**
+ * Cart line removals for fraud review — audit_events (completed + denied/cancelled)
+ * plus open till_action_requests still pending in range.
+ */
+export async function fetchCartRemoveReport({
+  start,
+  end,
+  branchId,
+  requestedBy = null,
+  outcome = null,
+} = {}) {
+  if (!hasSupabase) return []
+  try {
+    const auditRes = await fetchAllRows((from, to) => {
+      let q = supabase
+        .from('audit_events')
+        .select('*, staff(full_name), branches(name)')
+        .in('event_type', CART_REMOVE_AUDIT_TYPES)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(from, to)
+      if (start) q = q.gte('created_at', `${start}T00:00:00+08:00`)
+      if (end) q = q.lte('created_at', `${end}T23:59:59.999+08:00`)
+      if (branchId) q = q.eq('branch_id', branchId)
+      return q
+    })
+    if (auditRes.error) throw auditRes.error
+
+    const tillRes = await fetchAllRows((from, to) => {
+      let q = supabase
+        .from('till_action_requests')
+        .select('*')
+        .eq('action', 'cart_line_remove')
+        .eq('status', 'pending')
+        .order('requested_at', { ascending: false })
+        .range(from, to)
+      if (start) q = q.gte('requested_at', `${start}T00:00:00+08:00`)
+      if (end) q = q.lte('requested_at', `${end}T23:59:59.999+08:00`)
+      if (branchId) q = q.eq('branch_id', branchId)
+      if (requestedBy) q = q.eq('requested_by', requestedBy)
+      return q
+    })
+    if (tillRes.error && !/till_action_requests|schema cache|does not exist/i.test(String(tillRes.error.message || ''))) {
+      throw tillRes.error
+    }
+
+    const staffIds = new Set()
+    for (const row of auditRes.data || []) {
+      const meta = row.meta || {}
+      if (row.staff_id) staffIds.add(row.staff_id)
+      if (meta.requested_by) staffIds.add(meta.requested_by)
+      if (meta.approved_by) staffIds.add(meta.approved_by)
+    }
+    for (const row of tillRes.data || []) {
+      if (row.requested_by) staffIds.add(row.requested_by)
+    }
+    const who = await fetchStaffIdentities([...staffIds]).catch(() => ({}))
+
+    const rows = []
+    const byTill = new Map()
+
+    for (const row of auditRes.data || []) {
+      const meta = row.meta || {}
+      const rowOutcome = cartRemoveOutcomeFromAudit(row.event_type)
+      if (requestedBy && meta.requested_by !== requestedBy && row.staff_id !== requestedBy) continue
+      if (outcome && rowOutcome !== outcome) continue
+
+      const tillId = meta.till_action_id || null
+      const cashierId = meta.requested_by || row.staff_id
+      const mapped = {
+        when: row.created_at,
+        branch: row.branches?.name || '',
+        item: meta.product_name || meta.promo_name || row.detail || '—',
+        product_id: meta.product_id || meta.promo_group || '',
+        quantity: meta.quantity ?? meta.line_count ?? '',
+        line_value: meta.line_total != null ? Number(meta.line_total) : null,
+        cashier: who[cashierId]?.name || row.staff?.full_name || '—',
+        approved_by:
+          meta.approver_name && meta.approver_role
+            ? `${meta.approver_name} (${meta.approver_role})`
+            : meta.approver_name || (meta.approved_by ? who[meta.approved_by]?.name : '') || '—',
+        outcome: rowOutcome,
+        method: cartRemoveMethodLabel(meta.via),
+        detail: row.detail || '',
+        request_id: tillId || '',
+      }
+
+      if (tillId && rowOutcome.startsWith('removed')) {
+        const prev = byTill.get(tillId)
+        if (
+          prev &&
+          (prev.line_value == null || (mapped.line_value != null && mapped.line_value >= prev.line_value))
+        ) {
+          byTill.set(tillId, mapped)
+        } else if (!prev) {
+          byTill.set(tillId, mapped)
+        }
+        continue
+      }
+
+      rows.push(mapped)
+    }
+
+    for (const mapped of byTill.values()) {
+      rows.push(mapped)
+    }
+
+    for (const row of tillRes.data || []) {
+      if (outcome && outcome !== 'pending') continue
+      const meta = row.meta || {}
+      rows.push({
+        when: row.requested_at,
+        branch: '',
+        item: meta.product_name || row.detail || '—',
+        product_id: meta.product_id || '',
+        quantity: meta.quantity ?? '',
+        line_value: meta.line_total != null ? Number(meta.line_total) : null,
+        cashier: who[row.requested_by]?.name || '—',
+        approved_by: '—',
+        outcome: 'pending',
+        method: 'Awaiting manager',
+        detail: row.detail || '',
+        request_id: row.id,
+      })
+    }
+
+    rows.sort((a, b) => String(b.when || '').localeCompare(String(a.when || '')))
+    return rows
+  } catch (err) {
+    if (/audit_events|till_action_requests|schema cache|does not exist/i.test(String(err?.message || ''))) {
+      return []
+    }
+    throw err
+  }
+}
+
+export async function fetchPendingTillActionRequests({ branchId = null, manager = false } = {}) {
+  if (!hasSupabase) return []
+  try {
+    let q = supabase
+      .from('till_action_requests')
+      .select('*')
+      .eq('status', 'pending')
+      .order('requested_at', { ascending: false })
+      .limit(40)
+    if (!manager && branchId) q = q.eq('branch_id', branchId)
+    const { data, error } = await q
+    if (error) {
+      if (/till_action_requests|schema cache|does not exist/i.test(String(error.message || ''))) {
+        return []
+      }
+      throw error
+    }
+    const rows = (data || []).map(mapTillActionRequest).filter(Boolean)
+    const who = await fetchStaffIdentities(rows.map((r) => r.requestedBy)).catch(() => ({}))
+    return rows.map((row) => ({
+      ...row,
+      requestedByName: row.requestedBy ? who[row.requestedBy]?.name || null : null,
+    }))
+  } catch (err) {
+    if (/till_action_requests|schema cache|does not exist/i.test(String(err?.message || ''))) {
+      return []
+    }
+    throw err
+  }
+}
+
 export async function rejectRefundRequest({ id, staffId, reason }) {
   const { data, error } = await supabase.rpc('reject_refund_request', {
     p_request_id: id,
@@ -1917,6 +2583,24 @@ export async function cancelRefundRequest({ id, staffId }) {
   })
   if (error) throw error
   return data
+}
+
+/** Drop manager-refund alerts when a supervisor/manager voids or refunds on-site instead. */
+export async function dismissPendingRefundRequestsForTransaction({ transactionId, staffId }) {
+  if (!hasSupabase || !transactionId || !staffId) return
+  const { data, error } = await supabase
+    .from('refund_requests')
+    .select('id')
+    .eq('transaction_id', transactionId)
+    .eq('status', 'pending')
+  if (error) return
+  for (const row of data || []) {
+    try {
+      await cancelRefundRequest({ id: row.id, staffId })
+    } catch {
+      /* already acted on remotely */
+    }
+  }
 }
 
 /** Status poll fallback for Transactions.jsx's waiting modal, alongside its realtime subscription. */
@@ -2155,7 +2839,7 @@ export async function saveCompanyProfile({ businessName, tin, address }) {
   return data
 }
 
-export async function fetchBranches() {
+export async function fetchBranches({ includeCompany = true } = {}) {
   let { data, error } = await supabase
     .from('branches')
     .select(BRANCH_LIST_COLS)
@@ -2174,10 +2858,18 @@ export async function fetchBranches() {
     if (fallback.error) throw error
     data = fallback.data || []
   }
+  const rows = (data || []).map((row) => ({
+    ...row,
+    branch_type: normalizeBranchType(row.branch_type),
+  }))
+  // Branch cards / dashboards only need identity + type. Skip company_profile round-trip
+  // unless a caller needs composed TIN (receipts, fiscal settings).
+  if (!includeCompany) return rows
+
   // Every consumer (receipt, X/Z reading, settings form) reads `full_tin` and gets the
   // same composed value — no caller has to know about the two-level structure.
   const company = await fetchCompanyProfile().catch(() => null)
-  return (data || []).map((row) => ({
+  return rows.map((row) => ({
     ...row,
     company_tin: company?.tin || null,
     company_business_name: company?.business_name || null,
@@ -2187,17 +2879,55 @@ export async function fetchBranches() {
 
 const branchHeaderCache = new Map()
 
+/** Branch row → receipt header block (composed TIN when company profile is known). */
+export function mapBranchFiscalHeader(row, company = null) {
+  if (!row) return null
+  return {
+    id: row.id,
+    name: row.name || '',
+    business_name: row.business_name || row.name || '',
+    address: row.address || '',
+    tin: row.tin || '',
+    branch_tin_code: row.branch_tin_code || '',
+    company_tin: company?.tin || row.company_tin || null,
+    full_tin: composeTin(
+      company?.tin || row.company_tin,
+      row.branch_tin_code,
+      row.tin,
+    ),
+    bir_permit_no: row.bir_permit_no || '',
+    machine_identification_no: row.machine_identification_no || '',
+    serial_number: row.serial_number || '',
+    or_prefix: row.or_prefix || 'OR',
+  }
+}
+
 /**
  * Branch identity block for printing (business name, address, composed TIN, permit, MIN,
- * serial). Cached per branch id because it is read on every receipt print and changes
- * about never — and because the POS used to print `TIN: —` on every sale by handing
- * buildReceipt a stub `{ name }` object rather than the real branch row.
+ * serial). Memory cache → IndexedDB (offline) → network (online only, with timeout).
  */
 export async function fetchBranchFiscalHeader(branchId) {
-  if (!branchId || !supabase) return null
+  if (!branchId) return null
   if (branchHeaderCache.has(branchId)) return branchHeaderCache.get(branchId)
-  const branches = await fetchBranches().catch(() => [])
-  for (const row of branches) branchHeaderCache.set(row.id, row)
+
+  const { getLocalBranchFiscalHeader, saveBranchFiscalHeader } = await import('../offline/repository')
+  const local = await getLocalBranchFiscalHeader(branchId)
+  if (local) {
+    branchHeaderCache.set(branchId, local)
+    return local
+  }
+
+  if (!supabase) return null
+
+  const { canSyncWithBackend } = await import('../offline/reachability')
+  const { withTimeout } = await import('../utils/withTimeout')
+  if (!(await canSyncWithBackend())) return null
+
+  const branches = await withTimeout(fetchBranches(), 10000, 'Branch fiscal header').catch(() => [])
+  for (const row of branches) {
+    branchHeaderCache.set(row.id, row)
+    void saveBranchFiscalHeader(row.id, row)
+  }
   return branchHeaderCache.get(branchId) || null
 }
 
@@ -2353,13 +3083,11 @@ export async function saveBranch(payload) {
     is_active: payload.is_active,
   }
   if (payload.branch_type != null) {
-    fields.branch_type = payload.branch_type === 'restaurant' ? 'restaurant' : 'retail'
+    fields.branch_type = normalizeBranchType(payload.branch_type)
   }
   // Optional fiscal / settings fields — only write when provided (Branch settings)
-  if ('business_name' in payload || 'businessName' in payload) {
-    fields.business_name = payload.business_name ?? payload.businessName ?? null
-  }
-  if ('tin' in payload) fields.tin = payload.tin ?? null
+  // branches.tin / business_name are LEGACY fallbacks — prefer company_profile + branch_tin_code.
+  // App no longer writes tin/business_name (migrate_schema_cleanup_v1.sql).
   if ('branch_tin_code' in payload || 'branchTinCode' in payload) {
     fields.branch_tin_code = payload.branch_tin_code ?? payload.branchTinCode ?? null
   }
@@ -2690,6 +3418,14 @@ export async function createStaffAccount({
     }
   }
   if (managerSession) await supabase.auth.setSession(managerSession)
+  if (staffId && loginPin && pinRole) {
+    await persistStaffPinVerifier(staffId, loginPin, {
+      loginCode,
+      fullName,
+      role,
+      branchId,
+    })
+  }
   return { ...data.user, staffId }
 }
 
@@ -2704,8 +3440,28 @@ function staffCodeUniqueError(error) {
   return null
 }
 
+async function persistStaffPinVerifier(staffId, loginPin, { loginCode, fullName, role, branchId } = {}) {
+  if (!staffId || loginPin == null || String(loginPin).trim() === '') return
+  const verifier = await createVerifier(staffId, String(loginPin).trim())
+  await saveStaffPinVerifier(staffId, verifier).catch(() => {})
+  try {
+    const { upsertLocalSupervisorVerifier } = await import('../offline/supervisorPin')
+    await upsertLocalSupervisorVerifier({
+      staffId,
+      loginCode,
+      fullName,
+      role,
+      branchId,
+      pinVerifier: verifier,
+    })
+  } catch {
+    /* offline table optional */
+  }
+}
+
 export async function updateStaffRow(id, changes) {
   const payload = { ...changes }
+  const pinForVerifier = changes.loginPin ?? changes.login_pin ?? null
   if ('loginCode' in payload) {
     payload.login_code = payload.loginCode
     delete payload.loginCode
@@ -2727,6 +3483,14 @@ export async function updateStaffRow(id, changes) {
   const uniqueErr = staffCodeUniqueError(error)
   if (uniqueErr) throw uniqueErr
   if (error) throw error
+  if (pinForVerifier) {
+    await persistStaffPinVerifier(id, pinForVerifier, {
+      loginCode: data?.login_code,
+      fullName: data?.full_name,
+      role: data?.role,
+      branchId: data?.branch_id,
+    })
+  }
   return data
 }
 
@@ -2782,35 +3546,21 @@ export function mapShiftRow(row) {
     cashPickups: Number(row.cash_pickups || 0),
     closeNote: row.close_note || '',
     closedBy: row.closed_by || null,
-    closedWithoutSupervisor: row.closed_without_supervisor === true,
-    reviewedBy: row.reviewed_by || null,
-    reviewedAt: row.reviewed_at || null,
     open: !row.clock_out,
     status: row.clock_out ? 'closed' : 'open',
   }
 }
 
 const SHIFT_COLS =
-  'id, branch_id, staff_id, drawer_id, drawer_label, holds_drawer, business_date, clock_in, clock_out, shift_period, starting_cash, carried_from_shift_id, carried_amount, ending_cash, expected_cash, variance, cash_sales, cash_refunds, cash_paid_out, cash_pickups, close_note, closed_by, client_id, closed_without_supervisor, reviewed_by, reviewed_at'
-// shift_period (migrate_staff_shift_period.sql) and closed_without_supervisor/reviewed_by/
-// reviewed_at (migrate_shift_close_no_supervisor_flag.sql) are each optional, independent of
-// the core cash-accountability schema. Selecting any of them alongside the cash columns means
-// one missing optional column fails the whole select, and the fallback ladder would then drop
-// to a column set with no starting_cash / ending_cash at all — which reads as "the float was
-// never recorded" rather than as a schema gap. This tier keeps every cash figure and gives up
-// only the optional columns, together, rather than trying to isolate which one is missing.
-const SHIFT_COLS_CORE = SHIFT_COLS.replace(
-  ', shift_period',
-  '',
-).replace(', closed_without_supervisor, reviewed_by, reviewed_at', '')
+  'id, branch_id, staff_id, drawer_id, drawer_label, holds_drawer, business_date, clock_in, clock_out, shift_period, starting_cash, carried_from_shift_id, carried_amount, ending_cash, expected_cash, variance, cash_sales, cash_refunds, cash_paid_out, cash_pickups, close_note, closed_by, client_id'
+// shift_period is optional on older schemas — keep cash columns if it's missing.
+const SHIFT_COLS_CORE = SHIFT_COLS.replace(', shift_period', '')
 const SHIFT_COLS_LEGACY = 'id, branch_id, staff_id, clock_in, clock_out, shift_period'
 const SHIFT_COLS_MINIMAL = 'id, branch_id, staff_id, clock_in, clock_out'
 
 /** One of the optional staff_shifts columns is absent — a migration hasn't been applied yet. */
 function isMissingOptionalShiftColumn(error) {
-  return /shift_period|closed_without_supervisor|reviewed_by|reviewed_at/i.test(
-    String(error?.message || error || ''),
-  )
+  return /shift_period/i.test(String(error?.message || error || ''))
 }
 
 /** True when the database predates migrate_shift_cash_accountability.sql. */
@@ -2929,24 +3679,6 @@ export async function closeShift({ shiftId, endingCash = null, note = '', closed
   return mapShiftRow(Array.isArray(data) ? data[0] : data)
 }
 
-/**
- * Manager sign-off on a shift that was closed under its own cashier's count because no
- * supervisor/manager could witness it (see ShiftCashOut's "no supervisor available" path).
- * Requires migrate_shift_close_no_supervisor_flag.sql — absent on older databases, in which
- * case there is nothing to acknowledge, so this is a no-op rather than an error.
- */
-export async function acknowledgeShiftReview(shiftId, staffId) {
-  const { data, error } = await supabase.rpc('acknowledge_shift_review', {
-    p_shift_id: shiftId,
-    p_staff_id: staffId,
-  })
-  if (error) {
-    if (isMissingShiftRpc(error, 'acknowledge_shift_review')) return null
-    throw shiftRpcError(error)
-  }
-  return mapShiftRow(Array.isArray(data) ? data[0] : data)
-}
-
 /** Live cash position of an open shift — what the cash-out screen counts against. */
 export async function fetchShiftCashSummary(shiftId) {
   const { data, error } = await supabase.rpc('shift_cash_summary', { p_shift_id: shiftId })
@@ -3060,6 +3792,28 @@ export async function adjustShiftCash({ shiftId, field, newValue, reason, approv
     p_approved_by: approvedBy,
   })
   if (error) throw shiftRpcError(error)
+  return mapShiftRow(Array.isArray(data) ? data[0] : data)
+}
+
+/**
+ * Supervisor confirms cashier drawer handoff after the shift closed with no ending count.
+ * Fills ending/expected from shift components; clears Staff "Pending handoff".
+ * Needs migrate_receive_shift_handoff.sql.
+ */
+export async function receiveShiftHandoff({ shiftId, receivedBy = null }) {
+  const { data, error } = await supabase.rpc('receive_shift_handoff', {
+    p_shift_id: shiftId,
+    p_received_by: receivedBy,
+  })
+  if (error) {
+    if (isMissingShiftRpc(error, 'receive_shift_handoff')) {
+      throw appError(
+        'SHIFT05',
+        'receive_shift_handoff is missing — apply migrate_receive_shift_handoff.sql',
+      )
+    }
+    throw shiftRpcError(error)
+  }
   return mapShiftRow(Array.isArray(data) ? data[0] : data)
 }
 
@@ -3296,25 +4050,14 @@ export async function fetchStaffShifts({ branchId = null, start = null, end = nu
   })
 }
 
-/** Cash drawer ledger (change fund · pickups · petty paid-outs). Renamed from petty_cash. */
+/** Cash drawer ledger (change fund · pickups · petty paid-outs). */
 export const CASH_DRAWER_TABLE = 'cash_drawer_entries'
-const CASH_DRAWER_LEGACY_TABLE = 'petty_cash'
 const CASH_DRAWER_COLS =
   'id, branch_id, staff_id, amount, reason, business_date, created_at, kind, status, receipt_ref, shift_id, requested_by, approved_by, approved_at, confirmed_by, confirmed_at, reject_reason'
 
-function isMissingCashDrawerTable(error) {
-  return /cash_drawer_entries|petty_cash|Could not find the table|relation .* does not exist|schema cache/i.test(
-    String(error?.message || error || ''),
-  )
-}
-
-/** Prefer cash_drawer_entries; fall back to legacy petty_cash until migration is applied. */
+/** cash_drawer_entries only — petty_cash dual-read removed (migrate_schema_cleanup_v1.sql). */
 async function withCashDrawerTable(run) {
-  const primary = await run(CASH_DRAWER_TABLE)
-  if (primary?.error && isMissingCashDrawerTable(primary.error)) {
-    return run(CASH_DRAWER_LEGACY_TABLE)
-  }
-  return primary
+  return run(CASH_DRAWER_TABLE)
 }
 
 export async function addPettyCash({
@@ -3440,114 +4183,268 @@ export async function recordChangeFund({
   })
 }
 
-/** Staff requests petty cash (paid-out) — awaits supervisor/manager approval. */
-export async function requestPettyCash({
-  branchId,
-  staffId,
-  amount,
-  reason,
-  receiptRef,
-  businessDate,
-  shiftId = null,
-  autoApprove = false,
-}) {
-  const why = String(reason || '').trim()
-  if (!why) throw new Error('A reason is required for petty cash requests.')
-  return addPettyCash({
-    branchId,
-    staffId,
-    amount,
-    reason: why,
-    receiptRef: String(receiptRef || '').trim() || null,
-    businessDate,
-    kind: 'paid_out',
-    // A supervisor-or-above requesting their own branch's petty cash already holds
-    // approval authority — the immediate next step would just be them clicking Approve
-    // on their own row, same as submit_day_end collapsing self-approval. `autoApprove`
-    // is the caller's `canApprove` (see PettyCashPanel), the same gate the manual
-    // Approve button already uses, so this adds no new trust beyond what that button had.
-    status: autoApprove ? 'approved' : 'pending',
-    requestedBy: staffId,
-    approvedBy: autoApprove ? staffId : null,
-    shiftId,
-  })
+/** Statuses that reduce expected drawer cash (see migrate_cash_movements.sql). */
+export const CASH_MOVEMENT_COUNTING_STATUSES = [
+  'approved',
+  'remote_approved',
+  'self_recorded',
+  'confirmed',
+  'flagged_for_investigation',
+]
+
+function mapCashMovementRow(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    clientId: row.client_id || null,
+    shiftId: row.shift_id,
+    branchId: row.branch_id,
+    drawerId: row.drawer_id || 'main',
+    drawerLabel: row.drawer_label || 'Main drawer',
+    type: row.type,
+    amount: Number(row.amount || 0),
+    reason: row.reason || '',
+    requestedBy: row.requested_by,
+    requestedAt: row.requested_at || row.created_at || null,
+    status: row.status,
+    approvedBy: row.approved_by || null,
+    approvedAt: row.approved_at || null,
+    deniedBy: row.denied_by || null,
+    deniedAt: row.denied_at || null,
+    selfRecordAck: Boolean(row.self_record_ack),
+    selfRecordedAt: row.self_recorded_at || null,
+    reviewedBy: row.reviewed_by || null,
+    reviewedAt: row.reviewed_at || null,
+    reviewAction: row.review_action || null,
+    reviewNotes: row.review_notes || null,
+    createdOffline: Boolean(row.created_offline),
+    syncedAt: row.synced_at || null,
+    createdAt: row.created_at || null,
+  }
 }
 
-export async function approvePettyCash({ id, approvedBy }) {
-  const { data, error } = await withCashDrawerTable((table) =>
-    supabase
-      .from(table)
-      .update({
-        status: 'approved',
-        approved_by: approvedBy,
-        approved_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .eq('status', 'pending')
-      .select('*')
-      .single(),
-  )
+async function withCashMovementActors(rows) {
+  if (!rows.length) return rows
+  const who = await fetchStaffIdentities([
+    ...rows.map((r) => r.requestedBy),
+    ...rows.map((r) => r.approvedBy),
+    ...rows.map((r) => r.deniedBy),
+    ...rows.map((r) => r.reviewedBy),
+  ]).catch(() => ({}))
+  return rows.map((row) => ({
+    ...row,
+    requestedByName: row.requestedBy ? who[row.requestedBy]?.name || null : null,
+    approvedByName: row.approvedBy ? who[row.approvedBy]?.name || null : null,
+    deniedByName: row.deniedBy ? who[row.deniedBy]?.name || null : null,
+    reviewedByName: row.reviewedBy ? who[row.reviewedBy]?.name || null : null,
+  }))
+}
+
+export async function createCashMovementApproved({
+  shiftId,
+  branchId,
+  drawerId,
+  drawerLabel,
+  type,
+  amount,
+  reason,
+  requestedBy,
+  approvedBy,
+  clientId = null,
+  createdOffline = false,
+}) {
+  const { data, error } = await supabase.rpc('create_cash_movement_approved', {
+    p_shift_id: shiftId,
+    p_branch_id: branchId,
+    p_drawer_id: drawerId || 'main',
+    p_drawer_label: drawerLabel || 'Main drawer',
+    p_type: type,
+    p_amount: Number(amount),
+    p_reason: reason,
+    p_requested_by: requestedBy,
+    p_approved_by: approvedBy,
+    p_client_id: clientId,
+    p_created_offline: createdOffline,
+  })
   if (error) throw error
-  return mapPettyCashRow(data)
+  return mapCashMovementRow(data)
+}
+
+export async function createCashMovementPending({
+  shiftId,
+  branchId,
+  drawerId,
+  drawerLabel,
+  type,
+  amount,
+  reason,
+  requestedBy,
+  clientId = null,
+  createdOffline = false,
+}) {
+  const { data, error } = await supabase.rpc('create_cash_movement_pending', {
+    p_shift_id: shiftId,
+    p_branch_id: branchId,
+    p_drawer_id: drawerId || 'main',
+    p_drawer_label: drawerLabel || 'Main drawer',
+    p_type: type,
+    p_amount: Number(amount),
+    p_reason: reason,
+    p_requested_by: requestedBy,
+    p_client_id: clientId,
+    p_created_offline: createdOffline,
+  })
+  if (error) throw error
+  return mapCashMovementRow(data)
+}
+
+export async function approveCashMovementPin({ id, approvedBy }) {
+  const { data, error } = await supabase.rpc('approve_cash_movement_pin', {
+    p_id: id,
+    p_approved_by: approvedBy,
+  })
+  if (error) throw error
+  return mapCashMovementRow(data)
+}
+
+export async function approveCashMovementManager({ id, approvedBy }) {
+  const { data, error } = await supabase.rpc('approve_cash_movement_manager', {
+    p_id: id,
+    p_approved_by: approvedBy,
+  })
+  if (error) throw error
+  return mapCashMovementRow(data)
+}
+
+export async function denyCashMovement({ id, deniedBy }) {
+  const { data, error } = await supabase.rpc('deny_cash_movement', {
+    p_id: id,
+    p_denied_by: deniedBy,
+  })
+  if (error) throw error
+  return mapCashMovementRow(data)
+}
+
+/** Cashier (or manager) abandons a pending_remote Open Drawer request. */
+export async function cancelCashMovement({ id, cancelledBy }) {
+  const { data, error } = await supabase.rpc('cancel_cash_movement', {
+    p_id: id,
+    p_cancelled_by: cancelledBy,
+  })
+  if (error) throw error
+  return mapCashMovementRow(data)
+}
+
+export async function selfRecordCashMovement({ id, staffId, ack = true }) {
+  const { data, error } = await supabase.rpc('self_record_cash_movement', {
+    p_id: id,
+    p_staff_id: staffId,
+    p_ack: Boolean(ack),
+  })
+  if (error) throw error
+  return mapCashMovementRow(data)
+}
+
+export async function reviewCashMovement({ id, reviewedBy, action, notes = null }) {
+  const { data, error } = await supabase.rpc('review_cash_movement', {
+    p_id: id,
+    p_reviewed_by: reviewedBy,
+    p_action: action,
+    p_notes: notes,
+  })
+  if (error) throw error
+  return mapCashMovementRow(data)
+}
+
+/** Manager-only: flagged_for_investigation → confirmed (Resolved). */
+export async function resolveFlaggedCashMovement({ id, resolvedBy, notes = null }) {
+  const { data, error } = await supabase.rpc('resolve_flagged_cash_movement', {
+    p_id: id,
+    p_resolved_by: resolvedBy,
+    p_notes: notes,
+  })
+  if (error) throw error
+  return mapCashMovementRow(data)
+}
+
+export async function fetchCashMovementById(id) {
+  if (!hasSupabase || !id) return null
+  const { data, error } = await supabase.from('cash_movements').select('*').eq('id', id).maybeSingle()
+  if (error) {
+    if (/cash_movements|schema cache|does not exist/i.test(String(error.message || ''))) return null
+    throw error
+  }
+  const mapped = mapCashMovementRow(data)
+  if (!mapped) return null
+  const [withNames] = await withCashMovementActors([mapped])
+  return withNames
 }
 
 /**
- * Mark an approved petty-cash request as physically handed over.
- *
- * `.eq('status', 'approved')` is the control, not a filter: it means a row can only ever
- * reach 'fulfilled' from 'approved', so cash cannot be disbursed against a request nobody
- * signed off. The same rule is enforced in the database by
- * cash_drawer_entries_fulfil_needs_approval (migrate_petty_cash_fulfilment.sql) — the UI
- * is not the boundary here.
- *
- * Whoever is on site does this, including the cashier who raised the request. That is
- * deliberate: the approval already happened, and requiring the approver to be present to
- * hand over the money is exactly the deadlock this split exists to remove.
+ * List cash movements. Prefer shiftIds / requestedBy for live End-shift views (omit start/end
+ * so PH timezone vs UTC day clamps cannot hide same-session rows). Pass start+end for
+ * day-wide supervisor / report lists.
  */
-export async function fulfillPettyCash({ id, confirmedBy }) {
-  const { data, error } = await withCashDrawerTable((table) =>
-    supabase
-      .from(table)
-      .update({
-        status: 'fulfilled',
-        confirmed_by: confirmedBy,
-        confirmed_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .eq('status', 'approved')
-      .select('*')
-      .single(),
-  )
-  if (error) {
-    if (/fulfil_needs_approval|violates check constraint/i.test(String(error.message || ''))) {
-      throw appError('PETTY03', 'This request has no recorded approval.')
+export async function fetchCashMovements({
+  branchId = null,
+  shiftIds = null,
+  start = null,
+  end = null,
+  type = null,
+  status = null,
+  requestedBy = null,
+  drawerId = null,
+} = {}) {
+  if (!hasSupabase) return []
+  try {
+    const { data, error } = await fetchAllRows((from, to) => {
+      let q = supabase
+        .from('cash_movements')
+        .select('*')
+        .order('requested_at', { ascending: false })
+        .range(from, to)
+      if (branchId) q = q.eq('branch_id', branchId)
+      if (Array.isArray(shiftIds) && shiftIds.length) q = q.in('shift_id', shiftIds)
+      if (requestedBy) q = q.eq('requested_by', requestedBy)
+      // +08:00 matches BIR business-day local wall clock (Philippines).
+      if (start) q = q.gte('requested_at', `${start}T00:00:00+08:00`)
+      if (end) q = q.lte('requested_at', `${end}T23:59:59.999+08:00`)
+      if (type) q = q.eq('type', type)
+      if (status) q = q.eq('status', status)
+      if (drawerId) q = q.eq('drawer_id', drawerId)
+      return q
+    })
+    if (error) {
+      if (/cash_movements|schema cache|does not exist/i.test(String(error.message || ''))) return []
+      throw error
     }
-    // No row came back = it was not in 'approved' state (already fulfilled, or rejected).
-    if (/multiple \(or no\) rows|0 rows/i.test(String(error.message || ''))) {
-      throw appError('PETTY03', 'Only an approved request can be marked as handed over.')
-    }
-    throw error
+    return withCashMovementActors((data || []).map(mapCashMovementRow).filter(Boolean))
+  } catch (err) {
+    if (/cash_movements|schema cache|does not exist/i.test(String(err?.message || ''))) return []
+    throw err
   }
-  return mapPettyCashRow(data)
 }
 
-export async function rejectPettyCash({ id, approvedBy, reason = '' }) {
-  const { data, error } = await withCashDrawerTable((table) =>
-    supabase
-      .from(table)
-      .update({
-        status: 'rejected',
-        approved_by: approvedBy,
-        approved_at: new Date().toISOString(),
-        reject_reason: reason || null,
-      })
-      .eq('id', id)
-      .eq('status', 'pending')
+export async function fetchPendingCashMovements({ branchId = null, manager = false } = {}) {
+  if (!hasSupabase) return []
+  try {
+    let q = supabase
+      .from('cash_movements')
       .select('*')
-      .single(),
-  )
-  if (error) throw error
-  return mapPettyCashRow(data)
+      .eq('status', 'pending_remote')
+      .order('requested_at', { ascending: false })
+      .limit(40)
+    if (!manager && branchId) q = q.eq('branch_id', branchId)
+    const { data, error } = await q
+    if (error) {
+      if (/cash_movements|schema cache|does not exist/i.test(String(error.message || ''))) return []
+      throw error
+    }
+    return withCashMovementActors((data || []).map(mapCashMovementRow).filter(Boolean))
+  } catch (err) {
+    if (/cash_movements|schema cache|does not exist/i.test(String(err?.message || ''))) return []
+    throw err
+  }
 }
 
 /** Resolve requester / approver / fulfiller names (and the approver's role) onto rows. */
@@ -3764,7 +4661,7 @@ export async function branchSummary(branchId, { days = 1 } = {}) {
     .select('branch_type')
     .eq('id', branchId)
     .maybeSingle()
-  const isRestaurant = branch?.branch_type === 'restaurant'
+  const isRestaurant = isRestaurantBranchType(branch?.branch_type)
 
   // Paged. This feeds the headline Revenue/Orders KPI on the manager Overview, so a
   // truncation here understates the biggest number on the dashboard while the chart
@@ -3840,6 +4737,60 @@ export async function branchSummary(branchId, { days = 1 } = {}) {
     discounts: Number(discounts.toFixed(2)),
     refunds: Number(refunds.toFixed(2)),
     voidedSales: Number(voidedSales.toFixed(2)),
+  }
+}
+
+/**
+ * One round-trip for Manager Overview: per-branch sales KPIs + today's cash impact.
+ * Requires migrate_network_manager_overview.sql. Falls back to N× branchSummary + cash
+ * impact if the RPC is missing.
+ */
+export async function fetchManagerOverviewMetrics({ days = 1 } = {}) {
+  const { data, error } = await supabase.rpc('manager_overview_metrics', {
+    p_days: Math.max(1, days),
+  })
+  if (error) throw error
+  const payload = data || {}
+  const branches = payload.branches || {}
+  const cashImpact = payload.cashImpact || {
+    cashSales: 0,
+    cardSales: 0,
+    ewalletSales: 0,
+    cashRefunds: 0,
+    changeFund: 0,
+    pickup: 0,
+    paidOut: 0,
+    expectedCash: 0,
+  }
+  // Normalize numeric fields (jsonb may arrive as strings)
+  const summaries = {}
+  for (const [id, row] of Object.entries(branches)) {
+    summaries[id] = {
+      revenue: Number(row.revenue || 0),
+      orders: Number(row.orders || 0),
+      lowStock: Number(row.lowStock || 0),
+      menuOn: Number(row.menuOn || 0),
+      menuOff: Number(row.menuOff || 0),
+      branchType: normalizeBranchType(row.branchType),
+      grossSales: Number(row.grossSales || 0),
+      netSales: Number(row.netSales || 0),
+      discounts: Number(row.discounts || 0),
+      refunds: Number(row.refunds || 0),
+      voidedSales: Number(row.voidedSales || 0),
+    }
+  }
+  return {
+    summaries,
+    cashImpact: {
+      cashSales: Number(cashImpact.cashSales || 0),
+      cardSales: Number(cashImpact.cardSales || 0),
+      ewalletSales: Number(cashImpact.ewalletSales || 0),
+      cashRefunds: Number(cashImpact.cashRefunds || 0),
+      changeFund: Number(cashImpact.changeFund || 0),
+      pickup: Number(cashImpact.pickup || 0),
+      paidOut: Number(cashImpact.paidOut || 0),
+      expectedCash: Number(cashImpact.expectedCash || 0),
+    },
   }
 }
 
@@ -3977,15 +4928,19 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
   const byProductNet = {}
   const byCategoryNet = {}
   try {
-    const itemsRes = await supabase
-      .from('transaction_items')
-      .select(
-        'quantity, line_total, product_id, products(name, categories(name)), transactions!inner(created_at, status)',
-      )
-      .gte('transactions.created_at', startIso)
-      .eq('transactions.status', 'completed')
-    if (itemsRes.error) throw itemsRes.error
-    for (const row of itemsRes.data || []) {
+    const { data: itemRows, error: itemsErr } = await fetchAllRows((from, to) =>
+      supabase
+        .from('transaction_items')
+        .select(
+          'quantity, line_total, product_id, products(name, categories(name)), transactions!inner(created_at, status)',
+        )
+        .gte('transactions.created_at', startIso)
+        .eq('transactions.status', 'completed')
+        .order('product_id', { ascending: true })
+        .range(from, to),
+    )
+    if (itemsErr) throw itemsErr
+    for (const row of itemRows || []) {
       const revenue = Number(row.line_total || 0)
       const name = row.products?.name || 'Product'
       const category = row.products?.categories?.name || 'Other'
@@ -4034,34 +4989,58 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
   return {
     period,
     days,
-    linePoints: Object.entries(byBucket).map(([label, total]) => {
-      const orders = ordersByBucket[label] || 0
-      if (period === 'day') {
-        const hour = Number(label)
-        const suffix = hour < 12 ? 'AM' : 'PM'
-        const display = hour % 12 === 0 ? 12 : hour % 12
-        return { label: `${label}:00`, short: `${display} ${suffix}`, total, orders, full: `${display}:00 ${suffix}` }
-      }
-      const asDate =
-        period === 'year'
-          ? new Date(`${label}-01T00:00:00`)
-          : new Date(`${label}T00:00:00`)
-      return {
-        label,
-        short:
+    linePoints: (() => {
+      let entries = Object.entries(byBucket).map(([label, total]) => {
+        const orders = ordersByBucket[label] || 0
+        if (period === 'day') {
+          const hour = Number(label)
+          const suffix = hour < 12 ? 'AM' : 'PM'
+          const display = hour % 12 === 0 ? 12 : hour % 12
+          // Same axis thinning as supervisor Dashboard Today chart — label every 3rd hour
+          // (plus the current hour) so a busy day doesn't smear labels together.
+          const endHour = new Date().getHours()
+          const showShort = hour === endHour || hour % 3 === 0
+          return {
+            label: `${label}:00`,
+            short: showShort ? `${display} ${suffix}` : '',
+            total,
+            orders,
+            full: `${display}:00 ${suffix}`,
+          }
+        }
+        const asDate =
           period === 'year'
-            ? asDate.toLocaleDateString([], { month: 'short', year: '2-digit' })
-            : asDate.toLocaleDateString([], { month: 'short', day: 'numeric' }),
-        // Spelled out for the tooltip — "Mar 4" is fine on a crowded axis but ambiguous
-        // when someone is reading an exact figure off a hover.
-        full:
-          period === 'year'
-            ? asDate.toLocaleDateString([], { month: 'long', year: 'numeric' })
-            : asDate.toLocaleDateString([], { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' }),
-        total,
-        orders,
+            ? new Date(`${label}-01T00:00:00`)
+            : new Date(`${label}T00:00:00`)
+        return {
+          label,
+          short:
+            period === 'year'
+              ? asDate.toLocaleDateString([], { month: 'short', year: '2-digit' })
+              : asDate.toLocaleDateString([], { month: 'short', day: 'numeric' }),
+          full:
+            period === 'year'
+              ? asDate.toLocaleDateString([], { month: 'long', year: 'numeric' })
+              : asDate.toLocaleDateString([], {
+                  weekday: 'short',
+                  month: 'long',
+                  day: 'numeric',
+                  year: 'numeric',
+                }),
+          total,
+          orders,
+        }
+      })
+      // Month view: keep days with sales + bookends + every 3rd day — mirrors
+      // Dashboard.jsx buildChartPoints so the network chart auto-thins like the branch one.
+      if (period === 'month' && entries.length > 14) {
+        entries = entries.filter((row, index) => {
+          const hasSales = Number(row.total) > 0
+          return hasSales || index === 0 || index === entries.length - 1 || index % 3 === 0
+        })
       }
-    }),
+      return entries
+    })(),
     branchBars: Object.entries(byBranch).map(([category, value]) => ({ category, value })),
     paymentMix: [
       { id: 'cash', label: 'Cash', value: byPay.cash },
@@ -4200,20 +5179,37 @@ export async function logApprovalEvent({
   action,
   detail = null,
   meta = {},
+  deviceId = null,
+  clientId = null,
 }) {
-  return logAuditEvent({
-    branchId,
-    staffId: requestedBy || approvedBy || null,
-    eventType: `approval:${action}`,
-    detail,
-    meta: {
-      ...meta,
+  const { canSyncWithBackend } = await import('../offline/reachability')
+  const reachable = supabase && (await canSyncWithBackend())
+  if (!reachable) {
+    const { recordOfflineApprovalAudit } = await import('../offline/offlineAudit')
+    return recordOfflineApprovalAudit({
+      branchId,
+      requestedBy,
+      approvedBy,
+      approverName,
+      approverRole,
       action,
-      requested_by: requestedBy || null,
-      approved_by: approvedBy || null,
-      approver_name: approverName,
-      approver_role: approverRole,
-    },
+      detail,
+      meta,
+      deviceId,
+      clientId,
+    })
+  }
+  return logApprovalEventRemote({
+    branchId,
+    requestedBy,
+    approvedBy,
+    approverName,
+    approverRole,
+    action,
+    detail,
+    meta,
+    deviceId,
+    clientId,
   })
 }
 
@@ -5227,52 +6223,15 @@ export async function revertInventoryImport(batchId, staffId) {
 }
 
 /**
- * Best-effort sweep: flips any promo_events row past its ends_at from active/stop_pending
- * to status='expired' — see migrate_promo_expired_status.sql. Called at the top of the
- * promo read paths below instead of on a schedule, so it self-heals on every read without
- * needing pg_cron. Swallows errors so an un-migrated DB degrades to the old behaviour
- * (expired promos just stay hidden from POS via the respectDuration check) rather than
- * breaking the read.
- *
- * `expired` is deliberately not `stopped`: a promo that ran to its end date and one a
- * manager pulled early are different business events, and the old sweep recorded both as
- * `stopped`.
+ * Best-effort sweep: flips ended active/stop_pending promos to status='expired'.
+ * Call from manager promo screens only — not on every POS read (write-on-read was slow
+ * and unnecessary; promoHasEnded()/promoEffectiveStatus already hide ended promos).
  */
-async function expireEndedPromos() {
+export async function expireEndedPromos() {
   try {
-    // supabase-js resolves RPC errors onto { error } rather than rejecting — check both.
-    const { error } = await supabase.rpc('expire_ended_promos')
-    if (!error) return
-    // Function not deployed yet. Fall back to a plain UPDATE: managers/supervisors have RLS
-    // write access to their branch's promos, so the sweep still lands for exactly the people
-    // who look at the Promos page. Cashiers get denied here and that's fine — promoHasEnded()
-    // already hides ended promos for them.
-    const payload = {
-      status: 'expired',
-      is_active: false,
-      stopped_at: new Date().toISOString(),
-    }
-    const build = () =>
-      supabase
-        .from('promo_events')
-        .update(payload)
-        .in('status', ['active', 'stop_pending'])
-        .not('ends_at', 'is', null)
-        .lt('ends_at', new Date().toISOString())
-    const { error: updateError } = await build()
-    // Status check constraint not widened yet (migrate_promo_expired_status.sql unapplied):
-    // fall back to the old value so the sweep still happens. promoEffectiveStatus() maps
-    // that legacy shape back to `expired` for display.
-    if (updateError && /status_check|violates check constraint/i.test(String(updateError.message || ''))) {
-      await supabase
-        .from('promo_events')
-        .update({ ...payload, status: 'stopped', stop_reason: 'Promo ended' })
-        .in('status', ['active', 'stop_pending'])
-        .not('ends_at', 'is', null)
-        .lt('ends_at', new Date().toISOString())
-    }
+    await supabase.rpc('expire_ended_promos')
   } catch {
-    /* ignore — see comment above */
+    /* ignore — display truth still hides ended promos */
   }
 }
 
@@ -5280,9 +6239,7 @@ async function expireEndedPromos() {
  * Has this promo's scheduled end time passed?
  *
  * The client must never depend on the DB sweep having run to decide whether a promo is
- * over: the sweep needs a migration applied, needs write permission, and in any case only
- * runs when someone happens to read. An ended promo has to read as ended *immediately*,
- * everywhere, from the timestamp alone — that's what "auto-expire" means to the user.
+ * over: an ended promo has to read as ended immediately from the timestamp alone.
  */
 export function promoHasEnded(event) {
   const endsAt = event?.ends_at ?? event?.endsAt
@@ -5297,18 +6254,10 @@ export function promoHasEnded(event) {
  *   active   selling right now
  *   stopped  a manager ended it EARLY — a decision
  *   expired  it reached its own end date — a schedule running out
- *
- * `stopped` and `expired` must never collapse into each other: "we pulled that promo" and
- * "that promo finished" are different facts about the business. Derived here as well as
- * stored, so a tab open across the end time shows `expired` without waiting for the DB
- * sweep (see migrate_promo_expired_status.sql).
  */
 export function promoEffectiveStatus(event) {
-  const status = event?.status || (event?.is_active ? 'active' : 'inactive')
+  const status = event?.status || 'inactive'
   if ((status === 'active' || status === 'stop_pending') && promoHasEnded(event)) return 'expired'
-  // Pre-migration rows: the old sweep wrote 'stopped' with this exact reason and never set
-  // stopped_by. Both conditions together, so a manager who typed that reason is still a
-  // manual stop.
   if (
     status === 'stopped' &&
     !(event?.stopped_by ?? event?.stoppedBy) &&
@@ -5354,39 +6303,20 @@ export function promoStatusBadge(event) {
  * across all of them (see utils/promo.js computePromoDiscounts).
  */
 export async function fetchActivePromoEventsWithRules(branchId, { respectDuration = true } = {}) {
-  await expireEndedPromos()
-  // Live on POS: active or stop_pending (still selling until stop approved)
-  let query = supabase
+  // Display truth (promoHasEnded) hides ended rows — no write-on-read expire here.
+  const { data: events, error: eventError } = await supabase
     .from('promo_events')
-    .select('id,name,is_active,status,starts_at,ends_at,stop_reason')
+    .select('id,name,status,starts_at,ends_at,stop_reason')
     .eq('branch_id', branchId)
-
-  const { data: events, error: eventError } = await query
-    .or('status.in.(active,stop_pending),and(is_active.eq.true,status.is.null)')
+    .in('status', ['active', 'stop_pending'])
     .order('created_at', { ascending: false })
     .limit(20)
 
-  let liveEvents
-  if (eventError) {
-    // Fallback if status column missing
-    const fallback = await supabase
-      .from('promo_events')
-      .select('id,name,is_active,starts_at,ends_at')
-      .eq('branch_id', branchId)
-      .eq('is_active', true)
-    if (fallback.error) throw eventError
-    liveEvents = fallback.data || []
-  } else {
-    liveEvents = (events || []).filter(
-      (e) => e.status === 'active' || e.status === 'stop_pending' || (e.is_active && !e.status),
-    )
-  }
+  if (eventError) throw eventError
 
-  // A promo past its end date is never live, whatever the stored status says and whatever
-  // respectDuration asks for. respectDuration only governs the *not yet started* case (so a
-  // manager can still build rules on a scheduled promo) — it was never meant to resurrect a
-  // finished one, and treating it as such is why ended promos kept showing as Active here.
-  liveEvents = liveEvents.filter((e) => !promoHasEnded(e))
+  let liveEvents = (events || []).filter(
+    (e) => (e.status === 'active' || e.status === 'stop_pending') && !promoHasEnded(e),
+  )
 
   if (!liveEvents.length) return []
   const loaded = await Promise.all(liveEvents.map((event) => loadPromoRulesForEvent(event, respectDuration)))
@@ -5459,7 +6389,7 @@ async function loadPromoRulesForEvent(event, respectDuration = true) {
     event: {
       id: event.id,
       name: event.name,
-      status: event.status || (event.is_active ? 'active' : 'stopped'),
+      status: event.status || 'stopped',
       startsAt: event.starts_at,
       endsAt: event.ends_at,
       stopReason: event.stop_reason || null,
@@ -5522,8 +6452,9 @@ export async function createAndActivatePromoEvent({
   startsAt = null,
   endsAt = null,
   staffId = null,
-  activateImmediately = false,
+  activateImmediately = false, // unused — dual-control always creates pending
 }) {
+  void activateImmediately
   const starts_iso = startsAt ? new Date(startsAt).toISOString() : null
   const ends_iso = endsAt ? new Date(endsAt).toISOString() : null
   const desc = description?.trim() || null
@@ -5534,7 +6465,6 @@ export async function createAndActivatePromoEvent({
     branch_id: branchId,
     name,
     description: desc,
-    is_active: false,
     status: 'pending',
     starts_at: starts_iso,
     ends_at: ends_iso,
@@ -5543,27 +6473,12 @@ export async function createAndActivatePromoEvent({
 
   let { data, error } = await supabase.from('promo_events').insert(payload).select('id,name,status').single()
   if (error && isMissingColumnError(error, 'description')) {
-    // migrate_promo_description.sql not applied yet — create without it rather than fail outright.
     const withoutDescription = { ...payload }
     delete withoutDescription.description
     ;({ data, error } = await supabase
       .from('promo_events')
       .insert(withoutDescription)
       .select('id,name,status')
-      .single())
-  }
-  if (error && (isMissingColumnError(error, 'status') || isMissingColumnError(error, 'requested_by'))) {
-    // Legacy: old schema (pre dual-control) activated immediately
-    ;({ data, error } = await supabase
-      .from('promo_events')
-      .insert({
-        branch_id: branchId,
-        name,
-        is_active: activateImmediately,
-        starts_at: starts_iso,
-        ends_at: ends_iso,
-      })
-      .select('id,name')
       .single())
   }
   if (error) throw error
@@ -5801,6 +6716,134 @@ export async function fetchPromoSalesStats({
   return { receiptCount, discountTotal, saleTotal, items: aggregatePromoItems(matchedLines), receipts }
 }
 
+async function fetchPromoEventStatus(promoEventId) {
+  const { data, error } = await supabase.from('promo_events').select('status').eq('id', promoEventId).maybeSingle()
+  if (error) throw error
+  return data?.status || null
+}
+
+async function assertPromoEventPending(promoEventId) {
+  const status = await fetchPromoEventStatus(promoEventId)
+  if (!status) throw new Error('Promo event not found.')
+  if (status !== 'pending') {
+    throw new Error('Approved promos cannot be modified. Request an edit for manager reapproval.')
+  }
+}
+
+async function assertPromoRuleMutable(promoRuleId) {
+  const { data, error } = await supabase
+    .from('promo_rules')
+    .select('promo_event_id, promo_events(status)')
+    .eq('id', promoRuleId)
+    .maybeSingle()
+  if (error) throw error
+  if (!data) throw new Error('Promo rule not found.')
+  const status = data.promo_events?.status
+  if (status !== 'pending') {
+    throw new Error('Approved promos cannot be modified. Request an edit for manager reapproval.')
+  }
+}
+
+/** Sum completed branch sales (net of refunds) for a calendar date range (YYYY-MM-DD). */
+export async function fetchBranchSalesTotal({ branchId, from = null, to = null }) {
+  if (!branchId) return 0
+  const build = (fromIdx, toIdx) => {
+    let q = supabase
+      .from('transactions')
+      .select('total_amount, refunded_amount')
+      .eq('branch_id', branchId)
+      .eq('status', 'completed')
+    if (from) q = q.gte('created_at', `${from}T00:00:00`)
+    if (to) q = q.lte('created_at', `${to}T23:59:59.999`)
+    return q.order('created_at', { ascending: true }).range(fromIdx, toIdx)
+  }
+  const { data, error } = await fetchAllRows(build)
+  if (error) throw error
+  return Number(
+    (data || [])
+      .reduce((sum, t) => sum + Number(t.total_amount || 0) - Number(t.refunded_amount || 0), 0)
+      .toFixed(2),
+  )
+}
+
+/** Network-wide sales total across branches (optional branch filter + date range). */
+export async function fetchNetworkSalesTotal({ branchIds = null, from = null, to = null } = {}) {
+  const build = (fromIdx, toIdx) => {
+    let q = supabase
+      .from('transactions')
+      .select('total_amount, refunded_amount, branch_id')
+      .eq('status', 'completed')
+    if (branchIds?.length) q = q.in('branch_id', branchIds)
+    if (from) q = q.gte('created_at', `${from}T00:00:00`)
+    if (to) q = q.lte('created_at', `${to}T23:59:59.999`)
+    return q.order('created_at', { ascending: true }).range(fromIdx, toIdx)
+  }
+  const { data, error } = await fetchAllRows(build)
+  if (error) throw error
+  return Number(
+    (data || [])
+      .reduce((sum, t) => sum + Number(t.total_amount || 0) - Number(t.refunded_amount || 0), 0)
+      .toFixed(2),
+  )
+}
+
+/** promo_event_id → Set of rule_type values. */
+export async function fetchPromoRuleTypesForEvents(eventIds = []) {
+  const ids = [...new Set((eventIds || []).filter(Boolean))]
+  if (!ids.length) return {}
+  const { data, error } = await supabase.from('promo_rules').select('promo_event_id, rule_type').in('promo_event_id', ids)
+  if (error) throw error
+  const map = {}
+  for (const row of data || []) {
+    if (!map[row.promo_event_id]) map[row.promo_event_id] = []
+    map[row.promo_event_id].push(row.rule_type)
+  }
+  return map
+}
+
+export async function requestPromoEdit({ promoEventId, staffId }) {
+  const { data, error } = await supabase.rpc('request_promo_edit', {
+    p_promo_event_id: promoEventId,
+    p_staff_id: staffId,
+  })
+  if (error) throw error
+  return data
+}
+
+export async function createPromoWithRules({
+  branchId,
+  name,
+  description = null,
+  startsAt = null,
+  endsAt = null,
+  staffId = null,
+  rules = [],
+}) {
+  if (!rules?.length) {
+    throw new Error('Add at least one promo rule before submitting.')
+  }
+  const event = await createAndActivatePromoEvent({
+    branchId,
+    name,
+    description,
+    startsAt,
+    endsAt,
+    staffId,
+  })
+  for (const rule of rules) {
+    await createPromoRule({
+      promoEventId: event.id,
+      ruleType: rule.ruleType,
+      discountPct: rule.discountPct,
+      productIds: rule.productIds,
+      buyQty: rule.buyQty ?? 1,
+      getQty: rule.getQty ?? 1,
+      bundleName: rule.bundleName ?? null,
+    })
+  }
+  return event
+}
+
 export async function createPromoRule({
   promoEventId,
   ruleType,
@@ -5810,6 +6853,7 @@ export async function createPromoRule({
   getQty = 1,
   bundleName = null,
 }) {
+  await assertPromoEventPending(promoEventId)
   const payload = {
     promo_event_id: promoEventId,
     rule_type: ruleType,
@@ -5857,6 +6901,7 @@ export async function createPromoRule({
  * updateProductRow's discount_eligible guard; keep it if you add more optional fields.
  */
 export async function updatePromoEventDetails({ promoEventId, name, description, startsAt, endsAt }) {
+  await assertPromoEventPending(promoEventId)
   const toIso = (value) => (value ? new Date(value).toISOString() : null)
 
   const payload = {
@@ -5882,6 +6927,7 @@ export async function updatePromoEventDetails({ promoEventId, name, description,
 }
 
 export async function deletePromoRule(promoRuleId) {
+  await assertPromoRuleMutable(promoRuleId)
   const { data, error } = await supabase.from('promo_rules').delete().eq('id', promoRuleId).select('id').maybeSingle()
   if (error) throw error
   return data
@@ -5892,17 +6938,27 @@ export async function fetchPromoEventsForBranch(branchId) {
   const { data, error } = await supabase
     .from('promo_events')
     .select(
-      'id,name,description,is_active,status,starts_at,ends_at,created_at,stop_reason,reject_reason,requested_by,approved_by,stop_requested_by',
+      'id,name,description,status,starts_at,ends_at,created_at,stop_reason,reject_reason,requested_by,approved_by,stop_requested_by,supersedes_event_id',
     )
     .eq('branch_id', branchId)
     .order('created_at', { ascending: false })
 
-  if (error && isMissingColumnError(error, 'reject_reason')) {
-    // migrate_promo_reject_reason.sql not applied yet on this environment.
+  if (error && isMissingColumnError(error, 'supersedes_event_id')) {
     const retry = await supabase
       .from('promo_events')
       .select(
-        'id,name,description,is_active,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
+        'id,name,description,status,starts_at,ends_at,created_at,stop_reason,reject_reason,requested_by,approved_by,stop_requested_by',
+      )
+      .eq('branch_id', branchId)
+      .order('created_at', { ascending: false })
+    if (!retry.error) return retry.data || []
+  }
+
+  if (error && isMissingColumnError(error, 'reject_reason')) {
+    const retry = await supabase
+      .from('promo_events')
+      .select(
+        'id,name,description,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
       )
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
@@ -5913,22 +6969,14 @@ export async function fetchPromoEventsForBranch(branchId) {
     const retry = await supabase
       .from('promo_events')
       .select(
-        'id,name,is_active,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
+        'id,name,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
       )
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
     if (!retry.error) return retry.data || []
-  } else if (!error) {
-    return data || []
   }
-
-  const fallback = await supabase
-    .from('promo_events')
-    .select('id,name,is_active,starts_at,ends_at,created_at')
-    .eq('branch_id', branchId)
-    .order('created_at', { ascending: false })
-  if (fallback.error) throw error
-  return fallback.data || []
+  if (error) throw error
+  return data || []
 }
 
 /** Manager overview: live promos on every branch (no branch filter). */
@@ -5940,8 +6988,7 @@ export async function fetchActivePromosAcrossBranches() {
   const mapRow = (row) => ({
     id: row.id,
     name: row.name,
-    status: row.status || (row.is_active ? 'active' : 'inactive'),
-    is_active: Boolean(row.is_active),
+    status: row.status || 'inactive',
     starts_at: row.starts_at,
     ends_at: row.ends_at,
     created_at: row.created_at,
@@ -5951,65 +6998,20 @@ export async function fetchActivePromosAcrossBranches() {
   })
 
   const isLive = (row) => {
-    // Ended by the clock = not live, regardless of stored status (see promoHasEnded).
     if (promoHasEnded(row)) return false
     const status = String(row.status || '').toLowerCase()
-    if (status === 'active' || status === 'stop_pending') return true
-    // Legacy rows before dual-control status column
-    if (!status && row.is_active) return true
-    if (row.is_active && status === 'active') return true
-    return false
+    return status === 'active' || status === 'stop_pending'
   }
 
-  // Simple filter first (avoids brittle nested .or() PostgREST syntax)
-  let { data, error } = await supabase
+  const { data, error } = await supabase
     .from('promo_events')
-    .select('id,name,is_active,status,starts_at,ends_at,created_at,branch_id,stop_reason')
+    .select('id,name,status,starts_at,ends_at,created_at,branch_id,stop_reason')
     .in('status', ['active', 'stop_pending'])
     .order('created_at', { ascending: false })
     .limit(500)
 
-  if (error) {
-    // Column missing or filter unsupported — pull a wider set and filter in JS
-    const wide = await supabase
-      .from('promo_events')
-      .select('id,name,is_active,status,starts_at,ends_at,created_at,branch_id,stop_reason')
-      .order('created_at', { ascending: false })
-      .limit(500)
-
-    if (wide.error) {
-      const legacy = await supabase
-        .from('promo_events')
-        .select('id,name,is_active,starts_at,ends_at,created_at,branch_id')
-        .eq('is_active', true)
-        .order('created_at', { ascending: false })
-        .limit(500)
-      if (legacy.error) throw error
-      return (legacy.data || []).map(mapRow)
-    }
-
-    data = (wide.data || []).filter(isLive)
-  } else {
-    // Also pick up legacy is_active rows that may not have status=active
-    const { data: legacyActive } = await supabase
-      .from('promo_events')
-      .select('id,name,is_active,status,starts_at,ends_at,created_at,branch_id,stop_reason')
-      .eq('is_active', true)
-      .order('created_at', { ascending: false })
-      .limit(500)
-
-    const byId = new Map()
-    for (const row of data || []) byId.set(row.id, row)
-    for (const row of legacyActive || []) {
-      if (isLive(row) && !byId.has(row.id)) byId.set(row.id, row)
-    }
-    data = [...byId.values()]
-  }
-
-  return (data || [])
-    .filter(isLive)
-    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
-    .map(mapRow)
+  if (error) throw error
+  return (data || []).filter(isLive).map(mapRow)
 }
 
 /** Manager overview: full promo history (every status) on every branch, tagged with branch name. */
@@ -6034,17 +7036,21 @@ export async function deletePromoEvent(promoEventId) {
 
 /**
  * Pending approval inbox for Shell notifications.
- * Managers: submitted/requested day-ends + promo pending/stop + petty cash pending.
- * Supervisors: submitted/requested (non-manager-flagged) day-ends + petty cash pending on
- * their branch.
+ * Managers: submitted/requested day-ends + promo pending/stop + cash movements + till actions.
+ * Supervisors: submitted/requested (non-manager-flagged) day-ends + cash movements on their branch.
  */
-export async function fetchPendingApprovals({ role, branchId } = {}) {
+export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, reconcileStaffId = null } = {}) {
   if (!hasSupabase) return []
   const manager = role === 'manager' || role === 'admin' || role === 'master'
   const supervisor = role === 'supervisor'
   if (!manager && !supervisor) return []
 
+  if (reconcileStaffId) {
+    await reconcileResolvedPendingApprovals({ branchId, staffId: reconcileStaffId, manager })
+  }
+
   const items = []
+  const bizToday = today(dayOpenHour)
 
   // Day-end awaiting approve/close
   let dayQ = supabase
@@ -6074,10 +7080,17 @@ export async function fetchPendingApprovals({ role, branchId } = {}) {
   // count the drawer. A supervisor only sees a request that was NOT specifically flagged
   // for a manager; a manager sees every request (the universal fallback). Always routes to
   // /day-end (not the branch dashboard) — that's the screen with the actual counting form.
+  //
+  // Do NOT require closed_at IS NULL here: legacy schema defaulted closed_at to now() on
+  // insert, which hid every live request from the bell (migrate_day_end_request_notify_fix.sql).
   let requestQ = supabase
     .from('day_ends')
-    .select('id, business_date, status, requested_at, request_manager, branch_id, branches(name)')
+    .select(
+      'id, business_date, status, requested_at, request_manager, branch_id, submitted_at, closed_at, approved_at, branches(name)',
+    )
     .eq('status', 'requested')
+    .is('submitted_at', null)
+    .is('approved_at', null)
     .order('requested_at', { ascending: false })
     .limit(30)
   if (!manager) {
@@ -6085,8 +7098,15 @@ export async function fetchPendingApprovals({ role, branchId } = {}) {
     if (branchId) requestQ = requestQ.eq('branch_id', branchId)
   }
   const { data: requestRows, error: requestErr } = await requestQ
-  if (!requestErr) {
+  if (requestErr) {
+    if (typeof console !== 'undefined' && import.meta.env?.DEV) {
+      console.warn('[approvals] day_end requested query failed', requestErr.message || requestErr)
+    }
+  } else {
     for (const row of requestRows || []) {
+      // Orphaned cashier flag — day already rolled or drawer counted elsewhere.
+      const bizDate = String(row.business_date || '').slice(0, 10)
+      if (bizDate && bizDate < bizToday) continue
       const branchName = row.branches?.name || 'Branch'
       items.push({
         id: `day-req-${row.id}`,
@@ -6096,6 +7116,8 @@ export async function fetchPendingApprovals({ role, branchId } = {}) {
         href: '/day-end',
         createdAt: row.requested_at || null,
         priority: 1,
+        dayEndId: row.id,
+        dismissable: true,
       })
     }
   }
@@ -6128,60 +7150,55 @@ export async function fetchPendingApprovals({ role, branchId } = {}) {
     }
   }
 
-  // Petty cash requests awaiting approve
-  const { data: pettyRows, error: pettyErr } = await withCashDrawerTable((table) => {
-    let q = supabase
-      .from(table)
-      .select('id, amount, reason, created_at, branch_id, branches(name)')
-      .eq('status', 'pending')
-      .eq('kind', 'paid_out')
-      .order('created_at', { ascending: false })
-      .limit(40)
-    if (!manager && branchId) q = q.eq('branch_id', branchId)
-    return q
-  })
-  if (!pettyErr) {
-    for (const row of pettyRows || []) {
-      const branchName = row.branches?.name || 'Branch'
+  // Cash movements awaiting remote manager approval (POS Open Drawer notify path).
+  // Managers see all; supervisors see branch (can still deny/PIN-approve on till).
+  try {
+    const moveRows = await fetchPendingCashMovements({
+      branchId: manager ? null : branchId,
+      manager,
+    })
+    for (const row of moveRows) {
+      const typeLabel = row.type === 'pickup' ? 'Cash pickup' : 'Petty cash'
       items.push({
-        id: `petty-${row.id}`,
-        kind: 'petty_pending',
-        title: 'Petty cash request',
-        detail: `${branchName} · ₱${Number(row.amount || 0).toFixed(2)} · ${row.reason || 'No reason'}`,
-        href: manager ? `/manager/branches/${row.branch_id}` : '/day-end',
-        createdAt: row.created_at || null,
-        priority: 2,
+        id: `cash-move-${row.id}`,
+        kind: 'cash_movement_pending',
+        title: `${typeLabel} awaiting approval`,
+        detail: `₱${Number(row.amount || 0).toFixed(2)} · ${row.drawerLabel || row.drawerId} · ${row.requestedByName || 'Cashier'} · ${row.reason || ''}`,
+        href: manager ? `/manager/branches/${row.branchId}` : '/day-end',
+        createdAt: row.requestedAt || null,
+        priority: 1,
+        movementId: row.id,
+        movement: row,
+        actionable: manager || supervisor,
+        dismissable: true,
       })
     }
+  } catch {
+    /* table may be missing until migrate_cash_movements.sql */
   }
 
-  // Shifts closed under the cashier's own count because no supervisor/manager was reachable
-  // (see ShiftCashOut's "no supervisor available" path) — needs someone to acknowledge it.
-  // Silently skipped on a database that predates migrate_shift_close_no_supervisor_flag.sql.
-  let shiftQ = supabase
-    .from('staff_shifts')
-    .select('id, staff_id, branch_id, ending_cash, variance, clock_out, staff:staff_id(full_name), branches(name)')
-    .eq('closed_without_supervisor', true)
-    .is('reviewed_at', null)
-    .order('clock_out', { ascending: false })
-    .limit(30)
-  if (!manager && branchId) shiftQ = shiftQ.eq('branch_id', branchId)
-  const { data: shiftRows, error: shiftErr } = await shiftQ
-  if (!shiftErr) {
-    for (const row of shiftRows || []) {
-      const branchName = row.branches?.name || 'Branch'
+  // Cart remove / till gates awaiting manager
+  try {
+    const tillRows = await fetchPendingTillActionRequests({
+      branchId: manager ? null : branchId,
+      manager,
+    })
+    for (const row of tillRows) {
       items.push({
-        id: `shift-${row.id}`,
-        kind: 'shift_needs_review',
-        title: 'Shift closed without supervisor',
-        detail: `${row.staff?.full_name || 'Cashier'} · ${branchName} · ending ₱${Number(row.ending_cash || 0).toFixed(2)}${
-          row.variance ? ` · variance ₱${Number(row.variance).toFixed(2)}` : ''
-        }`,
-        href: '/manager/staff',
-        createdAt: row.clock_out || null,
-        priority: 2,
+        id: `till-act-${row.id}`,
+        kind: 'till_action_pending',
+        title: 'Cart remove awaiting approval',
+        detail: `${row.detail || 'Remove item'} · ${row.requestedByName || 'Cashier'}`,
+        href: manager ? `/manager/branches/${row.branchId}` : '/pos',
+        createdAt: row.requestedAt || null,
+        priority: 1,
+        tillActionId: row.id,
+        actionable: manager || role === 'supervisor',
+        dismissable: true,
       })
     }
+  } catch {
+    /* migrate_till_action_requests.sql */
   }
 
   // Promo dual-control — managers only
@@ -6240,4 +7257,41 @@ export async function fetchPendingApprovals({ role, branchId } = {}) {
     return String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
   })
   return items
+}
+
+/** Clear a stale inbox row once the till already handled it on-site. */
+export async function dismissNotificationItem({ item, staffId }) {
+  if (!hasSupabase || !item || !staffId) return
+  switch (item.kind) {
+    case 'till_action_pending':
+      if (item.tillActionId) {
+        try {
+          await resolveTillActionRequest({
+            id: item.tillActionId,
+            resolvedBy: staffId,
+            status: 'denied',
+          })
+        } catch (err) {
+          const msg = String(err?.message || '')
+          if (!/TILL_ACT04|already resolved/i.test(msg)) throw err
+        }
+      }
+      break
+    case 'day_end_requested':
+      if (item.dayEndId) {
+        await rejectDayEndRequest({
+          id: item.dayEndId,
+          staffId,
+          reason: 'Resolved on site',
+        })
+      }
+      break
+    case 'cash_movement_pending':
+      if (item.movementId) {
+        await denyCashMovement({ id: item.movementId, deniedBy: staffId })
+      }
+      break
+    default:
+      break
+  }
 }

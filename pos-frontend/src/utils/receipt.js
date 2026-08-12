@@ -3,14 +3,13 @@ import { money, qty } from './format'
 /**
  * Build a BIR-oriented receipt payload from branch + transaction detail.
  * Hardware printers can consume this object; browser print uses HTML.
+ *
+ * Invoice/OR number: allocated per branch at sale commit (`allocateLocalOrNumber`) so
+ * receipts print correctly offline. Sync reserves the same number on the server via
+ * `reserve_or_number`. Falls back to PENDING only if local allocation failed.
  */
 export function buildReceipt({ branch = {}, transaction = {}, lines = [], user = {} }) {
   const businessName = branch.business_name || branch.name || 'CalePOS Store'
-  // The real OR number is allocated server-side (allocate_or_number) once the sale reaches
-  // Supabase, which can be moments after this receipt prints (offline-first: local-first
-  // write, sync happens in the background). Until then, transaction.id is only the local
-  // client id (e.g. "txn_83abe93d-…") — show that plainly as pending rather than printing
-  // the raw id as if it were the OR number.
   const rawOrNumber = transaction.orNumber || transaction.or_number || null
   const isPendingOr = !rawOrNumber
   const orNumber = rawOrNumber || 'PENDING'
@@ -101,39 +100,53 @@ export function receiptToHtml(receipt) {
   const h = receipt.header
   const d = receipt.document
   const t = receipt.totals
+
+  const priceCell = (regular, net, { showRegular = true } = {}) => {
+    const hasDiscount = net < regular - 0.004
+    if (!hasDiscount) return money(regular)
+    if (!showRegular) return money(net)
+    return `<span class="price-stack"><span class="muted strike">${money(regular)}</span><span>${money(net)}</span></span>`
+  }
+
   const lineRows = receipt.lines
-    .map(
-      (line) => `
+    .map((line) => {
+      const hasLineDiscount = line.discountAmount > 0
+      const priceCol = priceCell(line.unitPrice, line.netUnitPrice)
+      const amtCol = priceCell(line.lineTotal, line.netLineTotal)
+      return `
       <tr>
-        <td>
+        <td class="item">
           ${escapeHtml(line.name)}
           ${
-            line.discountAmount > 0
-              ? `<div class="muted">Discount${
-                  t.discountType ? ` (${escapeHtml(t.discountType)})` : ''
-                } -${money(line.discountAmount)}</div>`
+            hasLineDiscount
+              ? `<div class="line-note">Discount${t.discountType ? ` (${escapeHtml(t.discountType)})` : ''} −${money(line.discountAmount)}</div>`
               : ''
           }
-          ${line.vatCategory === 'exempt' ? '<div class="muted">VAT-EXEMPT</div>' : ''}
+          ${line.vatCategory === 'exempt' ? '<div class="line-note">VAT-EXEMPT</div>' : ''}
         </td>
-        <td class="num">${qty(line.qty, line.unit)}</td>
-        <td class="num">${
-          // At qty 1 the unit price and the line amount are the same number — printing
-          // both reads as the price shown twice. The Amt column already carries it, so
-          // Price only needs to print when it says something Amt doesn't (qty != 1).
-          line.qty === 1
-            ? '—'
-            : line.netLineTotal < line.lineTotal
-              ? `<div class="muted strike">${money(line.unitPrice)}</div>${money(line.netUnitPrice)}`
-              : money(line.unitPrice)
-        }</td>
-        <td class="num">${
-          line.netLineTotal < line.lineTotal
-            ? `<div class="muted strike">${money(line.lineTotal)}</div>${money(line.netLineTotal)}`
-            : money(line.lineTotal)
-        }</td>
-      </tr>`,
-    )
+        <td class="num qty">${qty(line.qty, line.unit)}</td>
+        <td class="num">${priceCol}</td>
+        <td class="num">${amtCol}</td>
+      </tr>`
+    })
+    .join('')
+
+  const scPwdDiscount = Number(t.scPwdDiscount || 0)
+  const promoDiscount = Math.max(0, Number(t.discountAmount || 0) - scPwdDiscount)
+  const hasScPwdDiscount = scPwdDiscount > 0.004
+  const hasPromoDiscount = promoDiscount > 0.004
+  const showVatExempt = Number(t.vatExemptSales || 0) > 0.004
+  const showZeroRated = Number(t.zeroRatedSales || 0) > 0.004
+
+  const discountRows = [
+    hasScPwdDiscount
+      ? `<tr><td>Less: SC/PWD Discount</td><td class="num">-${money(scPwdDiscount)}</td></tr>`
+      : '',
+    hasPromoDiscount
+      ? `<tr><td>Less: Discount${t.discountType ? ` (${escapeHtml(t.discountType)})` : ''}</td><td class="num">-${money(promoDiscount)}</td></tr>`
+      : '',
+  ]
+    .filter(Boolean)
     .join('')
 
   return `<!doctype html>
@@ -143,16 +156,28 @@ export function receiptToHtml(receipt) {
   <title>${escapeHtml(d.title)} ${escapeHtml(String(d.orNumber))}</title>
   <style>
     body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #111; margin: 0; padding: 16px; }
-    .ticket { width: 280px; margin: 0 auto; }
+    .ticket { width: 300px; margin: 0 auto; }
     h1 { font-size: 14px; margin: 0 0 4px; text-align: center; }
     .center { text-align: center; }
     .muted { color: #555; }
     .strike { text-decoration: line-through; }
+    .line-note { margin-top: 3px; font-size: 10px; line-height: 1.35; color: #555; }
+    .price-stack { display: block; text-align: right; line-height: 1.35; }
+    .price-stack .strike { display: block; margin-bottom: 1px; }
+    .price-stack > span:last-child { display: block; }
     .rule { border-top: 1px dashed #999; margin: 10px 0; }
-    table { width: 100%; border-collapse: collapse; }
-    td { padding: 2px 0; vertical-align: top; }
-    td.num { text-align: right; white-space: nowrap; }
-    .totals td { padding-top: 4px; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    table.items col.col-item { width: 44%; }
+    table.items col.col-qty { width: 20%; }
+    table.items col.col-price { width: 18%; }
+    table.items col.col-amt { width: 18%; }
+    table.items td { padding: 4px 0; vertical-align: top; }
+    table.items td.item { padding-right: 6px; word-break: break-word; }
+    table.items td.qty { padding-right: 4px; }
+    table.items thead td { padding-bottom: 6px; font-weight: bold; border-bottom: 1px dashed #ccc; }
+    td.num { text-align: right; white-space: nowrap; padding-left: 4px; font-variant-numeric: tabular-nums; }
+    .totals td { padding-top: 4px; vertical-align: top; }
+    .totals td.num { padding-left: 8px; }
     @media print {
       body { padding: 0; }
       .no-print { display: none; }
@@ -170,12 +195,18 @@ export function receiptToHtml(receipt) {
     <div class="center muted">MIN: ${escapeHtml(h.machineId || '—')} · SN: ${escapeHtml(h.serialNumber || '—')}</div>
     <div class="rule"></div>
     <div class="center"><strong>${escapeHtml(d.title)}</strong></div>
-    <div>Invoice No: <strong>${escapeHtml(String(d.orNumber))}</strong>${d.isPendingOr ? ' <span class="muted">(assigns on sync)</span>' : ''}</div>
+    <div>OR No: <strong>${escapeHtml(String(d.orNumber))}</strong>${d.isPendingOr ? ' <span class="muted">(assigns on sync)</span>' : ''}</div>
     <div>Date: ${escapeHtml(formatReceiptDate(d.dateTime))}</div>
     <div>Cashier: ${escapeHtml(d.cashier)}</div>
     <div>Status: ${escapeHtml(d.status)}${d.voidReason ? ` (${escapeHtml(d.voidReason)})` : ''}</div>
     <div class="rule"></div>
-    <table>
+    <table class="items">
+      <colgroup>
+        <col class="col-item" />
+        <col class="col-qty" />
+        <col class="col-price" />
+        <col class="col-amt" />
+      </colgroup>
       <thead>
         <tr><td>Item</td><td class="num">Qty</td><td class="num">Price</td><td class="num">Amt</td></tr>
       </thead>
@@ -183,13 +214,13 @@ export function receiptToHtml(receipt) {
     </table>
     <div class="rule"></div>
     <table class="totals">
-      <tr><td>VATable Sales</td><td class="num">${money(t.vatableSales)}</td></tr>
-      <tr><td>VAT-Exempt Sales</td><td class="num">${money(t.vatExemptSales)}</td></tr>
-      <tr><td>Zero-Rated Sales</td><td class="num">${money(t.zeroRatedSales)}</td></tr>
+      <tr><td>VATable Sales <span class="muted">(net of VAT)</span></td><td class="num">${money(t.vatableSales)}</td></tr>
       <tr><td>VAT Amount</td><td class="num">${money(t.vatAmount)}</td></tr>
+      ${showVatExempt ? `<tr><td>VAT-Exempt Sales</td><td class="num">${money(t.vatExemptSales)}</td></tr>` : ''}
+      ${showZeroRated ? `<tr><td>Zero-Rated Sales</td><td class="num">${money(t.zeroRatedSales)}</td></tr>` : ''}
       <tr><td colspan="2"><div class="rule"></div></td></tr>
-      <tr><td>Total Sales</td><td class="num">${money(t.totalSales)}</td></tr>
-      <tr><td>Less: SC/PWD Discount</td><td class="num">-${money(t.scPwdDiscount)}</td></tr>
+      <tr><td><strong>TOTAL SALES</strong> <span class="muted">(VAT inclusive)</span></td><td class="num"><strong>${money(t.totalSales)}</strong></td></tr>
+      ${discountRows}
       <tr><td colspan="2"><div class="rule"></div></td></tr>
       <tr><td>TOTAL AMOUNT DUE</td><td class="num"><strong>${money(t.total)}</strong></td></tr>
       ${t.tendered != null && (transactionPaymentIsCash(t.payment)) ? `<tr><td>Cash Tendered</td><td class="num">${money(t.tendered)}</td></tr>` : ''}

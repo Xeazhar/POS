@@ -1,5 +1,23 @@
 import db from './db'
 
+export async function getLocalBranchFiscalHeader(branchId) {
+  if (!branchId) return null
+  const meta = await db.branchMeta.get(branchId)
+  return meta?.fiscalHeader || null
+}
+
+/** Persist branch identity block for offline receipt printing. */
+export async function saveBranchFiscalHeader(branchId, fiscalHeader) {
+  if (!branchId || !fiscalHeader) return
+  const existing = (await db.branchMeta.get(branchId)) || { branchId }
+  await db.branchMeta.put({
+    ...existing,
+    branchId,
+    fiscalHeader,
+    updatedAt: new Date().toISOString(),
+  })
+}
+
 export async function readBranchSnapshot(branchId) {
   const [products, transactions, movements, dayEnds, categories, branch] = await Promise.all([
     db.products.where('branchId').equals(branchId).toArray(),
@@ -188,7 +206,120 @@ export async function getLocalTransactionDetail(id) {
   return { transaction: txn, lines: lines.length ? lines : txn.itemsList || [] }
 }
 
+export async function patchLocalTransaction(id, patch) {
+  const txn = await db.transactions.get(id)
+  if (!txn) return null
+  const next = { ...txn, ...patch }
+  await db.transactions.put(next)
+  return next
+}
+
+export async function putLocalMovement(movement) {
+  if (!movement?.id) return
+  await db.movements.put({
+    ...movement,
+    syncStatus: movement.syncStatus || 'pending',
+    createdAt: movement.createdAt || new Date().toISOString(),
+  })
+}
+
+export async function putLocalDayEnd(dayEnd) {
+  if (!dayEnd?.id) return
+  await db.dayEnds.put({
+    ...dayEnd,
+    syncStatus: dayEnd.syncStatus || 'pending',
+  })
+}
+
+export async function putLocalCashMovement(movement) {
+  if (!movement?.clientId) return
+  await db.cashMovements.put({
+    ...movement,
+    syncStatus: movement.syncStatus || 'pending',
+    requestedAt: movement.requestedAt || new Date().toISOString(),
+  })
+}
+
 export async function updateLocalProducts(products) {
   if (!products?.length) return
   await db.products.bulkPut(products)
 }
+
+/** Cash movements mirrored locally for offline drawer / day-end views. */
+export async function listLocalCashMovements({
+  branchId,
+  date = null,
+  staffId = null,
+  shiftIds = null,
+} = {}) {
+  if (!branchId) return []
+  let rows = await db.cashMovements.where('branchId').equals(branchId).toArray()
+  if (date) {
+    rows = rows.filter((row) => String(row.requestedAt || row.businessDate || '').slice(0, 10) === date)
+  }
+  if (staffId) rows = rows.filter((row) => row.requestedBy === staffId)
+  if (shiftIds?.length) {
+    const ids = new Set(shiftIds.filter(Boolean))
+    rows = rows.filter((row) => ids.has(row.shiftId) || ids.has(row.shiftClientId))
+  }
+  return rows.sort((a, b) => String(b.requestedAt || '').localeCompare(String(a.requestedAt || '')))
+}
+
+async function readMetaCache(key) {
+  const row = await db.meta.get(key)
+  return row?.value ?? null
+}
+
+async function writeMetaCache(key, value) {
+  await db.meta.put({ key, value, savedAt: new Date().toISOString() })
+}
+
+export function promoCacheKey(branchId) {
+  return `promoCache:${branchId}`
+}
+
+export function catalogCacheKey(branchType) {
+  return `catalogCache:${branchType || 'retail'}`
+}
+
+export function staffCacheKey(branchId) {
+  return `staffCache:${branchId || 'all'}`
+}
+
+export function branchesCacheKey() {
+  return 'branchesCache'
+}
+
+export async function readPromoCache(branchId) {
+  return readMetaCache(promoCacheKey(branchId))
+}
+
+export async function writePromoCache(branchId, payload) {
+  if (!branchId) return
+  await writeMetaCache(promoCacheKey(branchId), payload)
+}
+
+export async function readCatalogCache(branchType) {
+  return readMetaCache(catalogCacheKey(branchType))
+}
+
+export async function writeCatalogCache(branchType, rows) {
+  await writeMetaCache(catalogCacheKey(branchType), rows || [])
+}
+
+export async function readStaffCache(branchId) {
+  return readMetaCache(staffCacheKey(branchId))
+}
+
+export async function writeStaffCache(branchId, rows) {
+  await writeMetaCache(staffCacheKey(branchId), rows || [])
+}
+
+export async function readBranchesCache() {
+  return readMetaCache(branchesCacheKey())
+}
+
+export async function writeBranchesCache(rows) {
+  await writeMetaCache(branchesCacheKey(), rows || [])
+}
+

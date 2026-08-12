@@ -8,12 +8,12 @@ import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '
 import { formatSupportError } from '../../utils/errors'
 import { buildReceipt } from '../../utils/receipt'
 import { money, pesoWhole, PESO, qty, today, formatOpenHourLabel } from '../../utils/format'
-import { computePromoDiscounts } from '../../utils/promo'
+import { buildCartDisplayGroups, computePromoDiscounts } from '../../utils/promo'
 import { computeVatBreakdown, VAT_RATE_DEFAULT } from '../../utils/vat'
 import { hasBudgetTier, lineTotal } from '../../utils/ulam'
-import { isSupervisorOrAbove } from '../../utils/roles'
+import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton, StatusOverlay, moneyClass } from '../ui'
-import SupervisorApprove from '../shared/SupervisorApprove'
+import CartRemoveApprove from './CartRemoveApprove'
 import NumPad from './NumPad'
 
 const PAY_METHODS = [
@@ -39,6 +39,7 @@ function Cart({
   const {
     items,
     removeItem,
+    removePromoEntries,
     adjustQuantity,
     clear,
     total,
@@ -46,11 +47,14 @@ function Cart({
     setOrderType,
     setPriceTier,
     ulamCombo,
+    cartId,
+    ensureCartId,
   } = useCartStore()
   const products = useProductStore((state) => state.products)
   const addTransaction = useInventoryStore((state) => state.addTransaction)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
   const user = useAuthStore((state) => state.user)
+  const deviceSessionId = useAuthStore((state) => state.deviceSessionId)
   const isRestaurant = user?.branchType === 'restaurant'
   const canRemoveDirect = isSupervisorOrAbove(user?.role)
   const [tendered, setTendered] = useState('')
@@ -61,9 +65,11 @@ function Cart({
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [paying, setPaying] = useState(false)
   const [paidResult, setPaidResult] = useState(null)
+  const lastReceiptRef = useRef(null)
   const [dayEndNudge, setDayEndNudge] = useState(false)
   const [error, setError] = useState('')
   const [removeIndex, setRemoveIndex] = useState(null)
+  const [removeGroup, setRemoveGroup] = useState(null)
   const touchUi = useIsTouchUi()
   const navigate = useNavigate()
   const rawSubtotal = total()
@@ -161,6 +167,63 @@ function Cart({
     }
   }, [items, discountType, vatRate, promoRules, products])
 
+  const displayGroups = useMemo(
+    () => buildCartDisplayGroups(items, promoRules),
+    [items, promoRules],
+  )
+
+  const promoGroupMetaByLine = useMemo(() => {
+    const map = new Map()
+    for (const group of displayGroups) {
+      if (group.kind !== 'promo') continue
+      for (const entry of group.entries) {
+        map.set(entry.lineIndex, {
+          promoGroupId: group.id,
+          promoGroupType: group.type,
+          promoGroupName: group.name,
+        })
+      }
+    }
+    return map
+  }, [displayGroups])
+
+  const lineUnits = (item) =>
+    item?.pricingMode === 'kg' ? Number(item.weight || 0) : Number(item.quantity || 0)
+
+  const entryGross = (entry) => {
+    const item = items[entry.lineIndex]
+    if (!item) return 0
+    const units = lineUnits(item)
+    if (!(units > 0)) return 0
+    return (lineTotal(item) / units) * Number(entry.units || 0)
+  }
+
+  const entryDiscount = (entry) => {
+    const item = items[entry.lineIndex]
+    if (!item) return 0
+    const units = lineUnits(item)
+    if (!(units > 0)) return 0
+    return ((pricing.lineDiscounts[entry.lineIndex] || 0) / units) * Number(entry.units || 0)
+  }
+
+  const entryNet = (entry) => {
+    const item = items[entry.lineIndex]
+    if (!item) return 0
+    const units = lineUnits(item)
+    if (!(units > 0)) return 0
+    const net = Number(pricing.lineBreakdown[entry.lineIndex]?.netAmount ?? lineTotal(item))
+    return (net / units) * Number(entry.units || 0)
+  }
+
+  const groupGross = (group) =>
+    group.entries.reduce((sum, entry) => sum + entryGross(entry), 0)
+
+  const groupDiscount = (group) =>
+    group.entries.reduce((sum, entry) => sum + entryDiscount(entry), 0)
+
+  const groupNet = (group) =>
+    group.entries.reduce((sum, entry) => sum + entryNet(entry), 0)
+
   useEffect(() => {
     if ((discountType === 'pwd' || discountType === 'senior') && !pricing.hasEligibleItems) {
       // Discount selection must clear when cart contents no longer qualify.
@@ -175,10 +238,17 @@ function Cart({
    * Promos are refetched live (useLiveData in POS.jsx) and auto-expire on their end date,
    * so a cart sitting open across the cutoff silently reprices upward. Without a notice the
    * cashier just sees a different total than the one they quoted the customer, mid-sale.
+   *
+   * Cart edits alone (remove line, drop qty below a BOGO/bundle threshold) can also strip
+   * a promo name from a remaining line — that is not "promo ended". Only warn when the
+   * event itself left the live `promoRules` set.
    */
   const [expiredPromoNotice, setExpiredPromoNotice] = useState(null)
   const prevPromoByLineRef = useRef(new Map())
   useEffect(() => {
+    const liveEventNames = new Set(
+      (promoRules || []).map((r) => r.eventName || r.event_name).filter(Boolean),
+    )
     // Keyed by product id + price tier (not cart index) so a line that's still in the
     // cart but lost its promo reads as "expired", while a line the cashier just removed
     // does not — removing an item is not the same event as its promo ending.
@@ -190,11 +260,17 @@ function Cart({
     const lost = []
     currentByLine.forEach((promoName, key) => {
       const prevPromoName = prevPromoByLineRef.current.get(key)
-      if (prevPromoName && promoName !== prevPromoName) lost.push(prevPromoName)
+      if (
+        prevPromoName &&
+        promoName !== prevPromoName &&
+        !liveEventNames.has(prevPromoName)
+      ) {
+        lost.push(prevPromoName)
+      }
     })
     prevPromoByLineRef.current = currentByLine
     if (lost.length) setExpiredPromoNotice([...new Set(lost)].join(', '))
-  }, [items, pricing.linePromoNames])
+  }, [items, pricing.linePromoNames, promoRules])
 
   const payTotal = pricing.total
   /**
@@ -305,18 +381,16 @@ function Cart({
       const cartItems = items.map((item, index) => {
         const line = pricing.lineBreakdown[index] || {}
         const discountAmount = pricing.lineDiscounts[index] || 0
+        const groupMeta = promoGroupMetaByLine.get(index) || {}
         return {
           ...item,
-          // For persistence/reporting, treat any discounted line as discount-eligible for that transaction.
           discountEligible: discountAmount > 0,
           discountAmount,
           vatCategory: pricing.lineVatCategories[index] || 'vatable',
-          // Which specific promo set this line's base price. Recorded even when SC/PWD is
-          // the headline discount, since the promo still determined the base the 20% came
-          // off — without it, Promos → Sales would under-report promo usage on SC/PWD sales.
           promoName: Number(line.promoDiscountAmount || 0) > 0 ? pricing.linePromoNames[index] || null : null,
-          // Straight from the VAT engine, never re-derived — on an exempt line the VAT
-          // strip is part of the reduction but is not a discount, so gross − discount lies.
+          promoGroupId: item.promoGroupId || groupMeta.promoGroupId || null,
+          promoGroupType: item.promoGroupType || groupMeta.promoGroupType || null,
+          promoGroupName: item.promoGroupName || groupMeta.promoGroupName || null,
           netLineTotal: Number(line.netAmount ?? lineTotal(item)),
         }
       })
@@ -347,8 +421,6 @@ function Cart({
           discountType === 'pwd' || discountType === 'senior' ? String(discountIdNote).trim() : null,
       })
       const change = Math.max(0, cash - payTotal)
-      // Real OR number is allocated server-side once the sale syncs — saved.id right after
-      // checkout is only the local client id, not fit to show as an official receipt number.
       const orLabel = saved?.orNumber || 'PENDING'
       const saleOrderType = isRestaurant ? orderType : undefined
 
@@ -367,10 +439,8 @@ function Cart({
         paymentMethod,
       })
 
-      // Real branch row, not a stub — the stub had no TIN/permit/MIN, so every printed
-      // sale showed "TIN: —". Cached in api, so this is one fetch per session.
       const branchHeader =
-        (await fetchBranchFiscalHeader(user?.branchId).catch(() => null)) || {
+        (await fetchBranchFiscalHeader(user?.branchId)) || {
           name: user?.branchName,
           business_name: user?.branchName,
         }
@@ -380,8 +450,6 @@ function Cart({
         user,
         transaction: {
           ...saved,
-          // Leave unset (not orLabel's 'PENDING' fallback) so buildReceipt can tell a real
-          // OR number apart from "not assigned yet" and label the receipt accordingly.
           orNumber: saved?.orNumber || null,
           tendered: cash,
           change,
@@ -418,16 +486,20 @@ function Cart({
           priceTier: item.priceTier,
         })),
       })
-      void (async () => {
-        if (!isDeviceEnabled(user?.deviceSettings, 'receipt_printer')) return
+      lastReceiptRef.current = receipt
+
+      const tryPrint = async () => {
         try {
           await receiptPrinter.printReceipt(receipt)
         } catch (printErr) {
           console.warn('Receipt print skipped:', printErr.message)
         }
-      })()
+      }
+      if (isDeviceEnabled(user?.deviceSettings, 'receipt_printer')) {
+        void tryPrint()
+      }
 
-      if (shouldNudgeDayEnd()) {
+      if (shouldNudgeDayEnd() && !isManagerRole(user?.role)) {
         setTimeout(() => setDayEndNudge(true), 400)
       }
     } catch (err) {
@@ -437,11 +509,23 @@ function Cart({
   }
 
   const requestRemove = (index) => {
+    ensureCartId()
     if (canRemoveDirect) {
       removeItem(index)
       return
     }
+    setRemoveGroup(null)
     setRemoveIndex(index)
+  }
+
+  const requestRemoveGroup = (group) => {
+    ensureCartId()
+    if (canRemoveDirect) {
+      removePromoEntries(group.entries)
+      return
+    }
+    setRemoveIndex(null)
+    setRemoveGroup(group)
   }
 
   const bumpQty = (index, delta) => {
@@ -500,9 +584,9 @@ function Cart({
   useEffect(() => {
     if (!onOverlayChange) return
     onOverlayChange(
-      checkoutOpen || paying || Boolean(paidResult) || dayEndNudge || removeIndex != null,
+      checkoutOpen || paying || Boolean(paidResult) || dayEndNudge || removeIndex != null || removeGroup != null,
     )
-  }, [checkoutOpen, paying, paidResult, dayEndNudge, removeIndex, onOverlayChange])
+  }, [checkoutOpen, paying, paidResult, dayEndNudge, removeIndex, removeGroup, onOverlayChange])
 
   /**
    * One sale-ticket-style row per cart line — name/qty/tags on top, price right-aligned,
@@ -510,13 +594,73 @@ function Cart({
    * never drift into two different cart designs (they used to be two near-identical
    * spreadsheet-table blocks).
    */
-  const renderCartLine = (item, index) => {
+  const renderPromoGroupRow = (group) => {
+    const gross = groupGross(group)
+    const discount = groupDiscount(group)
+    const net = groupNet(group)
+    const discounted = discount > 0.004
+    return (
+      <div
+        key={group.id}
+        className="border-t border-brand-n150 px-3 py-2.5 text-xs first:border-t-0"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <strong className="block truncate text-brand-ink">{group.name}</strong>
+            <span className="mt-0.5 block text-[10px] leading-snug text-brand-cart-muted">{group.sublabel}</span>
+            {discounted && (
+              <span className="mt-0.5 block text-[10px] font-bold text-brand-danger">
+                Promo −{money(discount)}
+              </span>
+            )}
+          </div>
+          <div className={`shrink-0 text-right ${moneyClass}`}>
+            {discounted ? (
+              <>
+                <span className="block text-[10px] text-brand-subtle line-through">{money(gross)}</span>
+                <span className="text-sm font-bold text-brand-danger">{money(net)}</span>
+              </>
+            ) : (
+              <span className="text-sm font-bold text-brand-ink">{money(gross)}</span>
+            )}
+          </div>
+        </div>
+        <div className="mt-2 flex justify-end">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 border-0 bg-transparent p-1 text-[11px] font-bold text-brand-cart-muted transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90 active:text-brand-ink"
+            onClick={() => requestRemoveGroup(group)}
+            title={canRemoveDirect ? 'Remove promo set' : 'Remove promo set (supervisor PIN)'}
+          >
+            <FiTrash2 size={14} />
+            Remove set
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const renderCartLine = (item, index, { units = null } = {}) => {
     const showTier = isRestaurant && hasBudgetTier(item.menuKind) && item.budgetPrice != null
     const qtyLabel =
       item.pricingMode === 'kg'
-        ? qty(item.weight, 'kg')
-        : `${Number(item.quantity).toFixed(0)} ${Number(item.quantity) > 1 ? 'pcs' : 'pc'}`
-    const discounted = lineNetTotal(index, item) < lineTotal(item)
+        ? qty(units ?? item.weight, 'kg')
+        : `${Number(units ?? item.quantity).toFixed(0)} ${Number(units ?? item.quantity) > 1 ? 'pcs' : 'pc'}`
+    const lineGross =
+      units != null && lineUnits(item) > 0
+        ? (lineTotal(item) / lineUnits(item)) * Number(units)
+        : lineTotal(item)
+    const lineDisc =
+      units != null && lineUnits(item) > 0
+        ? ((pricing.lineDiscounts[index] || 0) / lineUnits(item)) * Number(units)
+        : pricing.lineDiscounts[index] || 0
+    const lineNet =
+      units != null && lineUnits(item) > 0
+        ? ((Number(pricing.lineBreakdown[index]?.netAmount ?? lineTotal(item))) / lineUnits(item)) *
+          Number(units)
+        : lineNetTotal(index, item)
+    const discounted = lineNet < lineGross - 0.004
+    const showPromoTag = discounted && lineDisc > 0.004
     return (
       <div
         key={`${item.id}-${item.priceTier || 'regular'}-${index}`}
@@ -529,9 +673,9 @@ function Cart({
               {qtyLabel}
               {showTier && item.priceTier === 'budget' ? ' · budget' : ''}
             </span>
-            {pricing.lineDiscounts[index] > 0 && (
+            {showPromoTag && (
               <span className="mt-0.5 block text-[10px] font-bold text-brand-danger">
-                {lineTag(index)} −{money(pricing.lineDiscounts[index])}
+                {lineTag(index)} −{money(lineDisc)}
               </span>
             )}
             {pricing.lineBreakdown[index]?.vatCategory === 'exempt' && (
@@ -566,11 +710,11 @@ function Cart({
           <div className={`shrink-0 text-right ${moneyClass}`}>
             {discounted ? (
               <>
-                <span className="block text-[10px] text-brand-subtle line-through">{money(lineTotal(item))}</span>
-                <span className="text-sm font-bold text-brand-danger">{money(lineNetTotal(index, item))}</span>
+                <span className="block text-[10px] text-brand-subtle line-through">{money(lineGross)}</span>
+                <span className="text-sm font-bold text-brand-danger">{money(lineNet)}</span>
               </>
             ) : (
-              <span className="text-sm font-bold text-brand-ink">{money(lineTotal(item))}</span>
+              <span className="text-sm font-bold text-brand-ink">{money(lineGross)}</span>
             )}
           </div>
         </div>
@@ -608,6 +752,25 @@ function Cart({
         </div>
       </div>
     )
+  }
+
+  const renderDisplayGroup = (group) => {
+    if (group.kind === 'promo') return renderPromoGroupRow(group)
+    const entry = group.entries[0]
+    if (!entry) return null
+    const item = items[entry.lineIndex]
+    if (!item) return null
+    const partial = entry.units < lineUnits(item) - 0.0001
+    return renderCartLine(item, entry.lineIndex, partial ? { units: entry.units } : {})
+  }
+
+  const renderCartGroups = () => {
+    const rendered = displayGroups.map((group) => renderDisplayGroup(group))
+    const hasVisibleRows = rendered.some(Boolean)
+    if (items.length > 0 && !hasVisibleRows) {
+      return items.map((item, index) => renderCartLine(item, index))
+    }
+    return rendered
   }
 
   /**
@@ -998,6 +1161,18 @@ function Cart({
           }`}
           onClose={() => setPaidResult(null)}
           closeLabel="New sale"
+          actions={
+            <SecondaryButton
+              compact
+              type="button"
+              onClick={() => {
+                const receipt = lastReceiptRef.current
+                if (receipt) void receiptPrinter.printReceipt(receipt).catch(() => {})
+              }}
+            >
+              Print receipt
+            </SecondaryButton>
+          }
         />
       )}
       {dayEndNudge && (
@@ -1025,15 +1200,45 @@ function Cart({
           }
         />
       )}
+      {removeGroup != null && (
+        <CartRemoveApprove
+          item={{ name: removeGroup.name }}
+          cartId={cartId}
+          onCancel={() => setRemoveGroup(null)}
+          onAllowed={async ({ staffId, name, role, via }) => {
+            void logApprovalEvent({
+              branchId: user?.branchId,
+              requestedBy: user?.id,
+              approvedBy: staffId,
+              approverName: name,
+              approverRole: role,
+              deviceId: deviceSessionId || null,
+              action: via === 'self_allowed' ? 'cart_line_remove_self' : 'cart_line_remove',
+              detail: `Removed promo set "${removeGroup.name}" from cart`,
+              meta: {
+                action: 'REMOVE_CART_ITEM',
+                cart_id: cartId || null,
+                promo_group: removeGroup.id,
+                promo_name: removeGroup.name,
+                line_count: removeGroup.entries?.length ?? null,
+                line_total: Number(
+                  (removeGroup.entries || []).reduce((sum, entry) => sum + lineTotal(entry), 0).toFixed(2),
+                ),
+                via: via || 'pin',
+                offline: via === 'pin_offline',
+              },
+            })
+            removePromoEntries(removeGroup.entries)
+            setRemoveGroup(null)
+          }}
+        />
+      )}
       {removeIndex != null && (
-        <SupervisorApprove
-          branchId={user?.branchId}
-          title="Remove cart item"
-          detail={`Supervisor PIN required to remove ${items[removeIndex]?.name || 'this item'} from the cart.`}
+        <CartRemoveApprove
+          item={items[removeIndex]}
+          cartId={cartId}
           onCancel={() => setRemoveIndex(null)}
-          onApproved={({ staffId, name, role }) => {
-            // A cart line vanishing has no row of its own to hold an approver, so the
-            // sign-off is written to the audit trail instead of being lost.
+          onAllowed={async ({ staffId, name, role, via }) => {
             const removed = items[removeIndex]
             void logApprovalEvent({
               branchId: user?.branchId,
@@ -1041,11 +1246,19 @@ function Cart({
               approvedBy: staffId,
               approverName: name,
               approverRole: role,
-              action: 'cart_line_remove',
+              deviceId: deviceSessionId || null,
+              action: via === 'self_allowed' ? 'cart_line_remove_self' : 'cart_line_remove',
               detail: `Removed ${removed?.name || 'item'} from cart`,
               meta: {
+                action: 'REMOVE_CART_ITEM',
+                cart_id: cartId || null,
                 product_id: removed?.id || null,
-                quantity: removed?.quantity ?? null,
+                product_name: removed?.name || null,
+                quantity_removed: removed?.quantity ?? removed?.weight ?? null,
+                unit_price: removed?.unitPrice ?? removed?.price ?? null,
+                line_total: Number(lineTotal(removed).toFixed(2)),
+                via: via || 'pin',
+                offline: via === 'pin_offline',
               },
             })
             removeItem(removeIndex)
@@ -1134,7 +1347,7 @@ function Cart({
                   <div className="border-b border-brand-n150 bg-brand-n50 px-3 py-1.5 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
                     Items ({items.length})
                   </div>
-                  {items.map((item, index) => renderCartLine(item, index))}
+                  {renderCartGroups()}
                 </div>
               ) : (
                 <div className="mt-[140px] px-2 text-center text-sm leading-[1.8] text-brand-n500">
@@ -1168,7 +1381,7 @@ function Cart({
                   <div className="border-b border-brand-n150 bg-brand-n50 px-3 py-1.5 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
                     Items ({items.length})
                   </div>
-                  {items.map((item, index) => renderCartLine(item, index))}
+                  {renderCartGroups()}
                 </div>
               ) : (
                 <div className="mt-[140px] px-2 text-center text-sm leading-[1.8] text-brand-n500">
