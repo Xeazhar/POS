@@ -30,6 +30,7 @@ import {
   approverLabel,
   approveRefundRequest,
   bootstrapBranchData,
+  bootstrapBranchActivity,
   fetchBranchCashImpact,
   fetchBranchTelemetry,
   fetchBranches,
@@ -235,6 +236,36 @@ function ManagerBranchDashboard() {
     }
   }, [branchId])
 
+  const reloadOps = async () => {
+    if (!hasSupabase) return
+    const openHourForFetch = Number(branch?.day_open_hour ?? data?.dayOpenHour ?? 7)
+    const todayForFetch = businessDate(new Date(), openHourForFetch)
+    const activity = await bootstrapBranchActivity(branchId).catch(() => null)
+    const pettyTimeline = await fetchPettyCashTimeline(branchId, {
+      startDate: todayForFetch,
+      endDate: todayForFetch,
+    }).catch(() => [])
+    const [cashImpactRow, auditRows, refundRequests] = await Promise.all([
+      fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
+      fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
+      fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
+    ])
+    setData((prev) => ({
+      ...prev,
+      ...(activity
+        ? {
+            transactions: activity.transactions,
+            movements: activity.movements,
+            dayEnds: activity.dayEnds,
+          }
+        : {}),
+      pettyTimeline,
+      refundRequests,
+    }))
+    setCashImpact(cashImpactRow)
+    setAuditEvents(auditRows || [])
+  }
+
   const reload = async () => {
     if (!hasSupabase) return
     const branches = await fetchBranches()
@@ -277,7 +308,7 @@ function ManagerBranchDashboard() {
    */
   useLiveData({
     enabled: hasSupabase && Boolean(branchId),
-    fetch: reload,
+    fetch: reloadOps,
     tables: [
       { table: 'day_ends', filter: `branch_id=eq.${branchId}` },
       { table: 'cash_drawer_entries', filter: `branch_id=eq.${branchId}` },
@@ -1416,11 +1447,19 @@ function ManagerBranchDashboard() {
             <h2 className="mb-4 text-lg">Branch settings</h2>
             <div className="grid gap-3">
               <Field label="Branch name" required value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-              <Field label="Business name (receipt)" value={form.business_name || ''} onChange={(e) => setForm({ ...form, business_name: e.target.value })} />
+              <div className="rounded-md border border-brand-softline bg-brand-n50 px-3 py-2.5">
+                <span className="block text-[10px] font-bold tracking-wide text-brand-label uppercase">
+                  Business name (receipt)
+                </span>
+                <strong className="block text-sm text-brand-ink">
+                  {branch?.company_business_name || form.business_name || '—'}
+                </strong>
+                <span className="mt-0.5 block text-[10px] text-brand-subtle">
+                  From company profile (Manager → Branches). Legacy branch override is no longer editable here.
+                </span>
+              </div>
               <Field label="Address" value={form.address || ''} onChange={(e) => setForm({ ...form, address: e.target.value })} />
-              {/* Two-level TIN: the business has one TIN, each branch has a BIR branch
-                  code appended to it. The main TIN is edited once on Branches, not here,
-                  so two branches cannot end up claiming different company TINs. */}
+              {/* Two-level TIN: company_profile.tin + branch_tin_code. branches.tin is legacy read-only. */}
               <div className="rounded-md border border-brand-softline bg-brand-n50 px-3 py-2.5">
                 <span className="block text-[10px] font-bold tracking-wide text-brand-label uppercase">
                   Main company TIN
@@ -1431,7 +1470,7 @@ function ManagerBranchDashboard() {
                 <span className="mt-0.5 block text-[10px] text-brand-subtle">
                   {branch?.company_tin
                     ? 'Shared by every branch. Change it on Manager → Branches.'
-                    : 'Set it on Manager → Branches. Until then this branch prints its own TIN below.'}
+                    : 'Set it on Manager → Branches. Until then receipts may show a legacy branch TIN if one was stored.'}
                 </span>
               </div>
               <Field
@@ -1451,11 +1490,6 @@ function ManagerBranchDashboard() {
                     : form.tin || '—'}
                 </strong>
               </p>
-              <Field
-                label="Branch TIN override (only if this branch is registered separately)"
-                value={form.tin || ''}
-                onChange={(e) => setForm({ ...form, tin: e.target.value })}
-              />
               <Field label="BIR permit no." value={form.bir_permit_no || ''} onChange={(e) => setForm({ ...form, bir_permit_no: e.target.value })} />
               <Field label="Machine ID (MIN)" value={form.machine_identification_no || ''} onChange={(e) => setForm({ ...form, machine_identification_no: e.target.value })} />
               <Field label="Serial number" value={form.serial_number || ''} onChange={(e) => setForm({ ...form, serial_number: e.target.value })} />

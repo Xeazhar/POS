@@ -10,12 +10,12 @@
 ## Known drift: `schema.sql` is stale
 
 `schema.sql` has not been kept in sync with the `migrate_*.sql` files — entire
-subsystems (`staff_shifts`, `cash_drawer_entries`, day-end request/reject, dual
-control, PIN lockout, promo dual control, and more) exist only as migrations,
-not in `schema.sql` itself. **Do not bootstrap a new environment from
-`schema.sql` alone right now** — it is missing features the live app depends
-on. Use the full apply order below, or generate a verified `schema.sql` per
-"Generating a verified `schema.sql`" further down.
+subsystems exist only as migrations. **Do not bootstrap a new environment from
+`schema.sql` alone** until you dump a verified copy (see below).
+
+After applying the full order through `migrate_network_manager_overview.sql`
+(including `migrate_schema_cleanup_v1.sql`), regenerate `schema.sql` from a
+scratch project dump so fresh installs can use schema alone again.
 
 ## Full apply order (fresh project)
 
@@ -123,9 +123,16 @@ migrate_promo_rule_bundle_name.sql             -- needs migrate_promos_events_an
                                                 -- promo_rules.bundle_name (nullable, bundle_pct only) —
                                                 -- a name for one bundle rule, distinct from its promo
                                                 -- event's name, for the POS quick-add button
+migrate_schema_cleanup_v1.sql                  -- drop duplicate client_id index, promo is_active,
+                                                -- dormant shift-review cols, tighten refund_requests RLS,
+                                                -- align sale/audit event policies; cash_drawer_entries only
+migrate_network_manager_overview.sql           -- manager_overview_metrics(p_days) RPC — one round-trip
+                                                -- for Overview sales KPIs + today cash impact
 ```
 
-`wipe_products_clean_start.sql` is **destructive** and not part of this order —
+**Dev wipe (optional, non-user data only):** `wipe_non_user_data.sql` truncates sales/inventory/promos/shifts/drawer while **keeping** `staff`, `branches`, `roles`, `company_profile`, and Auth users. Run on DEV before cleanup if you want a clean slate.
+
+`wipe_products_clean_start.sql` is **destructive** and not part of the apply order —
 run it by hand only when you want to wipe products/catalog for a fresh import.
 
 ## Recommended apply order (existing project)

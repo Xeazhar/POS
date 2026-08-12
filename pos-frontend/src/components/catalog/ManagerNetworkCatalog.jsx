@@ -631,63 +631,7 @@ export default function ManagerNetworkCatalog() {
         </TableCard>
       )}
 
-      <TableCard className="mb-4 max-h-none p-5">
-        <h2 className="m-0 text-base">Import guide</h2>
-        <p className="mt-1 text-xs text-brand-muted">
-          Use this format for CSV/XLSX. Wrong headers are rejected before import.
-        </p>
-        {isRestaurant ? (
-          <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-brand-muted">
-            <li>
-              Required: <code>name</code>, <code>sku</code>, <code>price</code>, <code>category</code>,{' '}
-              <code>discountEligible</code> (true/false)
-            </li>
-            <li>
-              Optional: <code>menuKind</code>, <code>budgetPrice</code>, <code>barcode</code>
-            </li>
-            <li>Skipped if SKU already exists in the network catalog</li>
-            <li>
-              Sample:{' '}
-              <a className="font-bold text-brand-ink" href="/samples/potahe-menu-import.csv" download>
-                potahe-menu-import.csv
-              </a>
-            </li>
-          </ul>
-        ) : (
-          <>
-            <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-brand-muted">
-              <li>
-                Required: <code>name</code>, <code>sku</code>, <code>barcode</code>,{' '}
-                <code>category</code>, <code>pricingMode</code> (pc/kg), <code>price</code>,{' '}
-                <code>discountEligible</code> (true/false)
-              </li>
-              <li>
-                Optional: <code>lowStockAt</code> (default threshold only — not on-hand qty)
-              </li>
-              <li>
-                Do <strong>not</strong> include <code>stock</code> — quantity on hand belongs on
-                branch Inventory after adopt
-              </li>
-              <li>Skipped if SKU already exists in the network catalog</li>
-              <li>
-                Sample:{' '}
-                <a
-                  className="font-bold text-brand-ink"
-                  href="/samples/network-catalog-import.csv"
-                  download
-                >
-                  network-catalog-import.csv
-                </a>
-              </li>
-            </ul>
-            <pre className="mt-3 overflow-auto rounded-md bg-brand-n100 p-3 text-[11px] text-brand-ink">
-{`name,sku,barcode,category,pricingMode,price,discountEligible
-White Sugar 1kg,GRO-SUG-1,4801000000011,Groceries,pc,65,true
-Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
-            </pre>
-          </>
-        )}
-      </TableCard>
+      
 
       <TableCard className="mb-4 max-h-none">
         <div className="flex flex-col gap-3 border-b border-brand-softline px-5 py-4">
@@ -1011,6 +955,64 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
             onPrev={() => setPage((p) => Math.max(0, p - 1))}
             onNext={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
           />
+        )}
+      </TableCard>
+
+      <TableCard className="mb-4 max-h-none p-5">
+        <h2 className="m-0 text-base">Import guide</h2>
+        <p className="mt-1 text-xs text-brand-muted">
+          Use this format for CSV/XLSX. Wrong headers are rejected before import.
+        </p>
+        {isRestaurant ? (
+          <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-brand-muted">
+            <li>
+              Required: <code>name</code>, <code>sku</code>, <code>price</code>, <code>category</code>,{' '}
+              <code>discountEligible</code> (true/false)
+            </li>
+            <li>
+              Optional: <code>menuKind</code>, <code>budgetPrice</code>, <code>barcode</code>
+            </li>
+            <li>Skipped if SKU already exists in the network catalog</li>
+            <li>
+              Sample:{' '}
+              <a className="font-bold text-brand-ink" href="/samples/potahe-menu-import.csv" download>
+                potahe-menu-import.csv
+              </a>
+            </li>
+          </ul>
+        ) : (
+          <>
+            <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-brand-muted">
+              <li>
+                Required: <code>name</code>, <code>sku</code>, <code>barcode</code>,{' '}
+                <code>category</code>, <code>pricingMode</code> (pc/kg), <code>price</code>,{' '}
+                <code>discountEligible</code> (true/false)
+              </li>
+              <li>
+                Optional: <code>lowStockAt</code> (default threshold only — not on-hand qty)
+              </li>
+              <li>
+                Do <strong>not</strong> include <code>stock</code> — quantity on hand belongs on
+                branch Inventory after adopt
+              </li>
+              <li>Skipped if SKU already exists in the network catalog</li>
+              <li>
+                Sample:{' '}
+                <a
+                  className="font-bold text-brand-ink"
+                  href="/samples/network-catalog-import.csv"
+                  download
+                >
+                  network-catalog-import.csv
+                </a>
+              </li>
+            </ul>
+            <pre className="mt-3 overflow-auto rounded-md bg-brand-n100 p-3 text-[11px] text-brand-ink">
+{`name,sku,barcode,category,pricingMode,price,discountEligible
+White Sugar 1kg,GRO-SUG-1,4801000000011,Groceries,pc,65,true
+Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
+            </pre>
+          </>
         )}
       </TableCard>
 

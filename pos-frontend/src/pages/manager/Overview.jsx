@@ -13,8 +13,7 @@ import {
   tableRowClass,
 } from '../../components/ui'
 import {
-  branchSummary,
-  fetchBranchCashImpact,
+  fetchManagerOverviewMetrics,
   fetchBranches,
   fetchNetworkDashboard,
   fetchPeriodComparison,
@@ -132,67 +131,65 @@ function ManagerOverview() {
         const rows = await fetchBranches()
         if (!active) return
         setBranches(rows)
-        const next = {}
-        await Promise.all(
-          rows.map(async (branch) => {
-            next[branch.id] = await branchSummary(branch.id, { days: meta.days })
-          }),
-        )
-        // Fetched alongside the charts, not after them — the comparison is one extra
-        // query and serialising it would add a round trip to every period switch.
-        // It must never take the dashboard down: a missing delta badge is a far smaller
-        // problem than a blank page, so a failure here degrades to no badge.
         const periodStart = new Date()
         periodStart.setHours(0, 0, 0, 0)
         periodStart.setDate(periodStart.getDate() - (meta.days - 1))
-        const [charts, periodComparison, cashRows, events] = await Promise.all([
+        const [overviewMetrics, charts, periodComparison, events] = await Promise.all([
+          fetchManagerOverviewMetrics({ days: meta.days }).catch(async () => {
+            // RPC not deployed yet — fall back to per-branch fan-out (pre-overhaul path).
+            const { branchSummary, fetchBranchCashImpact } = await import('../../lib/api')
+            const next = {}
+            await Promise.all(
+              rows.map(async (branch) => {
+                next[branch.id] = await branchSummary(branch.id, { days: meta.days })
+              }),
+            )
+            const cashRows = await Promise.all(
+              rows.map((branch) => {
+                const openHour = Number(branch.day_open_hour ?? 7)
+                return fetchBranchCashImpact(branch.id, businessDate(new Date(), openHour), openHour).catch(
+                  () => null,
+                )
+              }),
+            )
+            return {
+              summaries: next,
+              cashImpact: cashRows.reduce(
+                (acc, row) => ({
+                  cashSales: acc.cashSales + (row?.cashSales || 0),
+                  cardSales: acc.cardSales + (row?.cardSales || 0),
+                  ewalletSales: acc.ewalletSales + (row?.ewalletSales || 0),
+                  cashRefunds: acc.cashRefunds + (row?.cashRefunds || 0),
+                  changeFund: acc.changeFund + (row?.changeFund || 0),
+                  pickup: acc.pickup + (row?.pickup || 0),
+                  paidOut: acc.paidOut + (row?.paidOut || 0),
+                  expectedCash: acc.expectedCash + (row?.expectedCash || 0),
+                }),
+                {
+                  cashSales: 0,
+                  cardSales: 0,
+                  ewalletSales: 0,
+                  cashRefunds: 0,
+                  changeFund: 0,
+                  pickup: 0,
+                  paidOut: 0,
+                  expectedCash: 0,
+                },
+              ),
+            }
+          }),
           fetchNetworkDashboard(period),
           fetchPeriodComparison(period).catch(() => null),
-          // Cash impact is always TODAY per branch (a drawer is counted once a day, not
-          // summed over a period), summed across every branch a manager can see.
-          Promise.all(
-            rows.map((branch) => {
-              const openHour = Number(branch.day_open_hour ?? 7)
-              return fetchBranchCashImpact(branch.id, businessDate(new Date(), openHour), openHour).catch(
-                () => null,
-              )
-            }),
-          ),
-          // No branchId — RLS already scopes a manager to branches they can see, same
-          // pattern fetchNetworkDashboard/fetchPeriodComparison rely on.
           fetchSaleEvents({ start: dateKey(periodStart), end: dateKey(new Date()) }).catch(() => []),
         ])
         if (!active) return
         setComparison(periodComparison)
-        setSummaries(next)
+        setSummaries(overviewMetrics.summaries || {})
         setLinePoints(charts.linePoints)
         setPaymentMix(charts.paymentMix || [])
         setTopProducts(charts.topProducts || [])
         setTopCategories(charts.topCategories || [])
-        setCashImpactTotals(
-          cashRows.reduce(
-            (acc, row) => ({
-              cashSales: acc.cashSales + (row?.cashSales || 0),
-              cardSales: acc.cardSales + (row?.cardSales || 0),
-              ewalletSales: acc.ewalletSales + (row?.ewalletSales || 0),
-              cashRefunds: acc.cashRefunds + (row?.cashRefunds || 0),
-              changeFund: acc.changeFund + (row?.changeFund || 0),
-              pickup: acc.pickup + (row?.pickup || 0),
-              paidOut: acc.paidOut + (row?.paidOut || 0),
-              expectedCash: acc.expectedCash + (row?.expectedCash || 0),
-            }),
-            {
-              cashSales: 0,
-              cardSales: 0,
-              ewalletSales: 0,
-              cashRefunds: 0,
-              changeFund: 0,
-              pickup: 0,
-              paidOut: 0,
-              expectedCash: 0,
-            },
-          ),
-        )
+        setCashImpactTotals(overviewMetrics.cashImpact || null)
         setAuditEvents((events || []).filter((e) => e.event_type === 'void' || e.event_type === 'refund'))
         setLoading(false)
       })
@@ -400,7 +397,7 @@ function ManagerOverview() {
 
       <TableCard>
         <div className="grid grid-cols-[minmax(0,1.6fr)_5.5rem_6.5rem_4.5rem_5rem] items-center gap-3 bg-brand-dark px-5 py-3 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[700px]:grid-cols-[minmax(0,1fr)]">
-          <span>Branch</span>
+          <span>Branches</span>
           <span className="max-[700px]:hidden">Type</span>
           <span className="text-right max-[700px]:hidden">Revenue</span>
           <span className="text-right max-[700px]:hidden">Orders</span>

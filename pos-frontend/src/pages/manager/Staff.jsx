@@ -22,7 +22,6 @@ import {
   varianceToneClass,
 } from '../../components/ui'
 import {
-  acknowledgeShiftReview,
   adjustShiftCash,
   closeShift,
   createStaffAccount,
@@ -232,9 +231,6 @@ function shiftStatus(row, adjusted) {
   if (row.holdsDrawer !== false && row.endingCash == null) {
     return { label: 'Pending handoff', tone: 'warn', hint: 'Ended without a drawer count' }
   }
-  if (row.closedWithoutSupervisor && !row.reviewedAt) {
-    return { label: 'Needs review', tone: 'warn', hint: 'Closed by the cashier — no supervisor was available to verify' }
-  }
   if (adjusted) {
     return { label: 'Adjusted', tone: 'warn', hint: 'Cash figures were corrected after closing' }
   }
@@ -260,7 +256,7 @@ const SHIFT_GRID_NARROW =
  * what it should have been · how far off. A supervisor should be able to scan the variance
  * column alone and stop on the row that is wrong.
  */
-function ShiftsTab({ rows, adjustments, loading, showBranch, canAdjustCash, onAdjust, onCloseShift, onAcknowledgeReview }) {
+function ShiftsTab({ rows, adjustments, loading, showBranch, canAdjustCash, onAdjust, onCloseShift }) {
   const grid = showBranch ? SHIFT_GRID_WITH_BRANCH : SHIFT_GRID_NO_BRANCH
   const narrow = SHIFT_GRID_NARROW
   return (
@@ -345,15 +341,6 @@ function ShiftsTab({ rows, adjustments, loading, showBranch, canAdjustCash, onAd
                     onClick={() => onAdjust(row, 'ending_cash', row.endingCash)}
                   >
                     Correct
-                  </button>
-                )}
-                {canAdjustCash && row.closedWithoutSupervisor && !row.reviewedAt && (
-                  <button
-                    type="button"
-                    className="mt-0.5 block border-0 bg-transparent text-[10px] font-bold text-brand-ink underline underline-offset-2"
-                    onClick={() => onAcknowledgeReview(row)}
-                  >
-                    Acknowledge
                   </button>
                 )}
                 {/* A cashier starting a new shift on this drawer never sees who is holding
@@ -758,14 +745,6 @@ function ManagerStaff() {
             setClosingCash('')
             setClosingNote('')
             setClosingError('')
-          }}
-          onAcknowledgeReview={async (shift) => {
-            try {
-              await acknowledgeShiftReview(shift.id, currentUser?.id || null)
-              await loadShifts()
-            } catch (err) {
-              setError(formatSupportError(err, 'SHIFT01'))
-            }
           }}
         />
       ) : (

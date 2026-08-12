@@ -607,9 +607,9 @@ index.
 | Drawer identity | `src/utils/drawer.js` |
 | Local store | `src/offline/shifts.js` (Dexie `shifts`, v2) |
 | Queue ops | `OPEN_SHIFT`, `CLOSE_SHIFT`, `REQUEST_DAY_END`, `REJECT_DAY_REQUEST` in `queueTypes.js` / `syncEngine.js` |
-| API | `api.js` → `openShift`, `closeShift`, `requestDayEnd`, `rejectDayEndRequest`, `fetchOpenShift`, `fetchOpenShiftOnDrawer`, `fetchOpenShiftsForBranch`, `fetchLastClosedShiftOnDrawer`, `fetchShiftCashSummary`, `adjustShiftCash`, `fetchShiftAdjustments`, `fetchStaffShifts`, `acknowledgeShiftReview` |
-| Tables | `staff_shifts` (+ cash columns, `closed_without_supervisor`, `reviewed_by`, `reviewed_at` — dormant, see below), `shift_adjustments`, `transactions.shift_id`, `day_ends` (+ `requested_at`, `requested_by`, `request_manager`, `rejected_at`, `rejected_by`, `reject_reason`) |
-| Migration | `migrate_shift_cash_accountability.sql`, `migrate_shift_close_no_supervisor_flag.sql`, `migrate_day_end_request_no_shift_count.sql`, `migrate_day_end_reject_request.sql`, `migrate_shift_cash_void_fix.sql`, `migrate_staff_identity_resolve.sql`, `migrate_branch_roster_exclude_managers.sql` |
+| API | `api.js` → `openShift`, `closeShift`, `requestDayEnd`, `rejectDayEndRequest`, `fetchOpenShift`, `fetchOpenShiftOnDrawer`, `fetchOpenShiftsForBranch`, `fetchLastClosedShiftOnDrawer`, `fetchShiftCashSummary`, `adjustShiftCash`, `fetchShiftAdjustments`, `fetchStaffShifts` |
+| Tables | `staff_shifts` (+ cash columns), `shift_adjustments`, `transactions.shift_id`, `day_ends` (+ `requested_at`, `requested_by`, `request_manager`, `rejected_at`, `rejected_by`, `reject_reason`) |
+| Migration | `migrate_shift_cash_accountability.sql`, `migrate_day_end_request_no_shift_count.sql`, `migrate_day_end_reject_request.sql`, `migrate_shift_cash_void_fix.sql`, `migrate_staff_identity_resolve.sql`, `migrate_branch_roster_exclude_managers.sql`, `migrate_schema_cleanup_v1.sql` (drops dormant shift-review columns) |
 
 **Query shifts by `business_date`, never by `clock_in`.** `fetchStaffShifts` matches its
 date range on the `business_date` column. Filtering on the clock-in instant is wrong twice
@@ -630,11 +630,8 @@ from a per-shift ending count.
 
 **The `staff_shifts` column fallback ladder is ordered, and the order is load-bearing.**
 `api.js` reads shifts through progressively older column sets: `SHIFT_COLS` →
-`SHIFT_COLS_CORE` → `SHIFT_COLS_LEGACY` → `SHIFT_COLS_MINIMAL`. `shift_period` (its own
-migration) and `closed_without_supervisor`/`reviewed_by`/`reviewed_at`
-(`migrate_shift_close_no_supervisor_flag.sql`) are each optional and independent of the core
-cash-accountability schema, so any of them can be missing on a database that has every cash
-column. They are therefore tested *together*, via `isMissingOptionalShiftColumn`, *before*
+`SHIFT_COLS_CORE` → `SHIFT_COLS_LEGACY` → `SHIFT_COLS_MINIMAL`. `shift_period` is optional
+on older DBs and is stripped via `isMissingOptionalShiftColumn` *before*
 `isMissingShiftCashSchema` — which matches `does not exist` generically and would otherwise
 read one missing optional column as a missing cash schema, dropping straight to a column set
 with no `starting_cash`/`ending_cash` and rendering every float and closing count blank.
@@ -646,14 +643,9 @@ actually carry the column.
 
 **Ending a shift no longer needs anyone's approval.** `ShiftCashOut.jsx` is a plain confirm
 now — no cash field, no `SupervisorApprove` PIN prompt. `endShift` (shiftStore.js) always
-closes under the cashier's own id (`closedBy: user.id`); `close_staff_shift()`'s
-`closed_without_supervisor` flag is deliberately never set true by this path anymore (it
-would otherwise fire on every single shift close, not just the rare unwitnessed one it used
-to mean) — `migrate_day_end_request_no_shift_count.sql` covers why. The
-`closed_without_supervisor`/`reviewed_by`/`reviewed_at` columns and
-`acknowledge_shift_review()` RPC are left in the schema (harmless) but are dormant: nothing
-sets the flag true anymore, so `fetchPendingApprovals`' "shift closed without supervisor"
-section and Manager/Staff → Shifts' **Needs review** status will not fire on new shifts.
+closes under the cashier's own id (`closedBy: user.id`). The old
+`closed_without_supervisor` / `acknowledge_shift_review` path was removed in
+`migrate_schema_cleanup_v1.sql` (columns + RPC + inbox/UI).
 
 **Ending a shift forces sign-out before the next count — but Request day end must still be
 reachable first.** `endShift` (shiftStore.js) lands on `gate: 'ended'`, not `'start'`.
@@ -1192,8 +1184,8 @@ to it, since they have no `/manager/*` nav.
 **Staff roster (`manager/Staff.jsx`, "Staff" sub-tab) rows are not interactive** — clicking a
 row used to expand a full per-person shift/cash-correction panel duplicating the "Shifts"
 sub-tab (`ShiftsTab`, same file) exactly; removed as pure redundancy, not a capability loss —
-`ShiftsTab` already has the full shift log, cash correction (`onAdjust`), close-shift and
-review-acknowledge UI. The row's Hours/Shifts/Variance columns are still populated from the
+`ShiftsTab` already has the full shift log, cash correction (`onAdjust`), and close-shift
+UI. The row's Hours/Shifts/Variance columns are still populated from the
 same `shiftsByStaff` data (glance-only, no click needed).
 
 **Reveal PIN requires re-entering your own password first**
@@ -1210,32 +1202,29 @@ All three dashboards a manager or supervisor lands on — `manager/Overview.jsx`
 same three metric groups, built from the same formulas so the numbers can never quietly
 disagree between screens:
 
+- **Sales performance** / **Payment & cash impact** on **Manager Overview** come from a
+  single RPC `manager_overview_metrics(p_days)` (`migrate_network_manager_overview.sql`,
+  wrapped by `api.fetchManagerOverviewMetrics`) instead of N× `branchSummary` + N×
+  `fetchBranchCashImpact`. If the RPC is missing, Overview falls back to the old fan-out.
+- **BranchDashboard** live updates (`day_ends` / `cash_drawer_entries` / `refund_requests`)
+  call `reloadOps` → `bootstrapBranchActivity` + drawer/cash/audit only — **not** a full
+  product bootstrap.
+- Login/`loadBranch` paints POS from `bootstrapPosCatalog` first, then completes sync via
+  `bootstrapBranchData` (catalog + activity in parallel for IndexedDB).
+- POS promo reads no longer call `expireEndedPromos` (write-on-read); manager promo screens
+  still sweep. Display truth is `promoHasEnded` / `promoEffectiveStatus` (`status` only —
+  `promo_events.is_active` was dropped in `migrate_schema_cleanup_v1.sql`).
+
 - **Sales performance** (Gross sales, Net sales, Discounts, Refunds, Voided sales) — the
   same reduction `utils/terminalReports.js` uses for the X/Z reading: Gross = Σ(total +
   discount) over Paid, Net = Σ(total − refunded) over Paid, Discounts = Σ discount over
   Paid, Refunds = Σ refunded over Paid (partial refunds only), Voided = Σ total over
   Voided. Computed client-side from already-loaded transactions on BranchDashboard/
-  Dashboard; on Overview, `api.branchSummary()` was extended to return these 5 fields
-  alongside its existing `revenue/orders/lowStock`, using the same per-branch transactions
-  query it already ran.
+  Dashboard; on Overview, via `fetchManagerOverviewMetrics` (or legacy `branchSummary`).
 - **Payment & cash impact** (Cash sales, Card sales, E-wallet sales, Cash in/out, Expected
   cash) — always TODAY's business day regardless of any period toggle (a drawer is
   counted once a day; see "Day end & cash" above). `api.fetchBranchCashImpact(branchId,
-  date, openHour)` is the single source for this — it composes `fetchPettyCashTimeline` +
-  `fetchStaffShifts` + a small business-date-filtered transactions query, and returns the
-  **exact same expected-cash formula** `SupervisorDayEnd` (`DayEnd.jsx`) uses for its own
-  "Expected" line, so a dashboard tile can never disagree with the real Day End screen for
-  the same branch/day. `cashSales`/`cardSales`/`ewalletSales` are all net of same-tender
-  refunds (so the three sum to that day's net sales), but only `cashSales` feeds
-  `expectedCash` — a card/e-wallet sale or refund never touches the physical drawer, so
-  those two figures are informational only on this card. Overview sums this across every
-  branch a manager can see (one call per branch, today). `Dashboard.jsx`/`Overview.jsx`
-  also have a separate, period-scoped "Payment methods" ranking card (`SalesMixBar`,
-  gross tender, % of period) further down the page — that one answers "how do customers
-  pay over the selected period", this card answers "does today's drawer add up"; the two
-  can legitimately show the same peso figure when the period is "Today" and there were no
-  refunds, which is not a bug. `BranchDashboard.jsx` has no separate payment-methods card,
-  so this is the only place its Card/E-wallet totals appear.
+  date, openHour)` remains the single-branch source; Overview uses the network RPC total.
 - **Audit** (void/refund counts, total value, a paginated recent list) — reuses
   `api.fetchSaleEvents({ branchId, start, end })`, the same source Reports →
   "Void / Refund Log" already reads. Rendered by `components/dashboard/AuditSummary.jsx`:
@@ -1445,6 +1434,8 @@ of one per row change.
 | Per-line discount tracking | `migrate_discountable_transaction_items.sql` |
 | Hot-table perf indexes | `migrate_perf_indexes_hot_tables.sql` (run each `CREATE INDEX CONCURRENTLY` statement individually — cannot run inside a transaction block) |
 | Multiple concurrent promos + per-line attribution | `migrate_promo_multi_active.sql`, `migrate_promo_line_attribution.sql` |
+| Schema cleanup (drop promo `is_active`, duplicate client_id index, dormant shift-review, tighten refund RLS) | `migrate_schema_cleanup_v1.sql` |
+| Manager Overview one-shot aggregates | `migrate_network_manager_overview.sql` (`manager_overview_metrics`) |
 | Promo auto-expire | `migrate_promo_auto_expire.sql` |
 | VAT breakdown (BIR) | `migrate_vat_breakdown.sql` |
 | Realtime (live POS/notification updates) | `migrate_enable_realtime.sql` |
@@ -1462,6 +1453,13 @@ That is why supervisors read the roster through `branch_staff_roster()`
 (`migrate_branch_staff_roster.sql`) — a definer function with an explicit safe column list —
 rather than a widened `read staff` policy. Never "simplify" it into a policy change, and
 never add a secret column to that function's select list.
+
+**Schema cleanup (`migrate_schema_cleanup_v1.sql`):** `promo_events.is_active` removed
+(status-only); duplicate `(branch_id, client_id)` unique index dropped; dormant
+`closed_without_supervisor` / `acknowledge_shift_review` removed; `refund_requests` has no
+client UPDATE policy (RPC-only mutations); `sale_events`/`audit_events` RLS uses
+`is_manager()` / `current_staff_branch()`. App: `voidSale` is RPC-only; cash drawer reads
+`cash_drawer_entries` only (no `petty_cash` fallback).
 
 ### Environments (dev vs production)
 
@@ -1648,20 +1646,9 @@ the UI — never render `reference` raw.
 
 ---
 
-## Backlog for external AI (Gemini / ChatGPT)
+## Promo subsystem — implementation notes
 
-### Important: nothing in this whole multi-session conversation has been committed
-`git log` stops at `b9b8629 Fixed bugs in manager approval` — every fix described in this
-file (multi-promo, VAT, realtime, the Discountable cascade, the Cart live-eligibility check,
-the `updateProductRow` guard, this session's product-refresh fallback + Promo-sales-panel
-removal) is **still only sitting uncommitted in the working tree**. If PWD/Senior "still isn't
-enabling" was tested against a deployed build or a since-restarted dev server, that build
-predates all of it. **Before doing further root-cause work on the discount bug, confirm the
-user is testing against this actual working tree** (`npm run dev` freshly started here, or a
-build/deploy made *after* these changes) — otherwise every fix below will keep looking broken
-no matter how correct the code is.
-
-### ROOT-CAUSED #2: PostgREST silently truncated product reads at 1000 rows
+### Query pagination — unbounded selects must use fetchAllRows
 `bootstrapBranchData`, `fetchBranchProducts`, and `fetchCatalogProducts` had no `.range()`
 pagination. Supabase's `db-max-rows` (1000 by default) caps the response **and returns no
 error** — so any branch past 1000 products silently lost everything after the 1000th by
@@ -1684,7 +1671,7 @@ the server actually names it.
 (a flag problem). These are completely different failures and guessing between them has
 cost real debugging time.
 
-### ROOT-CAUSED #1: Discountable not reaching POS (`products.catalog_product_id` was NULL)
+### `catalog_product_id` link integrity (Discountable not reaching POS)
 The cascade matched on `products.catalog_product_id`, but that column was only ever written
 in **one** place — `createProduct`'s best-effort mirror into `catalog_products` — and that
 path has two holes:
@@ -1705,7 +1692,7 @@ exactly why some products discounted correctly and others never did. Fixed three
   go missing again regardless of code path or role. Reports what's still unlinked.
 - Bulk multi-select in `ManagerNetworkCatalog` for setting Discountable on many items at once.
 
-### DONE in this pass (do not re-implement)
+### Live-update, VAT/SC-PWD, and Promos UI notes
 - **Layered live-update system** — `useLiveData` hook + hardened `subscribeTable` (status
   callback, exponential-backoff resubscribe, refetch-on-reconnect) + `useAppVersion` deploy
   watchdog with `/version.json`. See the "Realtime / live updates" section above.
@@ -1734,7 +1721,7 @@ exactly why some products discounted correctly and others never did. Fixed three
   `migrate_enable_realtime.sql` is applied (or one that silently drops its channel) would never
   pick up a manager's edit without a manual reload. Added the same 5-min `setInterval` fallback.
 
-### DONE in recent pass (do not re-implement)
+### Permissions, catalog cascade, and promo lifecycle notes
 - Module access: explicit `permissions[]` wins; routes gated by `RequireModule` only; Staff shows **Custom access** vs **Default access**.
 - Manager cover for supervisor approvals: `SupervisorApprove` has **Approve as manager** when signed-in role is manager/admin/master; SQL `migrate_manager_can_approve_any_branch.sql` lets manager PIN work cross-branch.
 - Sidebar **Refresh** button → `window.location.reload()`.
@@ -1754,7 +1741,7 @@ exactly why some products discounted correctly and others never did. Fixed three
 - **Promo History actions collapsed into a "⋯" menu** — the row used to lay out 4-8 inline text buttons (Sales, Approve/Reject, Approve/Reject stop, Modify, Rename, Edit description, Delete) side by side; same actions now live in a per-row dropdown (`openActionsId` state, closed by a full-screen click-away `div`). No action's behavior changed, only where it lives. The dropdown itself renders through a `createPortal(..., document.body)` with `position: fixed` computed from the trigger button's `getBoundingClientRect()` (`actionsAnchor` state) rather than `position: absolute` inside the row — the table's own scroll wrapper needs `overflow-x-auto` for wide screens, and per the CSS overflow spec, `overflow-x: auto` with `overflow-y: visible` still computes `overflow-y` to `auto` (clipping), not `visible`. An absolutely-positioned dropdown there was silently clipped to invisible for rows near the wrapper's edge — same root cause if a future popover in a horizontally-scrolling table goes invisible with no console error.
 - **Stop reason was already implemented** — a reason is required when requesting or executing a stop (`request_stop_promo` RPC, `stop_reason` column) and already rendered in Promo History under the status badge. This predates the description/date-filter work above; don't re-add it.
 
-### Multiple concurrent promos (DONE)
+### Multiple concurrent promos
 **Required SQL migration:** run `pos-frontend/supabase/migrate_promo_multi_active.sql` (drops the one-live-promo-per-branch unique index and stops `approve_promo_event()` from deactivating sibling promos).
 
 - **SQL/RPC:** `migrate_promo_multi_active.sql` — no more single-active constraint or forced deactivation on approve.

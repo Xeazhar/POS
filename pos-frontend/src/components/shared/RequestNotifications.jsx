@@ -55,7 +55,6 @@ export default function RequestNotifications() {
     const subs = [
       { table: 'day_ends', onChange: debouncedRefresh },
       { table: 'cash_drawer_entries', onChange: debouncedRefresh },
-      { table: 'petty_cash', onChange: debouncedRefresh }, // legacy table name, harmless if it doesn't exist
     ]
     if (manager) {
       subs.push({ table: 'promo_events', onChange: debouncedRefresh })
@@ -64,7 +63,6 @@ export default function RequestNotifications() {
     else if (user.branchId) {
       subs[0] = { table: 'day_ends', filter: `branch_id=eq.${user.branchId}`, onChange: debouncedRefresh }
       subs[1] = { table: 'cash_drawer_entries', filter: `branch_id=eq.${user.branchId}`, onChange: debouncedRefresh }
-      subs[2] = { table: 'petty_cash', filter: `branch_id=eq.${user.branchId}`, onChange: debouncedRefresh }
     }
     const unsubscribe = subscribeMany(subs)
     // Slow fallback only — see POLL_MS comment above.

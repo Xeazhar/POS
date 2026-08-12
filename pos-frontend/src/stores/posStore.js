@@ -400,6 +400,22 @@ export const useProductStore = create((set, get) => ({
       set({ products: data.products, loading: false })
       useInventoryStore.getState().hydrate(data)
     }
+    // Paint POS from catalog first when online — don't block the till on txs/movements.
+    if (isOnline() && api.hasSupabase) {
+      try {
+        const catalog = await api.bootstrapPosCatalog(branchId)
+        if (catalog?.products?.length) {
+          set({ products: catalog.products, loading: false })
+          useInventoryStore.getState().hydrate({
+            ...data,
+            products: catalog.products,
+            dayOpenHour: catalog.dayOpenHour,
+          })
+        }
+      } catch {
+        /* full sync below still runs */
+      }
+    }
     data = (await syncBranch(branchId)) || data
     set({ products: data.products || [], loading: false })
     useSyncStore.getState().refresh(branchId)

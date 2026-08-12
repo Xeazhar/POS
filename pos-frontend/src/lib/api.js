@@ -659,25 +659,17 @@ const BOOTSTRAP_PRODUCT_COLS =
   'id, branch_id, name, sku, barcode, category_id, menu_kind, pricing_mode, price, unit_cost, budget_price, low_stock_threshold, available_today, discount_eligible, product_no, created_at, categories(name)'
 const BOOTSTRAP_TX_COLS =
   'id, or_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, shift_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, discount_amount, discount_type, discount_id_note, transaction_items(id)'
-// Pre migrate_vat_breakdown.sql fallback (see bootstrapBranchData / fetchTerminalReportSource).
-const BOOTSTRAP_TX_COLS_LEGACY =
-  'id, or_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, discount_amount, discount_type, discount_id_note, transaction_items(id)'
 const BOOTSTRAP_MOVE_COLS =
   'id, created_at, product_id, movement_type, quantity_in, quantity_out, quantity_on_hand_after, old_price, new_price, detail, branch_id, products(name)'
 const BOOTSTRAP_DAY_END_COLS =
   'id, business_date, recorded_cash, cash_on_hand, variance, expected_cash, note, status, closed_at, submitted_at, approved_at, reopened_at, reopen_reason, day_report, staff_id, branch_id, staff!staff_id(full_name), requested_at, requested_by, request_manager, reopen_requested_at, reopen_requested_by, reopen_request_reason'
-const BOOTSTRAP_DAY_END_COLS_LEGACY =
-  'id, business_date, recorded_cash, cash_on_hand, variance, note, status, closed_at, staff_id, branch_id, staff!staff_id(full_name)'
 
-export async function bootstrapBranchData(branchId) {
-  // Everything that reads the store's dayEnds (DayEnd.jsx's today lookup, Dashboard's
-  // previous-day restock report) only ever needs recent days — unlike transactions/
-  // stock_movements above, this query had no bound at all, so it grew unbounded for the
-  // life of the branch. 90 days is generous headroom over "today"/"yesterday"; historical
-  // reporting goes through Reports.jsx's own date-ranged queries, not this snapshot.
-  const dayEndsCutoff = localDateKey(new Date(Date.now() - 90 * 86400000))
-  const [productsRes, inventoryRes, txRes, moveRes, dayResInitial, catsRes, branchRes] = await Promise.all([
-    // Paged: a branch with >1000 products would otherwise be silently truncated.
+/**
+ * POS cold-path: catalog + stock + categories only.
+ * Login/POS should wait on this; recent txs/movements/day-ends load separately.
+ */
+export async function bootstrapPosCatalog(branchId) {
+  const [productsRes, inventoryRes, catsRes, branchRes] = await Promise.all([
     fetchAllRows((from, to) =>
       supabase
         .from('products')
@@ -695,6 +687,40 @@ export async function bootstrapBranchData(branchId) {
         .order('product_id')
         .range(from, to),
     ),
+    supabase.from('categories').select('id, name').order('name'),
+    supabase.from('branches').select('id, day_open_hour').eq('id', branchId).maybeSingle(),
+  ])
+  for (const res of [productsRes, inventoryRes, catsRes, branchRes]) {
+    if (res.error) throw res.error
+  }
+  const stockMap = Object.fromEntries(
+    (inventoryRes.data || []).map((row) => [
+      row.product_id,
+      { stock: Number(row.quantity_on_hand), updatedAt: row.updated_at },
+    ]),
+  )
+  return {
+    products: (productsRes.data || []).map((row) =>
+      mapProduct(row, stockMap[row.id]?.stock ?? 0, {
+        updatedAt: stockMap[row.id]?.updatedAt,
+        lastMovementAt: null,
+      }),
+    ),
+    categories: catsRes.data || [],
+    dayOpenHour: Number(branchRes.data?.day_open_hour ?? 7),
+    transactions: [],
+    movements: [],
+    dayEnds: [],
+  }
+}
+
+/**
+ * Recent activity for a branch (txs / movements / day ends).
+ * Used by dashboards, sync, and inventory history — not required to paint POS tiles.
+ */
+export async function bootstrapBranchActivity(branchId) {
+  const dayEndsCutoff = localDateKey(new Date(Date.now() - 90 * 86400000))
+  const [txRes, moveRes, dayRes] = await Promise.all([
     supabase
       .from('transactions')
       .select(BOOTSTRAP_TX_COLS)
@@ -713,81 +739,48 @@ export async function bootstrapBranchData(branchId) {
       .eq('branch_id', branchId)
       .gte('business_date', dayEndsCutoff)
       .order('business_date', { ascending: false }),
-    supabase.from('categories').select('id, name').order('name'),
-    supabase.from('branches').select('id, day_open_hour').eq('id', branchId).maybeSingle(),
   ])
-
-  let dayRes = dayResInitial
-  if (
-    dayRes.error &&
-    /expected_cash|submitted_at|approved_at|reopened_at|reopen_reason|reopen_requested|day_report|schema cache|column/i.test(
-      String(dayRes.error.message || ''),
-    )
-  ) {
-    dayRes = await supabase
-      .from('day_ends')
-      .select(BOOTSTRAP_DAY_END_COLS_LEGACY)
-      .eq('branch_id', branchId)
-      .gte('business_date', dayEndsCutoff)
-      .order('business_date', { ascending: false })
-  }
-
-  let tx = txRes
-  if (
-    tx.error &&
-    /vat_exempt_sales|zero_rated_sales|sc_pwd_discount|vat_rate_applied|schema cache|column/i.test(
-      String(tx.error.message || ''),
-    )
-  ) {
-    // Frontend can deploy ahead of migrate_vat_breakdown.sql being run — degrade instead of
-    // failing the whole bootstrap (POS/inventory/etc. don't depend on these columns existing).
-    tx = await supabase
-      .from('transactions')
-      .select(BOOTSTRAP_TX_COLS_LEGACY)
-      .eq('branch_id', branchId)
-      .order('created_at', { ascending: false })
-      .limit(200)
-  }
-
-  for (const res of [productsRes, inventoryRes, tx, moveRes, dayRes, catsRes, branchRes]) {
+  for (const res of [txRes, moveRes, dayRes]) {
     if (res.error) throw res.error
   }
 
-  const staffNames = await staffNameById((tx.data || []).map((row) => row.staff_id))
-  // Approvers are resolved alongside cashiers so a voided/refunded receipt can name who
-  // signed it off in the list itself, not only after opening the detail modal.
+  const staffNames = await staffNameById((txRes.data || []).map((row) => row.staff_id))
   const approverIdentities = await fetchStaffIdentities(
-    (tx.data || []).map((row) => row.void_approved_by),
+    (txRes.data || []).map((row) => row.void_approved_by),
   ).catch(() => ({}))
 
-  const stockMap = Object.fromEntries(
-    (inventoryRes.data || []).map((row) => [
-      row.product_id,
-      {
-        stock: Number(row.quantity_on_hand),
-        updatedAt: row.updated_at,
-      },
-    ]),
-  )
   const lastMoveMap = {}
   ;(moveRes.data || []).forEach((row) => {
     if (!lastMoveMap[row.product_id]) lastMoveMap[row.product_id] = localDateKey(row.created_at)
   })
 
   return {
-    products: (productsRes.data || []).map((row) =>
-      mapProduct(row, stockMap[row.id]?.stock ?? 0, {
-        updatedAt: stockMap[row.id]?.updatedAt,
-        lastMovementAt: lastMoveMap[row.id] || null,
-      }),
-    ),
-    transactions: (tx.data || []).map((row) =>
+    transactions: (txRes.data || []).map((row) =>
       mapTransaction(withApprover(withCashierName(row, staffNames), approverIdentities)),
     ),
     movements: (moveRes.data || []).map(mapMovement),
     dayEnds: (dayRes.data || []).map((row) => mapDayEndRow(row)),
-    categories: catsRes.data || [],
-    dayOpenHour: Number(branchRes.data?.day_open_hour ?? 7),
+    lastMoveMap,
+  }
+}
+
+/** Full branch snapshot = catalog + activity (offline sync / pages that need both). */
+export async function bootstrapBranchData(branchId) {
+  const [catalog, activity] = await Promise.all([
+    bootstrapPosCatalog(branchId),
+    bootstrapBranchActivity(branchId),
+  ])
+  const products = (catalog.products || []).map((p) => ({
+    ...p,
+    lastMovementAt: activity.lastMoveMap?.[p.id] || p.lastMovementAt || null,
+  }))
+  return {
+    products,
+    categories: catalog.categories,
+    dayOpenHour: catalog.dayOpenHour,
+    transactions: activity.transactions,
+    movements: activity.movements,
+    dayEnds: activity.dayEnds,
   }
 }
 
@@ -1454,25 +1447,12 @@ function isDuplicateClientIdError(error) {
 }
 
 export async function loadTransactionByClientId(branchId, clientId) {
-  let { data, error } = await supabase
+  const { data, error } = await supabase
     .from('transactions')
     .select(BOOTSTRAP_TX_COLS)
     .eq('branch_id', branchId)
     .eq('client_id', clientId)
     .maybeSingle()
-  if (
-    error &&
-    /vat_exempt_sales|zero_rated_sales|sc_pwd_discount|vat_rate_applied|schema cache|column/i.test(
-      String(error.message || ''),
-    )
-  ) {
-    ;({ data, error } = await supabase
-      .from('transactions')
-      .select(BOOTSTRAP_TX_COLS_LEGACY)
-      .eq('branch_id', branchId)
-      .eq('client_id', clientId)
-      .maybeSingle())
-  }
   if (error) throw error
   return data
 }
@@ -1782,65 +1762,21 @@ function isAlreadyVoidedError(error) {
 }
 
 export async function voidSale(id, reason, staffId = null, approvedBy = null) {
-  if (staffId) {
-    // p_approved_by: migrate_void_sale_approved_by.sql. On an environment where that hasn't
-    // been applied yet, the old 3-arg signature doesn't match this call and PostgREST returns
-    // "Could not find the function" — falls through to the manual path below, which already
-    // records the approver correctly.
-    const { data, error } = await supabase.rpc('void_sale_secure', {
-      p_transaction_id: id,
-      p_staff_id: staffId,
-      p_reason: reason,
-      p_approved_by: approvedBy,
-    })
-    if (!error) return data
-    if (isAlreadyVoidedError(error)) {
-      const { data: current } = await supabase.from('transactions').select('*').eq('id', id).maybeSingle()
-      return current
-    }
-    if (!String(error.message || '').includes('Could not find the function')) throw error
+  if (!staffId) {
+    throw new Error('void_sale_secure requires staffId — direct transaction updates are not allowed')
   }
-
-  const { data: existing } = await supabase
-    .from('transactions')
-    .select('id, branch_id, or_number, total_amount')
-    .eq('id', id)
-    .maybeSingle()
-
-  const updatePayload = {
-    status: 'voided',
-    void_reason: reason,
-    voided_at: new Date().toISOString(),
-    voided_by: staffId,
-  }
-  if (approvedBy) updatePayload.void_approved_by = approvedBy
-
-  let { error } = await supabase.from('transactions').update(updatePayload).eq('id', id)
-  if (error && isMissingColumnError(error, 'void_approved_by')) {
-    delete updatePayload.void_approved_by
-    ;({ error } = await supabase.from('transactions').update(updatePayload).eq('id', id))
-  }
-  // Same idempotency case as the RPC branch above, reached here only on a pre-void_sale_secure
-  // database — guard_transaction_updates() (migrate_bir_pos_compliance.sql) rejects the update
-  // with "voided transactions are locked" once it already landed.
-  if (error && isAlreadyVoidedError(error)) {
+  const { data, error } = await supabase.rpc('void_sale_secure', {
+    p_transaction_id: id,
+    p_staff_id: staffId,
+    p_reason: reason,
+    p_approved_by: approvedBy,
+  })
+  if (!error) return data
+  if (isAlreadyVoidedError(error)) {
     const { data: current } = await supabase.from('transactions').select('*').eq('id', id).maybeSingle()
     return current
   }
-  if (error) throw error
-
-  if (existing?.branch_id) {
-    await supabase.from('sale_events').insert({
-      branch_id: existing.branch_id,
-      transaction_id: id,
-      staff_id: staffId,
-      event_type: 'void',
-      or_number: existing.or_number,
-      reason,
-      amount: existing.total_amount,
-      payload: { approved_by: approvedBy },
-    })
-  }
+  throw error
 }
 
 /** Partial or multi-item refund. items: [{ item_id, quantity }] */
@@ -2356,10 +2292,8 @@ export async function saveBranch(payload) {
     fields.branch_type = payload.branch_type === 'restaurant' ? 'restaurant' : 'retail'
   }
   // Optional fiscal / settings fields — only write when provided (Branch settings)
-  if ('business_name' in payload || 'businessName' in payload) {
-    fields.business_name = payload.business_name ?? payload.businessName ?? null
-  }
-  if ('tin' in payload) fields.tin = payload.tin ?? null
+  // branches.tin / business_name are LEGACY fallbacks — prefer company_profile + branch_tin_code.
+  // App no longer writes tin/business_name (migrate_schema_cleanup_v1.sql).
   if ('branch_tin_code' in payload || 'branchTinCode' in payload) {
     fields.branch_tin_code = payload.branch_tin_code ?? payload.branchTinCode ?? null
   }
@@ -2782,35 +2716,21 @@ export function mapShiftRow(row) {
     cashPickups: Number(row.cash_pickups || 0),
     closeNote: row.close_note || '',
     closedBy: row.closed_by || null,
-    closedWithoutSupervisor: row.closed_without_supervisor === true,
-    reviewedBy: row.reviewed_by || null,
-    reviewedAt: row.reviewed_at || null,
     open: !row.clock_out,
     status: row.clock_out ? 'closed' : 'open',
   }
 }
 
 const SHIFT_COLS =
-  'id, branch_id, staff_id, drawer_id, drawer_label, holds_drawer, business_date, clock_in, clock_out, shift_period, starting_cash, carried_from_shift_id, carried_amount, ending_cash, expected_cash, variance, cash_sales, cash_refunds, cash_paid_out, cash_pickups, close_note, closed_by, client_id, closed_without_supervisor, reviewed_by, reviewed_at'
-// shift_period (migrate_staff_shift_period.sql) and closed_without_supervisor/reviewed_by/
-// reviewed_at (migrate_shift_close_no_supervisor_flag.sql) are each optional, independent of
-// the core cash-accountability schema. Selecting any of them alongside the cash columns means
-// one missing optional column fails the whole select, and the fallback ladder would then drop
-// to a column set with no starting_cash / ending_cash at all — which reads as "the float was
-// never recorded" rather than as a schema gap. This tier keeps every cash figure and gives up
-// only the optional columns, together, rather than trying to isolate which one is missing.
-const SHIFT_COLS_CORE = SHIFT_COLS.replace(
-  ', shift_period',
-  '',
-).replace(', closed_without_supervisor, reviewed_by, reviewed_at', '')
+  'id, branch_id, staff_id, drawer_id, drawer_label, holds_drawer, business_date, clock_in, clock_out, shift_period, starting_cash, carried_from_shift_id, carried_amount, ending_cash, expected_cash, variance, cash_sales, cash_refunds, cash_paid_out, cash_pickups, close_note, closed_by, client_id'
+// shift_period is optional on older schemas — keep cash columns if it's missing.
+const SHIFT_COLS_CORE = SHIFT_COLS.replace(', shift_period', '')
 const SHIFT_COLS_LEGACY = 'id, branch_id, staff_id, clock_in, clock_out, shift_period'
 const SHIFT_COLS_MINIMAL = 'id, branch_id, staff_id, clock_in, clock_out'
 
 /** One of the optional staff_shifts columns is absent — a migration hasn't been applied yet. */
 function isMissingOptionalShiftColumn(error) {
-  return /shift_period|closed_without_supervisor|reviewed_by|reviewed_at/i.test(
-    String(error?.message || error || ''),
-  )
+  return /shift_period/i.test(String(error?.message || error || ''))
 }
 
 /** True when the database predates migrate_shift_cash_accountability.sql. */
@@ -2924,24 +2844,6 @@ export async function closeShift({ shiftId, endingCash = null, note = '', closed
     if (isMissingShiftRpc(error, 'close_staff_shift')) {
       return mapShiftRow(await clockOut(shiftId, { endingCash, note, closedBy }))
     }
-    throw shiftRpcError(error)
-  }
-  return mapShiftRow(Array.isArray(data) ? data[0] : data)
-}
-
-/**
- * Manager sign-off on a shift that was closed under its own cashier's count because no
- * supervisor/manager could witness it (see ShiftCashOut's "no supervisor available" path).
- * Requires migrate_shift_close_no_supervisor_flag.sql — absent on older databases, in which
- * case there is nothing to acknowledge, so this is a no-op rather than an error.
- */
-export async function acknowledgeShiftReview(shiftId, staffId) {
-  const { data, error } = await supabase.rpc('acknowledge_shift_review', {
-    p_shift_id: shiftId,
-    p_staff_id: staffId,
-  })
-  if (error) {
-    if (isMissingShiftRpc(error, 'acknowledge_shift_review')) return null
     throw shiftRpcError(error)
   }
   return mapShiftRow(Array.isArray(data) ? data[0] : data)
@@ -3296,25 +3198,14 @@ export async function fetchStaffShifts({ branchId = null, start = null, end = nu
   })
 }
 
-/** Cash drawer ledger (change fund · pickups · petty paid-outs). Renamed from petty_cash. */
+/** Cash drawer ledger (change fund · pickups · petty paid-outs). */
 export const CASH_DRAWER_TABLE = 'cash_drawer_entries'
-const CASH_DRAWER_LEGACY_TABLE = 'petty_cash'
 const CASH_DRAWER_COLS =
   'id, branch_id, staff_id, amount, reason, business_date, created_at, kind, status, receipt_ref, shift_id, requested_by, approved_by, approved_at, confirmed_by, confirmed_at, reject_reason'
 
-function isMissingCashDrawerTable(error) {
-  return /cash_drawer_entries|petty_cash|Could not find the table|relation .* does not exist|schema cache/i.test(
-    String(error?.message || error || ''),
-  )
-}
-
-/** Prefer cash_drawer_entries; fall back to legacy petty_cash until migration is applied. */
+/** cash_drawer_entries only — petty_cash dual-read removed (migrate_schema_cleanup_v1.sql). */
 async function withCashDrawerTable(run) {
-  const primary = await run(CASH_DRAWER_TABLE)
-  if (primary?.error && isMissingCashDrawerTable(primary.error)) {
-    return run(CASH_DRAWER_LEGACY_TABLE)
-  }
-  return primary
+  return run(CASH_DRAWER_TABLE)
 }
 
 export async function addPettyCash({
@@ -3843,6 +3734,60 @@ export async function branchSummary(branchId, { days = 1 } = {}) {
   }
 }
 
+/**
+ * One round-trip for Manager Overview: per-branch sales KPIs + today's cash impact.
+ * Requires migrate_network_manager_overview.sql. Falls back to N× branchSummary + cash
+ * impact if the RPC is missing.
+ */
+export async function fetchManagerOverviewMetrics({ days = 1 } = {}) {
+  const { data, error } = await supabase.rpc('manager_overview_metrics', {
+    p_days: Math.max(1, days),
+  })
+  if (error) throw error
+  const payload = data || {}
+  const branches = payload.branches || {}
+  const cashImpact = payload.cashImpact || {
+    cashSales: 0,
+    cardSales: 0,
+    ewalletSales: 0,
+    cashRefunds: 0,
+    changeFund: 0,
+    pickup: 0,
+    paidOut: 0,
+    expectedCash: 0,
+  }
+  // Normalize numeric fields (jsonb may arrive as strings)
+  const summaries = {}
+  for (const [id, row] of Object.entries(branches)) {
+    summaries[id] = {
+      revenue: Number(row.revenue || 0),
+      orders: Number(row.orders || 0),
+      lowStock: Number(row.lowStock || 0),
+      menuOn: Number(row.menuOn || 0),
+      menuOff: Number(row.menuOff || 0),
+      branchType: row.branchType === 'restaurant' ? 'restaurant' : 'retail',
+      grossSales: Number(row.grossSales || 0),
+      netSales: Number(row.netSales || 0),
+      discounts: Number(row.discounts || 0),
+      refunds: Number(row.refunds || 0),
+      voidedSales: Number(row.voidedSales || 0),
+    }
+  }
+  return {
+    summaries,
+    cashImpact: {
+      cashSales: Number(cashImpact.cashSales || 0),
+      cardSales: Number(cashImpact.cardSales || 0),
+      ewalletSales: Number(cashImpact.ewalletSales || 0),
+      cashRefunds: Number(cashImpact.cashRefunds || 0),
+      changeFund: Number(cashImpact.changeFund || 0),
+      pickup: Number(cashImpact.pickup || 0),
+      paidOut: Number(cashImpact.paidOut || 0),
+      expectedCash: Number(cashImpact.expectedCash || 0),
+    },
+  }
+}
+
 /** period: 'day' | 'week' | 'month' | 'year' */
 /**
  * Revenue and order count for the current period AND the one immediately before it,
@@ -3977,15 +3922,19 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
   const byProductNet = {}
   const byCategoryNet = {}
   try {
-    const itemsRes = await supabase
-      .from('transaction_items')
-      .select(
-        'quantity, line_total, product_id, products(name, categories(name)), transactions!inner(created_at, status)',
-      )
-      .gte('transactions.created_at', startIso)
-      .eq('transactions.status', 'completed')
-    if (itemsRes.error) throw itemsRes.error
-    for (const row of itemsRes.data || []) {
+    const { data: itemRows, error: itemsErr } = await fetchAllRows((from, to) =>
+      supabase
+        .from('transaction_items')
+        .select(
+          'quantity, line_total, product_id, products(name, categories(name)), transactions!inner(created_at, status)',
+        )
+        .gte('transactions.created_at', startIso)
+        .eq('transactions.status', 'completed')
+        .order('product_id', { ascending: true })
+        .range(from, to),
+    )
+    if (itemsErr) throw itemsErr
+    for (const row of itemRows || []) {
       const revenue = Number(row.line_total || 0)
       const name = row.products?.name || 'Product'
       const category = row.products?.categories?.name || 'Other'
@@ -5227,52 +5176,15 @@ export async function revertInventoryImport(batchId, staffId) {
 }
 
 /**
- * Best-effort sweep: flips any promo_events row past its ends_at from active/stop_pending
- * to status='expired' — see migrate_promo_expired_status.sql. Called at the top of the
- * promo read paths below instead of on a schedule, so it self-heals on every read without
- * needing pg_cron. Swallows errors so an un-migrated DB degrades to the old behaviour
- * (expired promos just stay hidden from POS via the respectDuration check) rather than
- * breaking the read.
- *
- * `expired` is deliberately not `stopped`: a promo that ran to its end date and one a
- * manager pulled early are different business events, and the old sweep recorded both as
- * `stopped`.
+ * Best-effort sweep: flips ended active/stop_pending promos to status='expired'.
+ * Call from manager promo screens only — not on every POS read (write-on-read was slow
+ * and unnecessary; promoHasEnded()/promoEffectiveStatus already hide ended promos).
  */
-async function expireEndedPromos() {
+export async function expireEndedPromos() {
   try {
-    // supabase-js resolves RPC errors onto { error } rather than rejecting — check both.
-    const { error } = await supabase.rpc('expire_ended_promos')
-    if (!error) return
-    // Function not deployed yet. Fall back to a plain UPDATE: managers/supervisors have RLS
-    // write access to their branch's promos, so the sweep still lands for exactly the people
-    // who look at the Promos page. Cashiers get denied here and that's fine — promoHasEnded()
-    // already hides ended promos for them.
-    const payload = {
-      status: 'expired',
-      is_active: false,
-      stopped_at: new Date().toISOString(),
-    }
-    const build = () =>
-      supabase
-        .from('promo_events')
-        .update(payload)
-        .in('status', ['active', 'stop_pending'])
-        .not('ends_at', 'is', null)
-        .lt('ends_at', new Date().toISOString())
-    const { error: updateError } = await build()
-    // Status check constraint not widened yet (migrate_promo_expired_status.sql unapplied):
-    // fall back to the old value so the sweep still happens. promoEffectiveStatus() maps
-    // that legacy shape back to `expired` for display.
-    if (updateError && /status_check|violates check constraint/i.test(String(updateError.message || ''))) {
-      await supabase
-        .from('promo_events')
-        .update({ ...payload, status: 'stopped', stop_reason: 'Promo ended' })
-        .in('status', ['active', 'stop_pending'])
-        .not('ends_at', 'is', null)
-        .lt('ends_at', new Date().toISOString())
-    }
+    await supabase.rpc('expire_ended_promos')
   } catch {
-    /* ignore — see comment above */
+    /* ignore — display truth still hides ended promos */
   }
 }
 
@@ -5280,9 +5192,7 @@ async function expireEndedPromos() {
  * Has this promo's scheduled end time passed?
  *
  * The client must never depend on the DB sweep having run to decide whether a promo is
- * over: the sweep needs a migration applied, needs write permission, and in any case only
- * runs when someone happens to read. An ended promo has to read as ended *immediately*,
- * everywhere, from the timestamp alone — that's what "auto-expire" means to the user.
+ * over: an ended promo has to read as ended immediately from the timestamp alone.
  */
 export function promoHasEnded(event) {
   const endsAt = event?.ends_at ?? event?.endsAt
@@ -5297,18 +5207,10 @@ export function promoHasEnded(event) {
  *   active   selling right now
  *   stopped  a manager ended it EARLY — a decision
  *   expired  it reached its own end date — a schedule running out
- *
- * `stopped` and `expired` must never collapse into each other: "we pulled that promo" and
- * "that promo finished" are different facts about the business. Derived here as well as
- * stored, so a tab open across the end time shows `expired` without waiting for the DB
- * sweep (see migrate_promo_expired_status.sql).
  */
 export function promoEffectiveStatus(event) {
-  const status = event?.status || (event?.is_active ? 'active' : 'inactive')
+  const status = event?.status || 'inactive'
   if ((status === 'active' || status === 'stop_pending') && promoHasEnded(event)) return 'expired'
-  // Pre-migration rows: the old sweep wrote 'stopped' with this exact reason and never set
-  // stopped_by. Both conditions together, so a manager who typed that reason is still a
-  // manual stop.
   if (
     status === 'stopped' &&
     !(event?.stopped_by ?? event?.stoppedBy) &&
@@ -5354,39 +5256,20 @@ export function promoStatusBadge(event) {
  * across all of them (see utils/promo.js computePromoDiscounts).
  */
 export async function fetchActivePromoEventsWithRules(branchId, { respectDuration = true } = {}) {
-  await expireEndedPromos()
-  // Live on POS: active or stop_pending (still selling until stop approved)
-  let query = supabase
+  // Display truth (promoHasEnded) hides ended rows — no write-on-read expire here.
+  const { data: events, error: eventError } = await supabase
     .from('promo_events')
-    .select('id,name,is_active,status,starts_at,ends_at,stop_reason')
+    .select('id,name,status,starts_at,ends_at,stop_reason')
     .eq('branch_id', branchId)
-
-  const { data: events, error: eventError } = await query
-    .or('status.in.(active,stop_pending),and(is_active.eq.true,status.is.null)')
+    .in('status', ['active', 'stop_pending'])
     .order('created_at', { ascending: false })
     .limit(20)
 
-  let liveEvents
-  if (eventError) {
-    // Fallback if status column missing
-    const fallback = await supabase
-      .from('promo_events')
-      .select('id,name,is_active,starts_at,ends_at')
-      .eq('branch_id', branchId)
-      .eq('is_active', true)
-    if (fallback.error) throw eventError
-    liveEvents = fallback.data || []
-  } else {
-    liveEvents = (events || []).filter(
-      (e) => e.status === 'active' || e.status === 'stop_pending' || (e.is_active && !e.status),
-    )
-  }
+  if (eventError) throw eventError
 
-  // A promo past its end date is never live, whatever the stored status says and whatever
-  // respectDuration asks for. respectDuration only governs the *not yet started* case (so a
-  // manager can still build rules on a scheduled promo) — it was never meant to resurrect a
-  // finished one, and treating it as such is why ended promos kept showing as Active here.
-  liveEvents = liveEvents.filter((e) => !promoHasEnded(e))
+  let liveEvents = (events || []).filter(
+    (e) => (e.status === 'active' || e.status === 'stop_pending') && !promoHasEnded(e),
+  )
 
   if (!liveEvents.length) return []
   const loaded = await Promise.all(liveEvents.map((event) => loadPromoRulesForEvent(event, respectDuration)))
@@ -5459,7 +5342,7 @@ async function loadPromoRulesForEvent(event, respectDuration = true) {
     event: {
       id: event.id,
       name: event.name,
-      status: event.status || (event.is_active ? 'active' : 'stopped'),
+      status: event.status || 'stopped',
       startsAt: event.starts_at,
       endsAt: event.ends_at,
       stopReason: event.stop_reason || null,
@@ -5522,8 +5405,9 @@ export async function createAndActivatePromoEvent({
   startsAt = null,
   endsAt = null,
   staffId = null,
-  activateImmediately = false,
+  activateImmediately = false, // unused — dual-control always creates pending
 }) {
+  void activateImmediately
   const starts_iso = startsAt ? new Date(startsAt).toISOString() : null
   const ends_iso = endsAt ? new Date(endsAt).toISOString() : null
   const desc = description?.trim() || null
@@ -5534,7 +5418,6 @@ export async function createAndActivatePromoEvent({
     branch_id: branchId,
     name,
     description: desc,
-    is_active: false,
     status: 'pending',
     starts_at: starts_iso,
     ends_at: ends_iso,
@@ -5543,27 +5426,12 @@ export async function createAndActivatePromoEvent({
 
   let { data, error } = await supabase.from('promo_events').insert(payload).select('id,name,status').single()
   if (error && isMissingColumnError(error, 'description')) {
-    // migrate_promo_description.sql not applied yet — create without it rather than fail outright.
     const withoutDescription = { ...payload }
     delete withoutDescription.description
     ;({ data, error } = await supabase
       .from('promo_events')
       .insert(withoutDescription)
       .select('id,name,status')
-      .single())
-  }
-  if (error && (isMissingColumnError(error, 'status') || isMissingColumnError(error, 'requested_by'))) {
-    // Legacy: old schema (pre dual-control) activated immediately
-    ;({ data, error } = await supabase
-      .from('promo_events')
-      .insert({
-        branch_id: branchId,
-        name,
-        is_active: activateImmediately,
-        starts_at: starts_iso,
-        ends_at: ends_iso,
-      })
-      .select('id,name')
       .single())
   }
   if (error) throw error
@@ -5892,17 +5760,16 @@ export async function fetchPromoEventsForBranch(branchId) {
   const { data, error } = await supabase
     .from('promo_events')
     .select(
-      'id,name,description,is_active,status,starts_at,ends_at,created_at,stop_reason,reject_reason,requested_by,approved_by,stop_requested_by',
+      'id,name,description,status,starts_at,ends_at,created_at,stop_reason,reject_reason,requested_by,approved_by,stop_requested_by',
     )
     .eq('branch_id', branchId)
     .order('created_at', { ascending: false })
 
   if (error && isMissingColumnError(error, 'reject_reason')) {
-    // migrate_promo_reject_reason.sql not applied yet on this environment.
     const retry = await supabase
       .from('promo_events')
       .select(
-        'id,name,description,is_active,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
+        'id,name,description,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
       )
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
@@ -5913,22 +5780,14 @@ export async function fetchPromoEventsForBranch(branchId) {
     const retry = await supabase
       .from('promo_events')
       .select(
-        'id,name,is_active,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
+        'id,name,status,starts_at,ends_at,created_at,stop_reason,requested_by,approved_by,stop_requested_by',
       )
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
     if (!retry.error) return retry.data || []
-  } else if (!error) {
-    return data || []
   }
-
-  const fallback = await supabase
-    .from('promo_events')
-    .select('id,name,is_active,starts_at,ends_at,created_at')
-    .eq('branch_id', branchId)
-    .order('created_at', { ascending: false })
-  if (fallback.error) throw error
-  return fallback.data || []
+  if (error) throw error
+  return data || []
 }
 
 /** Manager overview: live promos on every branch (no branch filter). */
@@ -5940,8 +5799,7 @@ export async function fetchActivePromosAcrossBranches() {
   const mapRow = (row) => ({
     id: row.id,
     name: row.name,
-    status: row.status || (row.is_active ? 'active' : 'inactive'),
-    is_active: Boolean(row.is_active),
+    status: row.status || 'inactive',
     starts_at: row.starts_at,
     ends_at: row.ends_at,
     created_at: row.created_at,
@@ -5951,65 +5809,20 @@ export async function fetchActivePromosAcrossBranches() {
   })
 
   const isLive = (row) => {
-    // Ended by the clock = not live, regardless of stored status (see promoHasEnded).
     if (promoHasEnded(row)) return false
     const status = String(row.status || '').toLowerCase()
-    if (status === 'active' || status === 'stop_pending') return true
-    // Legacy rows before dual-control status column
-    if (!status && row.is_active) return true
-    if (row.is_active && status === 'active') return true
-    return false
+    return status === 'active' || status === 'stop_pending'
   }
 
-  // Simple filter first (avoids brittle nested .or() PostgREST syntax)
-  let { data, error } = await supabase
+  const { data, error } = await supabase
     .from('promo_events')
-    .select('id,name,is_active,status,starts_at,ends_at,created_at,branch_id,stop_reason')
+    .select('id,name,status,starts_at,ends_at,created_at,branch_id,stop_reason')
     .in('status', ['active', 'stop_pending'])
     .order('created_at', { ascending: false })
     .limit(500)
 
-  if (error) {
-    // Column missing or filter unsupported — pull a wider set and filter in JS
-    const wide = await supabase
-      .from('promo_events')
-      .select('id,name,is_active,status,starts_at,ends_at,created_at,branch_id,stop_reason')
-      .order('created_at', { ascending: false })
-      .limit(500)
-
-    if (wide.error) {
-      const legacy = await supabase
-        .from('promo_events')
-        .select('id,name,is_active,starts_at,ends_at,created_at,branch_id')
-        .eq('is_active', true)
-        .order('created_at', { ascending: false })
-        .limit(500)
-      if (legacy.error) throw error
-      return (legacy.data || []).map(mapRow)
-    }
-
-    data = (wide.data || []).filter(isLive)
-  } else {
-    // Also pick up legacy is_active rows that may not have status=active
-    const { data: legacyActive } = await supabase
-      .from('promo_events')
-      .select('id,name,is_active,status,starts_at,ends_at,created_at,branch_id,stop_reason')
-      .eq('is_active', true)
-      .order('created_at', { ascending: false })
-      .limit(500)
-
-    const byId = new Map()
-    for (const row of data || []) byId.set(row.id, row)
-    for (const row of legacyActive || []) {
-      if (isLive(row) && !byId.has(row.id)) byId.set(row.id, row)
-    }
-    data = [...byId.values()]
-  }
-
-  return (data || [])
-    .filter(isLive)
-    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
-    .map(mapRow)
+  if (error) throw error
+  return (data || []).filter(isLive).map(mapRow)
 }
 
 /** Manager overview: full promo history (every status) on every branch, tagged with branch name. */
@@ -6150,35 +5963,6 @@ export async function fetchPendingApprovals({ role, branchId } = {}) {
         detail: `${branchName} · ₱${Number(row.amount || 0).toFixed(2)} · ${row.reason || 'No reason'}`,
         href: manager ? `/manager/branches/${row.branch_id}` : '/day-end',
         createdAt: row.created_at || null,
-        priority: 2,
-      })
-    }
-  }
-
-  // Shifts closed under the cashier's own count because no supervisor/manager was reachable
-  // (see ShiftCashOut's "no supervisor available" path) — needs someone to acknowledge it.
-  // Silently skipped on a database that predates migrate_shift_close_no_supervisor_flag.sql.
-  let shiftQ = supabase
-    .from('staff_shifts')
-    .select('id, staff_id, branch_id, ending_cash, variance, clock_out, staff:staff_id(full_name), branches(name)')
-    .eq('closed_without_supervisor', true)
-    .is('reviewed_at', null)
-    .order('clock_out', { ascending: false })
-    .limit(30)
-  if (!manager && branchId) shiftQ = shiftQ.eq('branch_id', branchId)
-  const { data: shiftRows, error: shiftErr } = await shiftQ
-  if (!shiftErr) {
-    for (const row of shiftRows || []) {
-      const branchName = row.branches?.name || 'Branch'
-      items.push({
-        id: `shift-${row.id}`,
-        kind: 'shift_needs_review',
-        title: 'Shift closed without supervisor',
-        detail: `${row.staff?.full_name || 'Cashier'} · ${branchName} · ending ₱${Number(row.ending_cash || 0).toFixed(2)}${
-          row.variance ? ` · variance ₱${Number(row.variance).toFixed(2)}` : ''
-        }`,
-        href: '/manager/staff',
-        createdAt: row.clock_out || null,
         priority: 2,
       })
     }

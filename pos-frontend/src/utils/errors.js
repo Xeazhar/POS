@@ -479,7 +479,7 @@ export const ERROR_CATALOG = {
     retry: true,
     cause:
       'The cash_drawer_entries write was rejected. On older databases this table is still named petty_cash.',
-    fix: 'Retry. If it keeps failing, apply migrate_rename_petty_cash_to_cash_drawer_entries.sql.',
+    fix: 'Retry. Apply migrate_rename_petty_cash_to_cash_drawer_entries.sql and migrate_schema_cleanup_v1.sql — the app no longer falls back to petty_cash.',
   },
   PETTY02: {
     message: 'Could not load cash drawer entries.',
