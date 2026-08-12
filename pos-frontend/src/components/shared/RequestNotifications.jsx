@@ -1,27 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FiBell } from 'react-icons/fi'
-import { fetchPendingApprovals, hasSupabase } from '../../lib/api'
-import { debounce, subscribeMany } from '../../offline/realtime'
-import { useAuthStore } from '../../stores/posStore'
+import {
+  approveCashMovementManager,
+  approveCashMovementPin,
+  denyCashMovement,
+  dismissNotificationItem,
+  fetchPendingApprovals,
+  hasSupabase,
+  resolveTillActionRequest,
+} from '../../lib/api'
+import {
+  NETWORK_OPERATIONS_TOPIC,
+  branchOperationsTopic,
+  debounce,
+  subscribeBroadcast,
+} from '../../offline/realtime'
+import { useAuthStore, useInventoryStore } from '../../stores/posStore'
+import { formatSupportError } from '../../utils/errors'
 import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { Skeleton } from '../ui'
 
-// Realtime keeps the badge current; this is only a slow fallback in case a
-// subscription silently drops (long session, network blip) — not the primary path.
-const POLL_MS = 5 * 60_000
+const POLL_MS = 30_000
 
 /**
  * Header inbox for important approval requests.
- * Manager: day-end submitted + promo pending / stop pending + refund requests.
- * Supervisor: day-end submitted on their branch.
+ * Manager: day-end, promo, refund, cash movements, cart-remove (inline Approve/Deny).
+ * Supervisor: day-end + cash movements + cart-remove on their branch.
  */
 export default function RequestNotifications() {
   const user = useAuthStore((s) => s.user)
+  const dayOpenHour = useInventoryStore((s) => s.dayOpenHour)
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
+  const [actionBusy, setActionBusy] = useState(null)
+  const [actionError, setActionError] = useState('')
   const rootRef = useRef(null)
 
   const canSee = isSupervisorOrAbove(user?.role)
@@ -37,6 +52,8 @@ export default function RequestNotifications() {
       const rows = await fetchPendingApprovals({
         role: user.role,
         branchId: user.branchId,
+        dayOpenHour,
+        reconcileStaffId: user.id,
       })
       setItems(rows)
     } catch {
@@ -44,34 +61,34 @@ export default function RequestNotifications() {
     } finally {
       setLoading(false)
     }
-  }, [canSee, user])
+  }, [canSee, user, dayOpenHour])
 
   useEffect(() => {
     if (!canSee || !hasSupabase || !user) return undefined
     refresh()
     const debouncedRefresh = debounce(refresh, 400)
-    // Live: a day-end submission, petty cash request, or promo approval request
-    // updates the badge immediately, whether or not the inbox is open.
-    const subs = [
-      { table: 'day_ends', onChange: debouncedRefresh },
-      { table: 'cash_drawer_entries', onChange: debouncedRefresh },
-    ]
-    if (manager) {
-      subs.push({ table: 'promo_events', onChange: debouncedRefresh })
-      subs.push({ table: 'refund_requests', onChange: debouncedRefresh })
-    }
-    else if (user.branchId) {
-      subs[0] = { table: 'day_ends', filter: `branch_id=eq.${user.branchId}`, onChange: debouncedRefresh }
-      subs[1] = { table: 'cash_drawer_entries', filter: `branch_id=eq.${user.branchId}`, onChange: debouncedRefresh }
-    }
-    const unsubscribe = subscribeMany(subs)
-    // Slow fallback only — see POLL_MS comment above.
+    // Private Broadcast only — channel auth is RLS on realtime.messages, not the topic string.
+    const topic = manager
+      ? NETWORK_OPERATIONS_TOPIC
+      : branchOperationsTopic(user.branchId)
+    const unsubscribe = topic
+      ? subscribeBroadcast({
+          topic,
+          events: ['OPERATIONS_CHANGED'],
+          onEvent: debouncedRefresh,
+          onStatus: (status) => {
+            if (status === 'SUBSCRIBED') debouncedRefresh()
+          },
+        })
+      : () => {}
     const timer = window.setInterval(refresh, POLL_MS)
     const onFocus = () => refresh()
     window.addEventListener('focus', onFocus)
+    window.addEventListener('online', refresh)
     return () => {
       window.clearInterval(timer)
       window.removeEventListener('focus', onFocus)
+      window.removeEventListener('online', refresh)
       debouncedRefresh.cancel()
       unsubscribe()
     }
@@ -98,6 +115,63 @@ export default function RequestNotifications() {
   const count = items.length
   const label = manager ? 'Manager requests' : 'Branch requests'
 
+  const actOnMovement = async (item, action) => {
+    if (!user?.id || !item.movementId) return
+    setActionBusy(`${item.id}-${action}`)
+    setActionError('')
+    try {
+      if (action === 'approve') {
+        if (manager) {
+          await approveCashMovementManager({ id: item.movementId, approvedBy: user.id })
+        } else {
+          await approveCashMovementPin({ id: item.movementId, approvedBy: user.id })
+        }
+      } else {
+        await denyCashMovement({ id: item.movementId, deniedBy: user.id })
+      }
+      setItems((prev) => prev.filter((row) => row.id !== item.id))
+      await refresh()
+    } catch (err) {
+      setActionError(formatSupportError(err, 'MOVE01'))
+    } finally {
+      setActionBusy(null)
+    }
+  }
+
+  const actOnTillAction = async (item, action) => {
+    if (!user?.id || !item.tillActionId) return
+    setActionBusy(`${item.id}-${action}`)
+    setActionError('')
+    try {
+      await resolveTillActionRequest({
+        id: item.tillActionId,
+        resolvedBy: user.id,
+        status: action === 'approve' ? 'approved' : 'denied',
+      })
+      setItems((prev) => prev.filter((row) => row.id !== item.id))
+      await refresh()
+    } catch (err) {
+      setActionError(formatSupportError(err, 'TILL_ACT01'))
+    } finally {
+      setActionBusy(null)
+    }
+  }
+
+  const dismissItem = async (item) => {
+    if (!user?.id || !item?.dismissable) return
+    setActionBusy(`${item.id}-dismiss`)
+    setActionError('')
+    try {
+      await dismissNotificationItem({ item, staffId: user.id })
+      setItems((prev) => prev.filter((row) => row.id !== item.id))
+      await refresh()
+    } catch (err) {
+      setActionError(formatSupportError(err, 'TILL_ACT01'))
+    } finally {
+      setActionBusy(null)
+    }
+  }
+
   return (
     <div className="relative" ref={rootRef}>
       <button
@@ -120,7 +194,7 @@ export default function RequestNotifications() {
       </button>
 
       {open && (
-        <div className="absolute top-[42px] right-0 z-40 w-[min(320px,calc(100vw-24px))] overflow-hidden rounded-lg border border-brand-border bg-white text-brand-ink shadow-lg">
+        <div className="absolute top-[42px] right-0 z-40 w-[min(340px,calc(100vw-24px))] overflow-hidden rounded-lg border border-brand-border bg-white text-brand-ink shadow-lg">
           <div className="border-b border-brand-softline px-3 py-2.5">
             <strong className="block text-xs">{label}</strong>
             {loading && !items.length ? (
@@ -130,41 +204,122 @@ export default function RequestNotifications() {
                 {loading ? 'Updating…' : count ? `${count} awaiting action` : 'No pending requests'}
               </span>
             )}
+            {actionError && <p className="m-0 mt-1 text-[10px] text-brand-danger">{actionError}</p>}
           </div>
-          <div className="max-h-[280px] overflow-auto">
+          <div className="max-h-[320px] overflow-auto">
             {loading && !items.length ? (
               <div className="space-y-2 px-3 py-3" role="status" aria-label="Loading">
                 <Skeleton className="h-3 w-40" />
                 <Skeleton className="h-2.5 w-56" />
-                <Skeleton className="mt-2 h-3 w-36" />
-                <Skeleton className="h-2.5 w-48" />
               </div>
             ) : (
               items.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className="block w-full border-0 border-t border-brand-softline bg-white px-3 py-2.5 text-left hover:bg-brand-n50"
-                onClick={() => {
-                  setOpen(false)
-                  navigate(item.href)
-                }}
-              >
-                <strong className="block text-[12px] text-brand-ink">{item.title}</strong>
-                <span className="mt-0.5 block text-[11px] text-brand-muted">{item.detail}</span>
-                {item.createdAt && (
-                  <span className="mt-1 block text-[10px] text-brand-subtle">
-                    {new Date(item.createdAt).toLocaleString()}
-                  </span>
-                )}
-              </button>
-            ))
+                <div
+                  key={item.id}
+                  className="border-t border-brand-softline bg-white px-3 py-2.5"
+                >
+                  <button
+                    type="button"
+                    className="block w-full border-0 bg-transparent p-0 text-left hover:opacity-90"
+                    onClick={() => {
+                      if (
+                        (item.kind === 'cash_movement_pending' || item.kind === 'till_action_pending') &&
+                        item.actionable
+                      ) {
+                        return
+                      }
+                      setOpen(false)
+                      navigate(item.href)
+                    }}
+                  >
+                    <strong className="block text-[12px] text-brand-ink">{item.title}</strong>
+                    <span className="mt-0.5 block text-[11px] text-brand-muted">{item.detail}</span>
+                    {item.createdAt && (
+                      <span className="mt-1 block text-[10px] text-brand-subtle">
+                        {new Date(item.createdAt).toLocaleString()}
+                      </span>
+                    )}
+                  </button>
+                  {item.kind === 'till_action_pending' && item.actionable && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded-[4px] border-0 bg-brand-dark px-2.5 py-1 text-[10px] font-bold text-white disabled:opacity-50"
+                        disabled={Boolean(actionBusy)}
+                        onClick={() => void actOnTillAction(item, 'approve')}
+                      >
+                        {actionBusy === `${item.id}-approve` ? '…' : 'Approve'}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-[4px] border border-brand-danger bg-brand-danger-bg px-2.5 py-1 text-[10px] font-bold text-brand-danger disabled:opacity-50"
+                        disabled={Boolean(actionBusy)}
+                        onClick={() => void actOnTillAction(item, 'deny')}
+                      >
+                        {actionBusy === `${item.id}-deny` ? '…' : 'Deny'}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-[4px] border border-brand-line bg-white px-2.5 py-1 text-[10px] font-bold text-brand-muted disabled:opacity-50"
+                        disabled={Boolean(actionBusy)}
+                        onClick={() => void dismissItem(item)}
+                      >
+                        {actionBusy === `${item.id}-dismiss` ? '…' : 'Clear'}
+                      </button>
+                    </div>
+                  )}
+                  {item.kind === 'cash_movement_pending' && item.actionable && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded-[4px] border-0 bg-brand-dark px-2.5 py-1 text-[10px] font-bold text-white disabled:opacity-50"
+                        disabled={Boolean(actionBusy)}
+                        onClick={() => void actOnMovement(item, 'approve')}
+                      >
+                        {actionBusy === `${item.id}-approve` ? '…' : 'Approve'}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-[4px] border border-brand-danger bg-brand-danger-bg px-2.5 py-1 text-[10px] font-bold text-brand-danger disabled:opacity-50"
+                        disabled={Boolean(actionBusy)}
+                        onClick={() => void actOnMovement(item, 'deny')}
+                      >
+                        {actionBusy === `${item.id}-deny` ? '…' : 'Deny'}
+                      </button>
+                      {item.dismissable && (
+                        <button
+                          type="button"
+                          className="rounded-[4px] border border-brand-line bg-white px-2.5 py-1 text-[10px] font-bold text-brand-muted disabled:opacity-50"
+                          disabled={Boolean(actionBusy)}
+                          onClick={() => void dismissItem(item)}
+                        >
+                          {actionBusy === `${item.id}-dismiss` ? '…' : 'Clear'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {item.dismissable &&
+                    item.kind !== 'till_action_pending' &&
+                    item.kind !== 'cash_movement_pending' && (
+                    <div className="mt-2">
+                      <button
+                        type="button"
+                        className="rounded-[4px] border border-brand-line bg-white px-2.5 py-1 text-[10px] font-bold text-brand-muted disabled:opacity-50"
+                        disabled={Boolean(actionBusy)}
+                        onClick={() => void dismissItem(item)}
+                      >
+                        {actionBusy === `${item.id}-dismiss` ? '…' : 'Clear'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))
             )}
             {!loading && items.length === 0 && (
               <div className="px-3 py-6 text-center text-[11px] text-brand-subtle">
                 {manager
-                  ? 'No day-end, promo, refund, or petty cash requests right now.'
-                  : 'No day-end or petty cash requests waiting for approval.'}
+                  ? 'No day-end, promo, refund, cash, or cart requests right now.'
+                  : 'No day-end, cash, or cart requests waiting for approval.'}
               </div>
             )}
           </div>

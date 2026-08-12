@@ -320,6 +320,10 @@ end $$;
 -- Expected cash is derived server-side from rows attributed to the shift, never sent by
 -- the client — a client-supplied "expected" is a number the person being held to account
 -- got to choose.
+-- Drop first: Postgres 42P13 if an existing overload has different parameter defaults
+-- (e.g. p_ending_cash default null from migrate_cash_movements.sql applied out of order).
+drop function if exists public.close_staff_shift(uuid, numeric, text, uuid);
+
 create or replace function public.close_staff_shift(
   p_shift_id uuid,
   p_ending_cash numeric,

@@ -16,11 +16,14 @@ import {
 import {
   branchSummary,
   fetchBranches,
+  fetchManagerOverviewMetrics,
   hasSupabase,
   reorderBranches,
   saveBranch,
 } from '../../lib/api'
 import { money } from '../../utils/format'
+import { RESTAURANT_FEATURES_ENABLED, normalizeBranchType } from '../../utils/features'
+import { readBranchesCache, writeBranchesCache } from '../../offline'
 
 const empty = {
   name: '',
@@ -32,10 +35,38 @@ const empty = {
 function ManagerBranches() {
   const [branches, setBranches] = useState([])
   const [summaries, setSummaries] = useState({})
+  const [summariesLoading, setSummariesLoading] = useState(false)
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
   const [dragId, setDragId] = useState(null)
   const [loading, setLoading] = useState(true)
+
+  const loadSummaries = async (rows) => {
+    if (!rows?.length) {
+      setSummaries({})
+      return
+    }
+    setSummariesLoading(true)
+    try {
+      const { summaries: next } = await fetchManagerOverviewMetrics({ days: 1 })
+      setSummaries(next || {})
+    } catch {
+      // RPC missing — same fan-out Overview used to do (slow, but correct).
+      const next = {}
+      await Promise.all(
+        rows.map(async (branch) => {
+          next[branch.id] = await branchSummary(branch.id).catch(() => ({
+            revenue: 0,
+            orders: 0,
+            lowStock: 0,
+          }))
+        }),
+      )
+      setSummaries(next)
+    } finally {
+      setSummariesLoading(false)
+    }
+  }
 
   const reload = async () => {
     if (!hasSupabase) {
@@ -51,29 +82,33 @@ function ManagerBranches() {
       setLoading(false)
       return
     }
-    const rows = await fetchBranches()
+    const rows = await fetchBranches({ includeCompany: false })
     setBranches(rows)
-    const next = {}
-    await Promise.all(
-      rows.map(async (branch) => {
-        next[branch.id] = await branchSummary(branch.id)
-      }),
-    )
-    setSummaries(next)
     setLoading(false)
+    await writeBranchesCache(rows).catch(() => {})
+    await loadSummaries(rows)
   }
 
   useEffect(() => {
     let active = true
     setLoading(true)
-    Promise.resolve()
-      .then(() => reload())
-      .catch((err) => {
+    ;(async () => {
+      try {
+        // Instant paint from last visit when cache exists.
+        const cached = await readBranchesCache().catch(() => null)
+        if (active && cached?.length) {
+          setBranches(cached)
+          setLoading(false)
+        }
+        if (!active) return
+        await reload()
+      } catch (err) {
         if (active) {
           setError(err.message)
           setLoading(false)
         }
-      })
+      }
+    })()
     return () => {
       active = false
     }
@@ -132,7 +167,7 @@ function ManagerBranches() {
                   <p className="m-0 mb-1 text-[10px] text-brand-subtle">⋮⋮ Drag to reorder</p>
                   <h2 className="m-0 text-lg">{branch.name}</h2>
                   <p className="mt-1 text-xs text-brand-muted">{branch.address || 'No address'}</p>
-                  {branch.branch_type === 'restaurant' && (
+                  {RESTAURANT_FEATURES_ENABLED && branch.branch_type === 'restaurant' && (
                     <p className="mt-1 text-[10px] font-bold tracking-wide text-brand-warn uppercase">
                       Restaurant / carinderia
                     </p>
@@ -144,15 +179,21 @@ function ManagerBranches() {
               </div>
               <div className="mb-4 grid grid-cols-3 gap-2 text-center">
                 <div>
-                  <strong className={`block text-brand-gold ${moneyClass}`}>{money(summary.revenue)}</strong>
+                  <strong className={`block text-brand-gold ${moneyClass}`}>
+                    {summariesLoading && summary.revenue == null ? '…' : money(summary.revenue || 0)}
+                  </strong>
                   <small className="text-[10px] text-brand-subtle">Today</small>
                 </div>
                 <div>
-                  <strong className="block">{summary.orders}</strong>
+                  <strong className="block">
+                    {summariesLoading && summary.orders == null ? '…' : summary.orders || 0}
+                  </strong>
                   <small className="text-[10px] text-brand-subtle">Orders</small>
                 </div>
                 <div>
-                  <strong className="block text-brand-danger">{summary.lowStock}</strong>
+                  <strong className="block text-brand-danger">
+                    {summariesLoading && summary.lowStock == null ? '…' : summary.lowStock || 0}
+                  </strong>
                   <small className="text-[10px] text-brand-subtle">Low stock</small>
                 </div>
               </div>
@@ -183,7 +224,7 @@ function ManagerBranches() {
                   name: form.name,
                   address: form.address,
                   is_active: form.is_active,
-                  branch_type: form.branch_type || 'retail',
+                  branch_type: normalizeBranchType(form.branch_type || 'retail'),
                 })
                 setForm(null)
                 await reload()
@@ -205,14 +246,18 @@ function ManagerBranches() {
                 value={form.address || ''}
                 onChange={(e) => setForm({ ...form, address: e.target.value })}
               />
-              <SelectField
-                label="Branch type"
-                value={form.branch_type || 'retail'}
-                onChange={(e) => setForm({ ...form, branch_type: e.target.value })}
-              >
-                <option value="retail">Retail / grocery</option>
-                <option value="restaurant">Restaurant / carinderia</option>
-              </SelectField>
+              {RESTAURANT_FEATURES_ENABLED ? (
+                <SelectField
+                  label="Branch type"
+                  value={form.branch_type || 'retail'}
+                  onChange={(e) => setForm({ ...form, branch_type: e.target.value })}
+                >
+                  <option value="retail">Retail / grocery</option>
+                  <option value="restaurant">Restaurant / carinderia</option>
+                </SelectField>
+              ) : (
+                <input type="hidden" name="branch_type" value="retail" readOnly />
+              )}
               <label className="flex items-center gap-2 text-xs font-bold text-brand-n700">
                 <input
                   type="checkbox"

@@ -1,6 +1,8 @@
 import * as api from '../lib/api'
+import { withTimeout } from '../utils/withTimeout'
 import db, { META_KEYS } from './db'
-import { QUEUE_STATUS, QUEUE_TYPES } from './queueTypes'
+import { canSyncWithBackend, isDeviceOnline } from './reachability'
+import { QUEUE_STATUS, QUEUE_TYPES, asUuidClientId } from './queueTypes'
 import {
   countBlocked,
   countPending,
@@ -17,7 +19,10 @@ import {
   putMovements,
   putTransactions,
   readBranchSnapshot,
+  saveBranchFiscalHeader,
 } from './repository'
+import { seedOrCounter } from './orNumber'
+import { putSupervisorVerifiers } from './supervisorPin'
 import {
   closeLocalShift,
   markShiftSynced,
@@ -45,7 +50,12 @@ function emit(state) {
 }
 
 export function isOnline() {
-  return typeof navigator === 'undefined' ? true : navigator.onLine
+  return isDeviceOnline()
+}
+
+/** Device online AND backend responded to a recent ping. */
+export async function isBackendReachable(force = false) {
+  return canSyncWithBackend(force)
 }
 
 /**
@@ -54,11 +64,16 @@ export function isOnline() {
  * those counts are owned by local sales until pushed.
  */
 export async function pullFromRemote(branchId) {
-  if (!api.hasSupabase || !branchId || !isOnline()) {
+  if (!api.hasSupabase || !branchId || !(await canSyncWithBackend())) {
     return readBranchSnapshot(branchId)
   }
 
-  const remote = await api.bootstrapBranchData(branchId)
+  const remote = await withTimeout(
+    api.bootstrapBranchData(branchId),
+    20000,
+    'Branch bootstrap',
+  ).catch(async () => readBranchSnapshot(branchId))
+  if (!remote?.products) return readBranchSnapshot(branchId)
   const preserveStock = await hasPendingStockOps(branchId)
 
   const products = await mergeProductsFromRemote(branchId, remote.products, { preserveStock })
@@ -79,8 +94,24 @@ export async function pullFromRemote(branchId) {
     branchId,
     name: remote.branchName || '',
     dayOpenHour: Number(remote.dayOpenHour ?? 7),
+    orPrefix: remote.orPrefix,
+    orNext: remote.orNext,
     updatedAt: new Date().toISOString(),
   })
+
+  if (remote.orPrefix != null || remote.orNext != null) {
+    await seedOrCounter(branchId, { orPrefix: remote.orPrefix, orNext: remote.orNext })
+  }
+  if (remote.fiscalHeader) {
+    await saveBranchFiscalHeader(branchId, remote.fiscalHeader)
+  }
+
+  try {
+    const verifiers = await api.fetchSupervisorPinVerifiers(branchId)
+    if (verifiers?.length) await putSupervisorVerifiers(branchId, verifiers)
+  } catch {
+    /* migrate_offline_supervisor_pin.sql may not be applied yet */
+  }
 
   // Shifts that are open somewhere on this branch right now. Pulled so a terminal knows
   // another device already holds a drawer before its cashier counts cash into it —
@@ -195,6 +226,85 @@ async function pushOne(item) {
       }
       return
     }
+    case QUEUE_TYPES.CASH_MOVEMENT_APPROVED: {
+      const shiftId = payload.shiftId || (await requireShiftServerId(payload.shiftClientId))
+      if (!shiftId) throw new Error('Shift not synced yet — cannot push cash movement.')
+      // cash_movements.client_id is uuid — strip `cash_` prefixes from older queue rows.
+      const serverClientId = asUuidClientId(payload.clientId)
+      if (payload.selfRecorded && !payload.serverId && !payload.id) {
+        const pending = await api.createCashMovementPending({
+          shiftId,
+          branchId: payload.branchId,
+          drawerId: payload.drawerId,
+          drawerLabel: payload.drawerLabel,
+          type: payload.type,
+          amount: payload.amount,
+          reason: payload.reason,
+          requestedBy: payload.requestedBy,
+          clientId: serverClientId,
+          createdOffline: payload.createdOffline === true,
+        })
+        await api.selfRecordCashMovement({
+          id: pending.id,
+          staffId: payload.requestedBy,
+          ack: payload.ack !== false,
+        })
+        if (payload.clientId && pending?.id) {
+          await db.cashMovements.update(payload.clientId, {
+            serverId: pending.id,
+            status: 'self_recorded',
+            syncStatus: 'synced',
+          })
+        }
+        return
+      }
+      const row = await api.createCashMovementApproved({
+        ...payload,
+        shiftId,
+        clientId: serverClientId,
+      })
+      if (payload.clientId && row?.id) {
+        await db.cashMovements.update(payload.clientId, {
+          serverId: row.id,
+          status: row.status,
+          syncStatus: 'synced',
+        })
+      }
+      return
+    }
+    case QUEUE_TYPES.CASH_MOVEMENT_PENDING: {
+      const shiftId = payload.shiftId || (await requireShiftServerId(payload.shiftClientId))
+      if (!shiftId) throw new Error('Shift not synced yet — cannot push cash movement.')
+      const row = await api.createCashMovementPending({
+        ...payload,
+        shiftId,
+        clientId: asUuidClientId(payload.clientId),
+      })
+      if (payload.clientId && row?.id) {
+        await db.cashMovements.update(payload.clientId, {
+          serverId: row.id,
+          status: row.status,
+          syncStatus: 'synced',
+        })
+      }
+      return
+    }
+    case QUEUE_TYPES.CASH_MOVEMENT_PIN_APPROVE: {
+      const id = payload.id || payload.serverId
+      if (!id) throw new Error('Cash movement id missing.')
+      await api.approveCashMovementPin({ id, approvedBy: payload.approvedBy })
+      return
+    }
+    case QUEUE_TYPES.CASH_MOVEMENT_SELF_RECORD: {
+      const id = payload.id || payload.serverId
+      if (!id) throw new Error('Cash movement id missing.')
+      await api.selfRecordCashMovement({
+        id,
+        staffId: payload.staffId,
+        ack: payload.ack !== false,
+      })
+      return
+    }
     case QUEUE_TYPES.COMPLETE_SALE: {
       const shiftId = payload.shiftClientId
         ? await requireShiftServerId(payload.shiftClientId)
@@ -273,23 +383,46 @@ async function pushOne(item) {
       })
       return
     }
+    case QUEUE_TYPES.LOG_APPROVAL_EVENT: {
+      await api.logApprovalEventRemote(payload)
+      const { markOfflineAuditSynced } = await import('./offlineAudit')
+      if (payload.clientId) await markOfflineAuditSynced(payload.clientId)
+      return
+    }
     default:
       throw new Error(`Unknown queue type: ${type}`)
   }
 }
 
+/** Max queue items per push tick — keeps checkout/UI responsive after large offline bursts. */
+export const PUSH_BATCH_SIZE = 8
+
+let drainingQueue = false
+let pushInFlight = false
+
 /** Push pending queue items FIFO. Stops on first hard failure (keeps order). */
-export async function pushQueue(branchId = null) {
-  if (!api.hasSupabase || !isOnline()) {
-    return { pushed: 0, remaining: await countPending(branchId), error: null }
+export async function pushQueue(branchId = null, { maxItems = PUSH_BATCH_SIZE } = {}) {
+  if (!api.hasSupabase || !(await canSyncWithBackend())) {
+    return { pushed: 0, remaining: await countPending(branchId), blocked: await countBlocked(branchId), error: null }
+  }
+  if (pushInFlight) {
+    return {
+      pushed: 0,
+      remaining: await countPending(branchId),
+      blocked: await countBlocked(branchId),
+      error: null,
+    }
   }
 
+  pushInFlight = true
+  try {
   await resetStuckSyncing()
   const pending = await listPending(branchId)
   let pushed = 0
   let error = null
 
   for (const item of pending) {
+    if (maxItems != null && pushed >= maxItems) break
     try {
       await markSyncing(item.id)
       await pushOne(item)
@@ -309,11 +442,74 @@ export async function pushQueue(branchId = null) {
     await db.meta.put({ key: META_KEYS.lastPushAt, value: new Date().toISOString() })
   }
 
+  const remaining = await countPending(branchId)
   return {
     pushed,
-    remaining: await countPending(branchId),
+    remaining,
     blocked: await countBlocked(branchId),
     error,
+  }
+  } finally {
+    pushInFlight = false
+  }
+}
+
+/**
+ * Drain the outbox in the background without blocking checkout.
+ * Yields between batches so a large offline backlog cannot freeze the UI.
+ */
+export async function drainQueueInBackground(branchId) {
+  if (!branchId || !api.hasSupabase || drainingQueue) return null
+  if (!(await canSyncWithBackend())) return null
+
+  drainingQueue = true
+  emit({
+    status: 'syncing',
+    online: isOnline(),
+    backendReachable: true,
+    pending: await countPending(branchId),
+  })
+  try {
+    let lastPush = { pushed: 0, remaining: await countPending(branchId), error: null }
+    while ((await canSyncWithBackend()) && lastPush.remaining > 0) {
+      lastPush = await pushQueue(branchId, { maxItems: PUSH_BATCH_SIZE })
+      emit({
+        status: 'syncing',
+        online: true,
+        backendReachable: true,
+        pending: lastPush.remaining,
+        lastError: lastPush.error,
+      })
+      if (lastPush.error && lastPush.pushed === 0) break
+      if (lastPush.remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+    }
+
+    let data = null
+    if ((await canSyncWithBackend()) && !lastPush.error) {
+      data = await pullFromRemote(branchId).catch(() => readBranchSnapshot(branchId))
+    }
+    emit({
+      status: lastPush.error ? 'error' : 'idle',
+      online: isOnline(),
+      backendReachable: await canSyncWithBackend(),
+      pending: await countPending(branchId),
+      blocked: await countBlocked(branchId),
+      lastError: lastPush.error,
+    })
+    return data
+  } catch (err) {
+    emit({
+      status: 'error',
+      online: isOnline(),
+      backendReachable: await canSyncWithBackend(),
+      lastError: err.message,
+      pending: await countPending(branchId),
+    })
+    return readBranchSnapshot(branchId)
+  } finally {
+    drainingQueue = false
   }
 }
 
@@ -328,17 +524,27 @@ export async function syncBranch(branchId) {
   }
 
   syncing = true
-  emit({ status: 'syncing', online: isOnline(), pending: await countPending(branchId) })
+  const reachable = await canSyncWithBackend()
+  emit({ status: 'syncing', online: isOnline(), backendReachable: reachable, pending: await countPending(branchId) })
   try {
-    if (isOnline() && api.hasSupabase) {
-      const pushResult = await pushQueue(branchId)
+    if (reachable && api.hasSupabase) {
+      const pushResult = await pushQueue(branchId, { maxItems: PUSH_BATCH_SIZE })
       emit({
         status: 'syncing',
         pending: pushResult.remaining,
         online: true,
         lastError: pushResult.error,
       })
-      const data = await pullFromRemote(branchId)
+      // Large backlog keeps draining in the background — don't block this caller on all N sales.
+      if (pushResult.remaining > 0 && !pushResult.error) {
+        queueMicrotask(() => {
+          void drainQueueInBackground(branchId)
+        })
+      }
+      const data =
+        pushResult.remaining === 0 && !pushResult.error
+          ? await pullFromRemote(branchId)
+          : await readBranchSnapshot(branchId)
       emit({
         status: pushResult.error ? 'error' : 'idle',
         online: true,
@@ -349,10 +555,10 @@ export async function syncBranch(branchId) {
       return data
     }
     const local = await readBranchSnapshot(branchId)
-    emit({ status: 'offline', online: false, pending: await countPending(branchId) })
+    emit({ status: 'offline', online: isOnline(), backendReachable: false, pending: await countPending(branchId) })
     return local
   } catch (err) {
-    emit({ status: 'error', online: isOnline(), lastError: err.message, pending: await countPending(branchId) })
+    emit({ status: 'error', online: isOnline(), backendReachable: await canSyncWithBackend(), lastError: err.message, pending: await countPending(branchId) })
     // Fall back to whatever is on disk — never wipe local
     return readBranchSnapshot(branchId)
   } finally {
@@ -361,8 +567,10 @@ export async function syncBranch(branchId) {
 }
 
 export async function getSyncStatus(branchId = null) {
+  const reachable = await canSyncWithBackend()
   return {
     online: isOnline(),
+    backendReachable: reachable,
     pending: await countPending(branchId),
     blocked: await countBlocked(branchId),
     lastPullAt: (await db.meta.get(META_KEYS.lastPullAt))?.value || null,

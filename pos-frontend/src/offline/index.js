@@ -3,7 +3,21 @@ export * from './queueTypes'
 export * from './syncQueue'
 export * from './repository'
 export * from './shifts'
-export { syncBranch, pullFromRemote, pushQueue, getSyncStatus, subscribeSync, isOnline } from './syncEngine'
+export {
+  branchInventoryTopic,
+  branchOperationsTopic,
+  NETWORK_OPERATIONS_TOPIC,
+  debounce,
+  ensureRealtimeAuth,
+  subscribeBroadcast,
+  subscribeBroadcastMany,
+  subscribeMany,
+  subscribeTable,
+} from './realtime'
+export { syncBranch, pullFromRemote, pushQueue, drainQueueInBackground, getSyncStatus, subscribeSync, isOnline, isBackendReachable } from './syncEngine'
+export { allocateLocalOrNumber, seedOrCounter, formatOrNumber } from './orNumber'
+export { putSupervisorVerifiers, verifySupervisorPinOffline } from './supervisorPin'
+export { canSyncWithBackend, checkBackendReachable, isDeviceOnline, invalidateReachabilityCache } from './reachability'
 export { startConnectivityWatcher, setSyncBranchId } from './connectivity'
 export { saveLocalSession, loadLocalSession, clearLocalSession } from './session'
 export {

@@ -22,7 +22,7 @@ import {
   validateImportHeaders,
 } from '../../utils/inventoryImport'
 import { formatSupportError } from '../../utils/errors'
-import { money, qty } from '../../utils/format'
+import ImportPreviewLines from '../shared/ImportPreviewLines'
 
 /**
  * xlsx is ~410KB — the single largest chunk in the app. It is only needed the moment
@@ -247,7 +247,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3`}
           <h2 className="m-0 text-lg">Import preview</h2>
           <p className="mt-1 text-xs text-brand-muted">
             {preview.filename} · {preview.updateCount} restock · {preview.createCount} new ·{' '}
-            {preview.skippedCount} skipped
+            {preview.skippedCount} skipped — review updates below before confirming.
           </p>
           {duplicate && (
             <div className="mt-3 rounded-md border border-brand-warn-line bg-brand-warn-surface px-3 py-3 text-xs text-brand-warn">
@@ -268,25 +268,11 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3`}
 
           {(preview.lines || []).length > 0 && (
             <div className="mt-3">
-              <p className="m-0 mb-1 text-[11px] font-bold text-brand-ink">Will import</p>
-              <div className="max-h-40 overflow-auto text-xs">
-                {(preview.lines || []).slice(0, 50).map((line, i) => (
-                  <div
-                    key={`ok-${i}`}
-                    className="flex justify-between gap-2 border-t border-brand-softline py-1.5 first:border-t-0"
-                  >
-                    <span className="truncate">
-                      {line.values?.name || '—'}{' '}
-                      <span className="text-brand-subtle">
-                        ({line.values?.sku}) · {line.action}
-                      </span>
-                    </span>
-                    <span className="shrink-0 tabular-nums">
-                      {line.values?.stock != null ? qty(line.values.stock) : money(line.values?.price)}
-                    </span>
-                  </div>
-                ))}
-              </div>
+              <ImportPreviewLines
+                lines={preview.lines}
+                creates={preview.creates}
+                updates={preview.updates}
+              />
             </div>
           )}
 

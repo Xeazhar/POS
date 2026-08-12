@@ -99,6 +99,12 @@ function Login() {
             <form
               className="mt-[22px]"
               method="POST"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              data-lpignore="true"
+              data-1p-ignore="true"
+              data-bwignore="true"
               onSubmit={async (event) => {
                 event.preventDefault()
                 try {
@@ -121,22 +127,29 @@ function Login() {
                   <Field
                     label="Staff code"
                     className="mt-[15px]"
+                    name="cale-staff-code"
                     value={loginCode}
                     onChange={(event) => setLoginCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
                     inputMode="numeric"
+                    autoComplete="off"
                     autoFocus
                     required
                     placeholder=""
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                   />
                   <Field
                     label="PIN"
                     className="mt-[15px]"
+                    name="cale-staff-pin"
                     value={pin}
                     onChange={(event) => setPin(sanitizePinInput(event.target.value))}
                     type="password"
-                    autoComplete="current-password"
+                    autoComplete="new-password"
                     required
                     placeholder=""
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                   />
                 </>
               ) : (
@@ -144,19 +157,27 @@ function Login() {
                   <Field
                     label={hasSupabase ? 'Email' : 'Staff name / email'}
                     className="mt-[15px]"
+                    name="cale-staff-email"
                     value={email}
                     onChange={(event) => setEmail(event.target.value)}
                     autoFocus
                     type={hasSupabase ? 'email' : 'text'}
+                    autoComplete="off"
                     required
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                   />
                   <Field
                     label="Password"
                     className="mt-[15px]"
+                    name="cale-staff-password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     type="password"
+                    autoComplete="new-password"
                     required
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                   />
                 </>
               )}

@@ -21,13 +21,21 @@ const IDLE_LOCK_MS = 10 * 60 * 1000
 const HEARTBEAT_MS = 2.5 * 60 * 1000
 const SIDEBAR_COLLAPSED_KEY = 'cale-sidebar-collapsed'
 
-function syncCopy({ online, pending, status, lastError }) {
+function syncCopy({ online, backendReachable, pending, status, lastError }) {
   const syncing = status === 'syncing' || status === 'pushing'
   if (!online) {
     return {
       label: pending ? `Offline · ${pending}` : 'Offline',
       detail: pending ? `${pending} saved locally` : 'No network',
       tone: 'off',
+      isError: false,
+    }
+  }
+  if (online && backendReachable === false && pending) {
+    return {
+      label: `${pending} queued`,
+      detail: 'Server unreachable — will retry',
+      tone: 'warn',
       isError: false,
     }
   }
@@ -87,6 +95,7 @@ function Shell({ children }) {
   const unlockScreen = useAuthStore((state) => state.unlockScreen)
   const deviceSessionId = useAuthStore((state) => state.deviceSessionId)
   const online = useSyncStore((state) => state.online)
+  const backendReachable = useSyncStore((state) => state.backendReachable)
   const pending = useSyncStore((state) => state.pending)
   const status = useSyncStore((state) => state.status)
   const lastError = useSyncStore((state) => state.lastError)
@@ -117,7 +126,7 @@ function Shell({ children }) {
   const resolveShift = useShiftStore((state) => state.resolve)
   const isManager = isManagerRole(user?.role) && user?.role !== 'master'
   const links = navLinksFor(user)
-  const sync = syncCopy({ online, pending, status, lastError })
+  const sync = syncCopy({ online, backendReachable, pending, status, lastError })
   const isPosPage = location.pathname === '/pos'
   const idleTimerRef = useRef(null)
   const showSyncBanner = sync.isError && lastError && !syncBannerDismissed
@@ -184,11 +193,9 @@ function Shell({ children }) {
   // gate/route combination still gets the full-screen block, including 'ended' anywhere
   // other than this one page.
   const onDayEndRoute = location.pathname === '/day-end'
-  const shiftBlocking =
-    worksShifts &&
-    shiftGate !== 'ready' &&
-    shiftGate !== 'checking' &&
-    !(shiftGate === 'ended' && onDayEndRoute)
+  const shiftEndedOnDayEnd = shiftGate === 'ended' && onDayEndRoute
+  const shiftGateActive = worksShifts && shiftGate !== 'ready'
+  const hideAppContent = (shiftGateActive && !shiftEndedOnDayEnd) || screenLocked
 
   const finishLogout = async () => {
     await logout()
@@ -247,7 +254,12 @@ function Shell({ children }) {
 
   return (
     <div className="min-h-screen bg-brand-canvas">
-      {shiftBlocking && (
+      {worksShifts && shiftGate === 'checking' && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-brand-canvas">
+          <p className="m-0 text-sm text-brand-muted">Checking shift…</p>
+        </div>
+      )}
+      {worksShifts && shiftGate !== 'ready' && shiftGate !== 'checking' && !shiftEndedOnDayEnd && (
         <ShiftGate
           user={user}
           holdsDrawer={holdsDrawer}
@@ -257,9 +269,6 @@ function Shell({ children }) {
           }}
         />
       )}
-      {/* No cash-out modal here any more. Ending a shift lives on End shift, where the
-          cashier is already looking at their own float, expected cash and variance —
-          not bolted onto the sign-out button. */}
       {logoutError && (
         <div
           role="alert"
@@ -268,10 +277,8 @@ function Shell({ children }) {
           {logoutError}
         </div>
       )}
-      <div
-        aria-hidden={shiftBlocking || undefined}
-        className={shiftBlocking ? 'pointer-events-none select-none' : undefined}
-      >
+      {!hideAppContent && (
+      <>
       <header className="flex h-[62px] items-center justify-between gap-3 bg-brand-dark px-6 text-white max-[700px]:px-4">
         <div className="flex min-w-0 shrink-0 items-center gap-2">
           <button
@@ -292,7 +299,9 @@ function Shell({ children }) {
 
         <div className="flex min-w-0 flex-1 items-center justify-center gap-2.5 px-2">
           <small className="max-w-[40%] truncate text-[11px] font-semibold text-brand-gold">
-            {user?.branchName || 'Bayombong Branch #001'}
+            {isManagerRole(user?.role)
+              ? 'All branches'
+              : user?.branchName || 'Branch'}
           </small>
           <Clock className="text-[12px]" />
           {/* Non-production builds say so, always visible — but as one small chip, not a
@@ -551,10 +560,8 @@ function Shell({ children }) {
           {isPosPage ? <div className="flex min-h-0 flex-1 flex-col">{children}</div> : children}
         </section>
       </div>
-
-      {/* The floating mobile lock button is gone: Lock now sits in the top navbar, which
-          is visible on every screen size, so a second one just covered page content. */}
-
+      </>
+      )}
       {screenLocked && (
         <LockScreen
           onUnlock={() => {
@@ -567,7 +574,6 @@ function Shell({ children }) {
           }}
         />
       )}
-      </div>
     </div>
   )
 }

@@ -3,12 +3,7 @@ import { createPortal } from 'react-dom'
 import {
   hasSupabase,
   bootstrapBranchData,
-  createAndActivatePromoEvent,
-  createPromoRule,
   fetchActivePromoEventsWithRules,
-  fetchPromoRulesForEvent,
-  deletePromoRule,
-  updatePromoEventDetails,
   fetchPromoEventsForBranch,
   deletePromoEvent,
   fetchBranches,
@@ -17,20 +12,30 @@ import {
   requestStopPromo,
   approveStopPromo,
   rejectStopPromo,
+  requestPromoEdit,
   fetchPromoSalesStats,
   fetchActivePromosAcrossBranches,
   fetchPromoEventsAcrossBranches,
   fetchTransactionDetail,
   fetchRefundSummary,
+  fetchBranchSalesTotal,
+  fetchNetworkSalesTotal,
+  fetchPromoRuleTypesForEvents,
   promoEffectiveStatus,
   promoStatusBadge,
 } from '../../lib/api'
-import { useAuthStore } from '../../stores/posStore'
+import { isOnline, readBranchSnapshot, readPromoCache, writePromoCache } from '../../offline'
+import { withTimeout } from '../../utils/withTimeout'
+import { useAuthStore, useProductStore } from '../../stores/posStore'
 import { useLiveData } from '../../hooks/useLiveData'
 import { money, qty } from '../../utils/format'
+import { summarizePromoRuleTypes } from '../../utils/promo'
 import { isManagerRole } from '../../utils/roles'
 import { isUuid } from '../../utils/transactionDetail'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
+import StatTiles from '../../components/dashboard/StatTiles'
+import SalesMixBar from '../../components/dashboard/SalesMixBar'
+import PromoEditorModal from '../../components/promos/PromoEditorModal'
 import {
   Eyebrow,
   Field,
@@ -49,123 +54,30 @@ import {
   tableHeadClass,
   tableRowClass,
 } from '../../components/ui'
-import { FiPlus, FiMoreHorizontal } from 'react-icons/fi'
+import { FiMoreHorizontal } from 'react-icons/fi'
 
 const HISTORY_PAGE_SIZE = 10
 
-/**
- * Searchable multi-select product list.
- *
- * Replaces one-at-a-time dropdowns: putting a promo on 30 items meant adding 30 separate
- * rules, one page interaction each. `item_pct` already applies its % to every product on
- * the rule, so one rule with many products is the same result for a fraction of the work.
- */
-function ProductMultiSelect({ products, selected, onChange, label, hint }) {
-  const [search, setSearch] = useState('')
-  const term = search.trim().toLowerCase()
-  const visible = term
-    ? products.filter(
-        (p) =>
-          String(p.name || '').toLowerCase().includes(term) ||
-          String(p.sku || '').toLowerCase().includes(term),
-      )
-    : products
-  const selectedSet = new Set(selected)
-  const visibleIds = visible.map((p) => p.id)
-  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedSet.has(id))
-
-  const toggle = (id, on) => {
-    const next = new Set(selected)
-    if (on) next.add(id)
-    else next.delete(id)
-    onChange([...next])
-  }
-
+function SortableTh({ label, sortKey, current, onSort, className = '' }) {
+  const active = current.key === sortKey
+  const arrow = active ? (current.dir === 'asc' ? ' ↑' : ' ↓') : ''
   return (
-    <div className="sm:col-span-2">
-      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs font-bold text-brand-n700">
-          {label}
-          {selected.length > 0 && <span className="ml-1 text-brand-subtle">· {selected.length} selected</span>}
-        </span>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline"
-            onClick={() => {
-              // Scoped to what the search is currently showing, so "select all" after a
-              // search means "all the ones I filtered to", not the whole catalog.
-              const next = new Set(selected)
-              if (allVisibleSelected) visibleIds.forEach((id) => next.delete(id))
-              else visibleIds.forEach((id) => next.add(id))
-              onChange([...next])
-            }}
-          >
-            {allVisibleSelected ? 'Clear shown' : 'Select all shown'}
-          </button>
-          {selected.length > 0 && (
-            <button
-              type="button"
-              className="border-0 bg-transparent text-[11px] font-bold text-brand-ink underline"
-              onClick={() => onChange([])}
-            >
-              Clear all
-            </button>
-          )}
-        </div>
-      </div>
-      <input
-        className="mb-2 w-full rounded border border-brand-line bg-white p-2 text-xs text-brand-ink outline-none"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search name or SKU…"
-      />
-      <div className="max-h-[240px] overflow-auto rounded border border-brand-softline bg-white p-2.5">
-        {visible.map((p) => (
-          <label key={p.id} className="flex cursor-pointer items-center justify-between gap-3 py-1.5 text-xs">
-            <span className="min-w-0 truncate">
-              {p.name} <span className="text-brand-subtle">({p.sku})</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={selectedSet.has(p.id)}
-              onChange={(e) => toggle(p.id, e.target.checked)}
-            />
-          </label>
-        ))}
-        {visible.length === 0 && (
-          <div className="py-3 text-center text-[11px] text-brand-subtle">No products match that search.</div>
-        )}
-      </div>
-      {hint && <div className="mt-2 text-[11px] text-brand-subtle">{hint}</div>}
-    </div>
+    <th className={`px-3 py-2.5 ${className}`}>
+      <button
+        type="button"
+        className="border-0 bg-transparent p-0 text-left text-[inherit] font-[inherit] tracking-[inherit] uppercase"
+        onClick={() =>
+          onSort({
+            key: sortKey,
+            dir: active && current.dir === 'desc' ? 'asc' : 'desc',
+          })
+        }
+      >
+        {label}
+        {arrow}
+      </button>
+    </th>
   )
-}
-
-/**
- * Format a Date for an <input type="datetime-local"> value.
- *
- * Must be built from local getters, not `toISOString().slice(0,16)` — ISO is UTC, so that
- * shortcut shows a Manila manager a time 8 hours behind what they actually picked, and
- * saves back a promo that starts 8 hours early.
- */
-function localDateTimeValue(date) {
-  const d = date instanceof Date ? date : new Date(date)
-  if (Number.isNaN(d.getTime())) return ''
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-/** Shared by both create forms (branch-scoped + network view): today-or-future start, end after start. */
-function validateNewPromoDates(startsAt, endsAt) {
-  if (!startsAt || !endsAt) return 'Enter a promo duration (Starts at + Ends at) before creating.'
-  const startDate = new Date(startsAt)
-  const endDate = new Date(endsAt)
-  if (endDate <= startDate) return 'End date must be after start date.'
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  if (startDate < today) return 'Start date cannot be in the past.'
-  return null
 }
 
 /**
@@ -194,47 +106,26 @@ export default function ManagerPromos() {
 
   // Several promo events can be live (active/stop_pending) on a branch at once.
   const [activeEvents, setActiveEvents] = useState([])
-  const [managingId, setManagingId] = useState(null) // which live event's rules are being edited
+  const [managingId, setManagingId] = useState(null)
   const [busy, setBusy] = useState(false)
-  const [eventName, setEventName] = useState('')
-  const [eventDescription, setEventDescription] = useState('')
   const [error, setError] = useState('')
-  const [startsAt, setStartsAt] = useState('')
-  const [endsAt, setEndsAt] = useState('')
-
-  const [ruleType, setRuleType] = useState('item_pct')
-  const [discountPct, setDiscountPct] = useState(20)
-  const [productSingle, setProductSingle] = useState(null)
-  const [productA, setProductA] = useState(null)
-  const [productB, setProductB] = useState(null)
-  const [bundleSelected, setBundleSelected] = useState([])
-  const [bundleName, setBundleName] = useState('')
-  const [itemSelected, setItemSelected] = useState([])
 
   const [history, setHistory] = useState([])
   const [historyPage, setHistoryPage] = useState(0)
-  const [editingEventId, setEditingEventId] = useState(null)
-  const [editStartsAt, setEditStartsAt] = useState('')
-  const [editEndsAt, setEditEndsAt] = useState('')
-  const [renameTarget, setRenameTarget] = useState(null) // { id, name } while the rename modal is open
-  const [renameValue, setRenameValue] = useState('')
-  const [descTarget, setDescTarget] = useState(null) // { id, description } while the edit-description modal is open
-  const [descValue, setDescValue] = useState('')
   const [pendingDelete, setPendingDelete] = useState(null)
-  const [workingEvent, setWorkingEvent] = useState(null) // pending event for adding rules
   const [stopReason, setStopReason] = useState('')
-  const [stopTarget, setStopTarget] = useState(null) // event being stopped, or null when modal closed
+  const [stopTarget, setStopTarget] = useState(null)
   const [rejectReason, setRejectReason] = useState('')
-  const [rejectTarget, setRejectTarget] = useState(null) // pending event being rejected, or null when modal closed
-  const [historyStats, setHistoryStats] = useState({}) // eventId -> summary
+  const [rejectTarget, setRejectTarget] = useState(null)
+  const [historyStats, setHistoryStats] = useState({})
   const [historyFrom, setHistoryFrom] = useState('')
   const [historyTo, setHistoryTo] = useState('')
-  const [openActionsId, setOpenActionsId] = useState(null) // history row whose "..." menu is open
-  // Screen-space anchor for the open menu, computed from the trigger button's own rect at
-  // click time. The menu renders through a portal (see below) instead of as a child of the
-  // table row, so it needs its own position rather than relying on `position: absolute`.
+  const [historySort, setHistorySort] = useState({ key: 'starts_at', dir: 'desc' })
+  const [branchSalesTotal, setBranchSalesTotal] = useState(null)
+  const [eventRuleTypes, setEventRuleTypes] = useState({})
+  const [openActionsId, setOpenActionsId] = useState(null)
   const [actionsAnchor, setActionsAnchor] = useState(null)
-  const [trackingEvent, setTrackingEvent] = useState(null) // { event, stats, busy }
+  const [trackingEvent, setTrackingEvent] = useState(null)
   const [txnDetail, setTxnDetail] = useState(null)
   const [txnRefundSummary, setTxnRefundSummary] = useState(null)
   const [loadingTxnDetail, setLoadingTxnDetail] = useState(false)
@@ -245,7 +136,11 @@ export default function ManagerPromos() {
   const [networkHistoryFrom, setNetworkHistoryFrom] = useState('')
   const [networkHistoryTo, setNetworkHistoryTo] = useState('')
   const [networkHistoryPage, setNetworkHistoryPage] = useState(0)
-  const [networkCreateBranchId, setNetworkCreateBranchId] = useState('')
+  const [networkHistorySort, setNetworkHistorySort] = useState({ key: 'starts_at', dir: 'desc' })
+  const [networkHistoryStats, setNetworkHistoryStats] = useState({})
+  const [networkEventRuleTypes, setNetworkEventRuleTypes] = useState({})
+  const [networkSalesTotal, setNetworkSalesTotal] = useState(null)
+  const [promoEditor, setPromoEditor] = useState(null)
   const [pageLoading, setPageLoading] = useState(false)
 
   const selectedBranch = branches.find((b) => b.id === branchId)
@@ -263,16 +158,65 @@ export default function ManagerPromos() {
       return true
     })
   }, [history, historyFrom, historyTo])
-  const historyPageCount = Math.max(1, Math.ceil(filteredHistory.length / HISTORY_PAGE_SIZE))
+
+  const sortedHistory = useMemo(() => {
+    const rows = [...filteredHistory]
+    const { key, dir } = historySort
+    const mul = dir === 'asc' ? 1 : -1
+    const discountPct = (e) => {
+      const d = historyStats[e.id]?.discountTotal || 0
+      if (!branchSalesTotal || branchSalesTotal <= 0) return -1
+      return (d / branchSalesTotal) * 100
+    }
+    rows.sort((a, b) => {
+      if (key === 'name') return mul * String(a.name || '').localeCompare(String(b.name || ''))
+      if (key === 'rule_type') {
+        return mul * summarizePromoRuleTypes(eventRuleTypes[a.id]).localeCompare(
+          summarizePromoRuleTypes(eventRuleTypes[b.id]),
+        )
+      }
+      if (key === 'starts_at') return mul * String(a.starts_at || '').localeCompare(String(b.starts_at || ''))
+      if (key === 'receipts') {
+        return mul * ((historyStats[a.id]?.receiptCount ?? -1) - (historyStats[b.id]?.receiptCount ?? -1))
+      }
+      if (key === 'discount') {
+        return mul * ((historyStats[a.id]?.discountTotal ?? -1) - (historyStats[b.id]?.discountTotal ?? -1))
+      }
+      if (key === 'discount_pct') return mul * (discountPct(a) - discountPct(b))
+      return 0
+    })
+    return rows
+  }, [filteredHistory, historySort, historyStats, eventRuleTypes, branchSalesTotal])
+
+  const historyPageCount = Math.max(1, Math.ceil(sortedHistory.length / HISTORY_PAGE_SIZE))
   const historyPageIndex = Math.min(historyPage, historyPageCount - 1)
-  const historyPageRows = filteredHistory.slice(
+  const historyPageRows = sortedHistory.slice(
     historyPageIndex * HISTORY_PAGE_SIZE,
     historyPageIndex * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
   )
+
+  const branchPerformanceSummary = useMemo(() => {
+    const promosRun = filteredHistory.filter((e) => !['pending', 'rejected'].includes(e.status)).length
+    let totalDiscount = 0
+    let totalReceipts = 0
+    for (const e of filteredHistory) {
+      const s = historyStats[e.id]
+      if (!s) continue
+      totalDiscount += s.discountTotal || 0
+      totalReceipts += s.receiptCount || 0
+    }
+    const pctOfSales =
+      branchSalesTotal && branchSalesTotal > 0 ? (totalDiscount / branchSalesTotal) * 100 : null
+    return { promosRun, totalDiscount, totalReceipts, pctOfSales }
+  }, [filteredHistory, historyStats, branchSalesTotal])
   // workingEvent (below) only ever surfaces the first pending row it finds — this covers
   // every pending request on the branch, not just one, so a second supervisor's submission
   // isn't invisible until someone happens to scroll into Promo History.
   const pendingRequests = useMemo(() => history.filter((r) => r.status === 'pending'), [history])
+  const networkPendingRequests = useMemo(
+    () => networkHistory.filter((r) => r.status === 'pending'),
+    [networkHistory],
+  )
   // Same shape as filteredHistory/historyPageRows above, but across every branch — its own
   // filter/page state since it's a different data set (all statuses, all branches) than the
   // single-branch table.
@@ -286,29 +230,72 @@ export default function ManagerPromos() {
       return true
     })
   }, [networkHistory, networkHistoryFrom, networkHistoryTo])
-  const networkHistoryPageCount = Math.max(1, Math.ceil(filteredNetworkHistory.length / HISTORY_PAGE_SIZE))
+
+  const sortedNetworkHistory = useMemo(() => {
+    const rows = [...filteredNetworkHistory]
+    const { key, dir } = networkHistorySort
+    const mul = dir === 'asc' ? 1 : -1
+    const discountPct = (e) => {
+      const d = networkHistoryStats[e.id]?.discountTotal || 0
+      if (!networkSalesTotal || networkSalesTotal <= 0) return -1
+      return (d / networkSalesTotal) * 100
+    }
+    rows.sort((a, b) => {
+      if (key === 'branch') return mul * String(a.branchName || '').localeCompare(String(b.branchName || ''))
+      if (key === 'name') return mul * String(a.name || '').localeCompare(String(b.name || ''))
+      if (key === 'rule_type') {
+        return mul * summarizePromoRuleTypes(networkEventRuleTypes[a.id]).localeCompare(
+          summarizePromoRuleTypes(networkEventRuleTypes[b.id]),
+        )
+      }
+      if (key === 'starts_at') return mul * String(a.starts_at || '').localeCompare(String(b.starts_at || ''))
+      if (key === 'receipts') {
+        return mul * ((networkHistoryStats[a.id]?.receiptCount ?? -1) - (networkHistoryStats[b.id]?.receiptCount ?? -1))
+      }
+      if (key === 'discount') {
+        return mul * ((networkHistoryStats[a.id]?.discountTotal ?? -1) - (networkHistoryStats[b.id]?.discountTotal ?? -1))
+      }
+      if (key === 'discount_pct') return mul * (discountPct(a) - discountPct(b))
+      return 0
+    })
+    return rows
+  }, [filteredNetworkHistory, networkHistorySort, networkHistoryStats, networkEventRuleTypes, networkSalesTotal])
+
+  const networkHistoryPageCount = Math.max(1, Math.ceil(sortedNetworkHistory.length / HISTORY_PAGE_SIZE))
   const networkHistoryPageIndex = Math.min(networkHistoryPage, networkHistoryPageCount - 1)
-  const networkHistoryPageRows = filteredNetworkHistory.slice(
+  const networkHistoryPageRows = sortedNetworkHistory.slice(
     networkHistoryPageIndex * HISTORY_PAGE_SIZE,
     networkHistoryPageIndex * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
   )
-  const selectedProductsForRule = useMemo(() => {
-    if (ruleType === 'item_pct') return itemSelected
-    if (ruleType === 'bogo_pct') return [productSingle].filter(Boolean)
-    if (ruleType === 'pair_pct') return [productA, productB].filter(Boolean)
-    if (ruleType === 'bundle_pct') return bundleSelected
-    return []
-  }, [ruleType, itemSelected, productSingle, productA, productB, bundleSelected])
 
-  // Pair/bundle/BOGO promos are piece-based (computePromoDiscounts already zeroes them out
-  // for kg lines at checkout) — weighed meat-counter items would silently never apply, so
-  // don't let a manager pick them into these rule types in the first place.
-  const eligibleProducts = useMemo(() => {
-    if (ruleType === 'pair_pct' || ruleType === 'bundle_pct' || ruleType === 'bogo_pct') {
-      return products.filter((p) => p.pricingMode !== 'kg')
+  const networkPerformanceSummary = useMemo(() => {
+    const promosRun = filteredNetworkHistory.filter((e) => !['pending', 'rejected'].includes(e.status)).length
+    let totalDiscount = 0
+    let totalReceipts = 0
+    for (const e of filteredNetworkHistory) {
+      const s = networkHistoryStats[e.id]
+      if (!s) continue
+      totalDiscount += s.discountTotal || 0
+      totalReceipts += s.receiptCount || 0
     }
-    return products
-  }, [ruleType, products])
+    const pctOfSales =
+      networkSalesTotal && networkSalesTotal > 0 ? (totalDiscount / networkSalesTotal) * 100 : null
+    return { promosRun, totalDiscount, totalReceipts, pctOfSales }
+  }, [filteredNetworkHistory, networkHistoryStats, networkSalesTotal])
+
+  const networkRuleTypeChart = useMemo(() => {
+    const byType = {}
+    for (const e of filteredNetworkHistory) {
+      const types = networkEventRuleTypes[e.id] || []
+      const discount = networkHistoryStats[e.id]?.discountTotal || 0
+      if (!discount) continue
+      const label = summarizePromoRuleTypes(types)
+      byType[label] = (byType[label] || 0) + discount
+    }
+    return Object.entries(byType)
+      .map(([category, value]) => ({ category, value }))
+      .sort((a, b) => b.value - a.value)
+  }, [filteredNetworkHistory, networkEventRuleTypes, networkHistoryStats])
 
   // Managers: load all branches and require an explicit selection.
   // Supervisors: lock to their assigned branch only.
@@ -348,19 +335,8 @@ export default function ManagerPromos() {
     setHistory([])
     setHistoryPage(0)
     setProducts([])
-    setProductSingle(null)
-    setProductA(null)
-    setProductB(null)
-    setBundleSelected([])
-    setItemSelected([])
-    setEventName('')
-    setStartsAt('')
-    setEndsAt('')
-    setEditingEventId(null)
-    setEditStartsAt('')
-    setEditEndsAt('')
     setPendingDelete(null)
-    setWorkingEvent(null)
+    setPromoEditor(null)
 
     if (!hasSupabase) return undefined
 
@@ -405,17 +381,50 @@ export default function ManagerPromos() {
     setPageLoading(true)
     void (async () => {
       try {
-        const data = await bootstrapBranchData(branchId)
-        if (!alive) return
-        setProducts(data.products || [])
-        const next = await fetchActivePromoEventsWithRules(branchId, { respectDuration: false })
+        const storeProducts = useProductStore.getState().products
+        if (storeProducts.length) {
+          if (alive) setProducts(storeProducts)
+        } else if (!isOnline()) {
+          const local = await readBranchSnapshot(branchId)
+          if (alive) setProducts(local.products || [])
+        } else {
+          const data = await withTimeout(bootstrapBranchData(branchId), 15000, 'Promo catalog')
+          if (alive) setProducts(data.products || [])
+        }
+
+        if (!isOnline()) {
+          const cached = await readPromoCache(branchId)
+          if (alive) {
+            setActiveEvents(cached?.active || [])
+            setManagingId((prev) =>
+              (cached?.active || []).some((e) => e.event.id === prev)
+                ? prev
+                : cached?.active?.[0]?.event.id || null,
+            )
+            setHistory(cached?.history || [])
+          }
+          return
+        }
+
+        const next = await withTimeout(
+          fetchActivePromoEventsWithRules(branchId, { respectDuration: false }),
+          15000,
+          'Active promos',
+        )
         if (!alive) return
         setActiveEvents(next)
         setManagingId((prev) => (next.some((e) => e.event.id === prev) ? prev : next[0]?.event.id || null))
-        const rows = await fetchPromoEventsForBranch(branchId)
+        const rows = await withTimeout(fetchPromoEventsForBranch(branchId), 15000, 'Promo history')
         if (alive) setHistory(rows)
+        await writePromoCache(branchId, { active: next, history: rows })
       } catch (e) {
-        if (alive) setError(e?.message || 'Failed to load branch promos.')
+        const cached = await readPromoCache(branchId).catch(() => null)
+        if (alive && cached) {
+          setActiveEvents(cached.active || [])
+          setHistory(cached.history || [])
+        } else if (alive) {
+          setError(e?.message || 'Failed to load branch promos.')
+        }
       } finally {
         if (alive) setPageLoading(false)
       }
@@ -426,16 +435,42 @@ export default function ManagerPromos() {
   }, [branchId, managerView])
 
   useEffect(() => {
-    // A new promo almost always starts now — pre-fill it so the manager only has to pick an
-    // end. Only fills a blank field: never clobbers a start the manager already typed, and
-    // never runs again once they have.
-    setStartsAt((prev) => prev || localDateTimeValue(new Date()))
+    setHistoryStats({})
+    setEventRuleTypes({})
   }, [branchId])
 
   useEffect(() => {
-    // Clear cached Sales summaries when switching branches.
-    setHistoryStats({})
-  }, [branchId])
+    if (!branchId) {
+      setBranchSalesTotal(null)
+      return
+    }
+    fetchBranchSalesTotal({ branchId, from: historyFrom || null, to: historyTo || null })
+      .then(setBranchSalesTotal)
+      .catch(() => setBranchSalesTotal(null))
+  }, [branchId, historyFrom, historyTo])
+
+  useEffect(() => {
+    if (!managerView || branchId) return
+    fetchNetworkSalesTotal({ from: networkHistoryFrom || null, to: networkHistoryTo || null })
+      .then(setNetworkSalesTotal)
+      .catch(() => setNetworkSalesTotal(null))
+  }, [managerView, branchId, networkHistoryFrom, networkHistoryTo])
+
+  useEffect(() => {
+    const ids = historyPageRows.map((e) => e.id)
+    if (!ids.length) return
+    fetchPromoRuleTypesForEvents(ids)
+      .then((map) => setEventRuleTypes((prev) => ({ ...prev, ...map })))
+      .catch(() => {})
+  }, [historyPageRows])
+
+  useEffect(() => {
+    const ids = networkHistoryPageRows.map((e) => e.id)
+    if (!ids.length) return
+    fetchPromoRuleTypesForEvents(ids)
+      .then((map) => setNetworkEventRuleTypes((prev) => ({ ...prev, ...map })))
+      .catch(() => {})
+  }, [networkHistoryPageRows])
 
   // Receipts/discount-given on Promo History used to only fill in once a manager opened a
   // row's Sales modal. Fetch the currently-visible page eagerly and keep it live off the
@@ -472,30 +507,37 @@ export default function ManagerPromos() {
     ],
   })
 
-  const openPromoTracking = async (eventRow) => {
-    if (!branchId || !eventRow?.name) return
-    setTrackingEvent({ event: eventRow, stats: null, busy: true })
-    try {
-      const stats = await fetchPromoSalesStats({
-        branchId,
-        promoName: eventRow.name,
-        startsAt: eventRow.starts_at || null,
-        endsAt: eventRow.ends_at || null,
-      })
-      setHistoryStats((prev) => ({
-        ...prev,
-        [eventRow.id]: {
-          receiptCount: stats.receiptCount,
-          discountTotal: stats.discountTotal,
-          saleTotal: stats.saleTotal,
-        },
-      }))
-      setTrackingEvent({ event: eventRow, stats, busy: false })
-    } catch (e) {
-      setError(e?.message || 'Failed to load promo transactions.')
-      setTrackingEvent(null)
+  const refreshNetworkVisibleStats = useCallback(async () => {
+    if (!networkHistoryPageRows.length) return
+    const entries = await Promise.all(
+      networkHistoryPageRows.map(async (e) => {
+        try {
+          const stats = await fetchPromoSalesStats({
+            branchId: e.branch_id,
+            promoName: e.name,
+            startsAt: e.starts_at || null,
+            endsAt: e.ends_at || null,
+          })
+          return [e.id, { receiptCount: stats.receiptCount, discountTotal: stats.discountTotal, saleTotal: stats.saleTotal }]
+        } catch {
+          return null
+        }
+      }),
+    )
+    setNetworkHistoryStats((prev) => ({ ...prev, ...Object.fromEntries(entries.filter(Boolean)) }))
+  }, [networkHistoryPageRows])
+
+  useLiveData({
+    enabled: managerView && !branchId && networkHistoryPageRows.length > 0,
+    fetch: refreshNetworkVisibleStats,
+    tables: [{ table: 'transactions' }, { table: 'transaction_items' }],
+  })
+
+  useEffect(() => {
+    if (managerView && !branchId && networkHistoryPageRows.length) {
+      void refreshNetworkVisibleStats()
     }
-  }
+  }, [managerView, branchId, networkHistoryPageRows, refreshNetworkVisibleStats])
 
   const openTxnDetail = async (receipt) => {
     if (!receipt?.id) return
@@ -534,7 +576,6 @@ export default function ManagerPromos() {
     if (!branchId) {
       setActiveEvents([])
       setManagingId(null)
-      setWorkingEvent(null)
       setHistory([])
       return
     }
@@ -543,22 +584,80 @@ export default function ManagerPromos() {
     setManagingId((prev) => (next.some((e) => e.event.id === prev) ? prev : next[0]?.event.id || null))
     const rows = await fetchPromoEventsForBranch(branchId)
     setHistory(rows)
-    const pending = (rows || []).find((r) => r.status === 'pending')
-    if (pending) {
-      const rules = await fetchPromoRulesForEvent(pending.id).catch(() => [])
-      setWorkingEvent({
-        event: {
-          id: pending.id,
-          name: pending.name,
-          status: 'pending',
-          startsAt: pending.starts_at,
-          endsAt: pending.ends_at,
-        },
-        rules,
-      })
-    } else {
-      setWorkingEvent(null)
+  }
+
+  const openPromoEditor = async ({ mode, branchId: bId, event = null }) => {
+    setError('')
+    setOpenActionsId(null)
+    setActionsAnchor(null)
+    const targetBranch = bId || branchId
+    setPromoEditor({
+      mode,
+      branchId: targetBranch,
+      event,
+    })
+  }
+
+  const closePromoEditor = useCallback(() => setPromoEditor(null), [])
+
+  const onRequestEdit = async (row) => {
+    if (!row?.id) return
+    setBusy(true)
+    setError('')
+    try {
+      const revision = await requestPromoEdit({ promoEventId: row.id, staffId: user.id })
+      if (branchId && (row.branch_id || branchId) === branchId) await refreshActive()
+      else await refreshNetworkOverview()
+      await openPromoEditor({ mode: 'edit', branchId: row.branch_id || branchId, event: revision })
+    } catch (e) {
+      setError(e?.message || 'Failed to request promo edit.')
+    } finally {
+      setBusy(false)
     }
+  }
+
+  const renderPendingPromoRow = (r, { showBranch = false } = {}) => (
+    <div
+      key={r.id}
+      className="flex flex-wrap items-center justify-between gap-2 rounded border border-brand-warn/40 bg-brand-warn/5 p-2.5"
+    >
+      <div className="min-w-0">
+        {showBranch && <div className="text-[10px] font-bold uppercase tracking-wide text-brand-subtle">{r.branchName}</div>}
+        <div className="text-xs font-bold text-brand-ink">{r.name}</div>
+        {r.supersedes_event_id && (
+          <div className="text-[10px] text-brand-warn">Edit revision — needs reapproval</div>
+        )}
+        {r.description && <div className="text-[11px] text-brand-subtle">{r.description}</div>}
+        <div className="mt-0.5 text-[10px] text-brand-muted">
+          {fmtPromoSchedule(r.starts_at)} → {fmtPromoSchedule(r.ends_at)}
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <SecondaryButton
+          compact
+          type="button"
+          disabled={busy}
+          onClick={() => void openPromoEditor({ mode: 'edit', branchId: r.branch_id || branchId, event: r })}
+        >
+          Edit
+        </SecondaryButton>
+        {managerView && (
+          <>
+            <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveCreate(r.id)}>
+              Approve
+            </PrimaryButton>
+            <SecondaryButton compact type="button" disabled={busy} onClick={() => setRejectTarget({ id: r.id, name: r.name })}>
+              Reject
+            </SecondaryButton>
+          </>
+        )}
+      </div>
+    </div>
+  )
+
+  const onEditorSaved = async () => {
+    if (branchId) await refreshActive()
+    else await refreshNetworkOverview()
   }
 
   // refreshActive() is branch-scoped and no-ops with no branch selected — actions taken from
@@ -577,79 +676,6 @@ export default function ManagerPromos() {
         .catch((e) => setError(e?.message || 'Failed to load promo history.'))
         .finally(() => setNetworkHistoryBusy(false)),
     ])
-  }
-
-  // Rule editor targets the pending draft if there is one, else the live event picked in "Manage rules".
-  const eventForRules = workingEvent || managedEvent
-
-  const onCreateEvent = async () => {
-    if (!branchId) {
-      setError('Select a branch before creating a promo.')
-      return
-    }
-    if (!eventName.trim()) return
-    const dateError = validateNewPromoDates(startsAt, endsAt)
-    if (dateError) {
-      setError(dateError)
-      return
-    }
-    setBusy(true)
-    setError('')
-    try {
-      // Managers create drafts they activate themselves; supervisors submit for manager approval.
-      await createAndActivatePromoEvent({
-        branchId,
-        name: eventName.trim(),
-        description: eventDescription.trim() || null,
-        startsAt: startsAt || null,
-        endsAt: endsAt || null,
-        staffId: user?.id,
-      })
-      setEventName('')
-      setEventDescription('')
-      await refreshActive()
-    } catch (e) {
-      setError(e?.message || 'Failed to create promo event.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  // Same form, no branch pre-selected — the network overview has no implicit branch, so the
-  // manager picks one from a dropdown right in the form instead of navigating in first.
-  const onCreateEventNetwork = async () => {
-    if (!networkCreateBranchId) {
-      setError('Select a branch before creating a promo.')
-      return
-    }
-    if (!eventName.trim()) return
-    const dateError = validateNewPromoDates(startsAt, endsAt)
-    if (dateError) {
-      setError(dateError)
-      return
-    }
-    setBusy(true)
-    setError('')
-    try {
-      await createAndActivatePromoEvent({
-        branchId: networkCreateBranchId,
-        name: eventName.trim(),
-        description: eventDescription.trim() || null,
-        startsAt: startsAt || null,
-        endsAt: endsAt || null,
-        staffId: user?.id,
-      })
-      setEventName('')
-      setEventDescription('')
-      setStartsAt('')
-      setEndsAt('')
-      setNetworkCreateBranchId('')
-      await refreshNetworkOverview()
-    } catch (e) {
-      setError(e?.message || 'Failed to create promo event.')
-    } finally {
-      setBusy(false)
-    }
   }
 
   const onApproveCreate = async (id) => {
@@ -735,94 +761,15 @@ export default function ManagerPromos() {
     }
   }
 
-  const onDeleteRule = async (ruleId) => {
-    if (!ruleId) return
-    setBusy(true)
-    setError('')
-    try {
-      await deletePromoRule(ruleId)
-      await refreshActive()
-    } catch (e) {
-      setError(e?.message || 'Failed to delete promo rule.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const isoToLocalValueForEdit = (iso) => (iso ? localDateTimeValue(iso) : '')
-
   const onDeleteEvent = async (promoEventId) => {
     if (!promoEventId) return
     setBusy(true)
     setError('')
     try {
       await deletePromoEvent(promoEventId)
-      await refreshActive()
+      await (branchId ? refreshActive() : refreshNetworkOverview())
     } catch (e) {
       setError(e?.message || 'Failed to delete promo event.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const onStartEditEvent = (row) => {
-    if (!row?.id) return
-    setEditingEventId(row.id)
-    setEditStartsAt(isoToLocalValueForEdit(row.starts_at))
-    setEditEndsAt(isoToLocalValueForEdit(row.ends_at))
-  }
-
-  const onCancelEditEvent = () => {
-    setEditingEventId(null)
-    setEditStartsAt('')
-    setEditEndsAt('')
-  }
-
-  // Renaming is a typo fix, not a change to what the promo does — it never touches
-  // schedule or approval state, so it needs no dual-control step. Note the name is also
-  // what per-line promo attribution matches on (transaction_items.promo_name), so past
-  // receipts keep the OLD name and stay correctly attributed to it.
-  const onStartRenameEvent = (row) => {
-    if (!row?.id) return
-    setRenameTarget({ id: row.id, name: row.name || '' })
-    setRenameValue(row.name || '')
-  }
-
-  const onSaveRename = async () => {
-    const nextName = renameValue.trim()
-    if (!renameTarget?.id || !nextName) return
-    setBusy(true)
-    setError('')
-    try {
-      await updatePromoEventDetails({ promoEventId: renameTarget.id, name: nextName })
-      setRenameTarget(null)
-      setRenameValue('')
-      await refreshActive()
-    } catch (e) {
-      setError(e?.message || 'Failed to rename promo.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  // Same partial-update convention as rename/duration — only description changes, nothing else.
-  const onStartEditDescription = (row) => {
-    if (!row?.id) return
-    setDescTarget({ id: row.id, description: row.description || '' })
-    setDescValue(row.description || '')
-  }
-
-  const onSaveDescription = async () => {
-    if (!descTarget?.id) return
-    setBusy(true)
-    setError('')
-    try {
-      await updatePromoEventDetails({ promoEventId: descTarget.id, description: descValue.trim() })
-      setDescTarget(null)
-      setDescValue('')
-      await refreshActive()
-    } catch (e) {
-      setError(e?.message || 'Failed to save promo description.')
     } finally {
       setBusy(false)
     }
@@ -838,89 +785,187 @@ export default function ManagerPromos() {
   }
 
   const confirmDelete = async () => {
-    if (!pendingDelete) return
-    if (pendingDelete.kind === 'rule') {
-      await onDeleteRule(pendingDelete.id)
-    } else if (pendingDelete.kind === 'event') {
-      await onDeleteEvent(pendingDelete.id)
-    }
+    if (!pendingDelete || pendingDelete.kind !== 'event') return
+    await onDeleteEvent(pendingDelete.id)
     setPendingDelete(null)
   }
 
-  const onSaveEditEvent = async () => {
-    if (!editingEventId) return
-    if (!editStartsAt || !editEndsAt) {
-      setError('Enter Starts + Ends when modifying an event.')
-      return
-    }
-    if (new Date(editEndsAt) <= new Date(editStartsAt)) {
-      setError('End date must be after start date.')
-      return
-    }
-    setBusy(true)
-    setError('')
+  const openPromoTrackingForRow = async (eventRow, rowBranchId) => {
+    const bId = rowBranchId || branchId
+    if (!bId || !eventRow?.name) return
+    setTrackingEvent({ event: eventRow, stats: null, busy: true, branchId: bId, branchName: eventRow.branchName })
     try {
-      await updatePromoEventDetails({
-        promoEventId: editingEventId,
-        startsAt: editStartsAt || null,
-        endsAt: editEndsAt || null,
+      const stats = await fetchPromoSalesStats({
+        branchId: bId,
+        promoName: eventRow.name,
+        startsAt: eventRow.starts_at || null,
+        endsAt: eventRow.ends_at || null,
       })
-      await refreshActive()
-      onCancelEditEvent()
+      const patch = {
+        receiptCount: stats.receiptCount,
+        discountTotal: stats.discountTotal,
+        saleTotal: stats.saleTotal,
+      }
+      if (bId === branchId) {
+        setHistoryStats((prev) => ({ ...prev, [eventRow.id]: patch }))
+      } else {
+        setNetworkHistoryStats((prev) => ({ ...prev, [eventRow.id]: patch }))
+      }
+      setTrackingEvent({ event: eventRow, stats, busy: false, branchId: bId, branchName: eventRow.branchName })
     } catch (e) {
-      setError(e?.message || 'Failed to modify promo event duration.')
-    } finally {
-      setBusy(false)
+      setError(e?.message || 'Failed to load promo transactions.')
+      setTrackingEvent(null)
     }
   }
 
-  const onAddRule = async () => {
-    const eventId = eventForRules?.event?.id
-    if (!eventId) return
-    if (!selectedProductsForRule.length) return
-    if (discountPct < 0 || discountPct > 100) return
-    // A product already covered by another rule on this event would just duplicate the
-    // discount — surface it instead of silently creating a second rule for the same item.
-    const usedProductIds = new Set(
-      (eventForRules?.rules || []).flatMap((r) => (r.products || []).map((p) => p.productId)),
-    )
-    const duplicates = selectedProductsForRule.filter((id) => usedProductIds.has(id))
-    if (duplicates.length) {
-      const names = duplicates.map((id) => products.find((p) => p.id === id)?.name || id).join(', ')
-      setError(`${names} already ${duplicates.length > 1 ? 'have' : 'has'} a promo rule on this event.`)
-      return
-    }
-    setBusy(true)
-    setError('')
-    try {
-      let buyQty = 1
-      let getQty = 1
-      if (ruleType !== 'bogo_pct') {
-        buyQty = 1
-        getQty = 1
-      }
-      await createPromoRule({
-        promoEventId: eventId,
-        ruleType,
-        discountPct: Number(discountPct),
-        productIds: selectedProductsForRule,
-        buyQty,
-        getQty,
-        bundleName: ruleType === 'bundle_pct' ? bundleName.trim() : null,
-      })
+  const fmtPromoSchedule = (iso) => {
+    if (!iso) return '—'
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return '—'
+    return d.toLocaleString([], {
+      month: '2-digit',
+      day: '2-digit',
+      year: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  }
 
-      setProductSingle(null)
-      setProductA(null)
-      setProductB(null)
-      setBundleSelected([])
-      setBundleName('')
-      setItemSelected([])
-      await refreshActive()
-    } catch (e) {
-      setError(e?.message || 'Failed to create promo rule.')
-    } finally {
-      setBusy(false)
-    }
+  const renderPerformanceActionsMenu = (e, { isLive, isNetwork = false }) => {
+    const status = promoEffectiveStatus(e)
+    return (
+      <div className="relative inline-block text-left">
+        <button
+          type="button"
+          className="rounded p-1.5 text-brand-ink hover:bg-brand-n100"
+          aria-label="Actions"
+          aria-haspopup="true"
+          aria-expanded={openActionsId === e.id}
+          onClick={(event) => {
+            if (openActionsId === e.id) {
+              setOpenActionsId(null)
+              setActionsAnchor(null)
+              return
+            }
+            const rect = event.currentTarget.getBoundingClientRect()
+            setActionsAnchor({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+            setOpenActionsId(e.id)
+          }}
+        >
+          <FiMoreHorizontal />
+        </button>
+        {openActionsId === e.id && actionsAnchor && createPortal(
+          <div
+            className="fixed z-50 flex min-w-[170px] flex-col rounded-md border border-brand-line bg-white p-1 text-left shadow-lg"
+            style={{ top: actionsAnchor.top, right: actionsAnchor.right }}
+          >
+            <button
+              type="button"
+              className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-danger hover:bg-brand-n100"
+              disabled={busy}
+              onClick={() => {
+                setOpenActionsId(null)
+                openPromoTrackingForRow(e, isNetwork ? e.branch_id : branchId)
+              }}
+            >
+              Sales
+            </button>
+            {e.status === 'pending' && (
+              <button
+                type="button"
+                className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                disabled={busy}
+                onClick={() => {
+                  setOpenActionsId(null)
+                  void openPromoEditor({ mode: 'edit', branchId: e.branch_id || branchId, event: e })
+                }}
+              >
+                Edit
+              </button>
+            )}
+            {managerView && e.status === 'pending' && (
+              <>
+                <button
+                  type="button"
+                  className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                  disabled={busy}
+                  onClick={() => {
+                    setOpenActionsId(null)
+                    onApproveCreate(e.id)
+                  }}
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                  disabled={busy}
+                  onClick={() => {
+                    setOpenActionsId(null)
+                    setRejectTarget({ id: e.id, name: e.name })
+                  }}
+                >
+                  Reject
+                </button>
+              </>
+            )}
+            {managerView && status === 'stop_pending' && (
+              <>
+                <button
+                  type="button"
+                  className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                  disabled={busy}
+                  onClick={() => {
+                    setOpenActionsId(null)
+                    onApproveStop(e.id)
+                  }}
+                >
+                  Approve stop
+                </button>
+                <button
+                  type="button"
+                  className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                  disabled={busy}
+                  onClick={() => {
+                    setOpenActionsId(null)
+                    onRejectStop(e.id)
+                  }}
+                >
+                  Reject stop
+                </button>
+              </>
+            )}
+            {isLive && (
+              <button
+                type="button"
+                className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                disabled={busy}
+                onClick={() => {
+                  setOpenActionsId(null)
+                  void onRequestEdit(e)
+                }}
+              >
+                Request edit
+              </button>
+            )}
+            {!isLive && (
+              <button
+                type="button"
+                className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
+                disabled={busy}
+                onClick={() => {
+                  setOpenActionsId(null)
+                  openDeleteConfirm({ kind: 'event', id: e.id, label: e.name })
+                }}
+              >
+                Delete
+              </button>
+            )}
+          </div>,
+          document.body,
+        )}
+      </div>
+    )
   }
 
   return (
@@ -971,84 +1016,28 @@ export default function ManagerPromos() {
       {!branchId ? (
         managerView ? (
           <>
-          <TableCard className="mb-4 max-h-none overflow-visible p-5">
-            <Eyebrow>NETWORK</Eyebrow>
-            <h2 className="m-0 text-base">Create a promo</h2>
-            <p className="m-0 mt-1 text-xs text-brand-muted">
-              Pick the branch this promo belongs to — promos never apply to all branches at once.
-            </p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <SelectField
-                label="Branch"
-                value={networkCreateBranchId}
-                onChange={(e) => setNetworkCreateBranchId(e.target.value)}
-              >
-                <option value="">Select a branch…</option>
-                {branches.map((branch) => (
-                  <option key={branch.id} value={branch.id}>
-                    {branch.name}
-                  </option>
-                ))}
-              </SelectField>
-              <Field
-                label="Promo name"
-                value={eventName}
-                onChange={(e) => setEventName(e.target.value)}
-                placeholder="e.g. Valentines"
-              />
-            </div>
-            <label className="mt-3 block text-xs">
-              <div className="mb-1 font-bold text-brand-muted">Description (optional)</div>
-              <textarea
-                rows={2}
-                value={eventDescription}
-                onChange={(e) => setEventDescription(e.target.value)}
-                placeholder="What is this promo about?"
-                className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
-              />
-            </label>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <label className="block text-xs">
-                <div className="mb-1 font-bold text-brand-muted">Starts at</div>
-                <input
-                  type="datetime-local"
-                  value={startsAt}
-                  min={localDateTimeValue(new Date())}
-                  onChange={(e) => setStartsAt(e.target.value)}
-                  className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
-                />
-              </label>
-              <label className="block text-xs">
-                <div className="mb-1 font-bold text-brand-muted">Ends at</div>
-                <input
-                  type="datetime-local"
-                  value={endsAt}
-                  onChange={(e) => setEndsAt(e.target.value)}
-                  className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
-                />
-              </label>
-            </div>
-            <div className="mt-4 flex justify-end">
-              <PrimaryButton
-                compact
-                type="button"
-                disabled={busy || !networkCreateBranchId || !eventName.trim() || !startsAt || !endsAt}
-                onClick={onCreateEventNetwork}
-              >
-                {busy ? 'Saving…' : 'Create promo'}
-              </PrimaryButton>
-            </div>
-          </TableCard>
-
           <TableCard className="max-h-none overflow-hidden">
             <div className="px-5 pt-4 pb-2">
               <Eyebrow>NETWORK</Eyebrow>
               <h2 className="m-0 text-lg">Active promos</h2>
               <p className="m-0 mt-1 text-xs text-brand-muted">
-                Every live and stop-pending promo across branches
-                {networkBusy ? '' : ` · ${networkActive.length} shown`}. Open a row to manage that branch.
+                Pending approval must be approved before going live on POS.
+                {networkBusy ? '' : ` · ${networkActive.length} live`}
+                {networkPendingRequests.length ? ` · ${networkPendingRequests.length} awaiting approval` : ''}
               </p>
             </div>
+
+            {networkPendingRequests.length > 0 && (
+              <div className="border-t border-brand-softline px-5 py-4">
+                <p className="m-0 mb-2 text-[11px] font-bold uppercase tracking-wide text-brand-warn">
+                  Awaiting approval · {networkPendingRequests.length}
+                </p>
+                <div className="flex flex-col gap-2">
+                  {networkPendingRequests.map((r) => renderPendingPromoRow(r, { showBranch: true }))}
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-[1.2fr_1.3fr_1fr_0.9fr_0.8fr] gap-2 bg-brand-dark px-5 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[1.2fr_1fr_0.8fr]">
               <span>Branch</span>
               <span>Promo</span>
@@ -1113,20 +1102,79 @@ export default function ManagerPromos() {
                   </div>
                 )
               })}
-            {!networkBusy && networkActive.length === 0 && (
+            {!networkBusy && networkActive.length === 0 && networkPendingRequests.length === 0 && (
               <div className="px-5 py-6 text-xs text-brand-subtle">
-                No active promos on any branch right now. Select a branch to create one.
+                No active or pending promos on any branch right now. Select a branch to create one.
+              </div>
+            )}
+            {!networkBusy && networkActive.length === 0 && networkPendingRequests.length > 0 && (
+              <div className="px-5 py-4 text-xs text-brand-subtle">
+                No live promos yet — approve a pending promo above to activate it on POS.
               </div>
             )}
           </TableCard>
 
-          <TableCard className="mt-4 max-h-none overflow-visible p-5">
-            <div className="flex flex-wrap items-end justify-between gap-3">
+          <TableCard className="mt-4 max-h-none overflow-visible p-0">
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-brand-softline px-5 py-4">
               <div>
                 <Eyebrow>NETWORK</Eyebrow>
-                <h2 className="m-0 text-base">All branches — promo history</h2>
+                <h2 className="m-0 text-base">Promo performance</h2>
+                <p className="m-0 mt-1 text-xs text-brand-muted">
+                  Compare promos across branches — open Sales on any row for receipt and item detail.
+                </p>
+              </div>
+              <PrimaryButton
+                compact
+                type="button"
+                disabled={busy}
+                onClick={() => void openPromoEditor({ mode: 'create', branchId: '' })}
+              >
+                Create promo
+              </PrimaryButton>
+            </div>
+
+            <div className="px-5 py-4">
+              <StatTiles
+                embedded
+                title="Summary"
+                subtitle={networkHistoryFrom || networkHistoryTo ? 'Filtered by promo start date' : 'All promos'}
+                items={[
+                  { label: 'Total promos run', value: networkPerformanceSummary.promosRun },
+                  {
+                    label: 'Total discount given',
+                    value: `−${money(networkPerformanceSummary.totalDiscount)}`,
+                    tone: 'danger',
+                  },
+                  { label: 'Total promo receipts', value: networkPerformanceSummary.totalReceipts },
+                  {
+                    label: 'Discount % of sales',
+                    value:
+                      networkPerformanceSummary.pctOfSales != null
+                        ? `${networkPerformanceSummary.pctOfSales.toFixed(1)}%`
+                        : '—',
+                    hint: networkSalesTotal ? `of ${money(networkSalesTotal)} branch sales` : null,
+                  },
+                ]}
+              />
+            </div>
+
+            <div className="border-t border-brand-softline px-5 py-4">
+              <SalesMixBar
+                embedded
+                mix={networkRuleTypeChart}
+                title="Discount by rule type"
+                subtitle={networkHistoryFrom || networkHistoryTo ? 'Filtered promos' : 'All promos'}
+                showShare
+                emptyMessage="No promo discount data in this period."
+              />
+            </div>
+
+            <div className="border-t border-brand-softline px-5 pt-4 pb-5">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="m-0 text-base">Branch comparison</h2>
                 <p className="m-0 mt-1 text-xs text-brand-subtle">
-                  Every promo event on every branch, whatever its status.
+                  Sort columns to compare performance — Sales opens the same receipt drill-down as branch view.
                 </p>
               </div>
               <div className="flex items-end gap-2">
@@ -1172,7 +1220,7 @@ export default function ManagerPromos() {
 
             {networkHistoryBusy && (
               <div className="mt-4" role="status" aria-label="Loading">
-                <SkeletonRows rows={4} cols={5} />
+                <SkeletonRows rows={4} cols={8} />
               </div>
             )}
 
@@ -1181,79 +1229,51 @@ export default function ManagerPromos() {
                 <table className="min-w-full text-left text-xs [&_td:first-child]:pl-5 [&_td:last-child]:pr-5 [&_th:first-child]:pl-5 [&_th:last-child]:pr-5">
                   <thead className={tableHeadClass}>
                     <tr>
-                      <th className="px-3 py-2.5">Branch</th>
-                      <th className="px-3 py-2.5">Promo name</th>
-                      <th className="px-3 py-2.5">Description</th>
-                      <th className="px-3 py-2.5">Schedule</th>
+                      <SortableTh label="Branch" sortKey="branch" current={networkHistorySort} onSort={setNetworkHistorySort} />
+                      <SortableTh label="Promo name" sortKey="name" current={networkHistorySort} onSort={setNetworkHistorySort} />
+                      <SortableTh label="Rule type" sortKey="rule_type" current={networkHistorySort} onSort={setNetworkHistorySort} />
+                      <SortableTh label="Date range" sortKey="starts_at" current={networkHistorySort} onSort={setNetworkHistorySort} />
                       <th className="px-3 py-2.5">Status</th>
+                      <SortableTh label="Receipts" sortKey="receipts" current={networkHistorySort} onSort={setNetworkHistorySort} className="text-right" />
+                      <SortableTh label="Discount given" sortKey="discount" current={networkHistorySort} onSort={setNetworkHistorySort} className="text-right" />
+                      <SortableTh label="Discount % sales" sortKey="discount_pct" current={networkHistorySort} onSort={setNetworkHistorySort} className="text-right" />
                       <th className="px-3 py-2.5 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {networkHistoryPageRows.map((e) => {
-                      const status = promoEffectiveStatus(e)
                       const badge = promoStatusBadge(e)
-                      const fmt = (iso) => {
-                        if (!iso) return '—'
-                        const d = new Date(iso)
-                        if (Number.isNaN(d.getTime())) return '—'
-                        return d.toLocaleString([], {
-                          month: '2-digit',
-                          day: '2-digit',
-                          year: '2-digit',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })
-                      }
-                      // Same "why it ended/was rejected" combine as the per-branch history table.
-                      const combined = [
-                        e.description,
-                        e.stop_reason ? `— Reason for ending: ${e.stop_reason}` : null,
-                        e.reject_reason ? `— Reason for rejecting: ${e.reject_reason}` : null,
-                      ]
-                        .filter(Boolean)
-                        .join(' ')
+                      const stats = networkHistoryStats[e.id]
+                      const isLive = promoEffectiveStatus(e) === 'active' || promoEffectiveStatus(e) === 'stop_pending'
+                      const discountPct =
+                        stats?.discountTotal && networkSalesTotal > 0
+                          ? ((stats.discountTotal / networkSalesTotal) * 100).toFixed(1)
+                          : null
                       return (
                         <tr key={e.id} className="border-t border-brand-softline">
                           <td className="px-3 py-3 font-bold text-brand-ink">{e.branchName}</td>
-                          <td className="px-3 py-3">{e.name}</td>
                           <td className="px-3 py-3">
-                            {combined ? (
-                              <span className="block max-w-[220px] truncate text-brand-slate" title={combined}>
-                                {combined}
-                              </span>
-                            ) : (
-                              <span className="text-brand-subtle">—</span>
+                            <span className="font-bold text-brand-ink">{e.name}</span>
+                            {e.supersedes_event_id && (
+                              <span className="mt-0.5 block text-[10px] text-brand-warn">Edit revision</span>
                             )}
                           </td>
-                          <td className="px-3 py-3">
-                            {fmt(e.starts_at)} → {fmt(e.ends_at)}
-                          </td>
+                          <td className="px-3 py-3">{summarizePromoRuleTypes(networkEventRuleTypes[e.id])}</td>
+                          <td className="px-3 py-3">{fmtPromoSchedule(e.starts_at)} → {fmtPromoSchedule(e.ends_at)}</td>
                           <td className="px-3 py-3">
                             <StatusBadge compact tone={badge.tone} title={badge.hint}>
                               {badge.label}
                             </StatusBadge>
                           </td>
+                          <td className="px-3 py-3 text-right tabular-nums">{stats ? stats.receiptCount : '—'}</td>
+                          <td className="px-3 py-3 text-right tabular-nums text-brand-danger">
+                            {stats ? `−${money(stats.discountTotal || 0)}` : '—'}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums">
+                            {discountPct != null ? `${discountPct}%` : '—'}
+                          </td>
                           <td className="px-3 py-3 text-right">
-                            <div className="flex justify-end gap-2">
-                              {status === 'pending' && (
-                                <>
-                                  <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveCreate(e.id)}>
-                                    Approve
-                                  </PrimaryButton>
-                                  <SecondaryButton compact type="button" disabled={busy} onClick={() => setRejectTarget({ id: e.id, name: e.name })}>
-                                    Reject
-                                  </SecondaryButton>
-                                </>
-                              )}
-                              <button
-                                type="button"
-                                className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                                onClick={() => setBranchId(e.branch_id)}
-                              >
-                                View
-                              </button>
-                            </div>
+                            {renderPerformanceActionsMenu(e, { isLive, isNetwork: true })}
                           </td>
                         </tr>
                       )
@@ -1273,13 +1293,14 @@ export default function ManagerPromos() {
                 <Pager
                   page={networkHistoryPageIndex + 1}
                   pageCount={networkHistoryPageCount}
-                  total={filteredNetworkHistory.length}
+                  total={sortedNetworkHistory.length}
                   label="events"
                   onPrev={() => setNetworkHistoryPage((p) => Math.max(0, p - 1))}
                   onNext={() => setNetworkHistoryPage((p) => Math.min(networkHistoryPageCount - 1, p + 1))}
                 />
               </div>
             )}
+            </div>
           </TableCard>
           </>
         ) : (
@@ -1289,389 +1310,129 @@ export default function ManagerPromos() {
         )
       ) : (
         <>
-      {pendingRequests.length > 0 && (
-        <TableCard className="mb-4 max-h-none overflow-visible p-5">
-          <Eyebrow>Pending promo requests · {pendingRequests.length}</Eyebrow>
-          <p className="m-0 mt-1 text-xs text-brand-muted">
-            {managerView ? 'Waiting on your approval.' : 'Waiting on manager approval.'}
-          </p>
-          <div className="mt-3 flex flex-col gap-2">
-            {pendingRequests.map((r) => (
-              <div
-                key={r.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded border border-brand-line p-2.5"
-              >
-                <div>
-                  <div className="text-xs font-bold text-brand-ink">{r.name}</div>
-                  {r.description && <div className="text-[11px] text-brand-subtle">{r.description}</div>}
-                </div>
-                {managerView && (
-                  <div className="flex gap-2">
-                    <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveCreate(r.id)}>
-                      Approve
-                    </PrimaryButton>
-                    <SecondaryButton compact type="button" disabled={busy} onClick={() => setRejectTarget({ id: r.id, name: r.name })}>
-                      Reject
-                    </SecondaryButton>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </TableCard>
-      )}
       <TableCard className="mb-4 max-h-none overflow-visible p-5">
-        <div className="grid gap-4 sm:grid-cols-2 sm:items-start">
-          <div>
-            <Eyebrow>Live promos{activeEvents.length ? ` · ${activeEvents.length}` : ''}</Eyebrow>
-            <p className="m-0 mt-1 text-xs text-brand-muted">
-              {managerView
-                ? 'Create a promo, add rules, then activate it. Several promos can run at once — Supervisor-submitted promos appear here for your approval.'
-                : 'New promos need manager approval before going live. Stopping also needs manager approval first.'}
+        <Eyebrow>Live promos{activeEvents.length ? ` · ${activeEvents.length}` : ''}</Eyebrow>
+        <p className="m-0 mt-1 text-xs text-brand-muted">
+          {managerView
+            ? 'Approve pending promos below to go live on POS. Several promos can run at once once approved.'
+            : 'New promos need manager approval before going live on POS.'}
+          {pendingRequests.length > 0 && (
+            <span className="mt-1 block font-bold text-brand-warn">
+              {pendingRequests.length} awaiting approval — not live until approved.
+            </span>
+          )}
+        </p>
+
+        {pendingRequests.length > 0 && (
+          <div className="mt-3 flex flex-col gap-2">
+            <p className="m-0 text-[11px] font-bold uppercase tracking-wide text-brand-warn">
+              Awaiting approval
             </p>
-            {!activeEvents.length ? (
-              <p className="m-0 mt-3 text-sm text-brand-ink">No live promo right now.</p>
-            ) : (
-              <>
-              {/* Selector and its actions on ONE row, bottom-aligned (`items-end`) so the
-                  buttons line up with the select box itself. They used to sit on a second
-                  row right-aligned under a full-width select, which read as floating
-                  loose rather than belonging to the control they act on. */}
-              <div className="mt-3 flex flex-wrap items-end gap-2">
-                <SelectField
-                  label="Managing"
-                  className="min-w-[220px] flex-1"
-                  value={managingId || ''}
-                  onChange={(e) => setManagingId(e.target.value)}
-                >
-                  {activeEvents.map((evt) => (
-                    <option key={evt.event.id} value={evt.event.id}>
-                      {evt.event.name} · {evt.event.status === 'stop_pending' ? 'Stop pending' : 'Active'}
-                    </option>
-                  ))}
-                </SelectField>
-
-                {/* No "Active" badge: everything in this dropdown is live by definition, and
-                    the option label already spells out Active vs Stop pending. Rename lives
-                    only in Promo History now — not duplicated here. */}
-                {managedEvent && (
-                  <>
-                    {managedEvent.event.status === 'active' && (
-                      <PrimaryButton compact type="button" disabled={busy} onClick={() => setStopTarget(managedEvent.event)}>
-                        {managerView ? 'Stop promo' : 'Request stop'}
-                      </PrimaryButton>
-                    )}
-                    {managerView && managedEvent.event.status === 'stop_pending' && (
-                      <>
-                        <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveStop(managedEvent.event.id)}>
-                          Approve stop
-                        </PrimaryButton>
-                        <SecondaryButton compact type="button" disabled={busy} onClick={() => onRejectStop(managedEvent.event.id)}>
-                          Reject stop
-                        </SecondaryButton>
-                      </>
-                    )}
-                  </>
-                )}
-              </div>
-              {managedEvent?.event?.status === 'stop_pending' && managedEvent.event.stopReason && (
-                <p className="mt-1 mb-0 text-[11px] text-brand-warn">
-                  Stop awaiting manager approval: {managedEvent.event.stopReason}
-                </p>
-              )}
-              </>
-            )}
+            {pendingRequests.map((r) => renderPendingPromoRow(r))}
           </div>
+        )}
 
-          <div className="flex flex-col gap-3">
-            <div className="flex items-end gap-2">
-              <div className="flex-1">
-                <Field
-                  label={managerView ? 'New promo event' : 'Request new promo event'}
-                  value={eventName}
-                  onChange={(e) => setEventName(e.target.value)}
-                  placeholder="e.g. Valentines"
-                />
-              </div>
+        {!activeEvents.length ? (
+          <>
+            <p className="m-0 mt-3 text-sm text-brand-ink">
+              {pendingRequests.length ? 'No live promo yet — approve one above to activate it.' : 'No live promo right now.'}
+            </p>
+            <div className="mt-3 flex justify-end">
               <PrimaryButton
                 compact
                 type="button"
-                disabled={busy || !branchId || !eventName.trim() || !startsAt || !endsAt}
-                onClick={onCreateEvent}
+                disabled={busy || !branchId}
+                onClick={() => void openPromoEditor({ mode: 'create', branchId })}
               >
-                {busy ? 'Saving…' : managerView ? 'Create promo' : 'Submit for approval'}
+                {managerView ? 'Create promo' : 'Request promo'}
               </PrimaryButton>
             </div>
-
-            <label className="block text-xs">
-              <div className="mb-1 font-bold text-brand-muted">Description (optional)</div>
-              <textarea
-                rows={2}
-                value={eventDescription}
-                onChange={(e) => setEventDescription(e.target.value)}
-                placeholder="What is this promo about?"
-                className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
-              />
-            </label>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="block text-xs">
-                <div className="mb-1 font-bold text-brand-muted">Starts at</div>
-                <input
-                  type="datetime-local"
-                  value={startsAt}
-                  min={localDateTimeValue(new Date())}
-                  onChange={(e) => setStartsAt(e.target.value)}
-                  className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
-                />
-              </label>
-              <label className="block text-xs">
-                <div className="mb-1 font-bold text-brand-muted">Ends at</div>
-                <input
-                  type="datetime-local"
-                  value={endsAt}
-                  onChange={(e) => setEndsAt(e.target.value)}
-                  className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
-                />
-              </label>
-            </div>
-          </div>
-        </div>
-      </TableCard>
-
-      {/* Most urgent first: a draft waiting on you needs action before anything else here matters. */}
-      {workingEvent && (
-        <TableCard className="mb-4 max-h-none overflow-visible p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <Eyebrow>{managerView ? 'READY TO ACTIVATE' : 'PENDING APPROVAL'}</Eyebrow>
-              <h2 className="m-0 text-lg">{workingEvent.event.name}</h2>
-              <p className="m-0 mt-1 text-xs text-brand-muted">
-                {managerView
-                  ? 'Add rules, then activate when ready. Not live on POS yet.'
-                  : 'Add rules while waiting. Not live on POS yet.'}
-              </p>
-            </div>
-            {managerView && (
-              <div className="flex gap-2">
-                <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveCreate(workingEvent.event.id)}>
-                  Activate
-                </PrimaryButton>
-                <SecondaryButton compact type="button" disabled={busy} onClick={() => setRejectTarget({ id: workingEvent.event.id, name: workingEvent.event.name })}>
-                  Discard
-                </SecondaryButton>
-              </div>
-            )}
-          </div>
-        </TableCard>
-      )}
-
-      <TableCard className="mb-4 max-h-none overflow-visible p-5">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="m-0 text-base">Rules</h2>
-            <p className="m-0 mt-1 text-xs text-brand-subtle">
-              {eventForRules?.rules?.length
-                ? `${eventForRules.rules.length} rule(s) on ${eventForRules.event?.status || 'event'}`
-                : 'Add rules to the pending or live event.'}
-            </p>
-          </div>
-        </div>
-
-        {eventForRules?.rules?.length ? (
-          // Full-bleed to the card edges, same treatment as Promo history below.
-          <div className="-mx-5 -mb-5 mt-4 overflow-x-auto overflow-y-visible">
-            <table className="min-w-full text-left text-xs [&_td:first-child]:pl-5 [&_td:last-child]:pr-5 [&_th:first-child]:pl-5 [&_th:last-child]:pr-5">
-              <thead className={tableHeadClass}>
-                <tr>
-                  <th className="px-3 py-2.5">Rule type</th>
-                  <th className="px-3 py-2.5">Discount %</th>
-                  <th className="px-3 py-2.5">Products in rule</th>
-                  <th className="px-3 py-2.5 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {eventForRules.rules.map((r) => (
-                  <tr key={r.id} className="border-t border-brand-softline">
-                    <td className="px-3 py-3 font-bold text-brand-ink">
-                      {r.ruleType}
-                      {r.bundleName && (
-                        <span className="block font-normal text-brand-subtle">{r.bundleName}</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-3">
-                      {r.discountPct}% off
-                    </td>
-                    <td className="px-3 py-3">
-                      {r.products
-                        .map((p) => `${p.productName || p.productId}${p.sku ? ` (${p.sku})` : ''}`)
-                        .join(', ')}
-                      {r.ruleType === 'pair_pct' && r.products.length >= 2 && (
-                        <span className="text-brand-subtle"> (pair)</span>
-                      )}
-                      {r.ruleType === 'bundle_pct' && r.products.length >= 2 && (
-                        <span className="text-brand-subtle"> (bundle)</span>
-                      )}
-                      {r.ruleType === 'bogo_pct' && r.products[0] && (
-                        <span className="text-brand-subtle">
-                          {' '}
-                          (buy {r.buyQty || 1} get {r.getQty || 1})
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-3 text-right">
-                      <button
-                        type="button"
-                        className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                        disabled={busy || eventForRules?.event?.status === 'stop_pending'}
-                        onClick={() =>
-                          openDeleteConfirm({
-                            kind: 'rule',
-                            id: r.id,
-                            label: r.ruleType,
-                          })}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          </>
         ) : (
-          <div className="mt-4 text-xs text-brand-subtle">No rules yet.</div>
+          <>
+            <div className="mt-3 flex flex-wrap items-end gap-2">
+              <SelectField
+                label="Managing"
+                className="w-full sm:w-auto sm:min-w-[240px] sm:max-w-xs"
+                value={managingId || ''}
+                onChange={(e) => setManagingId(e.target.value)}
+              >
+                {activeEvents.map((evt) => (
+                  <option key={evt.event.id} value={evt.event.id}>
+                    {evt.event.name} · {evt.event.status === 'stop_pending' ? 'Stop pending' : 'Active'}
+                  </option>
+                ))}
+              </SelectField>
+              {managedEvent && (
+                <>
+                  {managedEvent.event.status === 'active' && (
+                    <PrimaryButton compact type="button" disabled={busy} onClick={() => setStopTarget(managedEvent.event)}>
+                      {managerView ? 'Stop promo' : 'Request stop'}
+                    </PrimaryButton>
+                  )}
+                  {managerView && managedEvent.event.status === 'stop_pending' && (
+                    <>
+                      <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveStop(managedEvent.event.id)}>
+                        Approve stop
+                      </PrimaryButton>
+                      <SecondaryButton compact type="button" disabled={busy} onClick={() => onRejectStop(managedEvent.event.id)}>
+                        Reject stop
+                      </SecondaryButton>
+                    </>
+                  )}
+                </>
+              )}
+              <PrimaryButton
+                compact
+                type="button"
+                className="w-full sm:ml-auto sm:w-auto"
+                disabled={busy || !branchId}
+                onClick={() => void openPromoEditor({ mode: 'create', branchId })}
+              >
+                {managerView ? 'Create promo' : 'Request promo'}
+              </PrimaryButton>
+            </div>
+            {managedEvent?.event?.status === 'stop_pending' && managedEvent.event.stopReason && (
+              <p className="mt-1 mb-0 text-[11px] text-brand-warn">
+                Stop awaiting manager approval: {managedEvent.event.stopReason}
+              </p>
+            )}
+          </>
         )}
       </TableCard>
 
-      <TableCard className="max-h-none overflow-visible p-5">
-        <h2 className="m-0 text-base">Add promo rule</h2>
-        <p className="m-0 mt-1 text-xs text-brand-muted">
-          Applied only when cashier did not select PWD/Senior (no stacking).
-        </p>
-
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <SelectField label="Rule type" value={ruleType} onChange={(e) => setRuleType(e.target.value)}>
-            <option value="item_pct">Individual item % off</option>
-            <option value="pair_pct">Pair % off (both items)</option>
-            <option value="bundle_pct">Bundle % off (all bundle items)</option>
-            <option value="bogo_pct">Buy 1 Take 1 % off second (B1T1)</option>
-          </SelectField>
-
-          <Field
-            label="Discount % (0-100)"
-            inputMode="decimal"
-            value={String(discountPct)}
-            onChange={(e) => setDiscountPct(Number(e.target.value.replace(/[^\d.]/g, '')))}
-          />
-
-          {/* item_pct applies its % to every product on the rule, so one rule covers as
-              many items as you tick — no need for one rule per product. */}
-          {ruleType === 'item_pct' && (
-            <ProductMultiSelect
-              label="Products on this promo"
-              products={products}
-              selected={itemSelected}
-              onChange={setItemSelected}
-              hint="Every ticked product gets this % off. One rule covers them all."
+      <TableCard className="mb-4 mt-4 max-h-none overflow-visible p-0">
+        <div className="px-5 pt-5 pb-4">
+            <StatTiles
+              embedded
+              title="Promo performance"
+              subtitle={historyFrom || historyTo ? 'Filtered by promo start date' : 'All promos on this branch'}
+              items={[
+                { label: 'Total promos run', value: branchPerformanceSummary.promosRun },
+                {
+                  label: 'Total discount given',
+                  value: `−${money(branchPerformanceSummary.totalDiscount)}`,
+                  tone: 'danger',
+                },
+                { label: 'Total promo receipts', value: branchPerformanceSummary.totalReceipts },
+                {
+                  label: 'Discount % of sales',
+                  value:
+                    branchPerformanceSummary.pctOfSales != null
+                      ? `${branchPerformanceSummary.pctOfSales.toFixed(1)}%`
+                      : '—',
+                  hint: branchSalesTotal ? `of ${money(branchSalesTotal)} branch sales` : null,
+                },
+              ]}
             />
-          )}
-
-          {/* BOGO stays single: buy/get quantities are counted against one product. */}
-          {ruleType === 'bogo_pct' && (
-            <SelectField
-              label="Product"
-              value={productSingle || ''}
-              onChange={(e) => setProductSingle(e.target.value || null)}
-            >
-              {eligibleProducts.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.sku})
-                </option>
-              ))}
-            </SelectField>
-          )}
-
-          {ruleType === 'pair_pct' && (
-            <>
-              <SelectField label="Product A" value={productA || ''} onChange={(e) => setProductA(e.target.value || null)}>
-                {eligibleProducts.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.sku})
-                  </option>
-                ))}
-              </SelectField>
-              <SelectField label="Product B" value={productB || ''} onChange={(e) => setProductB(e.target.value || null)}>
-                {eligibleProducts.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.sku})
-                  </option>
-                ))}
-              </SelectField>
-            </>
-          )}
-
-          {ruleType === 'bundle_pct' && (
-            <>
-              <div>
-                <Field
-                  label="Bundle name"
-                  value={bundleName}
-                  onChange={(e) => setBundleName(e.target.value)}
-                  placeholder="e.g. Meryenda Bundle"
-                />
-                <p className="col-span-full m-0 mt-1 text-[11px] text-brand-subtle">
-                  Shown on the POS quick-add button and promo badge — a name for this
-                  specific set of items, not the promo event.
-                </p>
-              </div>
-              <ProductMultiSelect
-                label="Select bundle products"
-                products={eligibleProducts}
-                selected={bundleSelected}
-                onChange={setBundleSelected}
-                hint={bundleSelected.length < 2 ? 'Select at least 2 products for a bundle.' : null}
-              />
-            </>
-          )}
-
-          {(ruleType === 'pair_pct' || ruleType === 'bundle_pct' || ruleType === 'bogo_pct') && (
-            <p className="col-span-full m-0 text-xs text-brand-subtle">
-              Weighed (kg) items aren&apos;t eligible for pair/bundle/BOGO promos.
-            </p>
-          )}
         </div>
 
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <SecondaryButton
-            compact
-            type="button"
-            disabled={
-              busy ||
-              !eventForRules?.event?.id ||
-              !selectedProductsForRule.length ||
-              (ruleType === 'bundle_pct' && !bundleName.trim())
-            }
-            onClick={onAddRule}
-          >
-            <FiPlus className="mr-1" />
-            {busy ? 'Adding…' : 'Add rule'}
-          </SecondaryButton>
-        </div>
-      </TableCard>
-
-      {/*
-        Promo sales/performance lives on the History row's "Sales" action below — a
-        separate always-visible stats card for the currently-managed promo duplicated that
-        same data, so it was removed. Kept last on the page: Rules / Add rule (above) are
-        the working area, History is the reference table underneath.
-      */}
-      <TableCard className="mb-4 max-h-none p-5 mt-4">
+        <div className="border-t border-brand-softline px-5 pt-4 pb-5">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
-                <h2 className="m-0 text-base">Promo history</h2>
+                <h2 className="m-0 text-base">Promo summary</h2>
                 <p className="m-0 mt-1 text-xs text-brand-subtle">
-                  Past and current events with sales tracking — open Sales to see receipts and items sold.
+                  Sort columns to compare promos — Sales opens receipts and per-item breakdown.
                 </p>
               </div>
               {/* Filters by the promo's own start date, so picking a range means "promos that
@@ -1717,233 +1478,54 @@ export default function ManagerPromos() {
               </div>
             </div>
 
-            {filteredHistory.length ? (
-              // Full-bleed: negative margin cancels the card's p-5 so the dark header row
-              // reaches both edges instead of floating in a white gutter, and the first/last
-              // cells get that padding back individually so text still lines up with the title.
+            {sortedHistory.length ? (
               <div className="-mx-5 mt-4 overflow-x-auto overflow-y-visible">
                 <table className="min-w-full text-left text-xs [&_td:first-child]:pl-5 [&_td:last-child]:pr-5 [&_th:first-child]:pl-5 [&_th:last-child]:pr-5">
                   <thead className={tableHeadClass}>
                     <tr>
-                      <th className="px-3 py-2.5">Promo name</th>
-                      <th className="px-3 py-2.5">Description</th>
-                      <th className="px-3 py-2.5">Schedule</th>
+                      <SortableTh label="Promo name" sortKey="name" current={historySort} onSort={setHistorySort} />
+                      <SortableTh label="Rule type" sortKey="rule_type" current={historySort} onSort={setHistorySort} />
+                      <SortableTh label="Date range" sortKey="starts_at" current={historySort} onSort={setHistorySort} />
                       <th className="px-3 py-2.5">Status</th>
-                      <th className="px-3 py-2.5 text-right">Promo receipts</th>
-                      <th className="px-3 py-2.5 text-right">Discount given</th>
+                      <SortableTh label="Receipts" sortKey="receipts" current={historySort} onSort={setHistorySort} className="text-right" />
+                      <SortableTh label="Discount given" sortKey="discount" current={historySort} onSort={setHistorySort} className="text-right" />
+                      <SortableTh label="Discount % sales" sortKey="discount_pct" current={historySort} onSort={setHistorySort} className="text-right" />
                       <th className="px-3 py-2.5 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {historyPageRows.map((e) => {
-                      // Effective, not stored: a promo past its end date reads as expired even
-                      // if the DB sweep hasn't run yet. Keeps the row (and the Delete button
-                      // below) honest the moment the end time passes.
-                      const status = promoEffectiveStatus(e)
                       const badge = promoStatusBadge(e)
-                      const isLive = status === 'active' || status === 'stop_pending'
-                      const endedByClock = isLive !== (e.status === 'active' || e.status === 'stop_pending')
-                      const isEditing = editingEventId === e.id
+                      const isLive = promoEffectiveStatus(e) === 'active' || promoEffectiveStatus(e) === 'stop_pending'
                       const stats = historyStats[e.id]
-                      const fmt = (iso) => {
-                        if (!iso) return '—'
-                        const d = new Date(iso)
-                        if (Number.isNaN(d.getTime())) return '—'
-                        return d.toLocaleString([], { month: '2-digit', day: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
-                      }
-
+                      const discountPct =
+                        stats?.discountTotal && branchSalesTotal > 0
+                          ? ((stats.discountTotal / branchSalesTotal) * 100).toFixed(1)
+                          : null
                       return (
                         <tr key={e.id} className="border-t border-brand-softline">
-                          <td className="px-3 py-3 font-bold text-brand-ink">{e.name}</td>
                           <td className="px-3 py-3">
-                            {(() => {
-                              // Why it ended/was rejected lives here, not in Status — it's context
-                              // about the promo itself, appended after whatever description it
-                              // already has.
-                              const combined = [
-                                e.description,
-                                e.stop_reason ? `— Reason for ending: ${e.stop_reason}` : null,
-                                e.reject_reason ? `— Reason for rejecting: ${e.reject_reason}` : null,
-                              ]
-                                .filter(Boolean)
-                                .join(' ')
-                              return combined ? (
-                                <span className="block max-w-[220px] truncate text-brand-slate" title={combined}>
-                                  {combined}
-                                </span>
-                              ) : (
-                                <span className="text-brand-subtle">—</span>
-                              )
-                            })()}
+                            <span className="font-bold text-brand-ink">{e.name}</span>
+                            {e.supersedes_event_id && (
+                              <span className="mt-0.5 block text-[10px] text-brand-warn">Edit revision</span>
+                            )}
                           </td>
-                          <td className="px-3 py-3">{fmt(e.starts_at)} → {fmt(e.ends_at)}</td>
-                          {/* Colour-coded, and Stopped never renders as Expired or vice
-                              versa: "a manager pulled this" and "this finished on
-                              schedule" are different facts. */}
+                          <td className="px-3 py-3">{summarizePromoRuleTypes(eventRuleTypes[e.id])}</td>
+                          <td className="px-3 py-3">{fmtPromoSchedule(e.starts_at)} → {fmtPromoSchedule(e.ends_at)}</td>
                           <td className="px-3 py-3">
                             <StatusBadge compact tone={badge.tone} title={badge.hint}>
                               {badge.label}
                             </StatusBadge>
-                            {endedByClock && (
-                              <span className="mt-0.5 block text-[10px] text-brand-subtle">
-                                Reached its end time
-                              </span>
-                            )}
                           </td>
-                          <td className="px-3 py-3 text-right tabular-nums">
-                            {stats ? stats.receiptCount : '—'}
-                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums">{stats ? stats.receiptCount : '—'}</td>
                           <td className="px-3 py-3 text-right tabular-nums text-brand-danger">
                             {stats ? `−${money(stats.discountTotal || 0)}` : '—'}
                           </td>
+                          <td className="px-3 py-3 text-right tabular-nums">
+                            {discountPct != null ? `${discountPct}%` : '—'}
+                          </td>
                           <td className="px-3 py-3 text-right">
-                            {/* Collapsed into one menu — the row used to spill 4-8 inline text
-                                buttons across the width of the table depending on status. */}
-                            <div className="relative inline-block text-left">
-                              <button
-                                type="button"
-                                className="rounded p-1.5 text-brand-ink hover:bg-brand-n100"
-                                aria-label="Actions"
-                                aria-haspopup="true"
-                                aria-expanded={openActionsId === e.id}
-                                onClick={(event) => {
-                                  if (openActionsId === e.id) {
-                                    setOpenActionsId(null)
-                                    setActionsAnchor(null)
-                                    return
-                                  }
-                                  const rect = event.currentTarget.getBoundingClientRect()
-                                  setActionsAnchor({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
-                                  setOpenActionsId(e.id)
-                                }}
-                              >
-                                <FiMoreHorizontal />
-                              </button>
-                              {openActionsId === e.id && actionsAnchor && createPortal(
-                                <div
-                                  className="fixed z-50 flex min-w-[170px] flex-col rounded-md border border-brand-line bg-white p-1 text-left shadow-lg"
-                                  style={{ top: actionsAnchor.top, right: actionsAnchor.right }}
-                                >
-                                  <button
-                                    type="button"
-                                    className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-danger hover:bg-brand-n100"
-                                    disabled={busy}
-                                    onClick={() => {
-                                      setOpenActionsId(null)
-                                      openPromoTracking(e)
-                                    }}
-                                  >
-                                    Sales
-                                  </button>
-                                  {managerView && e.status === 'pending' && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
-                                        disabled={busy}
-                                        onClick={() => {
-                                          setOpenActionsId(null)
-                                          onApproveCreate(e.id)
-                                        }}
-                                      >
-                                        Approve
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
-                                        disabled={busy}
-                                        onClick={() => {
-                                          setOpenActionsId(null)
-                                          setRejectTarget({ id: e.id, name: e.name })
-                                        }}
-                                      >
-                                        Reject
-                                      </button>
-                                    </>
-                                  )}
-                                  {managerView && status === 'stop_pending' && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
-                                        disabled={busy}
-                                        onClick={() => {
-                                          setOpenActionsId(null)
-                                          onApproveStop(e.id)
-                                        }}
-                                      >
-                                        Approve stop
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
-                                        disabled={busy}
-                                        onClick={() => {
-                                          setOpenActionsId(null)
-                                          onRejectStop(e.id)
-                                        }}
-                                      >
-                                        Reject stop
-                                      </button>
-                                    </>
-                                  )}
-                                  {/* Duration can be edited regardless of status — including an already-active
-                                      promo — this only ever touches starts_at/ends_at (updatePromoEventDetails),
-                                      never approval state, so it doesn't need to go through dual control. */}
-                                  <button
-                                    type="button"
-                                    className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
-                                    disabled={busy || isEditing}
-                                    onClick={() => {
-                                      setOpenActionsId(null)
-                                      onStartEditEvent(e)
-                                    }}
-                                  >
-                                    Modify
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
-                                    disabled={busy}
-                                    onClick={() => {
-                                      setOpenActionsId(null)
-                                      onStartRenameEvent(e)
-                                    }}
-                                  >
-                                    Rename
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
-                                    disabled={busy}
-                                    onClick={() => {
-                                      setOpenActionsId(null)
-                                      onStartEditDescription(e)
-                                    }}
-                                  >
-                                    Edit description
-                                  </button>
-                                  {!isLive && (
-                                    <button
-                                      type="button"
-                                      className="rounded px-2 py-1.5 text-left text-xs font-bold text-brand-ink hover:bg-brand-n100"
-                                      disabled={busy}
-                                      onClick={() => {
-                                        setOpenActionsId(null)
-                                        openDeleteConfirm({
-                                          kind: 'event',
-                                          id: e.id,
-                                          label: e.name,
-                                        })
-                                      }}
-                                    >
-                                      Delete
-                                    </button>
-                                  )}
-                                </div>,
-                                document.body,
-                              )}
-                            </div>
+                            {renderPerformanceActionsMenu(e, { isLive })}
                           </td>
                         </tr>
                       )
@@ -1961,20 +1543,21 @@ export default function ManagerPromos() {
                 <Pager
                   page={historyPageIndex + 1}
                   pageCount={historyPageCount}
-                  total={filteredHistory.length}
+                  total={sortedHistory.length}
                   label="events"
                   onPrev={() => setHistoryPage((p) => Math.max(0, p - 1))}
                   onNext={() => setHistoryPage((p) => Math.min(historyPageCount - 1, p + 1))}
                 />
               </div>
             )}
+        </div>
       </TableCard>
 
         </>
       )}
 
       {/* Click-away for the "..." row menu — sits below the portal menu's z-50. */}
-      {openActionsId && (
+      {openActionsId && !promoEditor && (
         <div
           className="fixed inset-0 z-10"
           onClick={() => {
@@ -1984,109 +1567,25 @@ export default function ManagerPromos() {
         />
       )}
 
-      {editingEventId && (
-        <Modal onClose={onCancelEditEvent}>
-          <Eyebrow>MODIFY PROMO</Eyebrow>
-          <h2 className="m-0 text-lg">Update promo duration</h2>
-          <p className="mt-1 mb-4 text-xs text-brand-muted">
-            Set the new start and end date for this promo event.
-          </p>
-
-          <div className="grid gap-3">
-            <label className="block text-xs">
-              <div className="mb-1 font-bold text-brand-muted">Starts at</div>
-              <input
-                type="datetime-local"
-                value={editStartsAt}
-                onChange={(ev) => setEditStartsAt(ev.target.value)}
-                className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
-              />
-            </label>
-            <label className="block text-xs">
-              <div className="mb-1 font-bold text-brand-muted">Ends at</div>
-              <input
-                type="datetime-local"
-                value={editEndsAt}
-                onChange={(ev) => setEditEndsAt(ev.target.value)}
-                className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
-              />
-            </label>
-          </div>
-
-          <ModalActions>
-            <SecondaryButton compact type="button" disabled={busy} onClick={onCancelEditEvent}>
-              Cancel
-            </SecondaryButton>
-            <PrimaryButton compact type="button" disabled={busy} onClick={onSaveEditEvent}>
-              {busy ? 'Saving…' : 'Save changes'}
-            </PrimaryButton>
-          </ModalActions>
-        </Modal>
-      )}
-
-      {renameTarget && (
-        <Modal onClose={() => !busy && setRenameTarget(null)}>
-          <Eyebrow>RENAME PROMO</Eyebrow>
-          <h2 className="m-0 text-lg">Fix the promo name</h2>
-          <p className="mt-1 mb-4 text-xs text-brand-muted">
-            Only the name changes — schedule, rules, and approval status stay as they are.
-            Receipts already rung up keep the old name in their sales history.
-          </p>
-          <Field
-            label="Promo name"
-            value={renameValue}
-            onChange={(ev) => setRenameValue(ev.target.value.replace(/[<>]/g, ''))}
-            placeholder="e.g. Valentines"
-          />
-          <ModalActions>
-            <SecondaryButton compact type="button" disabled={busy} onClick={() => setRenameTarget(null)}>
-              Cancel
-            </SecondaryButton>
-            <PrimaryButton
-              compact
-              type="button"
-              disabled={busy || !renameValue.trim() || renameValue.trim() === renameTarget.name}
-              onClick={onSaveRename}
-            >
-              {busy ? 'Saving…' : 'Save name'}
-            </PrimaryButton>
-          </ModalActions>
-        </Modal>
-      )}
-
-      {descTarget && (
-        <Modal onClose={() => !busy && setDescTarget(null)}>
-          <Eyebrow>PROMO DESCRIPTION</Eyebrow>
-          <h2 className="m-0 mb-2 text-lg">What is this promo about?</h2>
-          <p className="m-0 mb-3 text-xs text-brand-muted">
-            Shown to managers and supervisors in Promo History. Not shown to customers.
-          </p>
-          <label className="block text-xs">
-            <textarea
-              rows={4}
-              value={descValue}
-              onChange={(ev) => setDescValue(ev.target.value)}
-              placeholder="e.g. 20% off all canned goods to clear shelf space before the new stock arrives."
-              className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
-            />
-          </label>
-          <ModalActions>
-            <SecondaryButton compact type="button" disabled={busy} onClick={() => setDescTarget(null)}>
-              Cancel
-            </SecondaryButton>
-            <PrimaryButton compact type="button" disabled={busy} onClick={onSaveDescription}>
-              {busy ? 'Saving…' : 'Save description'}
-            </PrimaryButton>
-          </ModalActions>
-        </Modal>
+      {promoEditor && (
+        <PromoEditorModal
+          open
+          mode={promoEditor.mode}
+          branchId={promoEditor.branchId}
+          branches={branches}
+          products={products}
+          event={promoEditor.event}
+          managerView={managerView}
+          staffId={user?.id}
+          onClose={closePromoEditor}
+          onSaved={onEditorSaved}
+        />
       )}
 
       {pendingDelete && (
         <Modal onClose={closeDeleteConfirm}>
           <Eyebrow>CONFIRM DELETE</Eyebrow>
-          <h2 className="m-0 text-lg">
-            Delete {pendingDelete.kind === 'rule' ? 'rule' : 'promo event'}?
-          </h2>
+          <h2 className="m-0 text-lg">Delete promo event?</h2>
           <p className="mt-1 mb-0 text-xs text-brand-muted">
             {pendingDelete.label ? `This will remove "${pendingDelete.label}". ` : ''}
             This action cannot be undone.
@@ -2159,6 +1658,7 @@ export default function ManagerPromos() {
           <h2 className="m-0 text-lg">{trackingEvent.event?.name}</h2>
           <p className="m-0 mt-1 text-xs text-brand-muted">
             Receipts and items sold under this promo
+            {trackingEvent.branchName ? ` · ${trackingEvent.branchName}` : ''}
             {trackingEvent.event?.status ? ` · ${trackingEvent.event.status}` : ''}
           </p>
 

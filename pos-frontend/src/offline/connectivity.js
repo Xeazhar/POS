@@ -1,7 +1,9 @@
-import { syncBranch } from './syncEngine'
+import { drainQueueInBackground } from './syncEngine'
+import { canSyncWithBackend, invalidateReachabilityCache, isDeviceOnline } from './reachability'
 
 let started = false
 let currentBranchId = null
+let syncDebounce = null
 
 export function setSyncBranchId(branchId) {
   currentBranchId = branchId
@@ -12,20 +14,28 @@ export function startConnectivityWatcher() {
   started = true
 
   const run = () => {
-    if (currentBranchId && navigator.onLine) {
-      syncBranch(currentBranchId).catch(() => {})
-    }
+    if (!currentBranchId || !isDeviceOnline()) return
+    invalidateReachabilityCache()
+    if (syncDebounce) window.clearTimeout(syncDebounce)
+    syncDebounce = window.setTimeout(() => {
+      syncDebounce = null
+      drainQueueInBackground(currentBranchId).catch(() => {})
+    }, 400)
   }
 
   window.addEventListener('online', run)
   window.addEventListener('offline', () => {
-    // UI listens via syncEngine subscribers / sync store
+    invalidateReachabilityCache()
+    if (syncDebounce) {
+      window.clearTimeout(syncDebounce)
+      syncDebounce = null
+    }
   })
 
-  // Periodic retry for failed queue items
+  // Periodic retry — respects per-item backoff inside listPending
   window.setInterval(() => {
-    if (currentBranchId && navigator.onLine) {
-      syncBranch(currentBranchId).catch(() => {})
+    if (currentBranchId && isDeviceOnline()) {
+      drainQueueInBackground(currentBranchId).catch(() => {})
     }
-  }, 60_000)
+  }, 30_000)
 }

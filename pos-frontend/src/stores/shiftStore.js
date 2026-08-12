@@ -231,11 +231,9 @@ export const useShiftStore = create((set, get) => ({
         const cashRefunds = Number((remote.cashRefunds + delta.refunds).toFixed(2))
         const expectedCash = Number(
           (
-            remote.startingCash +
-            cashSales -
-            cashRefunds -
-            remote.cashPaidOut -
-            remote.cashPickups
+            remote.expectedCash +
+            delta.sales -
+            delta.refunds
           ).toFixed(2),
         )
         return {

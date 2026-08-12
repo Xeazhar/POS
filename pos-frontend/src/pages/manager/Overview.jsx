@@ -21,6 +21,8 @@ import {
   hasSupabase,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
+import { isOnline, readBranchesCache } from '../../offline'
+import { withTimeout } from '../../utils/withTimeout'
 import { businessDate, greetingFor, money } from '../../utils/format'
 
 const PERIODS = [
@@ -128,7 +130,23 @@ function ManagerOverview() {
           setLoading(false)
           return
         }
-        const rows = await fetchBranches()
+        if (!isOnline()) {
+          const rows = (await readBranchesCache()) || []
+          if (!active) return
+          setBranches(rows)
+          setSummaries({})
+          setLinePoints([])
+          setPaymentMix([])
+          setTopProducts([])
+          setTopCategories([])
+          setComparison(null)
+          setCashImpactTotals(null)
+          setAuditEvents([])
+          setError('Offline — connect to refresh network-wide metrics.')
+          setLoading(false)
+          return
+        }
+        const rows = await withTimeout(fetchBranches(), 15000, 'Branches')
         if (!active) return
         setBranches(rows)
         const periodStart = new Date()
@@ -308,7 +326,7 @@ function ManagerOverview() {
   }
 
   return (
-    <div>
+    <div className="overflow-auto pt-2.5 pb-[18px]">
       <PageHeader eyebrow="ALL BRANCHES" title={greetingFor(user)}>
         <div className="flex flex-wrap items-center gap-1.5 max-[700px]:w-full">
           {loading && (
@@ -351,13 +369,11 @@ function ManagerOverview() {
         ))}
       </div>
 
-      {/* Revenue chart leads — it's the primary "how's the network doing" read. Sales
-          performance / Cash impact / Audit stack beside it rather than above it, so the
-          chart isn't pushed down the page by supporting numbers. Chart height is raised
-          to roughly match that 3-card stack instead of the default (a 2-card stack's) height. */}
-      <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(240px,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
-        <RevenueChart points={linePoints} period={`Network - ${periodLabel}`} height={300} />
-        <div className="flex flex-col gap-2.5">
+      <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
+        <div className="min-h-0 min-w-0">
+          <RevenueChart points={linePoints} period={`Network · ${periodLabel}`} fill />
+        </div>
+        <div className="flex min-w-0 flex-col gap-2.5">
           <StatTiles title="Sales performance" subtitle={periodLabel} items={salesPerformanceItems} />
           <StatTiles
             title="Payment & cash impact"

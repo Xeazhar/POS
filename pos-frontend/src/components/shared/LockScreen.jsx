@@ -97,13 +97,22 @@ function LockScreen({ onUnlock, onLogout }) {
         Locked · {user?.name || 'Staff'}
       </div>
 
-      <form onSubmit={unlock} className="w-full max-w-xs rounded-xl bg-white p-5 text-brand-ink shadow-lg">
+      <form
+        onSubmit={unlock}
+        className="w-full max-w-xs rounded-xl bg-white p-5 text-brand-ink shadow-lg"
+        autoComplete="off"
+        data-lpignore="true"
+        data-1p-ignore="true"
+      >
         <Eyebrow>UNLOCK</Eyebrow>
         <h2 className="mb-3 text-lg">{pinMode ? 'Enter your PIN' : 'Enter your password'}</h2>
         <Field
           label={pinMode ? 'PIN' : 'Password'}
+          name="cale-unlock-secret"
           type="password"
-          autoComplete="current-password"
+          autoComplete="new-password"
+          data-lpignore="true"
+          data-1p-ignore="true"
           value={secret}
           onChange={(e) =>
             setSecret(pinMode ? sanitizePinInput(e.target.value) : e.target.value)

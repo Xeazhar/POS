@@ -11,6 +11,7 @@ begin;
 
 -- Pending approvals / queues first (FKs into transactions)
 truncate table public.refund_requests restart identity cascade;
+truncate table public.till_action_requests restart identity cascade;
 truncate table public.sale_refund_lines restart identity cascade;
 truncate table public.sale_events restart identity cascade;
 truncate table public.audit_events restart identity cascade;
@@ -33,6 +34,7 @@ truncate table public.import_batches restart identity cascade;
 -- Day end / shifts / drawer (staff rows kept; shift history wiped)
 truncate table public.shift_adjustments restart identity cascade;
 truncate table public.cash_drawer_entries restart identity cascade;
+truncate table public.cash_movements restart identity cascade;
 truncate table public.staff_shifts restart identity cascade;
 truncate table public.day_ends restart identity cascade;
 

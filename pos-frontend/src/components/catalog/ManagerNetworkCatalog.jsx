@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  FiDownload,
   FiEdit2,
   FiMoreHorizontal,
   FiPlus,
@@ -36,6 +37,9 @@ import {
   hasSupabase,
   updateCatalogProduct,
 } from '../../lib/api'
+import { isOnline, readCatalogCache, writeCatalogCache } from '../../offline'
+import { RESTAURANT_FEATURES_ENABLED } from '../../utils/features'
+import { withTimeout } from '../../utils/withTimeout'
 import { useAuthStore } from '../../stores/posStore'
 import {
   buildCatalogImportPreview,
@@ -46,6 +50,7 @@ import {
 } from '../../utils/inventoryImport'
 import { money } from '../../utils/format'
 import { formatSupportError } from '../../utils/errors'
+import ImportPreviewLines from '../shared/ImportPreviewLines'
 import { categoryForMenuKind, hasBudgetTier, MENU_KINDS } from '../../utils/ulam'
 import { decimalOnly, digitsOnly, sanitizeText } from '../../utils/validate'
 
@@ -116,7 +121,7 @@ export default function ManagerNetworkCatalog() {
   const [importProgress, setImportProgress] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  const isRestaurant = branchType === 'restaurant'
+  const isRestaurant = RESTAURANT_FEATURES_ENABLED && branchType === 'restaurant'
 
   const reload = async () => {
     if (!hasSupabase) {
@@ -124,7 +129,18 @@ export default function ManagerNetworkCatalog() {
       setLoading(false)
       return
     }
-    setCatalog(await fetchCatalogProducts({ branchType }))
+    if (!isOnline()) {
+      setCatalog((await readCatalogCache(branchType)) || [])
+      setLoading(false)
+      return
+    }
+    try {
+      const rows = await withTimeout(fetchCatalogProducts({ branchType }), 15000, 'Network catalog')
+      setCatalog(rows)
+      await writeCatalogCache(branchType, rows || [])
+    } catch {
+      setCatalog((await readCatalogCache(branchType)) || [])
+    }
     setLoading(false)
   }
 
@@ -245,6 +261,7 @@ export default function ManagerNetworkCatalog() {
       await commitCatalogImport({
         preview,
         branchType,
+        staffId: user?.id || null,
         onProgress: (done, total) => setImportProgress({ done, total }),
       })
       setPreview(null)
@@ -254,6 +271,50 @@ export default function ManagerNetworkCatalog() {
     } finally {
       setBusy(false)
       setImportProgress(null)
+    }
+  }
+
+  /** Download the live catalog as CSV so a manager can edit prices/fields and re-import. */
+  const exportCatalog = async () => {
+    if (!catalog.length) {
+      setError('Nothing to export — this catalog type is empty.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      const XLSX = await loadXlsx()
+      const rows = isRestaurant
+        ? catalog.map((row) => ({
+            name: row.name,
+            sku: row.sku,
+            barcode: row.barcode || '',
+            category: row.category || '',
+            price: row.price,
+            budgetPrice: row.budgetPrice ?? '',
+            menuKind: row.menuKind || '',
+            discountEligible: row.discountEligible === true,
+          }))
+        : catalog.map((row) => ({
+            name: row.name,
+            sku: row.sku,
+            barcode: row.barcode || '',
+            category: row.category || '',
+            pricingMode: row.pricingMode || 'pc',
+            price: row.price,
+            discountEligible: row.discountEligible === true,
+            lowStockAt: row.lowStockAt ?? 10,
+          }))
+      const book = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(rows), 'Catalog')
+      XLSX.writeFile(
+        book,
+        `network-catalog-${isRestaurant ? 'restaurant' : 'retail'}.csv`,
+      )
+    } catch (err) {
+      setError(formatSupportError(err, 'CAT05'))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -535,21 +596,27 @@ export default function ManagerNetworkCatalog() {
       </PageHeader>
 
       <p className="mb-4 max-w-3xl text-xs text-brand-muted">
-        Add retail goods or restaurant menu items to the shared catalog (manually or CSV import).
-        Supervisors then add them to their branch from Catalog.
+        Add retail / meat products to the shared catalog (manually or CSV import).
+        To bulk-edit prices or fields, export the current catalog, edit the file, then import it
+        back — matching SKUs update and cascade to adopted branches. Supervisors adopt new items
+        onto their branch from Catalog.
       </p>
 
       <TableCard className="mb-4 max-h-none overflow-visible p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <SelectField
-            label="Catalog type"
-            className="w-full min-w-0 sm:max-w-[220px]"
-            value={branchType}
-            onChange={(e) => setBranchType(e.target.value)}
-          >
-            <option value="retail">Retail goods</option>
-            <option value="restaurant">Restaurant / potahe</option>
-          </SelectField>
+          {RESTAURANT_FEATURES_ENABLED ? (
+            <SelectField
+              label="Catalog type"
+              className="w-full min-w-0 sm:max-w-[220px]"
+              value={branchType}
+              onChange={(e) => setBranchType(e.target.value)}
+            >
+              <option value="retail">Retail goods</option>
+              <option value="restaurant">Restaurant / potahe</option>
+            </SelectField>
+          ) : (
+            <p className="text-xs font-bold text-brand-n700">Retail / meat catalog</p>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             <PrimaryButton
               compact
@@ -560,6 +627,15 @@ export default function ManagerNetworkCatalog() {
             >
               <FiPlus className="text-sm" /> Add item
             </PrimaryButton>
+            <SecondaryButton
+              compact
+              type="button"
+              className="!h-8 !min-h-0 !gap-1 !px-2.5 !text-[11px]"
+              disabled={busy || !catalog.length}
+              onClick={() => void exportCatalog()}
+            >
+              <FiDownload className="text-sm" /> Export
+            </SecondaryButton>
             <label
               className={`inline-flex h-8 cursor-pointer items-center gap-1 rounded-[5px] border border-brand-border bg-white px-2.5 text-[11px] font-bold text-brand-n800 ${
                 busy ? 'pointer-events-none opacity-35' : ''
@@ -583,38 +659,31 @@ export default function ManagerNetworkCatalog() {
         <TableCard className="mb-4 max-h-none p-5">
           <h2 className="m-0 text-lg">Import preview</h2>
           <p className="mt-1 text-xs text-brand-muted">
-            {preview.filename} · {preview.createCount} new · {preview.skippedCount} skipped
+            {preview.filename} · {preview.createCount} new · {preview.updateCount} update ·{' '}
+            {preview.skippedCount} skipped — review updates below before confirming.
           </p>
-          <div className="mt-3 max-h-56 overflow-auto text-xs">
-            {(preview.lines || []).slice(0, 40).map((line, i) => (
-              <div
-                key={`c-${i}`}
-                className="flex justify-between gap-2 border-t border-brand-softline py-1.5 first:border-t-0"
-              >
-                <span className="truncate">
-                  {line.values?.name || '—'}{' '}
-                  <span className="text-brand-subtle">({line.values?.sku})</span>
-                </span>
-                <span className="shrink-0 text-brand-success">create</span>
-              </div>
-            ))}
-            {(preview.skipped || []).length > 0 && (
-              <div className="mt-3 border-t border-brand-line pt-2">
-                <p className="m-0 mb-1 text-[11px] font-bold text-brand-warn">Skipped</p>
+          <ImportPreviewLines
+            lines={preview.lines}
+            creates={preview.creates}
+            updates={preview.updates}
+          />
+          {(preview.skipped || []).length > 0 && (
+            <div className="mt-4">
+              <p className="m-0 mb-1 text-[11px] font-bold text-brand-warn">
+                Skipped ({preview.skippedCount})
+              </p>
+              <div className="max-h-40 overflow-auto text-xs">
                 {(preview.skipped || []).slice(0, 40).map((line, i) => (
                   <div
                     key={`s-${i}`}
-                    className="flex justify-between gap-2 border-t border-brand-softline py-1.5 text-brand-subtle"
+                    className="border-t border-brand-softline py-1.5 text-brand-subtle first:border-t-0"
                   >
-                    <span className="truncate">
-                      {line.values?.name || line.values?.sku || '—'} — {line.reason}
-                    </span>
-                    <span className="shrink-0">skip</span>
+                    {line.values?.name || line.values?.sku || '—'} — {line.reason}
                   </div>
                 ))}
               </div>
-            )}
-          </div>
+            </div>
+          )}
           <div className="mt-4 flex gap-2">
             <SecondaryButton compact type="button" disabled={busy} onClick={() => setPreview(null)}>
               Cancel
@@ -622,10 +691,12 @@ export default function ManagerNetworkCatalog() {
             <PrimaryButton
               compact
               type="button"
-              disabled={busy || !preview.createCount}
+              disabled={busy || !(preview.createCount + preview.updateCount)}
               onClick={commitImport}
             >
-              {busy ? 'Importing…' : `Import ${preview.createCount} item(s)`}
+              {busy
+                ? 'Importing…'
+                : `Import ${preview.createCount} new, update ${preview.updateCount}`}
             </PrimaryButton>
           </div>
         </TableCard>
@@ -740,11 +811,10 @@ export default function ManagerNetworkCatalog() {
               </div>
             </div>
           )}
-          {/* Search spans two columns and bottom-aligns with the labelled selects beside
-              it — a fixed 260px width inside a grid track fought the grid and left the
-              field sitting short and high against its neighbours. */}
+          {/* Labelled SearchBox matches SelectField height (label + h-10 input row). */}
           <div className="grid grid-cols-2 items-end gap-2 sm:grid-cols-6">
             <SearchBox
+              label="Search"
               className="col-span-2 w-full"
               icon={<FiSearch />}
               placeholder="Search name"
@@ -972,7 +1042,12 @@ export default function ManagerNetworkCatalog() {
             <li>
               Optional: <code>menuKind</code>, <code>budgetPrice</code>, <code>barcode</code>
             </li>
-            <li>Skipped if SKU already exists in the network catalog</li>
+            <li>
+              Matching SKU (or barcode) <strong>updates</strong> the catalog row and cascades
+              identity/price/Discountable to adopted branches — export, edit, re-import for bulk
+              repricing
+            </li>
+            <li>Unchanged rows are skipped; new SKUs are created</li>
             <li>
               Sample:{' '}
               <a className="font-bold text-brand-ink" href="/samples/potahe-menu-import.csv" download>
@@ -995,7 +1070,12 @@ export default function ManagerNetworkCatalog() {
                 Do <strong>not</strong> include <code>stock</code> — quantity on hand belongs on
                 branch Inventory after adopt
               </li>
-              <li>Skipped if SKU already exists in the network catalog</li>
+              <li>
+              Matching SKU (or barcode) <strong>updates</strong> the catalog row and cascades
+              identity/price/Discountable to adopted branches — export, edit, re-import for bulk
+              repricing
+            </li>
+            <li>Unchanged rows are skipped; new SKUs are created</li>
               <li>
                 Sample:{' '}
                 <a

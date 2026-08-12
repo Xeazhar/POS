@@ -40,6 +40,14 @@ import {
   verifyAccountPassword,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
+import {
+  isOnline,
+  readBranchesCache,
+  readStaffCache,
+  writeBranchesCache,
+  writeStaffCache,
+} from '../../offline'
+import { withTimeout } from '../../utils/withTimeout'
 import { formatSupportError } from '../../utils/errors'
 import { money, today } from '../../utils/format'
 import { decimalOnly } from '../../utils/validate'
@@ -150,7 +158,6 @@ const fallbackRoles = [
   { name: 'cashier', label: 'Cashier' },
   { name: 'supervisor', label: 'Supervisor' },
   { name: 'manager', label: 'Manager' },
-  { name: 'admin', label: 'Admin' },
   { name: 'master', label: 'Master' },
 ]
 
@@ -222,16 +229,25 @@ function isStaffCodeTaken(existingStaff, code, excludeId = null) {
  * "main · open now" made a supervisor parse a drawer name and a state out of one string.
  * Drawer and status are different facts and get different columns.
  */
-function shiftStatus(row, adjusted) {
+function shiftStatus(row, adjustments = []) {
   if (row.open) {
     return { label: 'Open', tone: 'success', hint: 'Cashier is on this drawer now' }
   }
-  // Closed with no count recorded = the shift ended without the drawer being counted.
-  // That is not a normal close and must not look like one.
+  // Closed with no count recorded = cashier ended; supervisor has not confirmed receipt yet.
   if (row.holdsDrawer !== false && row.endingCash == null) {
     return { label: 'Pending handoff', tone: 'warn', hint: 'Ended without a drawer count' }
   }
-  if (adjusted) {
+  const handoffOnly =
+    adjustments.length > 0 &&
+    adjustments.every((a) => String(a.reason || '').startsWith('Handoff received'))
+  if (handoffOnly) {
+    return {
+      label: 'Received handoff',
+      tone: 'success',
+      hint: 'Supervisor confirmed drawer receipt at day end',
+    }
+  }
+  if (adjustments.length > 0) {
     return { label: 'Adjusted', tone: 'warn', hint: 'Cash figures were corrected after closing' }
   }
   return { label: 'Closed', tone: 'neutral', hint: 'Counted and cashed out' }
@@ -283,7 +299,7 @@ function ShiftsTab({ rows, adjustments, loading, showBranch, canAdjustCash, onAd
       ) : (
         rows.map((row) => {
           const logged = adjustments[row.id] || []
-          const status = shiftStatus(row, logged.length > 0)
+          const status = shiftStatus(row, logged)
           const floorShift = row.holdsDrawer === false
           return (
             <div
@@ -298,7 +314,7 @@ function ShiftsTab({ rows, adjustments, loading, showBranch, canAdjustCash, onAd
                 </small>
                 {/* Narrow screens drop most columns, so the money is summarised here. */}
                 <small className="mt-0.5 hidden text-[10px] text-brand-subtle max-[900px]:block">
-                  {floorShift ? 'No drawer' : row.drawerLabel || row.drawerId}
+                  {row.drawerLabel || row.drawerId || 'Main drawer'}
                   {' · in '}
                   {floorShift ? '—' : money(row.startingCash)}
                 </small>
@@ -309,7 +325,8 @@ function ShiftsTab({ rows, adjustments, loading, showBranch, canAdjustCash, onAd
                 </span>
               )}
               <span className="truncate text-brand-muted max-[900px]:hidden">
-                {floorShift ? 'No drawer' : row.drawerLabel || row.drawerId}
+                {/* Floor shifts (supervisor) still sit on the branch drawer — not "No drawer". */}
+                {row.drawerLabel || row.drawerId || 'Main drawer'}
               </span>
               <span className="min-w-0">
                 <StatusBadge compact tone={status.tone} title={status.hint}>
@@ -383,6 +400,7 @@ function ManagerStaff() {
 
   const [staff, setStaff] = useState([])
   const [branches, setBranches] = useState([])
+  const [statusFilter, setStatusFilter] = useState('all') // all | active | inactive
   const [roles, setRoles] = useState(fallbackRoles)
   const [form, setForm] = useState(null)
   const [formError, setFormError] = useState('')
@@ -450,11 +468,11 @@ function ManagerStaff() {
       setStaff([
         {
           id: 'local',
-          full_name: 'Demo Admin',
-          role: 'admin',
+          full_name: 'Demo Master',
+          role: 'master',
           is_active: true,
           branches: { name: 'Bayombong Branch #001' },
-          roles: { label: 'Admin' },
+          roles: { label: 'Master' },
         },
       ])
       setBranches([{ id: 'demo-main-branch', name: 'Bayombong Branch #001' }])
@@ -465,15 +483,31 @@ function ManagerStaff() {
     // Branches and the roles lookup are manager-shaped reads. A supervisor opening this
     // page for the shift log must not get an empty screen because one of them was denied
     // by RLS — only the staff list is load-bearing here.
+    if (!isOnline()) {
+      const [people, branchRows] = await Promise.all([
+        readStaffCache(lockedBranchId),
+        readBranchesCache(),
+      ])
+      setStaff(people || [])
+      setBranches(branchRows || [])
+      setRoles(fallbackRoles)
+      setLoading(false)
+      return
+    }
     const [people, branchRows, roleRows] = await Promise.all([
-      // Supervisors go through the definer roster (their RLS grants them one row only).
-      fetchStaffRoster({ branchId: lockedBranchId, isManager: canManageAccounts }),
-      fetchBranches().catch(() => []),
+      withTimeout(
+        fetchStaffRoster({ branchId: lockedBranchId, isManager: canManageAccounts }),
+        15000,
+        'Staff roster',
+      ),
+      withTimeout(fetchBranches(), 15000, 'Branches').catch(() => []),
       fetchRoles().catch(() => []),
     ])
     setStaff(people)
     setBranches(branchRows)
     setRoles(roleRows.length ? roleRows : fallbackRoles)
+    await writeStaffCache(lockedBranchId, people || [])
+    await writeBranchesCache(branchRows || [])
     setLoading(false)
   }
 
@@ -545,6 +579,8 @@ function ManagerStaff() {
     let rows = staff
     if (lockedBranchId) rows = rows.filter((p) => p.branch_id === lockedBranchId)
     else if (branchFilter) rows = rows.filter((p) => p.branch_id === branchFilter)
+    if (statusFilter === 'active') rows = rows.filter((p) => p.is_active !== false)
+    else if (statusFilter === 'inactive') rows = rows.filter((p) => p.is_active === false)
     if (q) {
       rows = rows.filter((p) =>
         `${p.full_name || ''} ${p.role || ''} ${p.login_code || ''} ${p.branches?.name || ''}`
@@ -553,7 +589,7 @@ function ManagerStaff() {
       )
     }
     return rows
-  }, [staff, lockedBranchId, branchFilter, query])
+  }, [staff, lockedBranchId, branchFilter, statusFilter, query])
 
   /** Flat shift rows for the Shifts tab, narrowed by the same search box. */
   const visibleShifts = useMemo(() => {
@@ -694,6 +730,16 @@ function ManagerStaff() {
               </span>
             </label>
           )}
+          <SelectField
+            label="Status"
+            className="min-w-[140px]"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
+            <option value="all">All</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </SelectField>
           <Field
             label="Shifts from"
             type="date"
@@ -852,7 +898,8 @@ function ManagerStaff() {
                     setForm({
                       id: person.id,
                       full_name: person.full_name,
-                      role: person.role,
+                      // Admin retired — open as manager so save passes canAssignRole.
+                      role: person.role === 'admin' ? 'manager' : person.role,
                       branch_id: person.branch_id,
                       is_active: person.is_active,
                       email: '',
@@ -861,7 +908,9 @@ function ManagerStaff() {
                       login_pin: '',
                       permissions: Array.isArray(person.permissions)
                         ? person.permissions
-                        : defaultPermissionsFor(person.role),
+                        : defaultPermissionsFor(
+                            person.role === 'admin' ? 'manager' : person.role,
+                          ),
                     })
                   }}
                 >
@@ -916,18 +965,18 @@ function ManagerStaff() {
               sessions.map((row) => (
                 <div
                   key={row.staffId}
-                  className="flex flex-wrap items-center justify-between gap-2 border-t border-brand-softline px-3 py-2.5 text-xs first:border-t-0"
+                  className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-brand-softline px-3 py-2.5 text-xs first:border-t-0"
                 >
-                  <div className="min-w-0">
+                  <div className="min-w-0 overflow-hidden">
                     <strong className="block truncate text-brand-ink">{row.name}</strong>
-                    <span className="block text-[10px] text-brand-subtle capitalize">
+                    <span className="block truncate text-[10px] text-brand-subtle capitalize">
                       {row.role || '—'} · {row.branchName}
                       {row.heartbeatAt
                         ? ` · last seen ${new Date(row.heartbeatAt).toLocaleString()}`
                         : ''}
                     </span>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
                     <StatusBadge compact tone={row.isStale ? 'neutral' : 'success'}>
                       {row.isStale ? 'Expired' : 'Live'}
                     </StatusBadge>

@@ -31,11 +31,19 @@ export async function enqueue(type, payload, { branchId, clientId } = {}) {
  */
 export const MAX_SYNC_ATTEMPTS = 5
 
+/** Exponential backoff before retrying a failed queue item (spec §10). */
+const RETRY_DELAYS_MS = [2000, 5000, 15000, 30000, 60000]
+
 export async function listPending(branchId = null) {
+  const now = Date.now()
   let rows = await db.syncQueue
     .where('status')
     .anyOf(QUEUE_STATUS.PENDING, QUEUE_STATUS.FAILED, QUEUE_STATUS.SYNCING)
     .sortBy('createdAt')
+  rows = rows.filter((row) => {
+    if (!row.nextRetryAt) return true
+    return new Date(row.nextRetryAt).getTime() <= now
+  })
   if (branchId) rows = rows.filter((row) => row.branchId === branchId)
   return rows
 }
@@ -62,6 +70,7 @@ export async function retryBlocked(branchId = null) {
       db.syncQueue.update(row.id, {
         status: QUEUE_STATUS.PENDING,
         attempts: 0,
+        nextRetryAt: null,
         updatedAt: new Date().toISOString(),
       }),
     ),
@@ -101,12 +110,18 @@ export async function markFailed(id, errorMessage) {
   const row = await db.syncQueue.get(id)
   const attempts = (row?.attempts || 0) + 1
   const blocked = attempts >= MAX_SYNC_ATTEMPTS
+  const delayMs = RETRY_DELAYS_MS[Math.min(Math.max(attempts - 1, 0), RETRY_DELAYS_MS.length - 1)]
+  const nextRetryAt = blocked ? null : new Date(Date.now() + delayMs).toISOString()
   await db.syncQueue.update(id, {
     status: blocked ? QUEUE_STATUS.BLOCKED : QUEUE_STATUS.FAILED,
     attempts,
     lastError: String(errorMessage || 'Sync failed').slice(0, 500),
+    nextRetryAt,
     updatedAt: new Date().toISOString(),
   })
+  if (typeof console !== 'undefined' && import.meta.env?.DEV) {
+    console.warn('[SYNC_FAILED]', row?.type, attempts, blocked ? 'BLOCKED' : `retry in ${delayMs}ms`)
+  }
   return { blocked, attempts }
 }
 

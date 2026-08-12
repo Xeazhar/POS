@@ -2,17 +2,19 @@ import { supabase, isConfigured } from '../lib/supabase'
 
 /**
  * Live-update transport (Supabase Realtime), separate from the offline sync
- * queue in this folder. This is one-way (server → open tab): "something on
- * this table changed, go refetch" — it does not replace the queue/pull logic
- * that keeps IndexedDB and Postgres reconciled while offline.
+ * queue in this folder. This is one-way (server → open tab): "something
+ * changed, go refetch" — it does not replace the queue/pull logic that keeps
+ * IndexedDB and Postgres reconciled while offline.
  *
- * RLS gates delivery the same way it gates a normal SELECT, so a subscribed
- * client only ever receives events for rows it could already read.
+ * Primary path: private Broadcast on branch-scoped topics (see
+ * migrate_realtime_broadcast_v1.sql). Payloads are notifications only —
+ * authoritative state always comes from a subsequent secured fetch/RPC.
  *
- * Requires `migrate_enable_realtime.sql` to have been run — if a table isn't
- * in the `supabase_realtime` publication, its channel just never fires
- * (silent no-op, not an error), which is fine: callers should still do the
- * one immediate fetch they'd do anyway and treat this as a nice-to-have.
+ * Secondary path: postgres_changes (migrate_enable_realtime.sql) still used
+ * where Broadcast triggers are not wired (e.g. promo rule child tables).
+ *
+ * Channel names are NOT a security boundary — Realtime Authorization +
+ * realtime.messages RLS (staff_can_subscribe_branch / is_manager) gate delivery.
  */
 
 /** Reconnect backoff, in ms. Capped — a dead channel must keep retrying cheaply forever. */
@@ -25,16 +27,21 @@ function log(...args) {
   if (debugEnabled) console.info('[realtime]', ...args)
 }
 
+/** Ensure the Realtime socket carries the current JWT (required for private channels). */
+export async function ensureRealtimeAuth() {
+  if (!isConfigured || !supabase) return
+  try {
+    await supabase.realtime.setAuth()
+  } catch (err) {
+    log('setAuth failed', err)
+  }
+}
+
 /**
  * Subscribe to postgres_changes on one table. Returns an unsubscribe function.
  *
- * A raw `.subscribe()` is fire-and-forget: if the socket drops (laptop sleeps, wifi
- * flaps, Supabase restarts) the channel goes CHANNEL_ERROR/TIMED_OUT/CLOSED and simply
- * stops delivering, with no error surfaced anywhere — the tab looks fine and silently
- * serves stale data. So watch the status callback and rebuild the channel on failure.
- *
- * `onStatus` (optional) is called with each raw status, so a caller can force a refetch
- * on reconnect — events that fired while disconnected are gone, not replayed.
+ * Prefer subscribeBroadcast for inventory/ops. Keep this for tables without
+ * Broadcast triggers or as an explicit fallback.
  */
 export function subscribeTable({ table, filter, onChange, onStatus }) {
   if (!isConfigured || !supabase || !table || !onChange) return () => {}
@@ -95,9 +102,114 @@ export function subscribeTable({ table, filter, onChange, onStatus }) {
   }
 }
 
-/** Subscribe to several tables at once; returns one combined unsubscribe function. */
+/**
+ * Private Broadcast subscription. Topic must match server-side realtime.send
+ * topics (e.g. pos:branch:<uuid>:inventory). Authorization is enforced by
+ * RLS on realtime.messages — a forged topic name yields CHANNEL_ERROR / no events.
+ *
+ * @param {object} options
+ * @param {string} options.topic
+ * @param {string[]} [options.events] broadcast event names; default listens to common POS events
+ * @param {Function} options.onEvent  (payload) => void — treat as "refetch signal" only
+ * @param {Function} [options.onStatus]
+ */
+export function subscribeBroadcast({ topic, events, onEvent, onStatus }) {
+  if (!isConfigured || !supabase || !topic || !onEvent) return () => {}
+
+  const eventList =
+    Array.isArray(events) && events.length > 0
+      ? events
+      : ['INVENTORY_CHANGED', 'CATALOG_CHANGED', 'OPERATIONS_CHANGED']
+
+  const label = `bc:${topic}`
+  let channel = null
+  let retryTimer = null
+  let attempt = 0
+  let disposed = false
+
+  const teardown = () => {
+    if (retryTimer) {
+      clearTimeout(retryTimer)
+      retryTimer = null
+    }
+    if (channel) {
+      supabase.removeChannel(channel)
+      channel = null
+    }
+  }
+
+  const scheduleRetry = () => {
+    if (disposed || retryTimer) return
+    const delay = RETRY_DELAYS[Math.min(attempt, RETRY_DELAYS.length - 1)]
+    attempt += 1
+    log(`${label}: reconnecting in ${delay}ms (attempt ${attempt})`)
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      teardown()
+      void connect()
+    }, delay)
+  }
+
+  const connect = async () => {
+    if (disposed) return
+    await ensureRealtimeAuth()
+    if (disposed) return
+
+    let builder = supabase.channel(topic, {
+      config: { private: true },
+    })
+    for (const event of eventList) {
+      builder = builder.on('broadcast', { event }, (message) => {
+        // Never trust payload as authoritative inventory/finance state.
+        onEvent(message?.payload ?? message)
+      })
+    }
+    channel = builder.subscribe((status) => {
+      if (disposed) return
+      log(`${label}: ${status}`)
+      onStatus?.(status)
+      if (status === 'SUBSCRIBED') {
+        attempt = 0
+        return
+      }
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        scheduleRetry()
+      }
+    })
+  }
+
+  void connect()
+
+  return () => {
+    disposed = true
+    teardown()
+  }
+}
+
+/** Branch inventory channel topic. */
+export function branchInventoryTopic(branchId) {
+  if (!branchId) return null
+  return `pos:branch:${branchId}:inventory`
+}
+
+/** Branch operations channel topic. */
+export function branchOperationsTopic(branchId) {
+  if (!branchId) return null
+  return `pos:branch:${branchId}:operations`
+}
+
+/** Manager network-wide operations inbox (RLS: is_manager only). */
+export const NETWORK_OPERATIONS_TOPIC = 'pos:network:operations'
+
+/** Subscribe to several postgres_changes tables; returns one combined unsubscribe. */
 export function subscribeMany(subs = []) {
   const unsubs = subs.filter(Boolean).map((sub) => subscribeTable(sub))
+  return () => unsubs.forEach((fn) => fn())
+}
+
+/** Subscribe to several private Broadcast topics. */
+export function subscribeBroadcastMany(subs = []) {
+  const unsubs = subs.filter(Boolean).map((sub) => subscribeBroadcast(sub))
   return () => unsubs.forEach((fn) => fn())
 }
 

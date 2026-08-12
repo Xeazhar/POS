@@ -22,6 +22,7 @@ import {
 } from '../components/ui'
 import {
   cancelRefundRequest,
+  dismissPendingRefundRequestsForTransaction,
   fetchBranchFiscalHeader,
   fetchRefundRequestById,
   fetchRefundSummary,
@@ -30,10 +31,11 @@ import {
   requestRefundApproval,
 } from '../lib/api'
 import { isDeviceEnabled, receiptPrinter } from '../devices'
-import { getLocalTransactionDetail } from '../offline'
+import { getLocalTransactionDetail, readBranchSnapshot } from '../offline'
 import { subscribeTable } from '../offline/realtime'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
-import { formatSupportError } from '../utils/errors'
+import { useSyncStore } from '../stores/syncStore'
+import { appError, formatSupportError } from '../utils/errors'
 import { isBusinessDayLocked, money, qty, today } from '../utils/format'
 import { buildReceipt } from '../utils/receipt'
 import { isSupervisorOrAbove } from '../utils/roles'
@@ -87,14 +89,16 @@ const filterSelectClass =
 
 function Transactions() {
   const transactions = useInventoryStore((state) => state.transactions)
+  const hydrate = useInventoryStore((state) => state.hydrate)
   const dayEnds = useInventoryStore((state) => state.dayEnds)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
-  const productsLoading = useProductStore((state) => state.loading)
   const voidTransaction = useInventoryStore((state) => state.voidTransaction)
   const refundTransactionItems = useInventoryStore((state) => state.refundTransactionItems)
   const user = useAuthStore((state) => state.user)
+  const online = useSyncStore((state) => state.online)
+  const refundOffline = hasSupabase && !online
   const [query, setQuery] = useState('')
-  const [dateFilter, setDateFilter] = useState('all')
+  const [dateFilter, setDateFilter] = useState('today')
   const [dateValue, setDateValue] = useState(today(dayOpenHour))
   const [statusFilter, setStatusFilter] = useState('all')
   const [payFilter, setPayFilter] = useState('all')
@@ -113,10 +117,56 @@ function Transactions() {
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [txLoading, setTxLoading] = useState(true)
+  const [offlineRefundOpen, setOfflineRefundOpen] = useState(false)
 
   const canApproveDirect = isSupervisorOrAbove(user?.role)
   const cashierDay = today(dayOpenHour)
   const isTxnLocked = (item) => isBusinessDayLocked(dayEnds, item.date, dayOpenHour)
+
+  const refundDisplayGroups = useMemo(() => {
+    const groups = []
+    const claimed = new Set()
+    refundLines.forEach((line, index) => {
+      if (claimed.has(index)) return
+      if (line.promoGroupId) {
+        const members = refundLines
+          .map((row, i) => ({ row, index: i }))
+          .filter(({ row }) => row.promoGroupId === line.promoGroupId)
+        members.forEach(({ index: i }) => claimed.add(i))
+        groups.push({
+          kind: 'promo',
+          id: line.promoGroupId,
+          name: line.promoGroupName || 'Promo set',
+          members,
+        })
+      } else {
+        claimed.add(index)
+        groups.push({ kind: 'line', members: [{ row: line, index }] })
+      }
+    })
+    return groups
+  }, [refundLines])
+
+  const toggleRefundLine = (index, selected) => {
+    setRefundLines((rows) => {
+      const groupId = rows[index]?.promoGroupId
+      if (!groupId) {
+        return rows.map((row, i) =>
+          i === index ? { ...row, selected, refundQty: selected ? row.maxRefund : 0 } : row,
+        )
+      }
+      return rows.map((row) =>
+        row.promoGroupId === groupId
+          ? {
+              ...row,
+              selected: row.maxRefund > 0 ? selected : row.selected,
+              refundQty: row.maxRefund > 0 ? (selected ? row.maxRefund : 0) : row.refundQty,
+            }
+          : row,
+      )
+    })
+  }
 
   const list = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -151,6 +201,26 @@ function Transactions() {
   useEffect(() => {
     setPage(0)
   }, [query, statusFilter, payFilter, discountFilter, dateFilter, dateValue, sortBy])
+
+  // Always paint from IndexedDB first — offline sales live here until sync.
+  useEffect(() => {
+    if (!user?.branchId) {
+      setTxLoading(false)
+      return undefined
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const data = await readBranchSnapshot(user.branchId)
+        if (!cancelled && data) hydrate(data)
+      } finally {
+        if (!cancelled) setTxLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [user?.branchId, hydrate])
 
   const pageCount = Math.max(1, Math.ceil(list.length / PAGE_SIZE))
   const pageIndex = Math.min(page, pageCount - 1)
@@ -198,7 +268,7 @@ function Transactions() {
 
   const clearFilters = () => {
     setQuery('')
-    setDateFilter('all')
+    setDateFilter('today')
     setDateValue(today(dayOpenHour))
     setStatusFilter('all')
     setPayFilter('all')
@@ -218,8 +288,14 @@ function Transactions() {
 
   const startRefund = async (item) => {
     setError('')
+    if (refundOffline) {
+      setOfflineRefundOpen(true)
+      return
+    }
     if (isTxnLocked(item)) {
-      setError('This business day is locked. Ask a manager to reopen before voiding or refunding.')
+      // Quote TILL04 so support hears "day closed / wait for reopen or next day", not a
+      // bare string — and not AUTH07, which used to steal any message containing "locked".
+      setError(formatSupportError(appError('TILL04'), 'TILL04'))
       return
     }
     setRefunding(item)
@@ -265,6 +341,10 @@ function Transactions() {
     setBusy(true)
     try {
       await voidTransaction(item.id, reason, approvedBy, approver)
+      await dismissPendingRefundRequestsForTransaction({
+        transactionId: item.id,
+        staffId: approvedBy || user?.id,
+      })
       closeRefund()
       setDetail(null)
     } catch (err) {
@@ -291,6 +371,10 @@ function Transactions() {
           item_id: line.id,
           quantity: Number(line.refundQty),
         })),
+      })
+      await dismissPendingRefundRequestsForTransaction({
+        transactionId: item.id,
+        staffId: approvedBy || user?.id,
       })
       closeRefund()
       setDetail(null)
@@ -406,7 +490,7 @@ function Transactions() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remoteRequest?.id, remoteRequest?.status])
 
-  if (productsLoading && !transactions.length) {
+  if (txLoading && !transactions.length) {
     return <PageSkeleton variant="table" />
   }
 
@@ -512,7 +596,7 @@ function Transactions() {
           <span className="truncate text-center max-[700px]:hidden">Status</span>
           <span className="truncate text-right max-[700px]:hidden">Action</span>
         </div>
-        {productsLoading ? (
+        {txLoading ? (
           <SkeletonRows rows={8} cols={5} />
         ) : (
         pageRows.map((item) => (
@@ -583,13 +667,15 @@ function Transactions() {
             <button
               type="button"
               className="justify-self-end border-0 bg-transparent text-[11px] text-brand-danger-soft disabled:text-brand-n500 max-[700px]:hidden"
-              disabled={item.status === 'Voided' || isTxnLocked(item)}
+              disabled={item.status === 'Voided' || isTxnLocked(item) || refundOffline}
               title={
-                isTxnLocked(item)
-                  ? 'Business day locked — reopen required'
-                  : item.status === 'Voided'
-                    ? 'Already voided'
-                    : 'Refund'
+                refundOffline
+                  ? 'Refunds need a connection — make a physical list and record when online (SALE07)'
+                  : isTxnLocked(item)
+                    ? 'Business day closed — no refunds until till reopens or next day opens (TILL04)'
+                    : item.status === 'Voided'
+                      ? 'Already voided'
+                      : 'Refund'
               }
               onClick={(event) => {
                 event.stopPropagation()
@@ -601,10 +687,10 @@ function Transactions() {
           </div>
         ))
         )}
-        {!productsLoading && list.length === 0 && (
+        {!txLoading && list.length === 0 && (
           <div className="px-5 py-8 text-xs text-brand-subtle">No transactions match these filters.</div>
         )}
-        {!productsLoading && pageCount > 1 && (
+        {!txLoading && pageCount > 1 && (
           <Pager
             page={pageIndex + 1}
             pageCount={pageCount}
@@ -653,6 +739,14 @@ function Transactions() {
             setDetail(null)
             startRefund(row)
           }}
+          refundBlocked={detail ? isTxnLocked(detail) || refundOffline : false}
+          refundBlockReason={
+            refundOffline
+              ? 'Refunds need a connection — make a physical list and record when online (SALE07)'
+              : detail && isTxnLocked(detail)
+                ? 'Business day closed — no refunds until till reopens or next day opens (TILL04)'
+                : undefined
+          }
         />
       )}
 
@@ -697,49 +791,82 @@ function Transactions() {
             Refund · {refunding.orNumber || String(refunding.id).slice(0, 8)}
           </h2>
           <div className="max-h-[260px] overflow-auto rounded-md border border-brand-softline">
-            {refundLines.map((line, index) => (
-              <div
-                key={line.id}
-                className="grid grid-cols-[auto_1fr_auto] items-center gap-3 border-t border-brand-softline px-3 py-2.5 text-xs first:border-t-0"
-              >
-                <input
-                  type="checkbox"
-                  checked={line.selected}
-                  disabled={line.maxRefund <= 0}
-                  onChange={(e) => {
-                    const selected = e.target.checked
-                    setRefundLines((rows) =>
-                      rows.map((row, i) => (i === index ? { ...row, selected } : row)),
-                    )
-                  }}
-                />
-                <div className="min-w-0">
-                  <strong className="block truncate">{line.name}</strong>
-                  <small className="text-[10px] text-brand-subtle">
-                    Sold {qty(line.quantity, line.pricingMode === 'kg' ? 'kg' : 'pc')}
-                    {line.alreadyRefunded > 0
-                      ? ` · already refunded ${qty(line.alreadyRefunded, line.pricingMode === 'kg' ? 'kg' : 'pc')}`
-                      : ''}
-                  </small>
-                </div>
-                <label className="flex items-center gap-1 text-[10px] text-brand-subtle">
-                  Qty
+            {refundDisplayGroups.map((group) => {
+              if (group.kind === 'promo') {
+                const selectable = group.members.some(({ row }) => row.maxRefund > 0)
+                const allSelected =
+                  selectable &&
+                  group.members.every(({ row }) => row.maxRefund <= 0 || (row.selected && row.refundQty === row.maxRefund))
+                return (
+                  <div
+                    key={group.id}
+                    className="grid grid-cols-[auto_1fr] items-start gap-3 border-t border-brand-softline px-3 py-2.5 text-xs first:border-t-0"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      disabled={!selectable}
+                      onChange={(e) => {
+                        const selected = e.target.checked
+                        group.members.forEach(({ index }) => toggleRefundLine(index, selected))
+                      }}
+                    />
+                    <div className="min-w-0">
+                      <strong className="block text-brand-ink">{group.name}</strong>
+                      <small className="mt-0.5 block text-[10px] leading-snug text-brand-subtle">
+                        {group.members
+                          .map(({ row }) =>
+                            `${row.name} · ${qty(row.quantity, row.pricingMode === 'kg' ? 'kg' : 'pc')}`,
+                          )
+                          .join(', ')}
+                      </small>
+                      <small className="mt-1 block text-[10px] text-brand-warn">
+                        Promo sets must be refunded together.
+                      </small>
+                    </div>
+                  </div>
+                )
+              }
+              const { row, index } = group.members[0]
+              return (
+                <div
+                  key={`${row.id}-${index}`}
+                  className="grid grid-cols-[auto_1fr_auto] items-center gap-3 border-t border-brand-softline px-3 py-2.5 text-xs first:border-t-0"
+                >
                   <input
-                    className="w-14 rounded border border-brand-line px-1 py-1 text-right text-xs text-brand-ink"
-                    inputMode="decimal"
-                    disabled={!line.selected || line.maxRefund <= 0}
-                    value={line.refundQty}
-                    onChange={(e) => {
-                      const raw = e.target.value.replace(/[^\d.]/g, '')
-                      const n = Math.min(line.maxRefund, Math.max(0, Number(raw) || 0))
-                      setRefundLines((rows) =>
-                        rows.map((row, i) => (i === index ? { ...row, refundQty: n } : row)),
-                      )
-                    }}
+                    type="checkbox"
+                    checked={row.selected}
+                    disabled={row.maxRefund <= 0}
+                    onChange={(e) => toggleRefundLine(index, e.target.checked)}
                   />
-                </label>
-              </div>
-            ))}
+                  <div className="min-w-0">
+                    <strong className="block truncate">{row.name}</strong>
+                    <small className="text-[10px] text-brand-subtle">
+                      Sold {qty(row.quantity, row.pricingMode === 'kg' ? 'kg' : 'pc')}
+                      {row.alreadyRefunded > 0
+                        ? ` · already refunded ${qty(row.alreadyRefunded, row.pricingMode === 'kg' ? 'kg' : 'pc')}`
+                        : ''}
+                    </small>
+                  </div>
+                  <label className="flex items-center gap-1 text-[10px] text-brand-subtle">
+                    Qty
+                    <input
+                      className="w-14 rounded border border-brand-line px-1 py-1 text-right text-xs text-brand-ink"
+                      inputMode="decimal"
+                      disabled={!row.selected || row.maxRefund <= 0}
+                      value={row.refundQty}
+                      onChange={(e) => {
+                        const raw = e.target.value.replace(/[^\d.]/g, '')
+                        const n = Math.min(row.maxRefund, Math.max(0, Number(raw) || 0))
+                        setRefundLines((rows) =>
+                          rows.map((entry, i) => (i === index ? { ...entry, refundQty: n } : entry)),
+                        )
+                      }}
+                    />
+                  </label>
+                </div>
+              )
+            })}
             {refundLines.length === 0 && (
               <div className="px-3 py-4 text-xs text-brand-subtle">No line items available.</div>
             )}
@@ -876,6 +1003,27 @@ function Transactions() {
             }
           }}
         />
+      )}
+
+      {offlineRefundOpen && (
+        <Modal onClose={() => setOfflineRefundOpen(false)}>
+          <Eyebrow>REFUND</Eyebrow>
+          <h2 className="mb-2 text-lg">Not available offline</h2>
+          <p className="mb-1 text-sm text-brand-muted">
+            Refunds change inventory, cash accountability, and audit records — they need a
+            connection to the server.
+          </p>
+          <p className="mb-4 text-xs text-brand-subtle">
+            Recommend making a physical list of items to refund and recording them when the system
+            is back online.
+          </p>
+          <p className="mb-4 text-xs text-brand-n500">{formatSupportError(appError('SALE07'), 'SALE07')}</p>
+          <ModalActions>
+            <PrimaryButton type="button" onClick={() => setOfflineRefundOpen(false)}>
+              Close
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
       )}
     </div>
   )

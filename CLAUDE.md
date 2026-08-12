@@ -33,7 +33,7 @@ Database is Supabase Postgres + RLS. Schema lives in `pos-frontend/supabase/sche
 
 ## Project stage (as of 2026-08)
 
-**Version `0.18.0`, pre-1.0 — in testing, not live for real sales.** Branch: `Development`. Do not cut `1.0.0` until trusted for money.
+**Version `0.19.0`, pre-1.0 — in testing, not live for real sales.** Branch: `Development`. Do not cut `1.0.0` until trusted for money.
 
 Shipped capability (treat as current, not backlog):
 - Offline-first POS, shifts/change fund, day-end dual control, cash drawer / petty workflow
@@ -41,7 +41,8 @@ Shipped capability (treat as current, not backlog):
 - Network catalog with cascades to adopted branches (Discountable + identity/price via `cascadeDiscountEligibleToBranches` / `cascadeCatalogFieldsToBranches`)
 - Manager/supervisor dashboards: Sales performance, Payment & cash impact (cash/card/e-wallet), Audit
 - Remote manager refund approval (`refund_requests`) when no supervisor on site
-- Layered realtime (`useLiveData` + resubscribe + poll fallback), PBKDF2 offline lock unlock
+- **Private Realtime Broadcast** (branch-scoped) + poll/focus fallback; PBKDF2 offline lock unlock; offline supervisor PIN verifiers
+- **Meat + retail focus** — restaurant/carinderia UI archived (`RESTAURANT_FEATURES_ENABLED`)
 - **Schema/load overhaul:** apply `wipe_non_user_data.sql` (DEV, keeps staff) → `migrate_schema_cleanup_v1.sql` → `migrate_network_manager_overview.sql`; app uses split bootstrap + Overview RPC
 
 Still true / watch-outs:

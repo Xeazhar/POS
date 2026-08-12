@@ -17,6 +17,187 @@ computation, OR numbering).
 
 ---
 
+## 0.19.0 — 2026-08-13
+
+### Added: Private Realtime Broadcast (branch-scoped)
+
+Security-first live updates: Postgres remains authoritative; private Broadcast notifies
+terminals to refetch. Apply `migrate_realtime_broadcast_v1.sql` (+ optional
+`migrate_realtime_broadcast_policies.sql`) and enable **Realtime Authorization** in the
+Supabase dashboard. Topics: `pos:branch:<id>:inventory`, `pos:branch:<id>:operations`,
+`pos:network:operations` (managers). Payloads are minimal (no stock qty / PINs / PII).
+Cashiers lose direct `branch_inventory` writes (sales still use `record_stock_movement`).
+Promo live path still uses postgres_changes until Broadcast covers rule children.
+
+### Changed: Restaurant features archived (meat + retail focus)
+
+Carinderia/restaurant UI is gated off via `RESTAURANT_FEATURES_ENABLED = false`
+(`src/utils/features.js`). Branch type and network catalog restaurant options are hidden;
+auth/branch loads coerce to retail. Code + SQL kept — restore by flipping the flag.
+See `docs/archive/restaurant-features.md`.
+
+### Security: Login / unlock / supervisor PIN — no browser credential save
+
+Login, lock screen, and supervisor approve forms use `autoComplete="off"` /
+`new-password`, non-standard field names, and password-manager ignore hints so browsers
+and extensions are less likely to autofill or offer to save staff PINs/passwords.
+
+### Fixed: POS promo tiles flash-in delay
+
+`loadPromos` hydrates from IndexedDB cache before the network fetch so Promos category
+and badges appear immediately on warm terminals.
+
+### Fixed: Branches list load
+
+Manager Branches paints cards from cache / `fetchBranches({ includeCompany: false })`
+first, then loads Today/Orders/Low-stock KPIs via one `manager_overview_metrics` RPC
+(falls back to N× `branchSummary` if the RPC is missing).
+
+### Fixed: Revenue chart layout + label size
+
+Branch, Overview, and supervisor Dashboard share a wide `items-stretch` chart beside
+Sales / Payment / Audit; plot uses fixed pixel SVG sizing so axis labels stay readable
+(compact header matches StatTiles).
+
+### Added: Promo dual-control lock + performance UI
+
+- **Create/edit in modal** — `PromoEditorModal` collects event fields + rules; inline create/rules panels removed from `Promos.jsx`.
+- **Rules required** — submit blocked until ≥1 rule; `approve_promo_event` rejects empty-rule pending promos (`migrate_promo_edit_reapproval.sql`).
+- **Freeze after approve** — live promos cannot mutate rules or details; **Request edit** clones to a pending revision (`request_promo_edit` RPC, `supersedes_event_id`); original stays live until revision approved.
+- **Promo performance** — branch + manager network summary cards, sortable performance table (rule type, receipts, discount, % of sales), unchanged Sales drill-down; network view adds Branch column + discount-by-rule-type bar chart.
+- **Fix:** promo editor modal no longer resets while typing (live-stats parent re-renders); bundle multi-select keeps selections across searches with visible chips; bundle requires name + 2 products.
+
+### Added: Cash Drawer Movements (POS Open Drawer)
+
+New `cash_movements` table (apply `migrate_cash_movements.sql`): petty cash and pickups created
+**only** from POS → **Open Drawer** (supervisor PIN, Notify Manager + **60s** countdown, or
+self-record with ack). Day End shows read-only **Drawer Activity** and blocks Close day until
+every `self_recorded` row is Confirm/Flag reviewed. Managers Approve/Deny from the Shell bell
+and Branch dashboard. Reports → **Cash Movements** for cross-session history. Legacy Day End
+pickup/request create paths removed. Open Drawer UI:
+type cards → **Get approval** → back **chevron** (not “Change type”) → PIN-first panel +
+`ManagerWaitPanel` (`OPEN_DRAWER_WAIT_SEC = 60` in `SupervisorPinWait.jsx`).
+
+### Added: Cart line remove — manager notify (30s)
+
+Removing a cart line uses `CartRemoveApprove` (not plain `SupervisorApprove`): supervisor PIN,
+or **Notify manager** with a **30s** wait (`CART_REMOVE_WAIT_SEC`), then self-allow with ack.
+Apply `migrate_till_action_requests.sql`. Shell bell + Branch dashboard Approve/Deny stop the
+cashier countdown (same pattern as cash movements).
+
+### Removed: legacy Day End Petty cash panel
+
+`PettyCashPanel.jsx` deleted. Day End no longer shows the legacy paid-out request/approve/
+fulfill queue (creation was already disabled). Branch dashboard no longer Approve/Reject/
+Mark handed over on legacy `cash_drawer_entries` paid-outs. Bell inbox no longer lists
+pending legacy petty. Historical reads (`fetchPettyCash` / timeline) and expected-cash math
+remain. New movements stay on POS → Open Drawer → `cash_movements`.
+
+### Fixed: revenue chart matches supervisor style
+
+Revenue chart restored to supervisor behavior (`preserveAspectRatio="xMidYMid meet"`,
+measured box without non-uniform stretch). Manager Overview uses the same layout as
+Dashboard.
+
+### Changed: no Day end sidebar tab for managers
+
+Managers keep `day_end` module access (cashier “request manager” close still works via
+`/day-end`), but the Day end item is hidden from manager sidebar nav — day ops stay on
+Branch dashboard.
+
+### Added: manager resolve flagged cash movements
+
+Apply `migrate_cash_movement_resolve_flagged.sql`. Accountability end-states shown as
+**Approved** / **Resolved** / **Flagged**. Unauthorized → Mark Resolved or Flag.
+**Flagged → Resolved** is manager-only (`resolve_flagged_cash_movement`).
+
+### Fixed: Drawer Activity empty list
+
+`fetchCashMovements` treated `fetchAllRows`'s `{ data, error }` as an array — mapping threw
+and Day End swallowed it to “No drawer movements”. Destructure `{ data, error }` so cashier
+and supervisor Drawer Activity (and Reports) actually list Open Drawer rows.
+
+### Fixed: manager Branch Cash drawer log + unauthorized resolve
+
+Manager Branch dashboard **Cash drawer log** now loads today’s `cash_movements` (not only
+legacy `cash_drawer_entries`), shows **Unauthorized** / **Flagged** / **Resolved** /
+**Approved**, and lets a manager/supervisor who is not the requester **Mark Resolved** or
+**Flag**. Managers can Mark Resolved on Flagged rows after applying
+`migrate_cash_movement_resolve_flagged.sql`. Totals include counting Open Drawer pickups and
+paid-outs. Live reload already watched `cash_movements`.
+
+### Fixed: supervisor PIN fields stacked
+
+Open Drawer / cart remove / shared `SupervisorPinPanel` uses Staff code above PIN (vertical),
+not side-by-side.
+
+### Fixed: unauthorized drawer movements block Close day
+
+Day End top banner + Confirm/Flag for `self_recorded`; Close day disabled until reviewed.
+Approved / remote_approved / denied never block closing.
+
+### Staff: supervisor drawer label, status filter, retire Admin role
+
+Staff → Shifts no longer shows **No drawer** for supervisor floor shifts — shows that
+terminal/branch drawer label (same Main drawer identity cashiers use). Staff filter row
+gains **Status** (All / Active / Inactive). **Admin** removed from assignable roles;
+`canAssignRole` refuses it; demo login uses master. Apply
+`migrate_retire_admin_role.sql` to remap existing `admin` staff → `manager` and delete
+the roles lookup row.
+
+### Day end Accountability: drop change-fund-by-shift table; cashier shift clock detail
+
+Supervisor **Accountability** no longer shows the per-shift float / closing / variance tracker
+("Change fund by shift"). Opening float total still feeds Expected drawer; pickups stay.
+Open cashier shifts keep a slim Close-shift list. Cashier **End shift** shows Started, On shift
+(live duration), drawer, and period above the cash breakdown.
+
+### Added: supervisor End shift + Received handoff before Close day
+
+Supervisor Day end now has **End shift** (own floor shift) — must clock out before Close day,
+same order as cashiers. Closed cashier shifts with no ending count show **Pending handoff**;
+supervisor confirms **Received handoff** (RPC `receive_shift_handoff`, migration
+`migrate_receive_shift_handoff.sql`) which fills ending/expected and clears the Staff badge
+(shows **Received handoff**). Close day / Approve blocked until own shift ended, open cashier
+shifts closed, and handoffs received.
+
+### Added: network catalog bulk edit via export/re-import; branch dashboard movement history; master Inventory removed
+
+Network catalog CSV import now **updates** matching SKUs (and cascades identity/price/Discountable
+to adopted branches) instead of skipping them — export the live catalog, edit prices/fields,
+re-import. Unchanged rows skip; new SKUs still create. Export button added on Manager → Data.
+
+Manager/Master branch dashboard Inventory section has **On hand | Movement history** subtabs
+(condensed movement panel). Master no longer gets the staff Inventory nav/module — use
+Branches → branch dashboard instead.
+
+### Fixed: refund on closed day quotes TILL04 (not PIN lockout); Transactions date filter defaults to today
+
+Refunding/voiding after day-end could surface as **AUTH07** ("Too many failed PIN attempts")
+because `formatSupportError` / `classifyError` treated any message containing "locked" as a
+PIN lockout — including the server's "This business day is locked…". That matcher is narrowed
+to real PIN lockouts, and closed-day void/refund refusals now map to **TILL04** ("no sales or
+refunds until a manager reopens the till, or the next business day opens"). The client lock
+check on Transactions uses the same code.
+
+Transactions date filter now defaults to **Today** (Reset returns to Today as well).
+
+### Fixed: false "Promo ended" banner when deleting cart lines; invoice number PENDING on online sale receipts
+
+Removing a cart line (or dropping qty below a BOGO/bundle threshold) could strip the promo
+name from a *remaining* line and fire Cart's "Promo ended — … Re-quote the total" alert even
+though the promo event was still live. The notice now only appears when that event name has
+left the live `promoRules` set (real expire / stop), not when cart composition alone drops
+eligibility.
+
+Online new sales were printing `Invoice No: PENDING (assigns on sync)` because
+`addTransaction` returned the local optimistic row and kicked sync off in the background —
+the receipt was built before `allocate_or_number` ran. Checkout now awaits the FIFO push and
+reads the assigned `or_number` before returning when online; offline (or a blocked queue)
+still prints PENDING as before.
+
+---
+
 ## 0.18.0 — 2026-08-10
 
 ### Added: Card/e-wallet sales on the "Payment & cash impact" dashboards + Day End; fixed a false "Short" on Day End

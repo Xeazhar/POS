@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { FiSearch } from 'react-icons/fi'
 import Cart from '../components/pos/Cart'
+import OpenDrawer from '../components/pos/OpenDrawer'
 import WeightModal from '../components/pos/WeightModal'
 import SupervisorApprove from '../components/shared/SupervisorApprove'
 import {
@@ -26,7 +27,9 @@ import {
   updateProductPrice,
 } from '../lib/api'
 import { useLiveData } from '../hooks/useLiveData'
+import { isOnline, readPromoCache, writePromoCache } from '../offline'
 import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '../stores/posStore'
+import { useShiftStore } from '../stores/shiftStore'
 import {
   businessDate,
   formatOpenHourLabel,
@@ -37,10 +40,10 @@ import {
 } from '../utils/format'
 import {
   buildPromoByProductId,
-  collectPromoBundles,
+  collectPromoQuickSets,
+  isItemPercentPromo,
   promoBadgeLabel,
   promoDisplayName,
-  promoPartnerLabel,
   promoUnitPrice,
 } from '../utils/promo'
 import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'
@@ -74,10 +77,14 @@ function POS() {
   const [inquiryProduct, setInquiryProduct] = useState(null)
   const [searchPopupOpen, setSearchPopupOpen] = useState(false)
   const [cartOverlayOpen, setCartOverlayOpen] = useState(false)
+  const [openDrawerOpen, setOpenDrawerOpen] = useState(false)
   const [activePromos, setActivePromos] = useState([])
+  const shift = useShiftStore((state) => state.shift)
   const [requestManagerNotice, setRequestManagerNotice] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const tillClosed = isTillClosed(dayEnds, dayOpenHour)
+  const canOpenDrawer =
+    Boolean(shift) && shift.holdsDrawer !== false && !tillClosed && Boolean(user?.branchId)
   const daySubmitted = isDaySubmitted(dayEnds, dayOpenHour)
   const dayFullyClosed = isDayFullyClosed(dayEnds, dayOpenHour)
   // Reopening a fully-closed day is manager-only; approving a submitted one is
@@ -104,9 +111,7 @@ function POS() {
     ? new Set(promoRules.flatMap((r) => (r.products || []).map((p) => p.productId)).filter(Boolean))
     : new Set()
   const promoByProductId = useMemo(() => buildPromoByProductId(promoRules), [promoRules])
-  // Named bundle rules (e.g. "Meryenda Bundle") — one quick-add button per bundle, so a
-  // cashier doesn't have to find and tap every item in it separately.
-  const activeBundles = useMemo(() => collectPromoBundles(promoRules), [promoRules])
+  const promoQuickSets = useMemo(() => collectPromoQuickSets(promoRules), [promoRules])
   const categories = [
     'All',
     ...(promoProductIds.size ? ['Promos'] : []),
@@ -141,11 +146,22 @@ function POS() {
       setActivePromos([])
       return
     }
+    // Paint from IndexedDB first so Promos tiles/badges don't flash in after network RTT.
+    const cached = await readPromoCache(branchId)
+    if (cached?.active?.length) {
+      setActivePromos(cached.active)
+    }
+    if (!isOnline()) {
+      setActivePromos(cached?.active || [])
+      return
+    }
     try {
-      setActivePromos(await fetchActivePromoEventsWithRules(branchId))
+      const rows = await fetchActivePromoEventsWithRules(branchId)
+      setActivePromos(rows)
+      await writePromoCache(branchId, { active: rows })
     } catch (err) {
       console.warn('Failed to load active promos', err)
-      setActivePromos([])
+      setActivePromos(cached?.active || [])
     }
   }, [branchId])
 
@@ -165,13 +181,19 @@ function POS() {
     useProductStore.getState().mergeProducts(await fetchBranchProducts(branchId))
   }, [branchId])
 
+  // Private Broadcast (inventory/catalog) — refetch authoritative products; do not
+  // apply payload quantities. postgres_changes omitted here to avoid double cost.
   useLiveData({
     enabled: liveEnabled,
     fetch: loadProducts,
-    tables: [
-      { table: 'products', filter: `branch_id=eq.${branchId}` },
-      { table: 'branch_inventory', filter: `branch_id=eq.${branchId}` },
-    ],
+    broadcasts: branchId
+      ? [
+          {
+            topic: `pos:branch:${branchId}:inventory`,
+            events: ['INVENTORY_CHANGED', 'CATALOG_CHANGED'],
+          },
+        ]
+      : [],
   })
 
   const finishMenuSetup = () => {
@@ -192,7 +214,9 @@ function POS() {
 
   const visible = sellable.filter((product) => {
     if (category === 'Promos') {
-      if (!promoProductIds.has(product.id)) return false
+      // Set promos (bundle / pair / BOGO) are quick-add tiles only — not duplicate product tiles.
+      const info = promoByProductId.get(product.id)
+      if (!isItemPercentPromo(info)) return false
     } else if (category !== 'All' && product.category !== category) return false
     // Scanner mode: show results only after a barcode scan / search input.
     if (barcodeTableMode && !String(search || '').trim()) return false
@@ -201,6 +225,24 @@ function POS() {
     const fields = [product.name, product.sku, product.productCode, product.barcode]
     return fields.some((value) => String(value || '').toLowerCase().includes(q))
   })
+
+  const visibleQuickSets = useMemo(() => {
+    if (category !== 'Promos' || manageMenu || barcodeTableMode) return []
+    const q = search.trim().toLowerCase()
+    if (!q) return promoQuickSets
+    return promoQuickSets.filter((set) => {
+      const hay = [
+        set.name,
+        set.sublabel,
+        set.badge,
+        ...set.products.map((p) => p.productName),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+      return hay.includes(q)
+    })
+  }, [category, promoQuickSets, search, manageMenu, barcodeTableMode])
 
   const select = (product) => {
     if (tillClosed) return
@@ -213,14 +255,28 @@ function POS() {
     else addItem(product)
   }
 
-  // Adds one of every product in a named bundle in a single tap — same guards and same
-  // per-item add path as tapping each tile individually (`select`), so stock/till/inquiry
-  // rules never diverge between the two. Bundle rules already exclude kg products at
-  // creation time (Promos.jsx), so every member here is a plain piece add.
-  const addBundle = (bundle) => {
-    for (const p of bundle.products) {
+  const newPromoGroupId = () =>
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `promo-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+  const addPromoQuickSet = (set) => {
+    if (tillClosed) return
+    const groupId = newPromoGroupId()
+    const group = { id: groupId, type: set.type, name: set.name }
+
+    if (set.type === 'bogo') {
+      const p = set.products[0]
       const product = products.find((item) => item.id === p.productId)
-      if (product) select(product)
+      if (product) {
+        addItem(product, set.buyQty + set.getQty, { promoGroup: group })
+      }
+      return
+    }
+
+    for (const p of set.products) {
+      const product = products.find((item) => item.id === p.productId)
+      if (product) addItem(product, 1, { promoGroup: group })
     }
   }
 
@@ -457,25 +513,6 @@ function POS() {
                 ))}
               </div>
             )}
-            {!barcodeTableMode && !manageMenu && activeBundles.length > 0 && (
-              <div className="-mx-1 flex gap-[7px] overflow-x-auto px-1 pb-1 [scrollbar-width:thin]">
-                {activeBundles.map((bundle) => (
-                  <button
-                    key={bundle.ruleId}
-                    type="button"
-                    disabled={tillClosed}
-                    className="shrink-0 rounded-[5px] border border-brand-danger bg-brand-danger-bg px-[11px] py-2 text-left text-xs whitespace-nowrap text-brand-danger transition-[filter] duration-100 disabled:cursor-not-allowed disabled:opacity-50"
-                    title={bundle.products.map((p) => p.productName).filter(Boolean).join(', ')}
-                    onClick={() => addBundle(bundle)}
-                  >
-                    <strong>{bundle.bundleName}</strong>
-                    <span className="ml-1 font-normal">
-                      +{bundle.products.length} items · {bundle.discountPct}% off
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
           {barcodeTableMode ? (
             !String(search || '').trim() ? (
@@ -504,9 +541,9 @@ function POS() {
                   <tbody>
                     {visible.map((product) => {
                       const promoInfo = promoByProductId.get(product.id)
-                      const salePrice = promoUnitPrice(product.price, promoInfo)
-                      const badge = promoBadgeLabel(promoInfo)
-                      const partner = promoPartnerLabel(promoInfo)
+                      const tilePromo = isItemPercentPromo(promoInfo) ? promoInfo : null
+                      const salePrice = promoUnitPrice(product.price, tilePromo)
+                      const badge = promoBadgeLabel(tilePromo)
                       return (
                       <tr
                         key={product.id}
@@ -521,13 +558,7 @@ function POS() {
                           {badge && (
                             <div className="mt-0.5 text-[10px] font-bold text-brand-danger">
                               {badge}
-                              {promoDisplayName(promoInfo) ? ` · ${promoDisplayName(promoInfo)}` : ''}
-                              {partner && (
-                                <span className="font-normal text-brand-subtle" title={partner.title}>
-                                  {' '}
-                                  ({partner.text})
-                                </span>
-                              )}
+                              {promoDisplayName(tilePromo) ? ` · ${promoDisplayName(tilePromo)}` : ''}
                             </div>
                           )}
                         </td>
@@ -568,13 +599,40 @@ function POS() {
                   : 'grid-cols-6 max-[1200px]:grid-cols-5 max-[1050px]:grid-cols-4 max-[800px]:grid-cols-3 max-[800px]:max-h-[52vh] max-[520px]:grid-cols-2'
               }`}
             >
+              {!manageMenu &&
+                visibleQuickSets.map((set) => (
+                  <div key={`quick-${set.ruleId}`} className="relative">
+                    <button
+                      type="button"
+                      disabled={tillClosed}
+                      title={set.sublabel}
+                      className="tap-target flex h-[104px] w-full flex-col items-start gap-0.5 overflow-hidden rounded-[6px] border border-brand-gold/55 bg-brand-gold/10 p-2.5 text-left transition-[border-color,box-shadow,transform,filter] duration-150 hover:border-brand-gold hover:bg-brand-gold/15 hover:shadow-[0_2px_8px_#00000012] active:scale-[0.98] disabled:cursor-not-allowed max-[800px]:h-[124px] max-[800px]:p-3"
+                      onClick={() => addPromoQuickSet(set)}
+                    >
+                      <span className="rounded bg-brand-gold px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-dark uppercase">
+                        {set.badge}
+                      </span>
+                      <strong className="line-clamp-2 min-h-0 flex-1 text-[13px] leading-snug text-brand-ink max-[800px]:text-sm">
+                        {set.name}
+                      </strong>
+                      <span className="line-clamp-2 shrink-0 text-[9px] leading-snug text-brand-subtle">
+                        {set.sublabel}
+                      </span>
+                      {set.discountPct > 0 ? (
+                        <span className={`shrink-0 text-[10px] font-bold text-brand-danger ${moneyClass}`}>
+                          {set.discountPct}% off
+                        </span>
+                      ) : null}
+                    </button>
+                  </div>
+                ))}
               {visible.map((product) => {
                 const offToday = isRestaurant && product.availableToday === false
                 const flashing = flashId === product.id
                 const promoInfo = promoByProductId.get(product.id)
-                const salePrice = promoUnitPrice(product.price, promoInfo)
-                const badge = promoBadgeLabel(promoInfo)
-                const partner = promoPartnerLabel(promoInfo)
+                const tilePromo = isItemPercentPromo(promoInfo) ? promoInfo : null
+                const salePrice = promoUnitPrice(product.price, tilePromo)
+                const badge = promoBadgeLabel(tilePromo)
                 return (
                   <div key={product.id} className="relative">
                     <button
@@ -589,7 +647,7 @@ function POS() {
                               }`
                           : offToday && manageMenu
                             ? 'border-brand-n200 bg-brand-n100 opacity-55'
-                            : promoInfo
+                            : tilePromo
                               ? 'border-brand-danger/40 bg-brand-danger-tint hover:border-brand-danger hover:shadow-[0_2px_8px_#00000012] active:border-brand-danger'
                               : 'border-brand-n200 bg-brand-n50 hover:border-brand-gold hover:shadow-[0_2px_8px_#00000012] active:border-brand-gold'
                       }`}
@@ -622,10 +680,9 @@ function POS() {
                         ) : badge ? (
                           <span
                             className="truncate rounded bg-brand-danger px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-white uppercase"
-                            title={[promoDisplayName(promoInfo), partner?.title].filter(Boolean).join(' · ') || undefined}
+                            title={promoDisplayName(tilePromo) || undefined}
                           >
                             {badge}
-                            {partner ? ` · ${partner.text}` : ''}
                           </span>
                         ) : isRestaurant ? (
                           <span
@@ -688,13 +745,15 @@ function POS() {
                   </div>
                 )
               })}
-              {visible.length === 0 && (
+              {visible.length === 0 && visibleQuickSets.length === 0 && (
                 <p className="col-span-full py-10 text-center text-xs text-brand-subtle">
                   {isRestaurant
                     ? manageMenu
                       ? 'No menu items yet — ask a manager to add potahe.'
                       : "No potahe marked available today. Tap Edit today's potahe to enable items."
-                    : 'No products match this search.'}
+                    : category === 'Promos'
+                      ? 'No promo sets or item discounts match this search.'
+                      : 'No products match this search.'}
                 </p>
               )}
             </div>
@@ -717,35 +776,55 @@ function POS() {
             onOverlayChange={setCartOverlayOpen}
             promoRules={promoRules}
             headerActions={
-              barcodeTableMode ? (
-                <>
-                  <button
-                    type="button"
-                    className={`rounded-[5px] border px-3 py-2 text-xs font-bold ${
-                      inquiryMode
-                        ? 'border-brand-dark bg-brand-dark text-white'
-                        : 'border-brand-border bg-white text-brand-ink'
-                    }`}
-                    disabled={tillClosed || cartOverlayOpen}
-                    onClick={() => setInquiryMode((v) => !v)}
-                    title="Look up item details without adding to cart"
-                  >
-                    Inquiry
-                  </button>
+              <>
+                {canOpenDrawer && (
                   <button
                     type="button"
                     className="rounded-[5px] border border-brand-border bg-white px-3 py-2 text-xs font-bold text-brand-ink"
-                    disabled={tillClosed || cartOverlayOpen}
-                    onClick={() => setSearchPopupOpen(true)}
+                    disabled={cartOverlayOpen}
+                    onClick={() => setOpenDrawerOpen(true)}
                   >
-                    Search item
+                    Open Drawer
                   </button>
-                </>
-              ) : null
+                )}
+                {barcodeTableMode ? (
+                  <>
+                    <button
+                      type="button"
+                      className={`rounded-[5px] border px-3 py-2 text-xs font-bold ${
+                        inquiryMode
+                          ? 'border-brand-dark bg-brand-dark text-white'
+                          : 'border-brand-border bg-white text-brand-ink'
+                      }`}
+                      disabled={tillClosed || cartOverlayOpen}
+                      onClick={() => setInquiryMode((v) => !v)}
+                      title="Look up item details without adding to cart"
+                    >
+                      Inquiry
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-[5px] border border-brand-border bg-white px-3 py-2 text-xs font-bold text-brand-ink"
+                      disabled={tillClosed || cartOverlayOpen}
+                      onClick={() => setSearchPopupOpen(true)}
+                    >
+                      Search item
+                    </button>
+                  </>
+                ) : null}
+              </>
             }
           />
         )}
       </div>
+      <OpenDrawer
+        open={openDrawerOpen}
+        onClose={() => setOpenDrawerOpen(false)}
+        onDone={() => {
+          void useShiftStore.getState().cashPosition?.()
+          window.dispatchEvent(new CustomEvent('cale-cash-movements-changed'))
+        }}
+      />
       {/* Barcode scanner mode: "Search / Scan" modal (SearchBox consumes scanner keystrokes, then Add/View results). */}
       {barcodeTableMode && searchPopupOpen && !cartOverlayOpen && (
         <Modal wide layer onClose={() => setSearchPopupOpen(false)}>

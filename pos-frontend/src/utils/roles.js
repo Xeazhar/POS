@@ -4,6 +4,7 @@ export const ROLES = {
   cashier: 'cashier',
   supervisor: 'supervisor',
   manager: 'manager',
+  /** @deprecated Retired — master is the only top account. Kept for legacy row reads. */
   admin: 'admin',
   master: 'master',
 }
@@ -55,6 +56,7 @@ const DEFAULTS = {
     // reach the same Day End / Close Day screen a supervisor uses — see DayEnd.jsx.
     'day_end',
   ],
+  // Legacy only — new accounts never get `admin`. Same surface as manager until migrated.
   admin: [
     'manager_overview',
     'manager_branches',
@@ -69,7 +71,7 @@ const DEFAULTS = {
     'dashboard',
     'pos',
     'transactions',
-    'inventory',
+    // No branch Inventory — masters use Branches → branch dashboard (On hand + Movement history).
     'catalog',
     'day_end',
     'devices',
@@ -99,9 +101,13 @@ export const ROLE_RANK = {
   cashier: 10,
   supervisor: 20,
   manager: 30,
+  // Kept so leftover `admin` rows still rank correctly until migrate_retire_admin_role.sql.
   admin: 40,
   master: 50,
 }
+
+/** Roles that may still be handed out on Staff. `admin` is retired — use master. */
+const ASSIGNABLE_ROLE_NAMES = ['cashier', 'supervisor', 'manager', 'master']
 
 export function roleRank(role) {
   return ROLE_RANK[role] ?? 0
@@ -117,6 +123,8 @@ export function roleRank(role) {
  * create its own peers or the tree has no root that can be replaced.
  */
 export function canAssignRole(actor, targetRole) {
+  // Admin is retired: master owns that power. Refuse even for master so Staff cannot mint it.
+  if (targetRole === 'admin') return false
   const actorRank = roleRank(actor?.role)
   const targetRank = roleRank(targetRole)
   if (!actorRank || !targetRank) return false
@@ -126,7 +134,7 @@ export function canAssignRole(actor, targetRole) {
 
 /** Roles this actor is allowed to hand out — for populating the role picker. */
 export function assignableRoles(actor) {
-  return Object.keys(ROLE_RANK).filter((role) => canAssignRole(actor, role))
+  return ASSIGNABLE_ROLE_NAMES.filter((role) => canAssignRole(actor, role))
 }
 
 /**
@@ -208,12 +216,10 @@ export function moduleLabel(moduleId) {
 
 export function canAccessModule(user, moduleId) {
   if (!user) return false
-  if (user.role === 'master') return true
-  // Admin keeps the same unconditional access as master, except Devices — that's
-  // strictly a cashier-unit pairing screen, not something an office-role account has a
-  // use for by default. Falls through to the normal permissions check below, so it can
-  // still be switched on per-account (Staff page), same as any other module.
-  if (user.role === 'admin' && moduleId !== 'devices') return true
+  // Master sees every module except branch Inventory — stock edits and full movement history
+  // for a branch live under Branches → that branch (On hand / Movement history subtabs).
+  if (user.role === 'master') return moduleId !== 'inventory'
+  // Legacy `admin` rows use manager-shaped defaults (no master bypass) until demoted.
   return effectivePermissions(user).includes(moduleId)
 }
 

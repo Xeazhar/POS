@@ -90,6 +90,7 @@ migrate_day_end_request_no_shift_count.sql     -- needs both files above (dual-c
 migrate_promo_description.sql
 migrate_sync_catalog_identity_fields.sql       -- one-time catch-up, safe to re-run
 migrate_day_end_reject_request.sql             -- needs migrate_day_end_request_no_shift_count.sql above
+migrate_day_end_request_notify_fix.sql        -- needs reject + notification_cleanup; closed_at null on request so bell shows
 migrate_promo_reject_reason.sql                -- needs migrate_promo_dual_control.sql above; adds
                                                 -- reject_reason + 3-arg reject_promo_event RPC
 migrate_void_sale_approved_by.sql              -- needs migrate_day_end_dual_control.sql above (supersedes
@@ -123,14 +124,40 @@ migrate_promo_rule_bundle_name.sql             -- needs migrate_promos_events_an
                                                 -- promo_rules.bundle_name (nullable, bundle_pct only) —
                                                 -- a name for one bundle rule, distinct from its promo
                                                 -- event's name, for the POS quick-add button
+migrate_promo_edit_reapproval.sql              -- needs migrate_schema_cleanup_v1.sql above; adds
+                                                -- supersedes_event_id, request_promo_edit(), approve
+                                                -- requires ≥1 rule, edit revision stops live promo
 migrate_schema_cleanup_v1.sql                  -- drop duplicate client_id index, promo is_active,
                                                 -- dormant shift-review cols, tighten refund_requests RLS,
                                                 -- align sale/audit event policies; cash_drawer_entries only
 migrate_network_manager_overview.sql           -- manager_overview_metrics(p_days) RPC — one round-trip
                                                 -- for Overview sales KPIs + today cash impact
+migrate_receive_shift_handoff.sql              -- receive_shift_handoff() — supervisor confirms
+                                                -- cashier drawer handoff after end-shift (clears
+                                                -- Staff "Pending handoff"); needs shift cash schema
+migrate_retire_admin_role.sql                  -- remap staff.role admin→manager; delete roles.admin;
+                                                -- master is sole top account (run after ceiling)
+migrate_cash_movements.sql                     -- cash_movements ledger + RPCs; POS Open Drawer
+                                                -- petty/pickup; updates shift_cash_summary
+migrate_cash_movement_cancel.sql               -- cancel_cash_movement — cashier X/Cancel voids
+                                                -- pending_remote Open Drawer requests
+migrate_cash_movement_resolve_flagged.sql      -- manager-only flagged → Resolved (confirmed)
+migrate_till_action_requests.sql               -- till_action_requests + RPCs; POS cart line
+                                                -- remove Notify manager (30s) / self-allow
+migrate_realtime_broadcast_v1.sql              -- private Broadcast topics; inventory
+                                                -- change_version; ops triggers; cashiers
+                                                -- cannot direct-write branch_inventory;
+                                                -- audit/sale_events append-only
+                                                -- (skips ALTER on realtime.messages —
+                                                -- that table is Supabase-owned)
+migrate_realtime_broadcast_policies.sql        -- optional: CREATE POLICY on
+                                                -- realtime.messages if main migrate
+                                                -- could not (Dashboard Realtime Auth ON)
 ```
 
 **Dev wipe (optional, non-user data only):** `wipe_non_user_data.sql` truncates sales/inventory/promos/shifts/drawer while **keeping** `staff`, `branches`, `roles`, `company_profile`, and Auth users. Run on DEV before cleanup if you want a clean slate.
+
+**Go-live wipe (keeps master only):** `wipe_for_deployment.sql` — same operational wipe as above, **plus** deletes every non-master `staff` / Auth user and resets `branches.or_next` to `1` (first invoice = `PREFIX-00000001`). Aborts if no active master exists. Run once when ready for live trading, never casually on a DB you still need.
 
 `wipe_products_clean_start.sql` is **destructive** and not part of the apply order —
 run it by hand only when you want to wipe products/catalog for a fresh import.
@@ -175,6 +202,8 @@ branches
   ├─ import_batches → import_batch_items
   ├─ cash_drawer_entries (ex petty_cash) → staff_shifts (change fund, cash-out, variance)
   │     └─ shift_adjustments (logged corrections to a closed shift)
+  ├─ cash_movements (petty/pickup during open shift; POS Open Drawer)
+  ├─ till_action_requests (cart line remove remote approve)
   ├─ branch_presence, branch_devices
   └─ sale_events, audit_events (BIR / audit)
 

@@ -17,6 +17,11 @@
  *    when there is no network — purging it offline would leave a blank screen on a till
  *    that is mid-shift. When offline we degrade to a plain reload, which still works
  *    because the SW serves the cached shell.
+ *
+ *  - NEVER purge caches while a service worker is still controlling the page without
+ *    unregistering it first. `/assets/*` is CacheFirst — after an empty purge the SW
+ *    answers JS/CSS requests from a dead cache and the POS paints a blank/crashed page.
+ *    Sequence: prove network → unregister SW → purge → reload (SW re-registers on boot).
  */
 
 import { markIntentionalReload } from '../offline/sessionLifecycle'
@@ -47,6 +52,19 @@ async function refreshServiceWorkers() {
   )
 }
 
+async function unregisterServiceWorkers() {
+  if (typeof navigator === 'undefined' || !navigator.serviceWorker) return
+  const registrations = await navigator.serviceWorker.getRegistrations()
+  await Promise.all(registrations.map((registration) => registration.unregister().catch(() => {})))
+}
+
+/** Confirm the deploy origin can still serve the app shell (CDN up, not just Wi‑Fi). */
+async function probeAppShell() {
+  const url = `${window.location.origin}/index.html?_hard=${Date.now()}`
+  const res = await fetch(url, { cache: 'no-store', credentials: 'same-origin' })
+  if (!res.ok) throw new Error(`App shell unreachable (${res.status})`)
+}
+
 /**
  * @param {object}  options
  * @param {boolean} options.online  when false, skips the cache purge (see SAFETY above)
@@ -60,12 +78,19 @@ export async function hardReload({ online = true } = {}) {
 
   try {
     if (online) {
+      // Prove network before wiping. navigator.onLine alone is not enough — Wi‑Fi with a
+      // dead CDN used to purge caches and then crash the till on reload.
+      await probeAppShell()
+      // Drop the controller before emptying Cache Storage so CacheFirst asset routes
+      // cannot serve empty-cache failures on the next load.
+      await unregisterServiceWorkers()
       await purgeAssetCaches()
+    } else {
       await refreshServiceWorkers()
     }
   } catch (err) {
-    // Whatever happens, still reload — a stuck Refresh button is worse than a stale cache.
-    console.warn('[hardReload] cache/SW refresh failed, reloading anyway', err)
+    // Whatever happens, still reload — but leave existing caches alone if the probe failed.
+    console.warn('[hardReload] cache/SW refresh failed, reloading with existing cache', err)
   }
 
   // location.reload(), not replace() with a cache-busting query. Two reasons:
@@ -73,7 +98,7 @@ export async function hardReload({ online = true } = {}) {
   //     second line of defence if the flag above ever fails to stick;
   //   - it leaves the URL clean instead of accumulating ?_r= on every refresh.
   // The freshness the query param bought is already covered: the service worker is what
-  // serves stale assets here, and its caches were just purged.
+  // serves stale assets here, and its caches were just purged (when online + probe ok).
   window.location.reload()
 }
 

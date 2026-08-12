@@ -9,6 +9,8 @@ function TransactionDetailModal({
   onRefund,
   onPrint,
   refundSummary = null,
+  refundBlocked = false,
+  refundBlockReason,
   layer = false,
 }) {
   const qtyByItem = refundSummary?.qtyByItem || {}
@@ -240,7 +242,18 @@ function TransactionDetailModal({
               </SecondaryButton>
             )}
             {onRefund && detail.status !== 'Voided' && (
-              <PrimaryButton compact type="button" onClick={() => onRefund(detail)}>
+              <PrimaryButton
+                compact
+                type="button"
+                disabled={refundBlocked}
+                title={
+                  refundBlockReason ||
+                  (refundBlocked
+                    ? 'Business day closed — no refunds until till reopens or next day opens (TILL04)'
+                    : undefined)
+                }
+                onClick={() => onRefund(detail)}
+              >
                 Refund
               </PrimaryButton>
             )}

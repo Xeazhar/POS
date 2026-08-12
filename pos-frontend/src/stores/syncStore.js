@@ -3,6 +3,7 @@ import { getSyncStatus, subscribeSync } from '../offline'
 
 export const useSyncStore = create((set) => ({
   online: typeof navigator === 'undefined' ? true : navigator.onLine,
+  backendReachable: false,
   status: 'idle',
   pending: 0,
   /** Ops quarantined after repeated push failures — real sales that never reached the server. */
@@ -10,7 +11,12 @@ export const useSyncStore = create((set) => ({
   lastError: null,
   refresh: async (branchId) => {
     const snap = await getSyncStatus(branchId)
-    set({ online: snap.online, pending: snap.pending, blocked: snap.blocked || 0 })
+    set({
+      online: snap.online,
+      backendReachable: snap.backendReachable ?? false,
+      pending: snap.pending,
+      blocked: snap.blocked || 0,
+    })
   },
 }))
 
@@ -21,6 +27,7 @@ export function bindSyncStore() {
   subscribeSync((state) => {
     useSyncStore.setState({
       online: state.online ?? useSyncStore.getState().online,
+      backendReachable: state.backendReachable ?? useSyncStore.getState().backendReachable,
       status: state.status || 'idle',
       pending: state.pending ?? useSyncStore.getState().pending,
       blocked: state.blocked ?? useSyncStore.getState().blocked,
