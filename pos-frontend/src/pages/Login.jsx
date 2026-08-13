@@ -10,6 +10,14 @@ import { APP_VERSION_LABEL, IS_PRERELEASE } from '../utils/version'
 import { SHOW_ENV_BADGE, environmentCaption, environmentLabel } from '../utils/environment'
 import { LegalNavLinks } from '../legal/LegalNavLinks'
 
+/**
+ * Renders the CalePOS staff login screen with PIN and manager authentication modes.
+ *
+ * Supports Supabase and demo-mode authentication, CAPTCHA verification, authentication
+ * errors, connectivity status, and post-login branch data loading.
+ *
+ * @returns {JSX.Element} The staff login interface.
+ */
 function Login() {
   const configured = hasSupabase || allowDemoMode
   const { siteKey: turnstileSiteKey, loading: captchaLoading, error: captchaConfigError, enabled: captchaRequired } =

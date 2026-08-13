@@ -22,8 +22,12 @@ import { lineTotal } from '../../utils/ulam'
 import { isManagerRole } from '../../utils/roles'
 
 /**
- * Cart line remove — supervisor PIN, or notify manager (30s), or self-allow after timeout.
- * Offline: PIN verified locally against provisioned PBKDF2 verifiers; audit queued for sync.
+ * Authorizes removing a cart item through supervisor or manager approval, or after a timed self-approval acknowledgment.
+ * Offline mode verifies supervisor credentials on the device and queues the audit record for synchronization.
+ * @param {Object} item - The cart item to remove.
+ * @param {string|null} [cartId=null] - The identifier of the cart containing the item.
+ * @param {Function} onCancel - Called when the approval modal is canceled or closed.
+ * @param {Function} onAllowed - Called after authorization with the approver identity, role, approval method, and request identifier.
  */
 export default function CartRemoveApprove({ item, cartId = null, onCancel, onAllowed }) {
   const user = useAuthStore((s) => s.user)

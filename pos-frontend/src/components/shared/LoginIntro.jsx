@@ -6,8 +6,10 @@ const INTRO_MS = 2400
 const FADE_OUT_MS = 420
 
 /**
- * Brief splash after a successful sign-in — author logo, welcome line,
- * author credit, and copyright. Not shown on the login form.
+ * Displays the branded welcome splash screen after sign-in.
+ * @param {string} [staffName] - The optional staff member's name to greet.
+ * @param {Function} [onDone] - Callback invoked when the splash screen finishes.
+ * @returns {JSX.Element} The welcome splash screen.
  */
 export default function LoginIntro({ staffName, onDone }) {
   const [exiting, setExiting] = useState(false)

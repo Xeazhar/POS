@@ -127,7 +127,11 @@ export function previousDayRestockReport(dayEnds = [], todayDate) {
   return rows[0] || null
 }
 
-/** Normalize day_report from DB or local entry. */
+/**
+ * Normalize a day-end report from a database or local entry.
+ * @param {Object} raw - The raw day-end report data.
+ * @return {Object|null} The normalized report, or `null` for invalid input.
+ */
 export function mapDayReport(raw) {
   if (!raw || typeof raw !== 'object') return null
   return {

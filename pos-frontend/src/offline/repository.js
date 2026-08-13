@@ -138,6 +138,11 @@ export async function putMovements(branchId, movements) {
   })
 }
 
+/**
+ * Synchronize branch day-end records while preserving local records for dates absent from the server response.
+ * @param {string} branchId - The branch whose day-end records are synchronized.
+ * @param {Array<Object>} dayEnds - Day-end records received from the server.
+ */
 export async function putDayEnds(branchId, dayEnds) {
   await db.transaction('rw', db.dayEnds, async () => {
     const serverDates = new Set((dayEnds || []).map((d) => d.date))

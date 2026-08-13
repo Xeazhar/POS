@@ -84,6 +84,11 @@ export const today = (openHour) => businessDate(new Date(), openHour ?? DEFAULT_
 export const rowBusinessDate = (row, openHour = DEFAULT_OPEN_HOUR) =>
   row?.createdAt ? businessDate(row.createdAt, openHour) : row?.date || null
 
+/**
+ * Assigns a priority score to a day-end entry for selection.
+ * @param {Object} entry - The day-end entry to rank.
+ * @returns {number} A priority score, where lower values indicate higher priority.
+ */
 function dayEndEntryRank(entry) {
   const syncRank = entry.syncStatus === 'pending' || entry.syncStatus === 'local' ? 0 : 10
   const statusRank =
@@ -97,6 +102,12 @@ function dayEndEntryRank(entry) {
   return syncRank + statusRank
 }
 
+/**
+ * Selects the highest-priority day-end entry for a business date.
+ * @param {Array<Object>} dayEnds - The day-end entries to search.
+ * @param {string} date - The business date to match.
+ * @return {Object|null} The highest-priority matching entry, or `null` when no entry matches.
+ */
 export function dayEndForBusinessDate(dayEnds, date) {
   const matches = (dayEnds || []).filter((item) => item.date === date)
   if (!matches.length) return null

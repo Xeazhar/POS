@@ -5,10 +5,18 @@ const SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render
 /** Cloudflare always-pass test key — local `npm run dev` only; never ship in production builds. */
 const DEV_TEST_SITE_KEY = '0x4AAAAAAEG89XtzHd_oWzOv'
 
+/**
+ * Reads and trims the configured Turnstile site key.
+ * @return {string} The trimmed site key, or an empty string when none is configured.
+ */
 function envSiteKey() {
   return String(import.meta.env.VITE_TURNSTILE_SITEKEY || '').trim()
 }
 
+/**
+ * Determines the Turnstile site key for the current environment.
+ * @return {string} The configured environment key, the development test key, or an empty string when no production key is configured.
+ */
 function resolveSiteKey() {
   const fromEnv = envSiteKey()
   if (fromEnv) return fromEnv
@@ -16,6 +24,10 @@ function resolveSiteKey() {
   return ''
 }
 
+/**
+ * Resolves the Turnstile site key and reports its configuration status.
+ * @return {{siteKey: string, loading: boolean, error: string, enabled: boolean}} The resolved site key, loading state, configuration error, and whether Turnstile is enabled.
+ */
 export function useTurnstileSiteKey() {
   const [siteKey, setSiteKey] = useState(() => resolveSiteKey())
   const [loading, setLoading] = useState(false)

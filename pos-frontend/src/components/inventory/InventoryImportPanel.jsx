@@ -27,9 +27,13 @@ import ImportPreviewLines from '../shared/ImportPreviewLines'
 import { readSpreadsheetBuffer, loadXlsx } from '../../lib/xlsxLoader'
 
 /**
- * CSV/XLSX restock import for supervisors on Inventory.
- * Restocks branch products; may create only when SKU exists in network catalog.
- * Skipped when SKU is not in the network catalog — reasons shown in preview.
+ * Import inventory restock data from a CSV or spreadsheet file for the current branch.
+ * Existing products are restocked, while new products are imported only when their SKU or barcode
+ * exists in the network catalog; other rows are shown as skipped with a reason.
+ * @param {Object} props - Component properties.
+ * @param {Array} props.products - Products currently available at the branch.
+ * @param {Function} props.onDone - Callback invoked after a successful import.
+ * @returns {JSX.Element|null} The import panel, or `null` for restaurant branches.
  */
 export default function InventoryImportPanel({ products, onDone }) {
   const user = useAuthStore((s) => s.user)

@@ -141,6 +141,10 @@ function rollUpStaffHours(rows = [], todayKey, openHour) {
   return [...byStaff.values()].sort((a, b) => b.totalMs - a.totalMs)
 }
 
+/**
+ * Displays and manages a branch's operational dashboard.
+ * @returns {JSX.Element} The branch dashboard interface.
+ */
 function ManagerBranchDashboard() {
   const { branchId } = useParams()
   const user = useAuthStore((state) => state.user)

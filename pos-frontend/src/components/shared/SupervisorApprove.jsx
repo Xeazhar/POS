@@ -8,10 +8,13 @@ import { sanitizePinInput } from '../../utils/pin'
 import { isManagerRole } from '../../utils/roles'
 
 /**
- * Modal for sensitive actions.
- * - Supervisors: staff code + PIN (branch-scoped).
- * - Managers/admin/master already signed in: can approve in place (supervisor unavailable).
- * - Managers with a PIN can also approve via code+PIN for any branch (RPC).
+ * Renders a modal for approving sensitive actions with supervisor credentials or an authorized manager session.
+ * @param {string} branchId - The branch whose approval is being requested.
+ * @param {string} [title='Approval required'] - The modal title.
+ * @param {string} [detail] - Supporting text displayed beneath the title.
+ * @param {Function} onCancel - Called when the approval flow is canceled.
+ * @param {Function} onApproved - Called with the approving staff member's identity and approval method.
+ * @returns {JSX.Element} The approval modal.
  */
 function SupervisorApprove({
   branchId,

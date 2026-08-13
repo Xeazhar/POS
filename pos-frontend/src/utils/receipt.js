@@ -264,7 +264,11 @@ function formatReceiptDate(value) {
   return date.toLocaleString()
 }
 
-/** Open a print-ready receipt window (works without a thermal printer). */
+/**
+ * Opens a browser window containing a print-ready receipt.
+ * @param {Object} receipt - The receipt data to render.
+ * @throws {Error} If the browser blocks the print window.
+ */
 export function printReceiptBrowser(receipt) {
   const html = receiptToHtml(receipt)
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' })

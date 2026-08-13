@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { FiMinus, FiPlus, FiTrash2, FiX } from 'react-icons/fi'
 import { useNavigate } from 'react-router-dom'
 import { isDeviceEnabled, receiptPrinter } from '../../devices'
@@ -29,6 +29,16 @@ function joinPromoNames(names = []) {
   return `${names.slice(0, 2).join(' + ')} +${names.length - 2} more`
 }
 
+/**
+ * Renders the current POS cart and manages checkout, payment, discounts, and sale completion.
+ * @param {Object} props - Cart configuration and callbacks.
+ * @param {boolean} [props.tillClosed=false] - Whether checkout and sales are unavailable because the till is closed.
+ * @param {React.ReactNode} [props.headerActions=null] - Content rendered in the cart header.
+ * @param {Function} [props.onOverlayChange=null] - Called with whether a modal or overlay is currently active.
+ * @param {boolean} [props.barcodeMode=false] - Whether to use the barcode-oriented cart layout.
+ * @param {Array} [props.promoRules=[]] - Promotion rules used to calculate and display discounts.
+ * @returns {JSX.Element} The cart interface and its checkout-related overlays.
+ */
 function Cart({
   tillClosed = false,
   headerActions = null,

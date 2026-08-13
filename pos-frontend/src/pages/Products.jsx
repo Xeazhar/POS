@@ -51,6 +51,9 @@ const emptyForm = {
   discountEligible: false,
 }
 
+/**
+ * Manage branch inventory and restaurant menus, including product editing, stock adjustments, filtering, and movement history.
+ */
 function Products() {
   const user = useAuthStore((state) => state.user)
   const isRestaurant = user?.branchType === 'restaurant'

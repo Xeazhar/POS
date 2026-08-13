@@ -383,15 +383,8 @@ function ShiftsTab({ rows, adjustments, loading, showBranch, canAdjustCash, onAd
 }
 
 /**
- * Staff — one tab covering both "who works here" and "what did their shifts look like".
- *
- * These used to be two pages listing the same people, and the shift log could not answer
- * "what role is this person" while the staff list could not answer "did their drawer
- * balance". One row per person, expanding into that person's shifts, answers both.
- *
- * Role-aware rather than role-gated: supervisors get the roster + hours + drawer detail
- * for their own branch (what the old Shifts page gave them); account creation, role
- * changes and PIN reveal stay manager-only, exactly as before the merge.
+ * Manage staff accounts and review their shift activity, including hours, drawer balances, and variances.
+ * Supervisors are limited to staff and shift data from their own branch, while managers can manage accounts and access broader branch data.
  */
 function ManagerStaff() {
   const currentUser = useAuthStore((state) => state.user)

@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 
-/** True for phone/tablet-style UIs (coarse pointer, no hover) — not desktop. */
+/**
+ * Determines whether the current UI is touch-oriented.
+ * @returns {boolean} `true` for a UI with no hover capability and a coarse pointer, `false` otherwise.
+ */
 export function useIsTouchUi() {
   const [touchUi, setTouchUi] = useState(() => readTouchUi())
 
@@ -16,6 +19,10 @@ export function useIsTouchUi() {
   return touchUi
 }
 
+/**
+ * Determines whether the current environment has a touch-oriented UI.
+ * @returns {boolean} `true` if the environment matches touch-oriented UI criteria, `false` otherwise.
+ */
 export function readTouchUi() {
   if (typeof window === 'undefined' || !window.matchMedia) return false
   if (window.matchMedia('(hover: none) and (pointer: coarse)').matches) return true

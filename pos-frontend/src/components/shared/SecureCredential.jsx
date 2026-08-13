@@ -9,8 +9,7 @@ export const secureFormProps = {
 }
 
 /**
- * Hidden decoy fields — password managers often fill these instead of real inputs.
- * Place once at the top of a credential form.
+ * Provides visually hidden decoy fields to redirect password-manager autofill.
  */
 export function CredentialAutofillTrap() {
   return (
