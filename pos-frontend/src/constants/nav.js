@@ -1,4 +1,4 @@
-import { FiBarChart2, FiClipboard, FiCpu, FiDatabase, FiGrid, FiMoon, FiPackage, FiUsers, FiMapPin, FiFileText, FiCoffee, FiTag } from 'react-icons/fi'
+import { FiBarChart2, FiClipboard, FiCpu, FiDatabase, FiGrid, FiMoon, FiPackage, FiSettings, FiUsers, FiMapPin, FiFileText, FiCoffee, FiTag } from 'react-icons/fi'
 import { canAccessModule, isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 import { isRestaurantBranchType } from '../utils/features'
 
@@ -50,7 +50,7 @@ export function staffLinksFor(user) {
     }
   }
 
-  return base.filter(([path, , , moduleId]) => {
+  return base.filter(([, , , moduleId]) => {
     if (!canAccessModule(user, moduleId)) return false
     // Managers already get these under the manager nav below (avoid duplicate tabs) —
     // shifts/promos/catalog all render the exact same page as their manager-nav counterpart
@@ -61,7 +61,8 @@ export function staffLinksFor(user) {
       (moduleId === 'shifts' ||
         moduleId === 'manager_promos' ||
         moduleId === 'catalog' ||
-        moduleId === 'day_end') &&
+        moduleId === 'day_end' ||
+        moduleId === 'devices') &&
       isManagerRole(user.role)
     )
       return false
@@ -77,6 +78,7 @@ export const managerLinks = [
   ['/manager/data', 'Data', FiDatabase, 'manager_data'],
   ['/manager/promos', 'Promos', FiTag, 'manager_promos'],
   ['/manager/reports', 'Reports', FiFileText, 'manager_reports'],
+  ['/settings/devices', 'Devices', FiCpu, 'devices'],
 ]
 
 export function managerLinksFor(user) {
@@ -93,14 +95,27 @@ export function navLinksFor(user) {
   const mgr = managerLinksFor(user)
   const seen = new Set()
   const combined = [...mgr, ...staff]
-  return combined.filter(([path]) => {
+  const links = combined.filter(([path]) => {
     if (seen.has(path)) return false
     seen.add(path)
     return true
   })
+  // Default last. Not a MODULES flag — every signed-in role gets Settings; the page
+  // itself hides manager-only sections. Devices stays its own `/settings/devices` tab.
+  // Staff may drag this (and every other tab) via SidebarNav; custom order is per login
+  // on this till (`utils/navOrder.js`) and does not change staffHomePath.
+  links.push(['/settings', 'Settings', FiSettings])
+  return links
 }
 
-/** Default landing path after login / unknown URLs */
+/** Sidebar Settings is active on Settings pages, but never on Devices. */
+export function isSettingsNavActive(pathname) {
+  if (pathname === '/settings/devices' || pathname.startsWith('/settings/devices/')) return false
+  return pathname === '/settings' || pathname.startsWith('/settings/')
+}
+
+/** Default landing path after login / unknown URLs. Not the first sidebar item — custom
+ *  menu order must not send a cashier to Reports because they dragged it to the top. */
 export function staffHomePath(user) {
   if (!user) return '/'
   // Cashiers open POS when they have access

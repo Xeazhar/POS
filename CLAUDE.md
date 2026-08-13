@@ -33,7 +33,7 @@ Database is Supabase Postgres + RLS. Schema lives in `pos-frontend/supabase/sche
 
 ## Project stage (as of 2026-08)
 
-**Version `0.19.0`, pre-1.0 — in testing, not live for real sales.** Branch: `Development`. Do not cut `1.0.0` until trusted for money.
+**Version `0.20.0`, pre-1.0 — in testing, not live for real sales.** Branch: `Development`. Do not cut `1.0.0` until trusted for money.
 
 Shipped capability (treat as current, not backlog):
 - Offline-first POS, shifts/change fund, day-end dual control, cash drawer / petty workflow

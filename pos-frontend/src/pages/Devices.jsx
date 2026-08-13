@@ -1,11 +1,30 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { FiBluetooth, FiHardDrive, FiPrinter } from 'react-icons/fi'
-import { Eyebrow, Field, PageHeader, PrimaryButton, SkeletonRows, StatusBadge, TableCard, tableRowClass } from '../components/ui'
-import { cashDrawer, getAllDeviceStatuses, isDeviceEnabled, normalizeDeviceSettings } from '../devices'
-import { hasSupabase, reportBranchDevices } from '../lib/api'
+import {
+  Eyebrow,
+  Field,
+  PageHeader,
+  PrimaryButton,
+  SkeletonRows,
+  StatusBadge,
+  TableCard,
+  tableHeadClass,
+  tableRowClass,
+} from '../components/ui'
+import {
+  BRANCH_DEVICES,
+  cashDrawer,
+  getAllDeviceStatuses,
+  isDeviceEnabled,
+  isTelemetryFresh,
+  normalizeDeviceSettings,
+} from '../devices'
+import { fetchBranches, fetchBranchTelemetry, hasSupabase, reportBranchDevices } from '../lib/api'
 import { useAuthStore } from '../stores/posStore'
 import { getDrawerId, getDrawerLabel, setDrawerId, setDrawerLabel } from '../utils/drawer'
 import { formatSupportError } from '../utils/errors'
+import { isManagerRole } from '../utils/roles'
 
 const ICONS = {
   'barcode-scanner': FiHardDrive,
@@ -13,7 +32,183 @@ const ICONS = {
   'cash-drawer': FiBluetooth,
 }
 
+const DEVICE_POLL_MS = 30_000
+
+function formatSeen(iso) {
+  if (!iso) return 'Never'
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return 'Never'
+  const ms = Date.now() - t
+  if (ms < 60_000) return 'Just now'
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`
+  return new Date(iso).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
+
+function tillOnline(presence) {
+  if (!presence) return false
+  if (presence.is_online === false) return false
+  return isTelemetryFresh(presence.last_seen_at || presence.updated_at)
+}
+
+function deviceNetworkStatus({ enabled, tillUp, telemetry }) {
+  if (!enabled) return { label: 'Off', tone: 'neutral' }
+  if (!tillUp) return { label: 'Till offline', tone: 'neutral' }
+  const fresh = isTelemetryFresh(telemetry?.updatedAt)
+  if (fresh && telemetry?.state === 'connected') return { label: 'Connected', tone: 'success' }
+  return { label: 'Not connected', tone: 'warn' }
+}
+
 function Devices() {
+  const user = useAuthStore((state) => state.user)
+  if (isManagerRole(user?.role)) return <NetworkDevicesOverview />
+  return <TillDevices />
+}
+
+function NetworkDevicesOverview() {
+  const [branches, setBranches] = useState([])
+  const [presence, setPresence] = useState({})
+  const [devicesByBranch, setDevicesByBranch] = useState({})
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+
+    const load = async ({ silent = false } = {}) => {
+      if (!hasSupabase) {
+        if (active) {
+          setLoading(false)
+          setError('Connect to the cloud to see branch device status.')
+        }
+        return
+      }
+      try {
+        if (!silent && active) setError('')
+        const rows = await fetchBranches({ includeCompany: false })
+        const ids = (rows || []).map((row) => row.id)
+        const tel = ids.length ? await fetchBranchTelemetry(ids) : { presence: {}, devices: {} }
+        if (!active) return
+        setBranches(rows || [])
+        setPresence(tel.presence || {})
+        setDevicesByBranch(tel.devices || {})
+        setLoading(false)
+      } catch (err) {
+        if (active) {
+          setError(formatSupportError(err))
+          setLoading(false)
+        }
+      }
+    }
+
+    load()
+    const poll = window.setInterval(() => load({ silent: true }), DEVICE_POLL_MS)
+    return () => {
+      active = false
+      window.clearInterval(poll)
+    }
+  }, [])
+
+  const ordered = [...branches].sort((a, b) => {
+    const aOff = a.is_active === false ? 1 : 0
+    const bOff = b.is_active === false ? 1 : 0
+    if (aOff !== bOff) return aOff - bOff
+    return String(a.name || '').localeCompare(String(b.name || ''))
+  })
+
+  return (
+    <div>
+      <PageHeader eyebrow="NETWORK" title="Devices">
+        <span className="text-xs text-brand-subtle">
+          Till presence and hardware status per branch. Enable or disable a device on that
+          branch dashboard.
+        </span>
+      </PageHeader>
+      {error && <p className="mb-3 text-xs text-brand-danger">{error}</p>}
+      <TableCard className="max-h-none">
+        <div className="border-b border-brand-softline px-5 py-4">
+          <Eyebrow>BRANCH STATUS</Eyebrow>
+          <p className="m-0 mt-1 text-xs text-brand-muted">
+            A till is online while a cashier app is open and heartbeating. Device rows come
+            from that till. Stale reports older than a few minutes count as not connected.
+          </p>
+        </div>
+        {loading ? (
+          <div className="px-5 py-4">
+            <SkeletonRows rows={4} cols={5} />
+          </div>
+        ) : !ordered.length ? (
+          <p className="px-5 py-4 text-xs text-brand-muted">No branches yet.</p>
+        ) : (
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr>
+                <th className={`${tableHeadClass} px-5 py-2`}>Branch</th>
+                <th className={`${tableHeadClass} px-3 py-2`}>Till</th>
+                {BRANCH_DEVICES.map((device) => (
+                  <th key={device.key} className={`${tableHeadClass} px-3 py-2`}>
+                    {device.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ordered.map((branch) => {
+                const settings = normalizeDeviceSettings(branch.device_settings)
+                const rowPresence = presence[branch.id]
+                const online = tillOnline(rowPresence)
+                const lastSeen = rowPresence?.last_seen_at || rowPresence?.updated_at
+                const list = devicesByBranch[branch.id] || []
+                const byKey = Object.fromEntries(list.map((row) => [row.key, row]))
+                return (
+                  <tr key={branch.id} className={tableRowClass}>
+                    <td className="px-5 py-2.5">
+                      <Link
+                        to={`/manager/branches/${branch.id}`}
+                        className="font-semibold text-brand-ink no-underline hover:underline"
+                      >
+                        {branch.name}
+                      </Link>
+                      {branch.is_active === false && (
+                        <span className="ml-2 text-[10px] font-bold tracking-wide text-brand-muted uppercase">
+                          Inactive
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <StatusBadge compact tone={online ? 'success' : 'neutral'}>
+                        {online ? 'Online' : 'Offline'}
+                      </StatusBadge>
+                      <span className="mt-1 block text-[10px] text-brand-subtle">
+                        {online ? 'Heartbeating' : `Last seen ${formatSeen(lastSeen)}`}
+                      </span>
+                    </td>
+                    {BRANCH_DEVICES.map((device) => {
+                      const status = deviceNetworkStatus({
+                        enabled: settings[device.key] === true,
+                        tillUp: online,
+                        telemetry: byKey[device.key],
+                      })
+                      return (
+                        <td key={device.key} className="px-3 py-2.5">
+                          <StatusBadge compact tone={status.tone}>
+                            {status.label}
+                          </StatusBadge>
+                        </td>
+                      )
+                    })}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
+      </TableCard>
+    </div>
+  )
+}
+
+function TillDevices() {
   const user = useAuthStore((state) => state.user)
   const settings = normalizeDeviceSettings(user?.deviceSettings)
   const [devices, setDevices] = useState([])
@@ -47,7 +242,7 @@ function Devices() {
 
   return (
     <div>
-      <PageHeader eyebrow="SETTINGS" title="Devices">
+      <PageHeader eyebrow="TILL" title="Devices">
         <span className="text-xs text-brand-subtle">
           This till — managers enable/disable devices under Branches
         </span>

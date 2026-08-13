@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Field,
@@ -32,14 +32,62 @@ const empty = {
   branch_type: 'retail',
 }
 
+function BranchCardBody({ branch, summary, summariesLoading }) {
+  return (
+    <>
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="m-0 mb-1 text-[10px] text-brand-subtle">⋮⋮ Drag to reorder</p>
+          <h2 className="m-0 text-lg">{branch.name}</h2>
+          <p className="mt-1 text-xs text-brand-muted">{branch.address || 'No address'}</p>
+          {RESTAURANT_FEATURES_ENABLED && branch.branch_type === 'restaurant' && (
+            <p className="mt-1 text-[10px] font-bold tracking-wide text-brand-warn uppercase">
+              Restaurant / carinderia
+            </p>
+          )}
+        </div>
+        <StatusBadge tone={branch.is_active ? 'success' : 'danger'} className="rounded-full">
+          {branch.is_active ? 'Active' : 'Inactive'}
+        </StatusBadge>
+      </div>
+      <div className="mb-4 grid grid-cols-3 gap-2 text-center">
+        <div>
+          <strong className={`block text-brand-gold ${moneyClass}`}>
+            {summariesLoading && summary.revenue == null ? '…' : money(summary.revenue || 0)}
+          </strong>
+          <small className="text-[10px] text-brand-subtle">Today</small>
+        </div>
+        <div>
+          <strong className="block">
+            {summariesLoading && summary.orders == null ? '…' : summary.orders || 0}
+          </strong>
+          <small className="text-[10px] text-brand-subtle">Orders</small>
+        </div>
+        <div>
+          <strong className="block text-brand-danger">
+            {summariesLoading && summary.lowStock == null ? '…' : summary.lowStock || 0}
+          </strong>
+          <small className="text-[10px] text-brand-subtle">Low stock</small>
+        </div>
+      </div>
+    </>
+  )
+}
+
 function ManagerBranches() {
   const [branches, setBranches] = useState([])
   const [summaries, setSummaries] = useState({})
   const [summariesLoading, setSummariesLoading] = useState(false)
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
-  const [dragId, setDragId] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [dragIndex, setDragIndex] = useState(null)
+  const [ghost, setGhost] = useState(null)
+  const gridRef = useRef(null)
+  const dragOriginRef = useRef(null)
+  const orderDirtyRef = useRef(false)
+  const branchesRef = useRef(branches)
+  branchesRef.current = branches
 
   const loadSummaries = async (rows) => {
     if (!rows?.length) {
@@ -51,7 +99,6 @@ function ManagerBranches() {
       const { summaries: next } = await fetchManagerOverviewMetrics({ days: 1 })
       setSummaries(next || {})
     } catch {
-      // RPC missing — same fan-out Overview used to do (slow, but correct).
       const next = {}
       await Promise.all(
         rows.map(async (branch) => {
@@ -94,7 +141,6 @@ function ManagerBranches() {
     setLoading(true)
     ;(async () => {
       try {
-        // Instant paint from last visit when cache exists.
         const cached = await readBranchesCache().catch(() => null)
         if (active && cached?.length) {
           setBranches(cached)
@@ -114,28 +160,99 @@ function ManagerBranches() {
     }
   }, [])
 
-  const onDropReorder = async (targetId) => {
-    if (!dragId || dragId === targetId) {
-      setDragId(null)
-      return
-    }
-    const from = branches.findIndex((b) => b.id === dragId)
-    const to = branches.findIndex((b) => b.id === targetId)
-    if (from < 0 || to < 0) {
-      setDragId(null)
-      return
-    }
-    const next = [...branches]
-    const [moved] = next.splice(from, 1)
-    next.splice(to, 0, moved)
-    setBranches(next)
-    setDragId(null)
+  const persistOrder = async (rows) => {
     try {
-      if (hasSupabase) await reorderBranches(next.map((b) => b.id))
+      if (hasSupabase) await reorderBranches(rows.map((b) => b.id))
+      await writeBranchesCache(rows).catch(() => {})
     } catch (err) {
       setError(err.message)
       await reload()
     }
+  }
+
+  const indexFromPoint = (clientX, clientY) => {
+    const cards = gridRef.current?.querySelectorAll('[data-branch-index]')
+    if (!cards?.length) return 0
+    let best = 0
+    let bestDist = Infinity
+    for (const card of cards) {
+      const rect = card.getBoundingClientRect()
+      const cx = rect.left + rect.width / 2
+      const cy = rect.top + rect.height / 2
+      const dist = (clientX - cx) ** 2 + (clientY - cy) ** 2
+      if (dist < bestDist) {
+        bestDist = dist
+        best = Number(card.dataset.branchIndex)
+      }
+    }
+    return best
+  }
+
+  const clearDrag = () => {
+    setDragIndex(null)
+    setGhost(null)
+    dragOriginRef.current = null
+  }
+
+  const onPointerDown = (event, index) => {
+    if (event.button != null && event.button !== 0) return
+    if (event.target.closest('a, button, input, label, [data-branch-edit]')) return
+    event.preventDefault()
+    const el = event.currentTarget
+    el.setPointerCapture(event.pointerId)
+    const rect = el.getBoundingClientRect()
+    const branch = branches[index]
+    dragOriginRef.current = {
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      width: rect.width,
+      height: rect.height,
+      branchId: branch.id,
+    }
+    orderDirtyRef.current = false
+    setDragIndex(index)
+    setGhost({
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height,
+      branch,
+    })
+  }
+
+  const onPointerMove = (event) => {
+    if (dragIndex == null || !dragOriginRef.current) return
+    const { offsetX, offsetY, width, height, branchId } = dragOriginRef.current
+    const branch = branches.find((b) => b.id === branchId) || branches[dragIndex]
+    setGhost({
+      x: event.clientX - offsetX,
+      y: event.clientY - offsetY,
+      width,
+      height,
+      branch,
+    })
+    const over = indexFromPoint(event.clientX, event.clientY)
+    if (over === dragIndex) return
+    const next = [...branchesRef.current]
+    const [moved] = next.splice(dragIndex, 1)
+    next.splice(over, 0, moved)
+    branchesRef.current = next
+    setBranches(next)
+    setDragIndex(over)
+    orderDirtyRef.current = true
+  }
+
+  const endDrag = async (event) => {
+    if (dragIndex == null) return
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    } catch {
+      /* already released */
+    }
+    const dirty = orderDirtyRef.current
+    const rows = branchesRef.current
+    clearDrag()
+    if (dirty) await persistOrder(rows)
   }
 
   return (
@@ -145,74 +262,78 @@ function ManagerBranches() {
           Add branch
         </PrimaryButton>
       </PageHeader>
-      <p className="mb-3 text-[11px] text-brand-subtle">Drag cards to set display order.</p>
+      <p className="mb-3 text-[11px] text-brand-subtle">
+        Drag cards to set display order — the card follows your pointer.
+      </p>
       {error && <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>}
       {loading ? (
         <SkeletonCards count={3} />
       ) : (
-      <div className="grid grid-cols-3 gap-3.5 max-[1050px]:grid-cols-2 max-[700px]:grid-cols-1">
-        {branches.map((branch) => {
-          const summary = summaries[branch.id] || { revenue: 0, orders: 0, lowStock: 0 }
-          return (
-            <TableCard
-              key={branch.id}
-              className={`max-h-none p-5 ${dragId === branch.id ? 'opacity-60 ring-2 ring-brand-gold' : ''}`}
-              draggable
-              onDragStart={() => setDragId(branch.id)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => onDropReorder(branch.id)}
-            >
-              <div className="mb-3 flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="m-0 mb-1 text-[10px] text-brand-subtle">⋮⋮ Drag to reorder</p>
-                  <h2 className="m-0 text-lg">{branch.name}</h2>
-                  <p className="mt-1 text-xs text-brand-muted">{branch.address || 'No address'}</p>
-                  {RESTAURANT_FEATURES_ENABLED && branch.branch_type === 'restaurant' && (
-                    <p className="mt-1 text-[10px] font-bold tracking-wide text-brand-warn uppercase">
-                      Restaurant / carinderia
-                    </p>
-                  )}
-                </div>
-                <StatusBadge tone={branch.is_active ? 'success' : 'danger'} className="rounded-full">
-                  {branch.is_active ? 'Active' : 'Inactive'}
-                </StatusBadge>
-              </div>
-              <div className="mb-4 grid grid-cols-3 gap-2 text-center">
-                <div>
-                  <strong className={`block text-brand-gold ${moneyClass}`}>
-                    {summariesLoading && summary.revenue == null ? '…' : money(summary.revenue || 0)}
-                  </strong>
-                  <small className="text-[10px] text-brand-subtle">Today</small>
-                </div>
-                <div>
-                  <strong className="block">
-                    {summariesLoading && summary.orders == null ? '…' : summary.orders || 0}
-                  </strong>
-                  <small className="text-[10px] text-brand-subtle">Orders</small>
-                </div>
-                <div>
-                  <strong className="block text-brand-danger">
-                    {summariesLoading && summary.lowStock == null ? '…' : summary.lowStock || 0}
-                  </strong>
-                  <small className="text-[10px] text-brand-subtle">Low stock</small>
-                </div>
-              </div>
-              <div className="flex justify-end gap-2">
-                <Link
-                  className="inline-flex h-10 items-center rounded-[5px] bg-brand-gold px-4 text-xs font-bold text-brand-dark no-underline"
-                  to={`/manager/branches/${branch.id}`}
-                >
-                  Open dashboard
-                </Link>
-                <SecondaryButton compact type="button" onClick={() => setForm(branch)}>
-                  Edit
-                </SecondaryButton>
-              </div>
-            </TableCard>
-          )
-        })}
-      </div>
+        <div
+          ref={gridRef}
+          className="grid grid-cols-3 gap-3.5 max-[1050px]:grid-cols-2 max-[700px]:grid-cols-1"
+        >
+          {branches.map((branch, index) => {
+            const summary = summaries[branch.id] || { revenue: 0, orders: 0, lowStock: 0 }
+            const isPlaceholder = dragIndex === index
+            return (
+              <TableCard
+                key={branch.id}
+                data-branch-index={index}
+                className={`max-h-none cursor-grab touch-none select-none p-5 active:cursor-grabbing ${
+                  isPlaceholder
+                    ? 'border border-dashed border-brand-gold/60 bg-brand-gold/10 opacity-40 shadow-none'
+                    : ''
+                }`}
+                onPointerDown={(event) => onPointerDown(event, index)}
+                onPointerMove={onPointerMove}
+                onPointerUp={endDrag}
+                onPointerCancel={endDrag}
+              >
+                <BranchCardBody
+                  branch={branch}
+                  summary={summary}
+                  summariesLoading={summariesLoading}
+                />
+                {!isPlaceholder && (
+                  <div className="flex justify-end gap-2" onPointerDown={(e) => e.stopPropagation()}>
+                    <Link
+                      className="inline-flex h-10 items-center rounded-[5px] bg-brand-gold px-4 text-xs font-bold text-brand-dark no-underline"
+                      to={`/manager/branches/${branch.id}`}
+                    >
+                      Open dashboard
+                    </Link>
+                    <SecondaryButton compact type="button" onClick={() => setForm(branch)}>
+                      Edit
+                    </SecondaryButton>
+                  </div>
+                )}
+              </TableCard>
+            )
+          })}
+        </div>
       )}
+
+      {ghost?.branch && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none fixed z-[80] max-h-none rounded-[10px] border border-brand-line bg-white p-5 shadow-[0_16px_40px_rgba(0,0,0,0.28)] ring-2 ring-brand-gold"
+          style={{
+            left: ghost.x,
+            top: ghost.y,
+            width: ghost.width,
+            minHeight: ghost.height,
+            transform: 'scale(1.03) rotate(-1.5deg)',
+          }}
+        >
+          <BranchCardBody
+            branch={ghost.branch}
+            summary={summaries[ghost.branch.id] || { revenue: 0, orders: 0, lowStock: 0 }}
+            summariesLoading={summariesLoading}
+          />
+        </div>
+      )}
+
       {form && (
         <Modal onClose={() => setForm(null)}>
           <form

@@ -8,6 +8,7 @@ import { formatSupportError } from '../utils/errors'
 import { sanitizePinInput } from '../utils/pin'
 import { APP_VERSION_LABEL, IS_PRERELEASE } from '../utils/version'
 import { SHOW_ENV_BADGE, environmentCaption, environmentLabel } from '../utils/environment'
+import { LegalNavLinks } from '../legal/LegalNavLinks'
 
 function Login() {
   const configured = hasSupabase || allowDemoMode
@@ -260,6 +261,10 @@ function Login() {
             </div>
           </>
         )}
+        <LegalNavLinks
+          className="mt-5 text-center text-[10px] text-brand-n500"
+          linkClassName="text-brand-n500 underline-offset-2 hover:text-brand-n600 hover:underline"
+        />
       </div>
     </main>
   )

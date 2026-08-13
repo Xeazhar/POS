@@ -5,7 +5,7 @@ alwaysApply: true
 
 # CalePOS — project status
 
-**Stage:** `0.19.0`, pre-1.0, in testing — not live for real money. Branch `Development`. Read `pos-frontend/docs/CODEMAP.md` + `CHANGELOG.md` before non-trivial work. App lives in `pos-frontend/`.
+**Stage:** `0.20.0`, pre-1.0, in testing — not live for real money. Branch `Development`. Read `pos-frontend/docs/CODEMAP.md` + `CHANGELOG.md` before non-trivial work. App lives in `pos-frontend/`.
 
 ## Shipped (do not re-build as backlog)
 
@@ -26,6 +26,7 @@ alwaysApply: true
 - UI never talks to Supabase except via `src/lib/api.js`
 - Version bumps only when user asks; every behaviour commit needs CHANGELOG
 - Realtime Authorization must be ON in Supabase Dashboard for private Broadcast; apply `migrate_realtime_broadcast_v1.sql`
+- Before live money: work through `pos-frontend/docs/GO_LIVE_CHECKLIST.md`
 
 ## Working tree note
 

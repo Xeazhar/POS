@@ -8,6 +8,7 @@ import { pinAuthEmail, isSupervisorOrAbove, isManagerRole } from '../utils/roles
 import { normalizeMenuKind } from '../utils/ulam'
 import { clearUnlockSecret, loadUnlockSecret, saveUnlockSecret } from '../offline/session'
 import { createVerifier, isVerifierExpired, verifyAgainst } from '../utils/unlockVerifier'
+import { clampIdleLockMinutes, IDLE_LOCK_MINUTES_DEFAULT } from '../utils/sessionPolicy'
 import { APP_VERSION } from '../utils/version'
 
 export const hasSupabase = Boolean(supabase)
@@ -2833,47 +2834,71 @@ export function composeTin(companyTin, branchCode, legacyBranchTin = null) {
 
 let companyProfileCache = null
 
+const COMPANY_PROFILE_SELECT = 'id, business_name, tin, address, idle_lock_minutes'
+const COMPANY_PROFILE_SELECT_LEGACY = 'id, business_name, tin, address'
+
+function mapCompanyProfile(row, { missing = false } = {}) {
+  return {
+    id: row?.id ?? true,
+    business_name: row?.business_name ?? null,
+    tin: row?.tin ?? null,
+    address: row?.address ?? null,
+    idle_lock_minutes: clampIdleLockMinutes(row?.idle_lock_minutes ?? IDLE_LOCK_MINUTES_DEFAULT),
+    missing,
+  }
+}
+
 /** The single company-level fiscal identity row. Cached — it changes about never. */
 export async function fetchCompanyProfile({ force = false } = {}) {
   if (!supabase) return null
   if (companyProfileCache && !force) return companyProfileCache
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('company_profile')
-    .select('id, business_name, tin, address')
+    .select(COMPANY_PROFILE_SELECT)
     .limit(1)
     .maybeSingle()
+  if (error && /idle_lock_minutes|schema cache|column/i.test(String(error.message || ''))) {
+    ;({ data, error } = await supabase
+      .from('company_profile')
+      .select(COMPANY_PROFILE_SELECT_LEGACY)
+      .limit(1)
+      .maybeSingle())
+  }
   if (error) {
     // Table not created yet (migration not applied) — degrade to branch-level TIN rather
     // than failing every screen that prints a receipt.
     if (/company_profile|schema cache|does not exist/i.test(String(error.message || ''))) {
-      companyProfileCache = { business_name: null, tin: null, address: null, missing: true }
+      companyProfileCache = mapCompanyProfile(null, { missing: true })
       return companyProfileCache
     }
     throw error
   }
-  companyProfileCache = data || { business_name: null, tin: null, address: null }
+  companyProfileCache = mapCompanyProfile(data)
   return companyProfileCache
 }
 
-export async function saveCompanyProfile({ businessName, tin, address }) {
-  const { data, error } = await supabase
-    .from('company_profile')
-    .upsert(
-      {
-        id: true,
-        business_name: businessName ?? null,
-        tin: tin ?? null,
-        address: address ?? null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'id' },
-    )
-    .select('id, business_name, tin, address')
-    .single()
+export async function saveCompanyProfile({ businessName, tin, address, idleLockMinutes } = {}) {
+  const payload = {
+    id: true,
+    updated_at: new Date().toISOString(),
+  }
+  if (businessName !== undefined) payload.business_name = businessName ?? null
+  if (tin !== undefined) payload.tin = tin ?? null
+  if (address !== undefined) payload.address = address ?? null
+  if (idleLockMinutes !== undefined) payload.idle_lock_minutes = clampIdleLockMinutes(idleLockMinutes)
+
+  const run = (selectCols) =>
+    supabase.from('company_profile').upsert(payload, { onConflict: 'id' }).select(selectCols).single()
+
+  let { data, error } = await run(COMPANY_PROFILE_SELECT)
+  if (error && /idle_lock_minutes|schema cache|column/i.test(String(error.message || ''))) {
+    if (idleLockMinutes !== undefined) throw error
+    ;({ data, error } = await run(COMPANY_PROFILE_SELECT_LEGACY))
+  }
   if (error) throw error
-  companyProfileCache = data
+  companyProfileCache = mapCompanyProfile(data)
   branchHeaderCache.clear()
-  return data
+  return companyProfileCache
 }
 
 export async function fetchBranches({ includeCompany = true } = {}) {
@@ -5292,6 +5317,32 @@ export async function fetchAuditEvents({ start, end, branchId, limit = 500 } = {
   const { data, error } = await build(0, limit - 1)
   if (error) throw error
   return data || []
+}
+
+const SECURITY_AUDIT_TYPES = [
+  'login',
+  'logout',
+  'day_end_lock',
+  'pin_viewed',
+  'company_profile_updated',
+]
+
+/** Recent security-relevant audit rows. Never selects PIN or password fields. */
+export async function fetchSecurityAuditEvents({ limit = 10, offset = 0 } = {}) {
+  if (!supabase) return { rows: [], total: 0 }
+  const from = Math.max(0, offset)
+  const size = Math.max(1, limit)
+  const { data, error, count } = await supabase
+    .from('audit_events')
+    .select('id, created_at, event_type, detail, staff_id, branch_id, staff(full_name), branches(name)', {
+      count: 'exact',
+    })
+    .in('event_type', SECURITY_AUDIT_TYPES)
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(from, from + size - 1)
+  if (error) throw error
+  return { rows: data || [], total: count ?? 0 }
 }
 
 /** Void / refund events. `limit: null` reads everything — see fetchAuditEvents. */

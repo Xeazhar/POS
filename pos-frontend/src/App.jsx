@@ -1,5 +1,5 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
-import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { Suspense, useCallback, useEffect, useState } from 'react'
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import Shell from './components/shared/Shell'
 import DesktopModeHint from './components/shared/DesktopModeHint'
 import LoginIntro from './components/shared/LoginIntro'
@@ -23,6 +23,7 @@ const Transactions = lazyWithRetry(() => import('./pages/Transactions.jsx'))
 const Products = lazyWithRetry(() => import('./pages/Products.jsx'))
 const DayEnd = lazyWithRetry(() => import('./pages/DayEnd.jsx'))
 const Devices = lazyWithRetry(() => import('./pages/Devices.jsx'))
+const Settings = lazyWithRetry(() => import('./pages/Settings.jsx'))
 const ManagerOverview = lazyWithRetry(() => import('./pages/manager/Overview.jsx'))
 const ManagerBranches = lazyWithRetry(() => import('./pages/manager/Branches.jsx'))
 const ManagerBranchDashboard = lazyWithRetry(() => import('./pages/manager/BranchDashboard.jsx'))
@@ -30,6 +31,7 @@ const ManagerStaff = lazyWithRetry(() => import('./pages/manager/Staff.jsx'))
 const ManagerData = lazyWithRetry(() => import('./pages/manager/Data.jsx'))
 const ManagerPromos = lazyWithRetry(() => import('./pages/manager/Promos.jsx'))
 const ManagerReports = lazyWithRetry(() => import('./pages/manager/Reports.jsx'))
+const Legal = lazyWithRetry(() => import('./pages/Legal.jsx'))
 
 function PageFallback() {
   return <PageSkeleton variant="table" className="px-1 py-2" />
@@ -119,6 +121,8 @@ function AppRoutes() {
   const logout = useAuthStore((state) => state.logout)
   const hydrate = useInventoryStore((state) => state.hydrate)
   const loadBranch = useProductStore((state) => state.loadBranch)
+  const { pathname } = useLocation()
+  const isLegal = pathname === '/legal' || pathname.startsWith('/legal/')
 
   useCompactChrome()
   useBranchHeartbeat(user)
@@ -156,9 +160,16 @@ function AppRoutes() {
 
   return (
     <>
-      <LoginIntroGate />
+      {!isLegal && <LoginIntroGate />}
       <Suspense fallback={<PageFallback />}>
-        {booting ? (
+        {isLegal ? (
+          <Routes>
+            <Route path="/legal/terms" element={<Legal />} />
+            <Route path="/legal/privacy" element={<Legal />} />
+            <Route path="/legal" element={<Navigate to="/legal/terms" replace />} />
+            <Route path="/legal/*" element={<Navigate to="/legal/terms" replace />} />
+          </Routes>
+        ) : booting ? (
           <div className="min-h-screen bg-brand-canvas px-[22px] py-6">
             <PageSkeleton variant="dashboard" />
           </div>
@@ -223,6 +234,7 @@ function AppRoutes() {
                   </RequireModule>
                 }
               />
+              <Route path="/settings/*" element={<Settings />} />
               <Route
                 path="/shifts"
                 element={

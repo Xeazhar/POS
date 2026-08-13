@@ -2085,7 +2085,7 @@ function ManagerBranchDashboard() {
                   {branch?.company_business_name || form.business_name || '—'}
                 </strong>
                 <span className="mt-0.5 block text-[10px] text-brand-subtle">
-                  From company profile (Manager → Branches). Legacy branch override is no longer editable here.
+                  From company profile (Settings → Business Information). Legacy branch override is no longer editable here.
                 </span>
               </div>
               <Field label="Address" value={form.address || ''} onChange={(e) => setForm({ ...form, address: e.target.value })} />
@@ -2099,8 +2099,8 @@ function ManagerBranchDashboard() {
                 </strong>
                 <span className="mt-0.5 block text-[10px] text-brand-subtle">
                   {branch?.company_tin
-                    ? 'Shared by every branch. Change it on Manager → Branches.'
-                    : 'Set it on Manager → Branches. Until then receipts may show a legacy branch TIN if one was stored.'}
+                    ? 'Shared by every branch. Change it in Settings → Business Information.'
+                    : 'Set it in Settings → Business Information. Until then receipts may show a legacy branch TIN if one was stored.'}
                 </span>
               </div>
               <Field

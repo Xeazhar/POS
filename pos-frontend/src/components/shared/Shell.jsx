@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { FiChevronLeft, FiChevronRight, FiLock, FiLogOut, FiMenu, FiRefreshCw, FiX } from 'react-icons/fi'
 import { navLinksFor } from '../../constants/nav'
-import { hasSupabase, heartbeatStaffSession } from '../../lib/api'
+import { fetchCompanyProfile, hasSupabase, heartbeatStaffSession } from '../../lib/api'
 import { useAppVersion } from '../../hooks/useAppVersion'
 import { useBranchOperationsLive } from '../../hooks/useBranchOperationsLive'
 import { useAuthStore, useCartStore } from '../../stores/posStore'
@@ -17,8 +17,9 @@ import Clock from './Clock'
 import LockScreen from './LockScreen'
 import RequestNotifications from './RequestNotifications'
 import ShiftGate from './ShiftGate'
-
-const IDLE_LOCK_MS = 10 * 60 * 1000
+import SidebarNav from './SidebarNav'
+import { applyIdleLockMinutes, getIdleLockMs, subscribeIdleLock } from '../../utils/sessionPolicy'
+import { applyNavOrder, clearNavOrder, loadNavOrder, saveNavOrder } from '../../utils/navOrder'
 const HEARTBEAT_MS = 2.5 * 60 * 1000
 const SIDEBAR_COLLAPSED_KEY = 'cale-sidebar-collapsed'
 
@@ -127,10 +128,23 @@ function Shell({ children }) {
   const resolveShift = useShiftStore((state) => state.resolve)
   useBranchOperationsLive(user?.branchId)
   const isManager = isManagerRole(user?.role) && user?.role !== 'master'
-  const links = navLinksFor(user)
+  const defaultLinks = navLinksFor(user)
+  const userId = user?.id
+  const [navDraft, setNavDraft] = useState(null)
+  const orderPaths = navDraft && navDraft.userId === userId ? navDraft.paths : loadNavOrder(userId)
+  const links = applyNavOrder(defaultLinks, orderPaths)
+  const commitNavOrder = (paths) => {
+    setNavDraft({ userId, paths })
+    saveNavOrder(userId, paths)
+  }
+  const resetNavOrder = () => {
+    setNavDraft({ userId, paths: null })
+    clearNavOrder(userId)
+  }
   const sync = syncCopy({ online, backendReachable, pending, status, lastError })
   const isPosPage = location.pathname === '/pos'
   const idleTimerRef = useRef(null)
+  const [idleLockMs, setIdleLockMs] = useState(getIdleLockMs)
   const showSyncBanner = sync.isError && lastError && !syncBannerDismissed
   // A reload mid-sale would throw away the cashier's cart, and unsynced local writes
   // still need this tab alive to push them — so only auto-refresh when neither is true.
@@ -149,8 +163,20 @@ function Shell({ children }) {
     if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current)
     idleTimerRef.current = window.setTimeout(() => {
       lockScreen()
-    }, IDLE_LOCK_MS)
+    }, idleLockMs)
   }
+
+  useEffect(() => subscribeIdleLock((minutes) => setIdleLockMs(minutes * 60 * 1000)), [])
+
+  useEffect(() => {
+    if (!hasSupabase || !user?.id) return undefined
+    fetchCompanyProfile()
+      .then((row) => {
+        if (row?.idle_lock_minutes != null) applyIdleLockMinutes(row.idle_lock_minutes)
+      })
+      .catch(() => {})
+    return undefined
+  }, [user?.id])
 
   useEffect(() => {
     if (!user) return undefined
@@ -163,7 +189,7 @@ function Shell({ children }) {
       if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- bumpIdle closes over screenLocked
-  }, [user?.id, screenLocked])
+  }, [user?.id, screenLocked, idleLockMs])
 
   useEffect(() => {
     if (!hasSupabase || !user?.id) return undefined
@@ -229,31 +255,16 @@ function Shell({ children }) {
     }
   }
 
-  const NavItems = ({ onNavigate, collapsed: iconOnly = false }) =>
-    links.map(([path, label, Icon]) => (
-      <NavLink
-        key={path}
-        to={path}
-        end={path === '/'}
-        onClick={() => onNavigate?.()}
-        title={iconOnly ? label : undefined}
-        data-tooltip={iconOnly ? label : undefined}
-        className={({ isActive }) =>
-          `mb-2 grid w-full justify-items-center gap-1.5 overflow-hidden rounded-lg px-1 py-3 text-[10px] leading-tight no-underline transition-[background-color,color,transform] duration-100 max-[700px]:mb-0 max-[700px]:flex max-[700px]:items-center max-[700px]:justify-start max-[700px]:gap-3 max-[700px]:px-3 max-[700px]:py-3 max-[700px]:text-xs compact:mb-0 compact:flex compact:items-center compact:justify-start compact:gap-3 compact:px-3 compact:py-3 compact:text-xs ${
-            isActive
-              ? 'bg-brand-gold text-brand-dark'
-              : 'text-brand-n500 hover:bg-brand-dark-hover hover:text-brand-n400 active:scale-[0.96] active:bg-brand-dark-active'
-          }`
-        }
-      >
-        <Icon className="text-xl shrink-0" />
-        {!iconOnly && (
-          <span className="max-w-full break-words text-center max-[700px]:inline max-[700px]:text-left compact:inline compact:text-left">
-            {label}
-          </span>
-        )}
-      </NavLink>
-    ))
+  const sidebarNav = (iconOnly, onNavigate) => (
+    <SidebarNav
+      links={links}
+      collapsed={iconOnly}
+      onNavigate={onNavigate}
+      onReorder={commitNavOrder}
+      onReset={resetNavOrder}
+      onRequestExpand={() => setCollapsed(false)}
+    />
+  )
 
   return (
     <div className="min-h-screen bg-brand-canvas">
@@ -394,8 +405,8 @@ function Shell({ children }) {
                 <FiX />
               </button>
             </div>
-            <div className="sidebar-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-              <NavItems onNavigate={() => setMenuOpen(false)} />
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              {sidebarNav(false, () => setMenuOpen(false))}
             </div>
           </aside>
         </div>
@@ -426,8 +437,8 @@ function Shell({ children }) {
               Supervisor
             </div>
           )}
-          <div className="sidebar-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-            <NavItems collapsed={collapsed} />
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            {sidebarNav(collapsed)}
           </div>
 
           {/* Refresh and Lock moved to the top navbar — see the header above. */}

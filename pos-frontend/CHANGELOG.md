@@ -19,6 +19,54 @@ computation, OR numbering).
 
 ## Unreleased
 
+## 0.20.0 — 2026-08-14
+
+### Added: Go-live checklist doc
+
+`docs/GO_LIVE_CHECKLIST.md` — business/BIR/NPC, hosting, wipe, store setup, smoke test,
+and ops reminders for before live sales.
+
+### Added: Rearrange sidebar
+
+Staff can drag sidebar tabs into any order (**Order** → Done, or Reset). Control sits at
+the **bottom** of the sidebar (not above nav) so it is harder to misclick. Dragging shows
+a floating card that follows the pointer; the list leaves a dashed placeholder where the
+tab will land. Saved on this till per login (`localStorage`); permissions still decide
+which tabs exist. Login landing path is unchanged.
+
+**Branches** reorder uses the same floating-card drag (card follows pointer; dashed
+placeholder in the grid). Open dashboard / Edit still click normally.
+
+### Changed: Legal contact email
+
+Terms, Privacy, and `LICENSE` contact address is `jazpera.bustria@gmail.com`
+(`src/legal/meta.js`).
+
+### Added: Terms and Conditions + Privacy Policy
+
+Public `/legal/terms` and `/legal/privacy` (readable signed out or in, outside the
+shift-gated Shell). Copy matches how CalePOS actually works: staff PINs, SC/PWD ID
+notes, offline IndexedDB, BIR record retention, Supabase + Cloudflare processors,
+RA 10173 rights. Linked from the login card and Settings → About.
+
+### Added: Settings
+
+Role-split Settings in the sidebar (not a Staff permission checkbox — every signed-in
+role can open it). Manager/master: Business Information (`company_profile`), Tax & VAT
+explainer (fixed 12%, not editable), Receipts & Invoices (read-only fiscal layout),
+Session & Auto-lock (5 / 10 / 15 minutes, company-wide), Security Activity (10 per page),
+Sync Status, About. Cashier/supervisor: Employee Information, Sync Status, About. Devices
+stays its own `/settings/devices` module. PINs stay on Staff. No queue-wipe or local-DB
+reset.
+
+- **Auto-lock preference** — managers pick 5, 10, or 15 minutes
+  (`company_profile.idle_lock_minutes`, `migrate_idle_lock_minutes.sql`). Floor 5, ceiling
+  15, never off. Tills cache the last pulled value for offline use.
+- **Security Activity** — 10 events per page with Previous / Next.
+- **Manager/master Devices** — network table of till online/offline plus scanner / printer
+  / drawer status per branch (cashier heartbeat). Enable/disable stays on the branch
+  dashboard. Managers now get the `devices` module by default.
+
 ### Security hardening (audit follow-up)
 
 - **Staff PIN reveal** — managers use `reveal_staff_pin()` RPC (`migrate_reveal_staff_pin.sql`)
@@ -32,6 +80,16 @@ computation, OR numbering).
 - **`audit_security.sql`** — smarter §4: excludes RLS helpers and trigger functions;
   flags only client-callable definer RPCs without auth patterns. **`migrate_security_definer_hardening_v1.sql`**
   adds auth to session, audit, price-change, and promo-expire RPCs.
+- **Function `search_path`** — `migrate_function_search_path_v1.sql` pins
+  `SET search_path = public` on nine invoker helpers/triggers that advisors flagged
+  as mutable. Audit §7 reports any remaining unset paths.
+- **Query/index hygiene** — `migrate_perf_fk_indexes_v1.sql` drops the duplicate
+  `transactions (branch_id, client_id)` unique index and redundant product sku/barcode
+  indexes, adds FK indexes on line items / audit / refunds / till actions, and wraps
+  `auth.uid()` in `(select …)` on `read staff` and `read audit events`.
+- **Offline OR reserve** — `migrate_offline_or_reserve.sql` adds `reserve_or_number` so
+  a till-printed OR is accepted on sync without shrinking `branches.or_next`. Was missing
+  from the apply order; Demo now has it.
 
 ### Fixed: browser “Save password?” on login and till credentials
 

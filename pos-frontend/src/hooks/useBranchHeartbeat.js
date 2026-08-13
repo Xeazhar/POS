@@ -3,19 +3,20 @@ import { fetchBranchDeviceSettings, heartbeatBranch, hasSupabase, reportBranchDe
 import { getAllDeviceStatuses, normalizeDeviceSettings } from '../devices'
 import { isOnline } from '../offline'
 import { useAuthStore } from '../stores/posStore'
+import { isManagerRole } from '../utils/roles'
 
 const HEARTBEAT_MS = 45_000
 
 /**
- * Cashiers report branch network presence + device stub status while the app is open.
- * Also refreshes manager device on/off flags so tills pick up changes without re-login.
- * Managers do not heartbeat (avoids marking a shop online from HQ).
+ * Cashiers and supervisors report branch network presence + device stub status while
+ * the app is open. Also refreshes manager device on/off flags so tills pick up changes
+ * without re-login. Managers/masters do not heartbeat (avoids marking a shop online from HQ).
  */
 export function useBranchHeartbeat(user) {
   const timerRef = useRef(null)
 
   useEffect(() => {
-    if (!hasSupabase || !user?.branchId || user.role !== 'cashier') return undefined
+    if (!hasSupabase || !user?.branchId || isManagerRole(user.role)) return undefined
 
     let cancelled = false
 

@@ -39,6 +39,8 @@ migrate_day_end_till_lock.sql
 migrate_branch_presence.sql
 migrate_price_change_history.sql
 migrate_bir_pos_compliance.sql
+migrate_offline_or_reserve.sql                 -- reserve_or_number: accept till-assigned OR
+                                                -- on sync without shrinking branches.or_next
 migrate_restaurant_branch.sql
 migrate_ulam_ordering.sql
 migrate_product_code.sql
@@ -158,6 +160,14 @@ migrate_realtime_broadcast_v1.sql              -- private Broadcast topics; inve
 migrate_realtime_broadcast_policies.sql        -- optional: CREATE POLICY on
                                                 -- realtime.messages if main migrate
                                                 -- could not (Dashboard Realtime Auth ON)
+migrate_function_search_path_v1.sql            -- SET search_path = public on 9 invoker
+                                                -- helpers/triggers flagged by advisors;
+                                                -- safe to re-run
+migrate_perf_fk_indexes_v1.sql                 -- drop duplicate client_id / sku / barcode
+                                                -- indexes; hot FK indexes; wrap auth.uid()
+                                                -- in (select …) on read staff / audit RLS
+migrate_idle_lock_minutes.sql                  -- company_profile.idle_lock_minutes (5/10/15);
+                                                -- needs migrate_company_tin.sql
 ```
 
 **Dev wipe (optional, non-user data only):** `wipe_non_user_data.sql` truncates sales/inventory/promos/shifts/drawer while **keeping** `staff`, `branches`, `roles`, `company_profile`, and Auth users. Run on DEV before cleanup if you want a clean slate.

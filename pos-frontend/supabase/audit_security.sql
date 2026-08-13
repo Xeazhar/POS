@@ -149,6 +149,25 @@ anon_writes as (
   where grantee = 'anon' and table_schema = 'public'
     and privilege_type in ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
 ),
+mutable_search_path as (
+  select
+    case when p.prosecdef then 'REVIEW' else 'INFO' end::text,
+    '7. Mutable search_path'::text,
+    p.proname::text,
+    case
+      when p.prosecdef then
+        'SECURITY DEFINER without SET search_path. Fix: alter function … set search_path = public; (migrate_function_search_path_v1.sql).'::text
+      else
+        'Invoker function without SET search_path. Pin it to match the rest of the RPC set.'::text
+    end
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public'
+    and (p.proconfig is null
+         or not exists (
+           select 1 from unnest(p.proconfig) c where c like 'search_path=%'
+         ))
+),
 summary as (
   select
     'INFO'::text,
@@ -171,6 +190,7 @@ select * from (
   union all select * from unrestricted
   union all select * from definer_no_check
   union all select * from anon_writes
+  union all select * from mutable_search_path
   union all select * from summary
 ) findings
 order by

@@ -9,6 +9,8 @@ export const useSyncStore = create((set) => ({
   /** Ops quarantined after repeated push failures — real sales that never reached the server. */
   blocked: 0,
   lastError: null,
+  lastPullAt: null,
+  lastPushAt: null,
   refresh: async (branchId) => {
     const snap = await getSyncStatus(branchId)
     set({
@@ -16,6 +18,8 @@ export const useSyncStore = create((set) => ({
       backendReachable: snap.backendReachable ?? false,
       pending: snap.pending,
       blocked: snap.blocked || 0,
+      lastPullAt: snap.lastPullAt || null,
+      lastPushAt: snap.lastPushAt || null,
     })
   },
 }))
@@ -32,6 +36,8 @@ export function bindSyncStore() {
       pending: state.pending ?? useSyncStore.getState().pending,
       blocked: state.blocked ?? useSyncStore.getState().blocked,
       lastError: state.lastError ?? null,
+      lastPullAt: state.lastPullAt ?? useSyncStore.getState().lastPullAt,
+      lastPushAt: state.lastPushAt ?? useSyncStore.getState().lastPushAt,
     })
   })
   if (typeof window !== 'undefined') {

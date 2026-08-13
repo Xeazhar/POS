@@ -3,7 +3,7 @@
 Guide to `pos-frontend`: where code lives, and **how data / control flow moves** through the app.  
 Paths are relative to `pos-frontend/`. Product name: **CalePOS**.
 
-**Current release:** `0.19.0` (see `package.json` + `CHANGELOG.md`). Pre-1.0 — not for live trading.
+**Current release:** `0.20.0` (see `package.json` + `CHANGELOG.md`). Pre-1.0 — not for live trading.
 
 ---
 
@@ -17,6 +17,7 @@ Browser (Vite + React)
   │
   ├─ Shell ……………………… src/components/shared/Shell.jsx
   │     sidebar ← navLinksFor(user) ← src/constants/nav.js
+  │              custom order ← src/utils/navOrder.js (this till, this staff id)
   │     shift gate → ShiftGate.jsx (useShiftStore)
   │     logout → plain sign out; the shift stays open and resumes on next login
   │     ending a shift lives on /day-end (cashier view) → ShiftCashOut.jsx
@@ -106,7 +107,10 @@ When changing behavior, the usual path is:
 | `/inventory` | `src/pages/Products.jsx` | staff inventory/menu operations — tabs: stock + **Movement history** (`src/components/inventory/MovementHistoryPanel.jsx`) |
 | `/data` | `src/pages/manager/Data.jsx` | supervisor branch catalog tools |
 | `/day-end` | `src/pages/DayEnd.jsx` | **role-split**: cashier → "End shift" (own drawer only); supervisor+ → "Day end" (branch, petty approval queue, submit for closing) |
-| `/settings/devices` | `src/pages/Devices.jsx` | staff device awareness |
+| `/settings` | `src/pages/Settings.jsx` | role-split: manager General/Security/Sync/About; cashier/supervisor My Account/Sync/About. About links to `/legal/*` |
+| `/legal/terms` | `src/pages/Legal.jsx` | public Terms and Conditions — no auth, no Shell (shift gate must not block reading) |
+| `/legal/privacy` | `src/pages/Legal.jsx` | public Privacy Policy (RA 10173). Copy lives in `src/legal/` |
+| `/settings/devices` | `src/pages/Devices.jsx` | cashier/supervisor: this till. Manager/master: per-branch presence + hardware. **Not** inside the Settings tree |
 | `/shifts` | `src/pages/manager/Staff.jsx` | **merged Staff page** (supervisor+) — tabs: Staff roster + Shifts log |
 | `/manager/branches` | `src/pages/manager/Branches.jsx` | branch list |
 | `/manager/branches/:branchId` | `src/pages/manager/BranchDashboard.jsx` | manager branch operations dashboard |
@@ -193,6 +197,10 @@ terminal that happens to be offline during the upgrade must not get locked out.
 **Never** reintroduce a fast hash here, and never store the password itself. PBKDF2 buys
 time proportional to password strength; it is not a substitute for one.
 
+Idle auto-lock delay is company-wide: `company_profile.idle_lock_minutes` (allowed 5, 10,
+or 15 — never off). Settings → Session & Auto-lock writes it; Shell reads it on sign-in
+and caches the last value in localStorage for offline tills (`src/utils/sessionPolicy.js`).
+
 ## Route Gates and Permissions
 
 Main permission files:
@@ -219,6 +227,10 @@ Permission behavior:
   master. The former `admin` role is **retired** (`migrate_retire_admin_role.sql` remaps to
   `manager`); only master has that top power. `manager` uses `DEFAULTS` / explicit `permissions`
   (devices not in manager defaults).
+- **Public legal pages** (`/legal/terms`, `/legal/privacy`) are rendered *before* the
+  signed-in Shell / signed-out Login split. They skip shift gate and auth. Copy is in
+  `src/legal/terms.js` and `src/legal/privacy.js`; keep those in sync with real data
+  practices (staff PINs, SC/PWD `discount_id_note`, IndexedDB, processors).
 
 ---
 
@@ -263,11 +275,12 @@ Offline is a real first-class flow, not just cached reads. Many writes are:
 | App entry | `src/main.jsx` |
 | Routes / role gates | `src/App.jsx` |
 | Page exports | `src/pages/index.js` |
-| Nav order + labels + home path | `src/constants/nav.js` |
+| Nav order + labels + home path | `src/constants/nav.js` + `src/utils/navOrder.js` (per-staff sidebar rearrange on this till) |
 | Roles / default module lists | `src/utils/roles.js` |
 | UI kit | `src/components/ui/index.jsx` (`Modal` / `ModalActions` — see below) |
 | Till PIN rules (cashier/supervisor) | `src/utils/pin.js` (exactly 6 digits) |
-| Shell (sidebar, logout, sync chip) | `src/components/shared/Shell.jsx` |
+| Shell (sidebar, logout, sync chip) | `src/components/shared/Shell.jsx` + `SidebarNav.jsx` |
+| Go-live / sell readiness checklist | `docs/GO_LIVE_CHECKLIST.md` |
 | Supabase client | `src/lib/supabase.js` |
 | All remote API / RPCs | `src/lib/api.js` |
 | Auth / cart / products / inventory stores | `src/stores/posStore.js` |
@@ -316,6 +329,14 @@ Prefer one of:
 - Check: `canAccessModule(user, moduleId)` (master always true except `inventory`; others use
   DEFAULTS / `permissions[]`. `admin` role retired — see `migrate_retire_admin_role.sql`).
 - Nav filters the same way in `staffLinksFor` / `managerLinksFor`.
+- **Settings** is always in the sidebar for signed-in users (`navLinksFor`); it is not a
+  `MODULES` id, so Staff cannot strip it. Default order puts it last; staff may drag any
+  tab (including Settings) via `SidebarNav` — order is per login on this till
+  (`utils/navOrder.js`) and does not change `staffHomePath`. Manager-only sections are gated in
+  `pages/Settings.jsx`; `company_profile` writes still require `is_manager()` RLS.
+  Devices remains module `devices` at `/settings/devices` (manager/master see network
+  status; cashiers/supervisors see this till). Session auto-lock minutes live on
+  `company_profile.idle_lock_minutes` (5 / 10 / 15 only).
 
 ### Logout
 
@@ -371,7 +392,9 @@ receipt.js → printer device (if enabled)
 **OR number at print time:** Each branch keeps its own sequence in IndexedDB
 (`branchMeta.orPrefix` / `orNext`, seeded from `branches.or_prefix` / `or_next` on pull).
 At sale commit, `allocateLocalOrNumber` assigns the next OR immediately; checkout never
-awaits sync. Branch fiscal header for receipts is cached in `branchMeta.fiscalHeader` on
+awaits sync. On push, `completeSale` calls `reserve_or_number` with that printed OR so
+`branches.or_next` jumps forward (never backward) and a duplicate OR is rejected. If the
+RPC is missing, it falls back to `allocate_or_number`. Branch fiscal header for receipts is cached in `branchMeta.fiscalHeader` on
 pull so offline print does not call Supabase. Sync drains the outbox in batches
 (`PUSH_BATCH_SIZE`, default 8) via `drainQueueInBackground` so a large offline backlog
 does not freeze the UI when connectivity returns.
@@ -461,11 +484,10 @@ appended (`00000` head office, then `00001`…). `company_profile.tin` + `branch
 receipt, the X/Z reading and the settings screen cannot print three different numbers.
 `branches.tin` survives as a per-branch override and as the pre-migration fallback.
 
-**No admin UI edits `company_profile` right now.** `manager/Branches.jsx` used to have a
-"Company details" card (business name/TIN/address) editing it directly; removed at the
-owner's request pending a proper settings surface — the data model, `api.fetchCompanyProfile`/
-`saveCompanyProfile`, and the TIN composition above are all still in place, only that one
-page's form is gone. Existing `company_profile` rows are untouched.
+Company identity and idle-lock minutes are edited in **Settings → Business Information**
+and **Settings → Session & Auto-lock** (`fetchCompanyProfile` / `saveCompanyProfile`).
+`company_profile` writes still require `is_manager()` RLS. Branch dashboard does not
+edit company TIN.
 
 `buildReceipt` must be handed the **real branch row** (`fetchBranchFiscalHeader(branchId)`,
 cached). Passing a `{ name, business_name }` stub is what made the POS print `TIN: —`,
@@ -1206,10 +1228,15 @@ module access remains so `/day-end` still works for cashier “request manager�
 
 | Piece | File |
 |-------|------|
-| Staff Devices page | `src/pages/Devices.jsx` |
+| Staff Devices page (this till) | `src/pages/Devices.jsx` `TillDevices` |
+| Manager/master network status | `src/pages/Devices.jsx` `NetworkDevicesOverview` via `fetchBranchTelemetry` |
 | Capability helpers | `src/devices/index.js` |
 | Manager toggles | `BranchDashboard.jsx` → `saveBranch` device_settings |
-| Presence / heartbeat | `useBranchHeartbeat.js`, `migrate_branch_presence.sql` |
+| Presence / heartbeat | `useBranchHeartbeat.js` (cashiers only), `migrate_branch_presence.sql` |
+
+Cashiers and supervisors report presence + device stubs every 45s. Manager Devices treats a till as
+offline when that heartbeat is older than 3 minutes (`DEVICE_STALE_MS`). Enable/disable
+stays on the branch dashboard; Devices is status only.
 
 UI copy: when manager enables a device, show **Enabled by manager · Connected/Not connected** (not stale “Disabled”).
 
@@ -1222,6 +1249,7 @@ UI copy: when manager enables a device, show **Enabled by manager · Connected/N
 | Overview | `/` (manager) | `manager/Overview.jsx` |
 | Branches | `/manager/branches` | `manager/Branches.jsx` |
 | Branch detail | `/manager/branches/:id` | `manager/BranchDashboard.jsx` |
+| Devices (network status) | `/settings/devices` | `Devices.jsx` (manager/master view) |
 | Staff | `/manager/staff` | `manager/Staff.jsx` |
 | Shifts | `/manager/shifts` | `Shifts.jsx` (manager mode) |
 | Data / catalog | `/manager/data` | `manager/Data.jsx` |
@@ -1457,6 +1485,7 @@ Do not delete `src/utils/ulam.js` (`lineTotal` is shared with retail).
 | Unique login codes | `migrate_staff_login_code_unique.sql` |
 | PIN auth fix | `migrate_fix_pin_login_auth.sql` |
 | BIR / sale immutability | `migrate_bir_pos_compliance.sql` |
+| Offline OR reserve on sync | `migrate_offline_or_reserve.sql` (`reserve_or_number`) |
 | Refunds | `migrate_refund_sale_items.sql`, `migrate_refund_amount_on_transactions.sql` |
 | Import batches (managers + branch staff write) | `migrate_import_batches.sql`, `migrate_import_batches_branch_staff.sql` |
 | Ulam / restaurant | `migrate_ulam_ordering.sql` |
@@ -1474,7 +1503,10 @@ Do not delete `src/utils/ulam.js` (`lineTotal` is shared with retail).
 | Promo auto-expire | `migrate_promo_auto_expire.sql` |
 | VAT breakdown (BIR) | `migrate_vat_breakdown.sql` |
 | Realtime (live POS/notification updates) | `migrate_enable_realtime.sql`, `migrate_realtime_broadcast_v1.sql` |
+| Function `search_path` pin | `migrate_function_search_path_v1.sql` |
+| Duplicate-index drop + hot FK indexes + RLS initplan | `migrate_perf_fk_indexes_v1.sql` |
 | Company TIN + per-branch BIR branch code | `migrate_company_tin.sql` |
+| Idle auto-lock minutes (5/10/15) | `migrate_idle_lock_minutes.sql` |
 | Petty cash `fulfilled` state (+ rewrites `close_staff_shift`/`shift_cash_summary`) | `migrate_petty_cash_fulfilment.sql` |
 | Master force sign-out of a stuck session | `migrate_admin_session_release.sql` |
 
@@ -1490,11 +1522,14 @@ rather than a widened `read staff` policy. Managers reveal a till PIN only throu
 `reveal_staff_pin()` (`migrate_reveal_staff_pin.sql`), not a client-side `SELECT login_pin`.
 Client-callable SECURITY DEFINER RPCs must enforce scope in-function — see
 `migrate_security_definer_hardening_v1.sql` and `supabase/audit_security.sql` §4.
+Public functions should `SET search_path = public` (`migrate_function_search_path_v1.sql`;
+audit §7).
 Never "simplify" it into a policy change, and never add a secret column to the roster
 function's select list.
 
 **Schema cleanup (`migrate_schema_cleanup_v1.sql`):** `promo_events.is_active` removed
-(status-only); duplicate `(branch_id, client_id)` unique index dropped; dormant
+(status-only); duplicate `(branch_id, client_id)` unique index dropped (re-drop in
+`migrate_perf_fk_indexes_v1.sql` if `migrate_sale_dedupe_hardening.sql` was re-run); dormant
 `closed_without_supervisor` / `acknowledge_shift_review` removed; `refund_requests` has no
 client UPDATE policy (RPC-only mutations); `sale_events`/`audit_events` RLS uses
 `is_manager()` / `current_staff_branch()`. App: `voidSale` is RPC-only; cash drawer reads
@@ -1520,7 +1555,11 @@ client UPDATE policy (RPC-only mutations); `sale_events`/`audit_events` RLS uses
 | Inventory stock adjust | `Products.jsx` |
 | Who lands where after login | `nav.js` `staffHomePath`, `Login.jsx` |
 | Who can open a page | `roles.js` + `App.jsx` gates |
-| Sidebar links | `nav.js` + `Shell.jsx` |
+| Sidebar links | `nav.js` + `Shell.jsx` + `SidebarNav.jsx`; drag order in `utils/navOrder.js` |
+| Settings (company TIN, VAT, auto-lock, security activity, sync) | `pages/Settings.jsx` + `pages/settings/*` + `utils/sessionPolicy.js` |
+| Terms / Privacy Policy | `pages/Legal.jsx` + `src/legal/{meta,terms,privacy}.js` — public `/legal/terms` and `/legal/privacy`; linked from Login and Settings → About |
+| Network device status (manager/master) | `pages/Devices.jsx` + `api.fetchBranchTelemetry` |
+| Staff roster / shift log / hours | `manager/Staff.jsx` (merged tab) |
 | Refund totals | `TransactionDetailModal.jsx` + refund migrations |
 | Day-end cash / Drawer Activity | `DayEnd.jsx`, `DrawerActivity.jsx` |
 | Branch day-end closing detail | `BranchDashboard.jsx` + `dayend/DayEndClosingDetail.jsx` |
@@ -1531,7 +1570,7 @@ client UPDATE policy (RPC-only mutations); `sale_events`/`audit_events` RLS uses
 | Staff roster / shift log / hours | `manager/Staff.jsx` (merged tab) |
 | Staff create/edit modal / till PIN | `manager/Staff.jsx` + `utils/pin.js` (6-digit PIN); Modal `footer` in `ui/index.jsx` |
 | Modal scroll vs action bar | `components/ui/index.jsx` (`Modal` / `ModalActions` / optional `footer`) |
-| TIN on receipts / reports | `api.composeTin` + `fetchBranches` `full_tin` |
+| TIN on receipts / reports | `api.composeTin` + `fetchBranches` `full_tin`; edit company TIN in Settings → Business Information |
 | Stuck "already signed in" | `api.fetchActiveSessions` / `forceReleaseStaffSession` |
 | Receipt layout | `receipt.js` |
 | New report | `manager/Reports.jsx` |
@@ -1545,7 +1584,7 @@ client UPDATE policy (RPC-only mutations); `sale_events`/`audit_events` RLS uses
 |------|-------|------------|
 | Cashier | PIN (6 digits) | POS, Transactions, Inventory (view/adjust), Day end, Devices |
 | Supervisor | PIN (6 digits) | Same + Shifts (branch) + **Products `/data`** (add/import) |
-| Manager | Email | Overview, Branches, Staff, Shifts (all), Data, Reports |
+| Manager | Email | Overview, Branches, Staff, Devices (network status), Data, Reports |
 | Master | Email | Manager + staff routes combined (sole top account; `admin` role retired) |
 
 ---
