@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { Eyebrow, ErrorBanner, Field, PrimaryButton, Skeleton } from '../components/ui'
 import Turnstile, { useTurnstileSiteKey } from '../components/shared/Turnstile'
+import { CredentialAutofillTrap, secureFormProps } from '../components/shared/SecureCredential'
 import { allowDemoMode, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { formatSupportError } from '../utils/errors'
 import { sanitizePinInput } from '../utils/pin'
-import { staffHomePath } from '../constants/nav'
 import { APP_VERSION_LABEL, IS_PRERELEASE } from '../utils/version'
 import { SHOW_ENV_BADGE, environmentCaption, environmentLabel } from '../utils/environment'
 
@@ -27,7 +26,6 @@ function Login() {
   const booting = useAuthStore((state) => state.booting)
   const hydrate = useInventoryStore((state) => state.hydrate)
   const loadBranch = useProductStore((state) => state.loadBranch)
-  const navigate = useNavigate()
 
   /**
    * Real network state, not build configuration.
@@ -61,11 +59,7 @@ function Login() {
       const data = await loadBranch(user.branchId)
       if (data) hydrate(data)
     }
-    // Whether a change fund is needed is decided by the shift store inside Shell, from
-    // local state first. Deciding it here would mean a signed-in cashier with no network
-    // could not be told "your shift is still open" and would be asked to count a drawer
-    // they already counted.
-    navigate(staffHomePath(user))
+    // Welcome splash is shown by App.jsx LoginIntroGate (loginIntroUser in auth store).
   }
 
   return (
@@ -97,14 +91,9 @@ function Login() {
                 : 'Demo mode — any code/PIN or email works offline.'}
             </p>
             <form
-              className="mt-[22px]"
+              className="relative mt-[22px]"
               method="POST"
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck={false}
-              data-lpignore="true"
-              data-1p-ignore="true"
-              data-bwignore="true"
+              {...secureFormProps}
               onSubmit={async (event) => {
                 event.preventDefault()
                 try {
@@ -122,34 +111,33 @@ function Login() {
                 }
               }}
             >
+              <CredentialAutofillTrap />
               {mode === 'pin' ? (
                 <>
                   <Field
                     label="Staff code"
                     className="mt-[15px]"
                     name="cale-staff-code"
+                    noSave
                     value={loginCode}
                     onChange={(event) => setLoginCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
                     inputMode="numeric"
-                    autoComplete="off"
                     autoFocus
                     required
                     placeholder=""
-                    data-lpignore="true"
-                    data-1p-ignore="true"
                   />
                   <Field
                     label="PIN"
                     className="mt-[15px]"
                     name="cale-staff-pin"
+                    noSave
+                    secret
                     value={pin}
                     onChange={(event) => setPin(sanitizePinInput(event.target.value))}
-                    type="password"
-                    autoComplete="new-password"
+                    inputMode="numeric"
+                    maxLength={6}
                     required
                     placeholder=""
-                    data-lpignore="true"
-                    data-1p-ignore="true"
                   />
                 </>
               ) : (
@@ -158,26 +146,25 @@ function Login() {
                     label={hasSupabase ? 'Email' : 'Staff name / email'}
                     className="mt-[15px]"
                     name="cale-staff-email"
+                    noSave
                     value={email}
                     onChange={(event) => setEmail(event.target.value)}
                     autoFocus
-                    type={hasSupabase ? 'email' : 'text'}
-                    autoComplete="off"
+                    type="text"
+                    inputMode="email"
+                    autoCapitalize="none"
+                    autoCorrect="off"
                     required
-                    data-lpignore="true"
-                    data-1p-ignore="true"
                   />
                   <Field
                     label="Password"
                     className="mt-[15px]"
                     name="cale-staff-password"
+                    noSave
+                    secret
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
-                    type="password"
-                    autoComplete="new-password"
                     required
-                    data-lpignore="true"
-                    data-1p-ignore="true"
                   />
                 </>
               )}

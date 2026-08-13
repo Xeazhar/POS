@@ -581,6 +581,174 @@ const PROMO_RULE_TYPE_LABELS = {
   bogo_pct: 'BOGO %',
 }
 
+function lineProductId(line) {
+  return line?.products?.id || line?.product_id || null
+}
+
+function linePricingMode(line) {
+  return line?.products?.pricing_mode === 'per_kg' ? 'kg' : 'pc'
+}
+
+/** Match sold lines to a promo rule — bundle name, B1T1, pair, or item %. */
+function inferPromoOfferMeta(groupLines = [], rules = []) {
+  const productIds = [...new Set(groupLines.map(lineProductId).filter(Boolean))]
+  const names = [...new Set(groupLines.map((l) => l.products?.name).filter(Boolean))]
+
+  for (const rule of rules || []) {
+    const ruleType = normalizeRuleType(rule.ruleType || rule.rule_type)
+    const ruleProductIds = (rule.products || [])
+      .map((p) => p.productId || p.product_id)
+      .filter(Boolean)
+
+    if (ruleType === 'item_pct' && productIds.length === 1 && ruleProductIds.includes(productIds[0])) {
+      return {
+        label: names[0] || 'Product',
+        badge: `Item ${Number(rule.discountPct || 0)}%`,
+        kind: 'item_pct',
+      }
+    }
+
+    if (
+      ruleType === 'bundle_pct' &&
+      rule.bundleName &&
+      ruleProductIds.length >= 2 &&
+      ruleProductIds.every((id) => productIds.includes(id))
+    ) {
+      return { label: rule.bundleName, badge: 'Bundle', kind: 'bundle' }
+    }
+
+    if (
+      ruleType === 'pair_pct' &&
+      ruleProductIds.length >= 2 &&
+      productIds.length === 2 &&
+      ruleProductIds.every((id) => productIds.includes(id))
+    ) {
+      const [a, b] = rule.products || []
+      return {
+        label: `${a?.productName || 'Item A'} + ${b?.productName || 'Item B'}`,
+        badge: 'Pair',
+        kind: 'pair',
+      }
+    }
+
+    if (
+      ruleType === 'bogo_pct' &&
+      ruleProductIds.length >= 1 &&
+      productIds.length === 1 &&
+      productIds[0] === ruleProductIds[0]
+    ) {
+      const buyQty = Number(rule.buyQty ?? rule.buy_qty ?? 1)
+      const getQty = Number(rule.getQty ?? rule.get_qty ?? 1)
+      const pname = names[0] || 'Item'
+      if (buyQty === 1 && getQty === 1) {
+        return { label: pname, badge: 'Buy 1 take 1', kind: 'bogo' }
+      }
+      return { label: pname, badge: `Buy ${buyQty} Get ${getQty}`, kind: 'bogo' }
+    }
+  }
+
+  if (productIds.length >= 2) {
+    return { label: names.slice(0, 3).join(' + '), badge: 'Bundle', kind: 'bundle' }
+  }
+  return { label: names[0] || 'Promo item', badge: 'Promo', kind: 'item' }
+}
+
+function sumLineMoney(lines = []) {
+  let gross = 0
+  let discount = 0
+  let net = 0
+  let qty = 0
+  let pricingMode = 'pc'
+  for (const line of lines) {
+    const q = Number(line.quantity || 0)
+    const g = Number(line.line_total || 0)
+    const d = Number(line.discount_amount || 0)
+    gross += g
+    discount += d
+    net += Math.max(0, g - d)
+    qty += q
+    if (linePricingMode(line) === 'kg') pricingMode = 'kg'
+  }
+  return {
+    qty: Number(qty.toFixed(3)),
+    gross: Number(gross.toFixed(2)),
+    discount: Number(discount.toFixed(2)),
+    net: Number(net.toFixed(2)),
+    pricingMode,
+  }
+}
+
+/**
+ * Promo tracking: group sold lines by offer (bundle / pair / B1T1 / item %) instead of
+ * flattening every SKU — matches how cashiers sold them on POS quick-add tiles.
+ */
+export function aggregatePromoSalesOffers(lines = [], rules = []) {
+  const setInstances = new Map()
+  const singles = new Map()
+
+  for (const line of lines) {
+    const txnId = line.transaction_id
+    const groupId = line.promo_group_id
+    if (groupId && txnId) {
+      const key = `${txnId}:${groupId}`
+      if (!setInstances.has(key)) setInstances.set(key, [])
+      setInstances.get(key).push(line)
+      continue
+    }
+
+    const productId = lineProductId(line) || 'unknown'
+    if (!singles.has(productId)) singles.set(productId, [])
+    singles.get(productId).push(line)
+  }
+
+  const buckets = new Map()
+
+  const addBucket = (meta, totals, { sets = 0, units = 0, pricingMode = 'pc' }) => {
+    const bucketKey = `${meta.kind}:${meta.label}:${meta.badge}`
+    if (!buckets.has(bucketKey)) {
+      buckets.set(bucketKey, {
+        ...meta,
+        sets: 0,
+        qty: 0,
+        pricingMode,
+        gross: 0,
+        discount: 0,
+        net: 0,
+      })
+    }
+    const row = buckets.get(bucketKey)
+    row.sets += sets
+    row.qty += units
+    row.gross += totals.gross
+    row.discount += totals.discount
+    row.net += totals.net
+    if (pricingMode === 'kg') row.pricingMode = 'kg'
+  }
+
+  for (const groupLines of setInstances.values()) {
+    const meta = inferPromoOfferMeta(groupLines, rules)
+    const totals = sumLineMoney(groupLines)
+    addBucket(meta, totals, { sets: 1, units: 0, pricingMode: totals.pricingMode })
+  }
+
+  for (const groupLines of singles.values()) {
+    const meta = inferPromoOfferMeta(groupLines, rules)
+    const totals = sumLineMoney(groupLines)
+    addBucket(meta, totals, { sets: 0, units: totals.qty, pricingMode: totals.pricingMode })
+  }
+
+  return [...buckets.values()]
+    .map((row) => ({
+      ...row,
+      gross: Number(row.gross.toFixed(2)),
+      discount: Number(row.discount.toFixed(2)),
+      net: Number(row.net.toFixed(2)),
+      qty: Number(row.qty.toFixed(3)),
+      sets: row.sets,
+    }))
+    .sort((a, b) => b.discount - a.discount)
+}
+
 /** One label for an event's rules — "Mixed" when more than one rule_type is present. */
 export function summarizePromoRuleTypes(ruleTypes = []) {
   const unique = [...new Set((ruleTypes || []).filter(Boolean))]

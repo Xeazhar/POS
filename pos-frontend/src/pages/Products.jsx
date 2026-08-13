@@ -21,7 +21,7 @@ import {
   tableRowClass,
 } from '../components/ui'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
-import { hasSupabase, logAuditEvent, bootstrapBranchData, fetchBranches } from '../lib/api'
+import { hasSupabase, logAuditEvent, bootstrapBranchInventory, fetchBranchProducts, fetchBranches } from '../lib/api'
 import { isOnline, readBranchSnapshot } from '../offline'
 import { withTimeout } from '../utils/withTimeout'
 import { isDayFullyClosed, money, qty, today, formatDate, stockTone } from '../utils/format'
@@ -104,8 +104,8 @@ function Products() {
       return
     }
     try {
-      const data = await withTimeout(bootstrapBranchData(user.branchId), 15000, 'Inventory sync')
-      useProductStore.getState().setProducts(data.products || [])
+      const products = await withTimeout(fetchBranchProducts(user.branchId), 15000, 'Inventory sync')
+      useProductStore.getState().setProducts(products || [])
     } catch {
       const local = await readBranchSnapshot(user.branchId)
       useProductStore.getState().setProducts(local.products || [])
@@ -159,7 +159,7 @@ function Products() {
         active = false
       }
     }
-    withTimeout(bootstrapBranchData(viewBranchId), 15000, 'Branch view')
+    withTimeout(bootstrapBranchInventory(viewBranchId), 15000, 'Branch view')
       .then((data) => {
         if (!active) return
         setRemote({ products: data.products || [], movements: data.movements || [] })

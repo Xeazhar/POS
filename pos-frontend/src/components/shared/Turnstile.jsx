@@ -1,47 +1,38 @@
 import { useEffect, useRef, useState } from 'react'
 
 const SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
-const FALLBACK_SITE_KEY = '0x4AAAAAAEG89XtzHd_oWzOv'
+
+/** Cloudflare always-pass test key — local `npm run dev` only; never ship in production builds. */
+const DEV_TEST_SITE_KEY = '0x4AAAAAAEG89XtzHd_oWzOv'
 
 function envSiteKey() {
   return String(import.meta.env.VITE_TURNSTILE_SITEKEY || '').trim()
 }
 
-async function loadRuntimeSiteKey() {
-  try {
-    const res = await fetch(`${import.meta.env.BASE_URL}captcha.json`, { cache: 'no-store' })
-    if (!res.ok) return ''
-    const data = await res.json()
-    return String(data?.turnstileSiteKey || '').trim()
-  } catch {
-    return ''
-  }
+function resolveSiteKey() {
+  const fromEnv = envSiteKey()
+  if (fromEnv) return fromEnv
+  if (import.meta.env.DEV) return DEV_TEST_SITE_KEY
+  return ''
 }
 
 export function useTurnstileSiteKey() {
-  const [siteKey, setSiteKey] = useState(() => envSiteKey() || FALLBACK_SITE_KEY)
-  const [loading, setLoading] = useState(() => !envSiteKey())
-  const [error, setError] = useState('')
+  const [siteKey, setSiteKey] = useState(() => resolveSiteKey())
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(() => {
+    if (envSiteKey() || import.meta.env.DEV) return ''
+    return 'Turnstile site key missing. Set VITE_TURNSTILE_SITEKEY in the hosting dashboard.'
+  })
 
   useEffect(() => {
-    if (envSiteKey()) {
-      setSiteKey(envSiteKey())
-      setLoading(false)
-      return undefined
+    const key = resolveSiteKey()
+    setSiteKey(key)
+    if (!key && import.meta.env.PROD) {
+      setError('Turnstile site key missing. Set VITE_TURNSTILE_SITEKEY in the hosting dashboard.')
+    } else {
+      setError('')
     }
-
-    let cancelled = false
-    void (async () => {
-      const key = (await loadRuntimeSiteKey()) || FALLBACK_SITE_KEY
-      if (cancelled) return
-      setSiteKey(key)
-      if (!key) setError('Turnstile site key missing. Set VITE_TURNSTILE_SITEKEY.')
-      setLoading(false)
-    })()
-
-    return () => {
-      cancelled = true
-    }
+    setLoading(false)
   }, [])
 
   return { siteKey, loading, error, enabled: Boolean(siteKey) }

@@ -84,8 +84,26 @@ export const today = (openHour) => businessDate(new Date(), openHour ?? DEFAULT_
 export const rowBusinessDate = (row, openHour = DEFAULT_OPEN_HOUR) =>
   row?.createdAt ? businessDate(row.createdAt, openHour) : row?.date || null
 
+function dayEndEntryRank(entry) {
+  const syncRank = entry.syncStatus === 'pending' || entry.syncStatus === 'local' ? 0 : 10
+  const statusRank =
+    {
+      reopened: 5,
+      requested: 4,
+      rejected: 3,
+      submitted: 2,
+      closed: 1,
+    }[entry.status] ?? 0
+  return syncRank + statusRank
+}
+
 export function dayEndForBusinessDate(dayEnds, date) {
-  return (dayEnds || []).find((item) => item.date === date) || null
+  const matches = (dayEnds || []).filter((item) => item.date === date)
+  if (!matches.length) return null
+  if (matches.length === 1) return matches[0]
+  return matches.reduce((best, item) =>
+    dayEndEntryRank(item) > dayEndEntryRank(best) ? item : best,
+  )
 }
 
 /** Till is locked when current business day is submitted (awaiting approval) or closed. */

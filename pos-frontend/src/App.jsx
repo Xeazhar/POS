@@ -1,9 +1,12 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import Shell from './components/shared/Shell'
+import DesktopModeHint from './components/shared/DesktopModeHint'
+import LoginIntro from './components/shared/LoginIntro'
 import { PageSkeleton } from './components/ui'
 import { useAppVersion } from './hooks/useAppVersion'
 import { useBranchHeartbeat } from './hooks/useBranchHeartbeat'
+import { useCompactChrome } from './hooks/useCompactChrome'
 import { hasSupabase } from './lib/api'
 import { startConnectivityWatcher } from './offline'
 import { installSessionLifecycle, consumeBrowserClosedFlag } from './offline/sessionLifecycle'
@@ -11,21 +14,22 @@ import { useAuthStore, useInventoryStore, useProductStore } from './stores/posSt
 import { bindSyncStore } from './stores/syncStore'
 import { canAccessModule } from './utils/roles'
 import { staffHomePath } from './constants/nav'
+import { clearChunkReloadFlag, lazyWithRetry } from './utils/lazyWithRetry'
 
-const Login = lazy(() => import('./pages/Login.jsx'))
-const Dashboard = lazy(() => import('./pages/Dashboard.jsx'))
-const POS = lazy(() => import('./pages/POS.jsx'))
-const Transactions = lazy(() => import('./pages/Transactions.jsx'))
-const Products = lazy(() => import('./pages/Products.jsx'))
-const DayEnd = lazy(() => import('./pages/DayEnd.jsx'))
-const Devices = lazy(() => import('./pages/Devices.jsx'))
-const ManagerOverview = lazy(() => import('./pages/manager/Overview.jsx'))
-const ManagerBranches = lazy(() => import('./pages/manager/Branches.jsx'))
-const ManagerBranchDashboard = lazy(() => import('./pages/manager/BranchDashboard.jsx'))
-const ManagerStaff = lazy(() => import('./pages/manager/Staff.jsx'))
-const ManagerData = lazy(() => import('./pages/manager/Data.jsx'))
-const ManagerPromos = lazy(() => import('./pages/manager/Promos.jsx'))
-const ManagerReports = lazy(() => import('./pages/manager/Reports.jsx'))
+const Login = lazyWithRetry(() => import('./pages/Login.jsx'))
+const Dashboard = lazyWithRetry(() => import('./pages/Dashboard.jsx'))
+const POS = lazyWithRetry(() => import('./pages/POS.jsx'))
+const Transactions = lazyWithRetry(() => import('./pages/Transactions.jsx'))
+const Products = lazyWithRetry(() => import('./pages/Products.jsx'))
+const DayEnd = lazyWithRetry(() => import('./pages/DayEnd.jsx'))
+const Devices = lazyWithRetry(() => import('./pages/Devices.jsx'))
+const ManagerOverview = lazyWithRetry(() => import('./pages/manager/Overview.jsx'))
+const ManagerBranches = lazyWithRetry(() => import('./pages/manager/Branches.jsx'))
+const ManagerBranchDashboard = lazyWithRetry(() => import('./pages/manager/BranchDashboard.jsx'))
+const ManagerStaff = lazyWithRetry(() => import('./pages/manager/Staff.jsx'))
+const ManagerData = lazyWithRetry(() => import('./pages/manager/Data.jsx'))
+const ManagerPromos = lazyWithRetry(() => import('./pages/manager/Promos.jsx'))
+const ManagerReports = lazyWithRetry(() => import('./pages/manager/Reports.jsx'))
 
 function PageFallback() {
   return <PageSkeleton variant="table" className="px-1 py-2" />
@@ -93,7 +97,22 @@ function Home() {
   return <Dashboard />
 }
 
-function App() {
+function LoginIntroGate() {
+  const loginIntroUser = useAuthStore((state) => state.loginIntroUser)
+  const clearLoginIntro = useAuthStore((state) => state.clearLoginIntro)
+  const navigate = useNavigate()
+
+  const finishIntro = useCallback(() => {
+    const user = useAuthStore.getState().loginIntroUser
+    clearLoginIntro()
+    if (user) navigate(staffHomePath(user), { replace: true })
+  }, [clearLoginIntro, navigate])
+
+  if (!loginIntroUser) return null
+  return <LoginIntro staffName={loginIntroUser.name} onDone={finishIntro} />
+}
+
+function AppRoutes() {
   const user = useAuthStore((state) => state.user)
   const booting = useAuthStore((state) => state.booting)
   const restoreSession = useAuthStore((state) => state.restoreSession)
@@ -101,7 +120,12 @@ function App() {
   const hydrate = useInventoryStore((state) => state.hydrate)
   const loadBranch = useProductStore((state) => state.loadBranch)
 
+  useCompactChrome()
   useBranchHeartbeat(user)
+
+  useEffect(() => {
+    clearChunkReloadFlag()
+  }, [])
 
   useEffect(() => {
     bindSyncStore()
@@ -131,7 +155,8 @@ function App() {
   }, [restoreSession, loadBranch, hydrate, logout])
 
   return (
-    <BrowserRouter>
+    <>
+      <LoginIntroGate />
       <Suspense fallback={<PageFallback />}>
         {booting ? (
           <div className="min-h-screen bg-brand-canvas px-[22px] py-6">
@@ -292,6 +317,15 @@ function App() {
           </>
         )}
       </Suspense>
+    </>
+  )
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <DesktopModeHint />
+      <AppRoutes />
     </BrowserRouter>
   )
 }

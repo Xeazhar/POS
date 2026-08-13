@@ -4,6 +4,7 @@ import { FiChevronLeft, FiChevronRight, FiLock, FiLogOut, FiMenu, FiRefreshCw, F
 import { navLinksFor } from '../../constants/nav'
 import { hasSupabase, heartbeatStaffSession } from '../../lib/api'
 import { useAppVersion } from '../../hooks/useAppVersion'
+import { useBranchOperationsLive } from '../../hooks/useBranchOperationsLive'
 import { useAuthStore, useCartStore } from '../../stores/posStore'
 import { useShiftStore } from '../../stores/shiftStore'
 import { useSyncStore } from '../../stores/syncStore'
@@ -124,6 +125,7 @@ function Shell({ children }) {
   const [syncBannerDismissed, setSyncBannerDismissed] = useState(false)
   const shiftGate = useShiftStore((state) => state.gate)
   const resolveShift = useShiftStore((state) => state.resolve)
+  useBranchOperationsLive(user?.branchId)
   const isManager = isManagerRole(user?.role) && user?.role !== 'master'
   const links = navLinksFor(user)
   const sync = syncCopy({ online, backendReachable, pending, status, lastError })
@@ -235,8 +237,9 @@ function Shell({ children }) {
         end={path === '/'}
         onClick={() => onNavigate?.()}
         title={iconOnly ? label : undefined}
+        data-tooltip={iconOnly ? label : undefined}
         className={({ isActive }) =>
-          `mb-2 grid w-full justify-items-center gap-1.5 overflow-hidden rounded-lg px-1 py-3 text-[10px] leading-tight no-underline transition-[background-color,color,transform] duration-100 max-[700px]:mb-0 max-[700px]:flex max-[700px]:items-center max-[700px]:justify-start max-[700px]:gap-3 max-[700px]:px-3 max-[700px]:py-3 max-[700px]:text-xs ${
+          `mb-2 grid w-full justify-items-center gap-1.5 overflow-hidden rounded-lg px-1 py-3 text-[10px] leading-tight no-underline transition-[background-color,color,transform] duration-100 max-[700px]:mb-0 max-[700px]:flex max-[700px]:items-center max-[700px]:justify-start max-[700px]:gap-3 max-[700px]:px-3 max-[700px]:py-3 max-[700px]:text-xs compact:mb-0 compact:flex compact:items-center compact:justify-start compact:gap-3 compact:px-3 compact:py-3 compact:text-xs ${
             isActive
               ? 'bg-brand-gold text-brand-dark'
               : 'text-brand-n500 hover:bg-brand-dark-hover hover:text-brand-n400 active:scale-[0.96] active:bg-brand-dark-active'
@@ -245,7 +248,7 @@ function Shell({ children }) {
       >
         <Icon className="text-xl shrink-0" />
         {!iconOnly && (
-          <span className="max-w-full break-words text-center max-[700px]:inline max-[700px]:text-left">
+          <span className="max-w-full break-words text-center max-[700px]:inline max-[700px]:text-left compact:inline compact:text-left">
             {label}
           </span>
         )}
@@ -279,12 +282,14 @@ function Shell({ children }) {
       )}
       {!hideAppContent && (
       <>
-      <header className="flex h-[62px] items-center justify-between gap-3 bg-brand-dark px-6 text-white max-[700px]:px-4">
+      <header className="flex h-[62px] items-center justify-between gap-3 bg-brand-dark px-6 text-white max-[700px]:px-4 compact:px-4">
         <div className="flex min-w-0 shrink-0 items-center gap-2">
           <button
             type="button"
-            className="hidden border-0 bg-transparent p-1 text-xl text-white max-[700px]:inline-grid"
+            className="hidden border-0 bg-transparent p-1 text-xl text-white max-[700px]:inline-grid compact:inline-grid"
             aria-label="Open menu"
+            title="Open navigation menu"
+            data-tooltip="Open navigation menu"
             onClick={() => setMenuOpen(true)}
           >
             <FiMenu />
@@ -293,7 +298,7 @@ function Shell({ children }) {
             <span className="mr-2 inline-grid h-[31px] w-[31px] place-items-center rounded-lg bg-brand-gold text-brand-dark">
               C
             </span>
-            <span className="max-[700px]:hidden">CalePOS</span>
+            <span className="max-[700px]:hidden compact:hidden">CalePOS</span>
           </div>
         </div>
 
@@ -328,6 +333,7 @@ function Shell({ children }) {
             type="button"
             className="border-0 bg-transparent text-lg text-inherit transition-[transform,opacity] duration-100 hover:opacity-80 active:scale-90 active:opacity-70"
             title="Refresh — clears cached app files and loads the newest version"
+            data-tooltip="Refresh — clears cached app files and loads the newest version"
             aria-label="Refresh"
             onClick={() => void hardReload({ online })}
           >
@@ -336,7 +342,8 @@ function Shell({ children }) {
           <button
             type="button"
             className="border-0 bg-transparent text-lg text-inherit transition-[transform,opacity] duration-100 hover:opacity-80 active:scale-90 active:opacity-70"
-            title="Lock screen"
+            title="Lock screen — requires password to unlock"
+            data-tooltip="Lock screen — requires password to unlock"
             aria-label="Lock screen"
             onClick={() => lockScreen()}
           >
@@ -346,13 +353,15 @@ function Shell({ children }) {
           <div className="grid h-[35px] w-[35px] place-items-center rounded-full bg-brand-gold font-bold text-brand-dark">
             {user?.name?.[0] || 'A'}
           </div>
-          <div className="max-[700px]:hidden">
+          <div className="max-[700px]:hidden compact:hidden">
             <strong className="block">{user?.name}</strong>
             <small className="mt-[3px] block text-[10px] text-brand-soft capitalize">{user?.role || 'staff'}</small>
           </div>
           <button
             className="ml-1 border-0 bg-transparent text-lg text-inherit transition-[transform,opacity] duration-100 hover:opacity-80 active:scale-90 active:opacity-70 disabled:opacity-40"
-            title="Sign out"
+            title="Sign out — ends your session on this device"
+            data-tooltip="Sign out — ends your session on this device"
+            aria-label="Sign out"
             disabled={logoutBusy}
             onClick={requestLogout}
           >
@@ -362,11 +371,13 @@ function Shell({ children }) {
       </header>
 
       {menuOpen && (
-        <div className="fixed inset-0 z-[20] hidden max-[700px]:block">
+        <div className="fixed inset-0 z-[20] hidden max-[700px]:block compact:block">
           <button
             type="button"
             className="absolute inset-0 border-0 bg-brand-scrim"
             aria-label="Close menu"
+            title="Close menu"
+            data-tooltip="Close menu"
             onClick={() => setMenuOpen(false)}
           />
           <aside className="absolute top-0 left-0 flex h-full w-[min(280px,85vw)] flex-col bg-brand-panel px-3 py-4 text-white shadow-lg">
@@ -375,6 +386,9 @@ function Shell({ children }) {
               <button
                 type="button"
                 className="border-0 bg-transparent text-xl text-white"
+                title="Close menu"
+                data-tooltip="Close menu"
+                aria-label="Close menu"
                 onClick={() => setMenuOpen(false)}
               >
                 <FiX />
@@ -389,7 +403,7 @@ function Shell({ children }) {
 
       <div className="flex h-[calc(100vh-62px)]">
         <aside
-          className={`flex flex-col overflow-hidden bg-brand-panel px-3 py-[25px] max-[700px]:hidden ${
+          className={`flex flex-col overflow-hidden bg-brand-panel px-3 py-[25px] max-[700px]:hidden compact:hidden ${
             collapsed ? 'w-[64px] px-2' : 'w-[88px]'
           }`}
         >
@@ -477,7 +491,7 @@ function Shell({ children }) {
         </aside>
 
         <section
-          className={`min-h-0 min-w-0 flex-1 px-[22px] py-3.5 max-[700px]:px-3.5 max-[700px]:py-[22px] ${
+          className={`min-h-0 min-w-0 flex-1 px-[22px] py-3.5 max-[700px]:px-3.5 max-[700px]:py-[22px] compact:px-3.5 compact:py-[22px] ${
             isPosPage ? 'flex flex-col overflow-hidden' : 'overflow-auto'
           }`}
         >
@@ -500,7 +514,9 @@ function Shell({ children }) {
               </p>
               <button
                 type="button"
-                className="shrink-0 rounded-[5px] border border-brand-danger bg-white px-2.5 py-1.5 text-[11px] font-bold text-brand-danger"
+                className="shrink-0 rounded-[5px] border border-brand-danger bg-white px-2.5 py-1.5 text-[11px] font-semibold text-brand-danger"
+                title="Retry sending blocked records to the server"
+                data-tooltip="Retry sending blocked records to the server"
                 onClick={async () => {
                   const { retryBlocked } = await import('../../offline/syncQueue')
                   await retryBlocked(user?.branchId || null)
@@ -526,7 +542,9 @@ function Shell({ children }) {
               </p>
               <button
                 type="button"
-                className="shrink-0 rounded-[5px] border border-brand-dark bg-brand-dark px-2.5 py-1.5 text-[11px] font-bold text-white"
+                className="shrink-0 rounded-[5px] border border-brand-dark bg-brand-dark px-2.5 py-1.5 text-[11px] font-semibold text-white"
+                title="Load the newest app version"
+                data-tooltip="Load the newest app version"
                 onClick={reload}
               >
                 Refresh now
@@ -551,6 +569,8 @@ function Shell({ children }) {
                 type="button"
                 className="shrink-0 border-0 bg-transparent p-1 text-base leading-none text-brand-warn"
                 aria-label="Dismiss sync message"
+                title="Dismiss sync message"
+                data-tooltip="Dismiss sync message"
                 onClick={() => setSyncBannerDismissed(true)}
               >
                 <FiX />

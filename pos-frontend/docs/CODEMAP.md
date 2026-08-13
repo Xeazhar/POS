@@ -89,9 +89,9 @@ When changing behavior, the usual path is:
 |------|------|
 | `src/components/pos/` | cart, numpad, weight modal, POS-specific behavior |
 | `src/components/transactions/` | transaction detail / refund display |
-| `src/components/dayend/` | day-end report panels, restock alert UI |
+| `src/components/dayend/` | day-end report panels, restock alert UI, manager closing detail |
 | `src/components/shared/` | shell, supervisor approval, cross-feature widgets |
-| `src/components/ui/` | primitive UI kit used across the app |
+| `src/components/ui/` | primitive UI kit (`Modal` / `ModalActions`, buttons, fields, banners) |
 | `src/components/dashboard/` | dashboard/overview widgets |
 
 ---
@@ -265,7 +265,8 @@ Offline is a real first-class flow, not just cached reads. Many writes are:
 | Page exports | `src/pages/index.js` |
 | Nav order + labels + home path | `src/constants/nav.js` |
 | Roles / default module lists | `src/utils/roles.js` |
-| UI kit | `src/components/ui/index.jsx` |
+| UI kit | `src/components/ui/index.jsx` (`Modal` / `ModalActions` — see below) |
+| Till PIN rules (cashier/supervisor) | `src/utils/pin.js` (exactly 6 digits) |
 | Shell (sidebar, logout, sync chip) | `src/components/shared/Shell.jsx` |
 | Supabase client | `src/lib/supabase.js` |
 | All remote API / RPCs | `src/lib/api.js` |
@@ -279,14 +280,34 @@ Offline is a real first-class flow, not just cached reads. Many writes are:
 
 ### Login → home → shell
 
-1. `Login.jsx` — PIN (`signInWithPin` / `resolve_pin_login`) or email password.
+1. `Login.jsx` — PIN (`signInWithPin` / `resolve_pin_login`; cashier/supervisor **6-digit**
+   till PIN via `utils/pin.js`) or email password (manager+).
 2. `useAuthStore.login` sets `user` (role, branchId, branchType, permissions, deviceSettings).
-3. Navigate via `staffHomePath(user)` (`nav.js`): cashiers → `/pos` (restaurant may `?menu=1`); others → first allowed nav link.
+3. `LoginIntro.jsx` — short welcome splash (logo watermark, By Xeazhar, ©); then navigate via
+   `staffHomePath(user)` (`nav.js`): cashiers → `/pos`; others → first allowed nav link.
+   Session restore skips the splash.
 4. `App.jsx` wraps authenticated UI in `Shell`; routes gated by `RequireModule` + role wrappers.
 5. Shift gate: `Shell.jsx` calls `useShiftStore.resolve(user)`, which answers from IndexedDB
    first and refines with the server. `ready` lets work proceed; anything else renders
    `ShiftGate.jsx` over the app. Login itself no longer decides this — see "Shifts & change
    fund" below for why.
+
+### Modal layout (`components/ui/index.jsx`)
+
+`Modal` is a flex column capped at `max-h-[calc(100dvh-1.5rem)]` with `min-h-0` (so the
+flex item can shrink — without that, `max-height` is ignored and long dialogs clip).
+Body scrolls in an inner `overflow-y-auto` region; **Cancel/Save never live in that scroll
+region** (they used to be `sticky` and covered fields such as Module access on Edit staff).
+
+Prefer one of:
+
+- **`footer` prop** — pinned bar outside the scroll body (Staff create/edit uses this:
+  `footer={<ModalActions>…</ModalActions>}` + `form="staff-edit-form"` on the submit
+  button so Save still posts the form).
+- **`ModalActions` as a child** — auto-pulled out of the scroll body (also when the sole
+  child is a `<form>` wrapping fields + `ModalActions`).
+
+`ModalActions` is `shrink-0` with a top border — not sticky inside the scroller.
 
 ### Permissions
 
@@ -412,7 +433,8 @@ VAT/exempt breakdown is surfaced everywhere a transaction's money is shown: the 
 preview, the printed receipt, and `TransactionDetailModal.jsx` (shared by staff
 `Transactions.jsx` and manager `BranchDashboard.jsx` — same component, same fields, both get
 it automatically). The manager "Recent receipts" panel additionally tags a row `VAT-exempt`
-when `vatExemptSales > 0`.
+when `vatExemptSales > 0`, and the same detail modal offers **Print receipt** (browser reprint
+of the existing OR; see Manager tracking).
 
 ```
 Cart.jsx pricing useMemo
@@ -857,8 +879,8 @@ FKs `staff` three times, so an embed needs disambiguating at every call site).
 
 | Role | Screen | Sees |
 |---|---|---|
-| cashier | **End shift** | shift detail (Started / On shift duration / drawer / period), own cash-sales-so-far (`useShiftStore.cashPosition`), **Drawer Activity** (own shift movements, read-only), **End shift** clock-out (`ShiftCashOut`), **Request day end**. No creation of petty/pickup here — use POS → Open Drawer. |
-| supervisor+ | **Day end** | branch sales, Accountability (open shifts), **Drawer Activity** (review `self_recorded`), pending handoffs / day-end request, Close day (blocked until own shift ended, cashier shifts closed, handoffs received, and self-recorded movements reviewed). |
+| cashier | **End shift** | `OwnShiftSoFar.jsx`: shift detail (Started / On shift duration / drawer / period), own cash-sales-so-far (`useShiftStore.cashPosition`), **Drawer Activity** (own shift movements, read-only), **End shift** clock-out (`ShiftCashOut`), **Request day end**. No creation of petty/pickup here — use POS → Open Drawer. |
+| supervisor+ | **Day end** | Same **`OwnShiftSoFar`** block at the top (own shift figures + shift-scoped drawer activity), then branch sales, Accountability (open shifts), branch-wide **Drawer Activity** (review `self_recorded`), pending handoffs / day-end request, Close day (blocked until own shift ended, cashier shifts closed, handoffs received, and self-recorded movements reviewed). Floor supervisors (`holdsDrawer: false`) see cash sales only; till-holding cashiers see the full drawer breakdown. |
 
 **`cashPosition()` merges server + not-yet-synced local sales.** The server RPC
 (`shift_cash_summary`) only knows about a sale once it has synced — a sale rung up is
@@ -909,13 +931,13 @@ calendar `date` only when `createdAt` is absent. Applied in `DayEnd.jsx` (`inBus
 This is the transaction-side sibling of the existing "query shifts by `business_date`, never by
 `clock_in`" rule above — same failure, different table.
 
-**`SupervisorDayEnd`'s "Cash on hand" field starts blank, not `0`** (`cashOnHand === ''`
-until the supervisor types something) — `hasCashOnHand` gates both the "Variance vs
-expected" display and `noteRequired`, so the screen reads "—  Enter cash on hand to
-compare" instead of a false "₱X Short" the instant the page loads with nothing counted
-yet. The "Close day" button was already correctly disabled on a blank field before this
-fix (`disabled={cashOnHand === '' || ...}`) — only the premature on-screen variance was
-wrong, not what could actually be submitted. Also shows Card/E-wallet sales (net of
+**`SupervisorDayEnd`'s "Cash on hand" field starts blank, not `0`** — draft input is never
+pre-filled from a prior visit, a reopened day row, or IndexedDB; leaving Day end and returning
+always shows an empty field until someone counts again (submitted/closed days show filed
+`existing.cashOnHand` read-only). `hasCashOnHand` gates both the "Variance vs expected"
+display and `noteRequired`, so the screen reads "— Enter cash on hand to compare" instead of
+a false "₱X Short" the instant the page loads with nothing counted yet. The "Close day"
+button stays disabled until the draft field has a value. Also shows Card/E-wallet sales (net of
 refunds, same as `cashSales`, informational — never enter `expectedCash`) alongside Cash
 sales under "All sales (POS)", so a supervisor can see the tender split without leaving
 this screen.
@@ -1032,13 +1054,15 @@ they closed; that boundary was deliberately left alone.
 
 **Reopen is current-day only.** `BranchDashboard.jsx` offers Reopen on a closed day-end row
 only while `entry.date === todayKey`; past closings render `Locked` with no override at any
-role. `DayEnd.jsx`'s Cancel closing only ever acts on `dayEndForBusinessDate(dayEnds, date)`
+role. Clicking the row still opens the read-only closing detail (petty / cash-outs) for
+that past day. `DayEnd.jsx`'s Cancel closing only ever acts on `dayEndForBusinessDate(dayEnds, date)`
 for the CURRENT business date, so it inherits the same restriction without a separate check.
 Reopening a passed day would move cash figures under a Z-reading already filed.
 
 **`DayEnd.jsx` has no historical closings list of its own.** It used to render its own
 "Previous day-end closings" table, duplicating `BranchDashboard.jsx`'s paginated "Day-end
-closings" section (which also has Reopen) with a plainer read-only copy. Removed — a
+closings" section (which also has Reopen, and a click-through detail for petty / cash-outs)
+with a plainer read-only copy. Removed — a
 supervisor closing today's day doesn't need yesterday's numbers on the same screen, and a
 manager wanting history already has the richer version. `DayEnd.jsx` still fetches `dayEnds`
 (`useInventoryStore`) for `dayEndForBusinessDate(dayEnds, date)` — only the list *rendering*
@@ -1095,6 +1119,7 @@ the two screens disagree.
 |-------|------|
 | Page | `src/pages/DayEnd.jsx` |
 | Report panels | `src/components/dayend/DayEndReportPanels.jsx` |
+| Own shift panel | `src/components/dayend/OwnShiftSoFar.jsx` (cashier End shift + supervisor Day end header) |
 | Snapshot builder | `src/utils/dayEndReport.js` |
 | Nudge | `Cart.jsx` `shouldNudgeDayEnd` |
 | API | `closeDayEnd`, `reopenDayEnd`, `requestDayReopen`, `addPettyCash`, `fetchPettyCash`, `fetchPettyCashTimeline` |
@@ -1121,8 +1146,9 @@ POS → **Open Drawer** (`OpenDrawer.jsx` on `POS.jsx`):
   Both write IndexedDB + `CASH_MOVEMENT_APPROVED` queue and sync when online. Notify manager
   is unavailable offline (needs server) — self-record replaces that path while offline.
 - Cancel (X): voids `pending_remote` via `cancel_cash_movement` (`migrate_cash_movement_cancel.sql`)
-- Day End **Drawer Activity** (`DrawerActivity.jsx`) lists all Open Drawer rows (amount,
-  reason, requester, approver/reviewer, status). `self_recorded` = **Unauthorized**;
+- Day End **Drawer Activity** (`DrawerActivity.jsx`) lists **this business day's** Open Drawer
+  rows only (amount, reason, requester, approver/reviewer, status) — `useDayEndData` scopes
+  every `fetchCashMovements` path to the current date. `self_recorded` = **Unauthorized**;
   page-top banner + row/banner open Mark Resolved / Flag modal. Reviewer must be
   supervisor/manager **other than** `requested_by` (RPC `review_cash_movement` + UI).
   Close day hard-blocked until every unauthorized row is `confirmed` (Resolved) or
@@ -1155,7 +1181,20 @@ Manager tracking lives in:
   - **Cash drawer log** = today’s `fetchCashMovements` + legacy `fetchPettyCashTimeline`;
     unauthorized → Mark Resolved / Flag; Flagged → Mark Resolved (**manager only** via
     `resolveFlaggedCashMovement`); end-state labels Approved / Resolved / Flagged
+  - **Day-end closings** rows are clickable → `DayEndClosingDetail.jsx` loads that business
+    date’s shift cash-outs (`fetchStaffShifts`) plus petty / pickups / cash-in
+    (`fetchCashMovements` + `fetchPettyCashTimeline`). Approve / Reopen stay on the row
+    (stopPropagation). Reopen remains current-day only.
+  - **Recent receipts** open `TransactionDetailModal` with **Print receipt** — browser reprint
+    of the existing OR (`buildReceipt` + `receiptPrinter.printReceipt`); uses the *viewed*
+    branch fiscal header (`fetchBranchFiscalHeader`), does not mint a new OR, and is not
+    gated on the manager’s own till printer toggle (this is a copy, not a counter print).
   - live reload on `cash_movements` / `cash_drawer_entries` / day_ends / refunds / till actions
+  - **Staff terminals:** `Shell.jsx` → `useBranchOperationsLive` refetches
+    `bootstrapBranchActivity` into `useInventoryStore` on `OPERATIONS_CHANGED` (manager reopen,
+    day-end submit/approve, etc.) so POS / ShiftGate unlock without a full reload; `loadBranch`
+    also refetches day-end activity on login when online (even if the sync outbox is non-empty),
+    and `putDayEnds` drops stale local pending rows when the server already has that business date
 
 Managers do **not** get a Day end sidebar tab (`nav.js` hides `day_end` for `isManagerRole`);
 module access remains so `/day-end` still works for cashier “request manager” closes.
@@ -1212,6 +1251,13 @@ PBKDF2 verifier the lock screen uses (`src/utils/unlockVerifier.js`), not a live
 sign-in, so it still works offline. Only gated for `hasSupabase` — the local demo fallback
 skips the check (nothing real to protect).
 
+**Cashier / supervisor till PIN** is exactly **6 digits** (no letters/symbols). Rules and
+helpers live in `src/utils/pin.js` (`sanitizePinInput`, `validateComplexPin` name kept for
+call-site stability, `randomComplexPin`, `PIN_RULES_HINT`). Enforced on Staff create/edit;
+login (`signInWithPin`), `SupervisorApprove` / `SupervisorPinWait`, and lock-screen PIN mode
+strip input to digits. **Generate** on the staff form emits a random 6-digit PIN. Manager+
+still use email + password. Legacy complex PINs must be reset to 6 digits before login.
+
 ### Dashboard metrics: Sales performance / Payment & cash impact / Audit
 
 All three dashboards a manager or supervisor lands on — `manager/Overview.jsx`
@@ -1229,6 +1275,17 @@ disagree between screens:
   product bootstrap.
 - Login/`loadBranch` paints POS from `bootstrapPosCatalog` first, then completes sync via
   `bootstrapBranchData` (catalog + activity in parallel for IndexedDB).
+- **Bootstrap tiers:** `bootstrapPosCatalog` (products + branch fiscal header only) →
+  `bootstrapBranchInventory` (catalog + movements, no txs/day-ends) → `bootstrapBranchData`
+  (full offline snapshot). Inventory page reload uses `fetchBranchProducts`; Promos editor
+  uses `bootstrapPosCatalog`. Branch dashboard initial load runs branches + full bootstrap
+  in parallel, then one `Promise.all` wave for day ops. Promo history stats use
+  `fetchPromoSalesStatsSummary` with `utils/mapLimit.js` (concurrency 3); Sales modal
+  detail uses `fetchPromoSalesStats`. Spreadsheet I/O: `src/lib/xlsxLoader.js` (lazy
+  `@e965/xlsx`, safe `read` defaults).
+- **Resilience:** `AppErrorBoundary` (root), `lazyWithRetry` on route chunks (one hard
+  reload on chunk failure), `useCompactChrome` + `compact:` layout for touch devices in
+  desktop-site mode, `DesktopModeHint` banner.
 - POS promo reads no longer call `expireEndedPromos` (write-on-read); manager promo screens
   still sweep. Display truth is `promoHasEnded` / `promoEffectiveStatus` (`status` only —
   `promo_events.is_active` was dropped in `migrate_schema_cleanup_v1.sql`).
@@ -1429,8 +1486,12 @@ Run migrations in the Supabase SQL editor; respect comments about order / depend
 column-level, so any policy letting a role SELECT a staff row lets it read that row's PIN.
 That is why supervisors read the roster through `branch_staff_roster()`
 (`migrate_branch_staff_roster.sql`) — a definer function with an explicit safe column list —
-rather than a widened `read staff` policy. Never "simplify" it into a policy change, and
-never add a secret column to that function's select list.
+rather than a widened `read staff` policy. Managers reveal a till PIN only through
+`reveal_staff_pin()` (`migrate_reveal_staff_pin.sql`), not a client-side `SELECT login_pin`.
+Client-callable SECURITY DEFINER RPCs must enforce scope in-function — see
+`migrate_security_definer_hardening_v1.sql` and `supabase/audit_security.sql` §4.
+Never "simplify" it into a policy change, and never add a secret column to the roster
+function's select list.
 
 **Schema cleanup (`migrate_schema_cleanup_v1.sql`):** `promo_events.is_active` removed
 (status-only); duplicate `(branch_id, client_id)` unique index dropped; dormant
@@ -1462,10 +1523,14 @@ client UPDATE policy (RPC-only mutations); `sale_events`/`audit_events` RLS uses
 | Sidebar links | `nav.js` + `Shell.jsx` |
 | Refund totals | `TransactionDetailModal.jsx` + refund migrations |
 | Day-end cash / Drawer Activity | `DayEnd.jsx`, `DrawerActivity.jsx` |
+| Branch day-end closing detail | `BranchDashboard.jsx` + `dayend/DayEndClosingDetail.jsx` |
+| Reprint a branch receipt | `BranchDashboard.jsx` Recent receipts → `TransactionDetailModal` Print |
 | POS Open Drawer (petty/pickup) | `OpenDrawer.jsx`, `POS.jsx` |
 | Cart line remove approval | `CartRemoveApprove.jsx`, `SupervisorPinWait.jsx` |
 | Cash movements (Open Drawer) | `components/pos/OpenDrawer.jsx`, `components/dayend/DrawerActivity.jsx` |
 | Staff roster / shift log / hours | `manager/Staff.jsx` (merged tab) |
+| Staff create/edit modal / till PIN | `manager/Staff.jsx` + `utils/pin.js` (6-digit PIN); Modal `footer` in `ui/index.jsx` |
+| Modal scroll vs action bar | `components/ui/index.jsx` (`Modal` / `ModalActions` / optional `footer`) |
 | TIN on receipts / reports | `api.composeTin` + `fetchBranches` `full_tin` |
 | Stuck "already signed in" | `api.fetchActiveSessions` / `forceReleaseStaffSession` |
 | Receipt layout | `receipt.js` |
@@ -1478,8 +1543,8 @@ client UPDATE policy (RPC-only mutations); `sale_events`/`audit_events` RLS uses
 
 | Role | Login | Main areas |
 |------|-------|------------|
-| Cashier | PIN | POS, Transactions, Inventory (view/adjust), Day end, Devices |
-| Supervisor | PIN | Same + Shifts (branch) + **Products `/data`** (add/import) |
+| Cashier | PIN (6 digits) | POS, Transactions, Inventory (view/adjust), Day end, Devices |
+| Supervisor | PIN (6 digits) | Same + Shifts (branch) + **Products `/data`** (add/import) |
 | Manager | Email | Overview, Branches, Staff, Shifts (all), Data, Reports |
 | Master | Email | Manager + staff routes combined (sole top account; `admin` role retired) |
 
@@ -1723,7 +1788,7 @@ exactly why some products discounted correctly and others never did. Fixed three
 - **Cart** (`src/components/pos/Cart.jsx`): no longer takes a single `promoLabel` prop — it derives the discount label itself from `computePromoDiscounts`' `appliedEventNames` (joined, e.g. "Valentines + Payday Sale"), and per-line breakdown rows show the actual promo that won that line via `linePromoNames`. The "Promo ended — … Re-quote" banner only fires when an event name that was pricing a still-present line has left the live `promoRules` set (real expire/stop) — not when removing a line or breaking a BOGO/bundle threshold merely drops eligibility on remaining items.
 - **Promos UI** (`src/pages/manager/Promos.jsx`): `activeEvents` (array, was `active` singular) renders one card per live promo with its own Stop/Approve-stop controls. `managingId` + `managedEvent` track which live event's rules/sales-stats panel is currently shown ("Manage rules" button per card); a fresh pending draft (`workingEvent`) always takes priority for rule-building over an already-live event, so creating promo B while promo A is still live doesn't block adding rules to B.
 
-**Mixed-cart reporting fix:** `transactions.discount_type` is still a single text column (joined label like "Promo A + Promo B" when a cart mixes promos) — exact-matching that per promo would undercount mixed carts. Fixed via **per-line attribution**: `migrate_promo_line_attribution.sql` adds `transaction_items.promo_name` (which promo won that specific line, null for PWD/Senior/undiscounted). `src/lib/api.js` `fetchPromoSalesStats` now attributes by that column (prefilters candidate receipts by branch/date/`discount_amount > 0`, then matches lines by `promo_name = promoName`) instead of matching the whole transaction's `discount_type`. `fetchPromoSalesStatsLegacy` (same file) is the pre-migration fallback and is used automatically if the `promo_name` column doesn't exist yet.
+**Mixed-cart reporting fix:** `transactions.discount_type` is still a single text column (joined label like "Promo A + Promo B" when a cart mixes promos) — exact-matching that per promo would undercount mixed carts. Fixed via **per-line attribution**: `migrate_promo_line_attribution.sql` adds `transaction_items.promo_name` (which promo won that specific line, null for PWD/Senior/undiscounted). `src/lib/api.js` `fetchPromoSalesStats` attributes by that column (paged query on `transaction_items` with `promo_name = promoName` + branch/date join on `transactions`, then derives receipts from matched lines) instead of scanning up to 1000 discounted receipts first. Sales drill-down groups lines into **offers** (`aggregatePromoSalesOffers` in `utils/promo.js`) — bundle name, Buy 1 take 1, pair, item % — using `promo_group_id` + event rules, not a flat SKU list. `fetchPromoSalesStatsLegacy` (same file) is the pre-migration fallback and is used automatically if the `promo_name` column doesn't exist yet.
 - **Cart** (`Cart.jsx`): tags each checkout line with `promoName` (from `computePromoDiscounts`' `linePromoNames`) before calling `addTransaction`.
 - **Store** (`posStore.js` `addTransaction`): passes `promoName` through to the `QUEUE_TYPES.COMPLETE_SALE` payload.
 - **API** (`api.js` `completeSale`): writes `transaction_items.promo_name`; falls back to omitting the column (like the existing `price_tier` fallback) on old schemas.

@@ -23,6 +23,7 @@ import {
 import { useAuthStore } from '../../stores/posStore'
 import { isOnline, readBranchesCache } from '../../offline'
 import { withTimeout } from '../../utils/withTimeout'
+import { mapLimit } from '../../utils/mapLimit'
 import { businessDate, greetingFor, money } from '../../utils/format'
 
 const PERIODS = [
@@ -156,20 +157,17 @@ function ManagerOverview() {
           fetchManagerOverviewMetrics({ days: meta.days }).catch(async () => {
             // RPC not deployed yet — fall back to per-branch fan-out (pre-overhaul path).
             const { branchSummary, fetchBranchCashImpact } = await import('../../lib/api')
-            const next = {}
-            await Promise.all(
-              rows.map(async (branch) => {
-                next[branch.id] = await branchSummary(branch.id, { days: meta.days })
-              }),
-            )
-            const cashRows = await Promise.all(
-              rows.map((branch) => {
-                const openHour = Number(branch.day_open_hour ?? 7)
-                return fetchBranchCashImpact(branch.id, businessDate(new Date(), openHour), openHour).catch(
-                  () => null,
-                )
-              }),
-            )
+            const summaryRows = await mapLimit(rows, 4, async (branch) => {
+              const summary = await branchSummary(branch.id, { days: meta.days })
+              return [branch.id, summary]
+            })
+            const next = Object.fromEntries(summaryRows)
+            const cashRows = await mapLimit(rows, 4, async (branch) => {
+              const openHour = Number(branch.day_open_hour ?? 7)
+              return fetchBranchCashImpact(branch.id, businessDate(new Date(), openHour), openHour).catch(
+                () => null,
+              )
+            })
             return {
               summaries: next,
               cashImpact: cashRows.reduce(
@@ -370,7 +368,7 @@ function ManagerOverview() {
       </div>
 
       <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
-        <div className="min-h-0 min-w-0">
+        <div className="min-h-0 min-w-0 w-full">
           <RevenueChart points={linePoints} period={`Network · ${periodLabel}`} fill />
         </div>
         <div className="flex min-w-0 flex-col gap-2.5">

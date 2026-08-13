@@ -17,15 +17,7 @@ import { money, qty } from '../../utils/format'
 
 const PAGE_SIZE = 15
 
-/**
- * xlsx is a ~410KB chunk — only worth loading the moment someone actually exports, same
- * reasoning as the Reports page's on-demand load.
- */
-let xlsxPromise = null
-function loadXlsx() {
-  if (!xlsxPromise) xlsxPromise = import('xlsx')
-  return xlsxPromise
-}
+import { loadXlsx } from '../../lib/xlsxLoader'
 
 /** Local YYYY-MM-DD. Not toISOString — that is UTC and shifts the day in UTC+8. */
 function dayKey(d) {

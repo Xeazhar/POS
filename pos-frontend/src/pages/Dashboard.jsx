@@ -447,7 +447,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
       )}
 
       <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
-        <div className="min-h-0 min-w-0">
+        <div className="min-h-0 min-w-0 w-full">
           <RevenueChart points={buildChartPoints(filtered, period)} period={period} fill />
         </div>
         <div className="flex min-w-0 flex-col gap-2.5">

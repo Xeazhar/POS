@@ -636,6 +636,32 @@ export const ERROR_CATALOG = {
     fix: 'Ask a master account to clear the session, or wait 15 minutes for it to expire on its own.',
   },
 
+  // ── STAFF — roster / PIN reveal (supervisor-safe reads) ─────────────────
+  STAFF01: {
+    message: 'Staff roster is not installed on this database yet.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'Supervisors need branch_staff_roster() so till PINs are not exposed via a wide SELECT.',
+    fix: 'Run migrate_branch_staff_roster.sql in the Supabase SQL editor.',
+  },
+  STAFF02: {
+    message: 'PIN reveal is not installed on this database yet.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'Managers reveal PINs through reveal_staff_pin(), not a direct staff table read.',
+    fix: 'Run migrate_reveal_staff_pin.sql in the Supabase SQL editor.',
+  },
+  STAFF03: {
+    message: 'You are not allowed to reveal this staff member\'s PIN.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'Only manager, admin, or master accounts may reveal till PINs.',
+    fix: 'Ask a manager to reveal the PIN, or reset it from Staff with edit access.',
+  },
+
   // ── PRICE — till-side price override ─────────────────────────────────────
   PRICE01: {
     message: 'Price override failed — the original price still applies.',

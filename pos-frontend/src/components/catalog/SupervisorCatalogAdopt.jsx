@@ -18,7 +18,7 @@ import {
 } from '../ui'
 import {
   adoptCatalogProducts,
-  bootstrapBranchData,
+  bootstrapPosCatalog,
   fetchCatalogProducts,
   hasSupabase,
   updateProductRow,
@@ -82,7 +82,7 @@ export default function SupervisorCatalogAdopt() {
     }
     try {
       const [branch, catRows] = await Promise.all([
-        withTimeout(bootstrapBranchData(user.branchId), 15000, 'Branch catalog'),
+        withTimeout(bootstrapPosCatalog(user.branchId), 15000, 'Branch catalog'),
         withTimeout(fetchCatalogProducts({ branchType }), 15000, 'Network catalog'),
       ])
       setProducts(branch.products || [])

@@ -267,20 +267,14 @@ function formatReceiptDate(value) {
 /** Open a print-ready receipt window (works without a thermal printer). */
 export function printReceiptBrowser(receipt) {
   const html = receiptToHtml(receipt)
-  // Do not use noopener here — it returns null / blocks document.write and leaves about:blank.
-  const win = window.open('', '_blank', 'width=360,height=720')
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const win = window.open(url, '_blank', 'width=360,height=720')
   if (!win) {
+    URL.revokeObjectURL(url)
     throw new Error('Pop-up blocked — allow pop-ups to print receipts.')
   }
-  try {
-    win.opener = null
-  } catch {
-    /* ignore */
-  }
-  win.document.open()
-  win.document.write(html)
-  win.document.close()
-  // Close the print window after the dialog finishes (or after a short delay).
+  setTimeout(() => URL.revokeObjectURL(url), 120000)
   const closeSoon = () => {
     try {
       win.close()

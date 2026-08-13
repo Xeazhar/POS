@@ -2,6 +2,7 @@ import {
   Field,
   PrimaryButton,
 } from '../ui'
+import { CredentialAutofillTrap, secureFormProps } from './SecureCredential'
 import { sanitizePinInput } from '../../utils/pin'
 
 /** Cash drawer Open Drawer — manager wait before self-record. */
@@ -26,12 +27,14 @@ export function SupervisorPinPanel({
 }) {
   return (
     <form
-      className="rounded-lg border border-brand-softline bg-brand-n50 px-3.5 py-3.5"
+      className="relative rounded-lg border border-brand-softline bg-brand-n50 px-3.5 py-3.5"
+      {...secureFormProps}
       onSubmit={(e) => {
         e.preventDefault()
         onSubmit?.()
       }}
     >
+      <CredentialAutofillTrap />
       <div className="mb-2.5 flex items-baseline justify-between gap-2">
         <strong className="text-sm text-brand-ink">Supervisor PIN</strong>
         {hint ? <span className="text-[10px] text-brand-subtle">{hint}</span> : null}
@@ -39,19 +42,21 @@ export function SupervisorPinPanel({
       <div className="grid grid-cols-1 gap-2.5">
         <Field
           label="Staff code"
+          noSave
           value={loginCode}
           onChange={(e) => onLoginCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
           inputMode="numeric"
-          autoComplete="off"
           autoFocus={autoFocusCode}
           inputClassName="h-12 text-base tracking-wider"
         />
         <Field
           label="PIN"
-          type="password"
+          noSave
+          secret
           value={pin}
           onChange={(e) => onPin(sanitizePinInput(e.target.value))}
-          autoComplete="off"
+          inputMode="numeric"
+          maxLength={6}
           inputClassName="h-12 text-base"
         />
       </div>

@@ -136,6 +136,7 @@ export function mapDayReport(raw) {
     revenue: Number(raw.revenue ?? 0),
     sold: Array.isArray(raw.sold) ? raw.sold : [],
     restock: Array.isArray(raw.restock) ? raw.restock : [],
+    refunded: Number(raw.refunded ?? 0),
     generatedAt: raw.generatedAt || raw.generated_at || null,
   }
 }

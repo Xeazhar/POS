@@ -1,14 +1,45 @@
+import { Children, cloneElement, isValidElement } from 'react'
 import { FiX } from 'react-icons/fi'
 import { isKnownErrorCode, saleImpactGuidance } from '../../utils/errors'
 
-export function PrimaryButton({ className = '', compact = false, children, ...props }) {
+/** Pull ModalActions out of the scroll body so the footer never covers fields. */
+function splitModalActions(children) {
+  const items = Children.toArray(children)
+  const body = []
+  const actions = []
+  for (const child of items) {
+    if (
+      isValidElement(child) &&
+      (child.type === ModalActions || child.type?.displayName === 'ModalActions')
+    ) {
+      actions.push(child)
+    } else {
+      body.push(child)
+    }
+  }
+  return { body, actions }
+}
+
+/** Derive hover tooltip text for shared buttons. */
+function buttonTooltip({ tooltip, title, children, 'aria-label': ariaLabel }) {
+  if (tooltip) return tooltip
+  if (title) return title
+  if (ariaLabel) return ariaLabel
+  if (typeof children === 'string') return children
+  return undefined
+}
+
+export function PrimaryButton({ className = '', compact = false, tooltip, title, children, ...props }) {
+  const tip = buttonTooltip({ tooltip, title, children, 'aria-label': props['aria-label'] })
   return (
     <button
-      className={`inline-flex items-center justify-center gap-2 rounded-[5px] border-0 bg-brand-gold font-bold text-brand-dark hover:brightness-105 active:brightness-97 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:brightness-100 ${
+      className={`inline-flex items-center justify-center gap-2 rounded-[5px] border-0 bg-brand-gold font-semibold text-brand-dark hover:brightness-105 active:brightness-97 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:brightness-100 ${
         compact
           ? 'h-10 w-auto min-w-0 px-3 text-xs whitespace-nowrap max-[700px]:h-9 max-[700px]:px-2.5 max-[700px]:text-[11px]'
           : 'w-full px-4 py-[13px] max-[700px]:px-3 max-[700px]:py-3 max-[700px]:text-sm'
       } ${className}`}
+      title={tip}
+      data-tooltip={tip}
       {...props}
     >
       {children}
@@ -16,14 +47,17 @@ export function PrimaryButton({ className = '', compact = false, children, ...pr
   )
 }
 
-export function SecondaryButton({ className = '', compact = false, children, ...props }) {
+export function SecondaryButton({ className = '', compact = false, tooltip, title, children, ...props }) {
+  const tip = buttonTooltip({ tooltip, title, children, 'aria-label': props['aria-label'] })
   return (
     <button
-      className={`inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-brand-n400 bg-brand-n100 font-bold text-brand-n800 hover:bg-brand-n200 hover:border-brand-n400 active:bg-brand-n300 disabled:cursor-not-allowed disabled:opacity-35 ${
+      className={`inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-brand-n400 bg-brand-n100 font-semibold text-brand-n800 hover:bg-brand-n200 hover:border-brand-n400 active:bg-brand-n300 disabled:cursor-not-allowed disabled:opacity-35 ${
         compact
           ? 'h-10 w-auto min-w-0 px-3 text-xs whitespace-nowrap max-[700px]:h-9 max-[700px]:px-2.5 max-[700px]:text-[11px]'
           : 'px-3.5 py-[11px] max-[700px]:px-3 max-[700px]:text-sm'
       } ${className}`}
+      title={tip}
+      data-tooltip={tip}
       {...props}
     >
       {children}
@@ -31,12 +65,50 @@ export function SecondaryButton({ className = '', compact = false, children, ...
   )
 }
 
-export function Field({ label, className = '', inputClassName = '', ...props }) {
+/** Icon-only control — always pass `label` (and optional longer `tooltip`). */
+export function IconButton({ label, tooltip, title, className = '', children, ...props }) {
+  const tip = buttonTooltip({ tooltip, title, 'aria-label': label, children })
   return (
-    <label className={`block text-[11px] font-bold text-brand-n700 ${className}`}>
+    <button
+      type="button"
+      className={className}
+      aria-label={label}
+      title={tip ?? label}
+      data-tooltip={tip ?? label}
+      {...props}
+    >
+      {children}
+    </button>
+  )
+}
+
+export function Field({ label, className = '', inputClassName = '', noSave = false, secret = false, onFocus, type, ...props }) {
+  const handleFocus = (e) => {
+    if (noSave) e.target.removeAttribute('readonly')
+    onFocus?.(e)
+  }
+
+  const antiSaveProps = noSave
+    ? {
+        readOnly: true,
+        onFocus: handleFocus,
+        autoComplete: 'off',
+        'data-lpignore': 'true',
+        'data-1p-ignore': 'true',
+        'data-bwignore': 'true',
+        'data-form-type': 'other',
+      }
+    : {}
+
+  const inputType = secret ? 'text' : type
+
+  return (
+    <label className={`block text-[11px] font-medium text-brand-n700 ${className}`}>
       {label}
       <input
-        className={`mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px] font-normal outline-none ${inputClassName}`}
+        className={`mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px] font-normal outline-none ${secret ? 'secure-secret-input ' : ''}${inputClassName}`}
+        type={inputType}
+        {...antiSaveProps}
         {...props}
       />
     </label>
@@ -45,7 +117,7 @@ export function Field({ label, className = '', inputClassName = '', ...props }) 
 
 export function SelectField({ label, className = '', children, ...props }) {
   return (
-    <label className={`block text-[11px] font-bold text-brand-n700 ${className}`}>
+    <label className={`block text-[11px] font-medium text-brand-n700 ${className}`}>
       {label}
       <select
         className="mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px] font-normal outline-none"
@@ -59,7 +131,7 @@ export function SelectField({ label, className = '', children, ...props }) {
 
 export function Eyebrow({ children, className = '' }) {
   return (
-    <p className={`mb-2 text-[10px] font-bold tracking-[1.4px] text-brand-eyebrow uppercase ${className}`}>
+    <p className={`mb-2 text-[10px] font-semibold tracking-[1.4px] text-brand-eyebrow uppercase ${className}`}>
       {children}
     </p>
   )
@@ -78,7 +150,7 @@ export function SectionHeading({ title, subtitle, meta, className = '', tone = '
       className={`flex items-end justify-between gap-3 border-b border-brand-line bg-white px-4 py-3.5 ${className}`}
     >
       <div className="min-w-0">
-        <h2 className={`m-0 text-lg font-bold tracking-[-0.02em] ${accent}`}>{title}</h2>
+        <h2 className={`m-0 text-lg font-semibold tracking-[-0.02em] ${accent}`}>{title}</h2>
         {subtitle ? (
           <p className="m-0 mt-1 text-[12px] leading-snug text-brand-muted">{subtitle}</p>
         ) : null}
@@ -147,7 +219,7 @@ export function SearchBox({ icon, className = '', label = null, ...props }) {
   )
   if (!label) return box
   return (
-    <label className={`block text-[11px] font-bold text-brand-n700 ${className}`}>
+    <label className={`block text-[11px] font-medium text-brand-n700 ${className}`}>
       {label}
       {box}
     </label>
@@ -358,22 +430,74 @@ export function DeltaBadge({ current, previous, hasPrevious = true, className = 
   )
 }
 
-export function Modal({ wide = false, xl = false, layer = false, className = '', onClose, children }) {
-  // `xl` is for content that genuinely needs two columns (checkout). Cramming a long
-  // breakdown into the 460px `wide` column made it scroll under the sticky action bar.
+export function Modal({
+  wide = false,
+  xl = false,
+  layer = false,
+  className = '',
+  onClose,
+  footer = null,
+  children,
+}) {
+  // `xl` is for content that genuinely needs two columns (checkout).
+  // Actions are pinned below the scroll body so long forms (Edit staff) never clip
+  // fields under Cancel/Save. Panel uses min-h-0 + dvh max-height — without min-h-0,
+  // flex default min-height:auto ignores max-height and the dialog overflows the viewport.
   const width = xl
     ? 'sm:w-[min(920px,100%)]'
     : wide
       ? 'sm:w-[min(460px,100%)]'
       : 'sm:w-[min(420px,100%)]'
+
+  const childList = Children.toArray(children)
+  const sole = childList.length === 1 && isValidElement(childList[0]) ? childList[0] : null
+  // Prefer an explicit `footer` prop. Otherwise pull ModalActions out of children
+  // (including when wrapped in a single <form> so type=submit still works).
+  let panelBody
+  const scrollClass =
+    'min-h-0 flex-1 overflow-y-auto overscroll-contain p-5 max-[700px]:p-4'
+
+  if (footer) {
+    panelBody = (
+      <>
+        <div className={scrollClass}>{children}</div>
+        {footer}
+      </>
+    )
+  } else {
+    const formSplit =
+      sole && sole.type === 'form' ? splitModalActions(sole.props.children) : null
+    const topSplit = formSplit ? null : splitModalActions(children)
+    if (formSplit) {
+      const formClass = [sole.props.className, 'flex min-h-0 flex-1 flex-col overflow-hidden']
+        .filter(Boolean)
+        .join(' ')
+      panelBody = cloneElement(
+        sole,
+        { className: formClass },
+        <>
+          <div className={scrollClass}>{formSplit.body}</div>
+          {formSplit.actions}
+        </>,
+      )
+    } else {
+      panelBody = (
+        <>
+          <div className={scrollClass}>{topSplit.body}</div>
+          {topSplit.actions}
+        </>
+      )
+    }
+  }
+
   return (
     <div
-      className={`fixed inset-0 flex items-center justify-center bg-brand-scrim p-3 max-[700px]:items-end max-[700px]:p-0 max-[700px]:pt-8 ${
+      className={`fixed inset-0 flex min-h-0 items-center justify-center bg-brand-scrim p-3 max-[700px]:items-end max-[700px]:p-0 max-[700px]:pt-8 ${
         layer ? 'z-[6]' : 'z-[4]'
       }`}
     >
       <div
-        className={`relative flex max-h-full w-full flex-col overflow-hidden rounded-[10px] bg-white max-[700px]:max-h-[min(100%,calc(100dvh-2rem))] max-[700px]:rounded-b-none max-[700px]:rounded-t-[12px] ${width} ${className}`}
+        className={`relative flex max-h-[calc(100dvh-1.5rem)] min-h-0 w-full flex-col overflow-hidden rounded-[10px] bg-white max-[700px]:max-h-[min(100%,calc(100dvh-2rem))] max-[700px]:rounded-b-none max-[700px]:rounded-t-[12px] ${width} ${className}`}
       >
         {onClose && (
           <button
@@ -385,9 +509,7 @@ export function Modal({ wide = false, xl = false, layer = false, className = '',
             <FiX />
           </button>
         )}
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5 max-[700px]:p-4">
-          {children}
-        </div>
+        {panelBody}
       </div>
     </div>
   )
@@ -396,12 +518,13 @@ export function Modal({ wide = false, xl = false, layer = false, className = '',
 export function ModalActions({ children, className = '' }) {
   return (
     <div
-      className={`sticky bottom-0 -mx-5 -mb-1 mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-brand-softline bg-white px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-[700px]:-mx-4 max-[700px]:px-4 max-[700px]:[&>button]:min-w-0 max-[700px]:[&>button]:flex-1 ${className}`}
+      className={`flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-brand-softline bg-white px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-[700px]:px-4 max-[700px]:[&>button]:min-w-0 max-[700px]:[&>button]:flex-1 ${className}`}
     >
       {children}
     </div>
   )
 }
+ModalActions.displayName = 'ModalActions'
 
 /**
  * Shows a support code so staff can text/call you with the exact failure — and, when the
@@ -568,14 +691,18 @@ export function ToggleSwitch({
   busy = false,
   onChange,
   label = 'Toggle',
+  tooltip,
   className = '',
 }) {
+  const tip = tooltip ?? label
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      title={tip}
+      data-tooltip={tip}
       disabled={disabled || busy}
       onClick={() => onChange?.(!checked)}
       className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-0 p-0.5 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-55 ${

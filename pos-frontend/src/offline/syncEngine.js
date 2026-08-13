@@ -541,10 +541,16 @@ export async function syncBranch(branchId) {
           void drainQueueInBackground(branchId)
         })
       }
-      const data =
-        pushResult.remaining === 0 && !pushResult.error
-          ? await pullFromRemote(branchId)
-          : await readBranchSnapshot(branchId)
+      let data
+      if (pushResult.remaining === 0 && !pushResult.error) {
+        data = await pullFromRemote(branchId)
+      } else {
+        // Pending sales must not block day-end refresh — manager reopen has to reach
+        // ShiftGate on re-login even while the outbox still holds local sales.
+        const { refreshBranchActivity } = await import('../hooks/useBranchOperationsLive')
+        await refreshBranchActivity(branchId).catch(() => {})
+        data = await readBranchSnapshot(branchId)
+      }
       emit({
         status: pushResult.error ? 'error' : 'idle',
         online: true,

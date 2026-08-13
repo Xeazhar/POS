@@ -16,7 +16,7 @@ export function useIsTouchUi() {
   return touchUi
 }
 
-function readTouchUi() {
+export function readTouchUi() {
   if (typeof window === 'undefined' || !window.matchMedia) return false
   if (window.matchMedia('(hover: none) and (pointer: coarse)').matches) return true
   // Fallback: narrow viewport with touch points (some tablets report hybrid pointers)

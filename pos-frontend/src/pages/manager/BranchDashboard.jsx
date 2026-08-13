@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { FiX } from 'react-icons/fi'
 import { Link, useParams } from 'react-router-dom'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
+import DayEndClosingDetail from '../../components/dayend/DayEndClosingDetail'
 import { DayEndReportPanels } from '../../components/dayend/DayEndReportPanels'
 import AuditSummary from '../../components/dashboard/AuditSummary'
 import RevenueChart from '../../components/dashboard/RevenueChart'
@@ -35,6 +36,7 @@ import {
   bootstrapBranchData,
   bootstrapBranchActivity,
   fetchBranchCashImpact,
+  fetchBranchFiscalHeader,
   fetchBranchTelemetry,
   fetchBranches,
   fetchPettyCashTimeline,
@@ -58,8 +60,9 @@ import {
   resolveFlaggedCashMovement,
   saveBranch,
 } from '../../lib/api'
-import { BRANCH_DEVICES, normalizeDeviceSettings } from '../../devices'
+import { BRANCH_DEVICES, normalizeDeviceSettings, receiptPrinter } from '../../devices'
 import { useLiveData } from '../../hooks/useLiveData'
+import { refreshBranchActivity } from '../../hooks/useBranchOperationsLive'
 import { useAuthStore } from '../../stores/posStore'
 import {
   isOnline,
@@ -75,6 +78,7 @@ import { buildRevenueChartPoints, inRevenueChartPeriod, revenueChartPeriodDays }
 import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { discountSourceLabel, isPromoDiscountType } from '../../utils/promo'
 import { isUuid } from '../../utils/transactionDetail'
+import { buildReceipt } from '../../utils/receipt'
 
 const PAGE_SIZE = 10
 /** How far back the branch Staff table reads the clock-in/out log. */
@@ -163,6 +167,7 @@ function ManagerBranchDashboard() {
   const [receiptDateValue, setReceiptDateValue] = useState('')
   const [receiptPromoFilter, setReceiptPromoFilter] = useState('all') // all | <promo name> | pwd | none
   const [dayEndPage, setDayEndPage] = useState(0)
+  const [viewingDayEnd, setViewingDayEnd] = useState(null)
   const [reopening, setReopening] = useState(null)
   const [reopenTarget, setReopenTarget] = useState(null)
   const [reopenReason, setReopenReason] = useState('')
@@ -234,32 +239,41 @@ function ManagerBranchDashboard() {
           setLoading(false)
           return
         }
-        const branches = await withTimeout(fetchBranches(), 15000, 'Branches')
+        const [branches, payload] = await Promise.all([
+          withTimeout(fetchBranches(), 15000, 'Branches'),
+          withTimeout(bootstrapBranchData(branchId), 20000, 'Branch data'),
+        ])
         if (!active) return
         await writeBranchesCache(branches)
         setBranch(branches.find((row) => row.id === branchId) || null)
-        const payload = await withTimeout(bootstrapBranchData(branchId), 20000, 'Branch data')
         const openHourForFetch = Number(payload.dayOpenHour ?? 7)
         const todayForFetch = businessDate(new Date(), openHourForFetch)
-        const pettyTimeline = await fetchPettyCashTimeline(branchId, {
-          startDate: todayForFetch,
-          endDate: todayForFetch,
-        }).catch(() => [])
-        const dayCashMovements = await fetchCashMovements({
-          branchId,
-          start: todayForFetch,
-          end: todayForFetch,
-        }).catch(() => [])
-        const tel = await fetchBranchTelemetry([branchId])
-        // Staff roster + hours comes from the shift log — the same clock-in/out records
-        // Shifts.jsx reads. STAFF_LOG_DAYS back, so a fortnightly payroll question is
-        // answerable without opening a second page.
-        const shiftRows = await fetchStaffShifts({
-          branchId,
-          start: daysAgoKey(STAFF_LOG_DAYS),
-          end: todayForFetch,
-        }).catch(() => [])
-        const [cashImpactRow, auditRows, refundRequests, cashMoves, tillActs] = await Promise.all([
+        const [
+          pettyTimeline,
+          dayCashMovements,
+          tel,
+          shiftRows,
+          cashImpactRow,
+          auditRows,
+          refundRequests,
+          cashMoves,
+          tillActs,
+        ] = await Promise.all([
+          fetchPettyCashTimeline(branchId, {
+            startDate: todayForFetch,
+            endDate: todayForFetch,
+          }).catch(() => []),
+          fetchCashMovements({
+            branchId,
+            start: todayForFetch,
+            end: todayForFetch,
+          }).catch(() => []),
+          fetchBranchTelemetry([branchId]),
+          fetchStaffShifts({
+            branchId,
+            start: daysAgoKey(STAFF_LOG_DAYS),
+            end: todayForFetch,
+          }).catch(() => []),
           fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
           fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
           fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
@@ -561,6 +575,7 @@ function ManagerBranchDashboard() {
     setError('')
     try {
       await approveDayEnd({ id: entry.id, staffId: user.id })
+      await refreshBranchActivity(branchId)
       await reload()
     } catch (err) {
       setError(formatSupportError(err, 'TILL02'))
@@ -583,6 +598,7 @@ function ManagerBranchDashboard() {
       await reopenDayEnd({ id: entry.id, staffId: user.id, reason })
       setReopenTarget(null)
       setReopenReason('')
+      await refreshBranchActivity(branchId)
       await reload()
     } catch (err) {
       setError(formatSupportError(err, 'TILL02'))
@@ -891,7 +907,7 @@ function ManagerBranchDashboard() {
       </div>
 
       <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
-        <div className="min-h-0 min-w-0">
+        <div className="min-h-0 min-w-0 w-full">
           <RevenueChart points={chartPoints} period={chartPeriod} fill />
         </div>
         <div className="flex min-w-0 flex-col gap-2.5">
@@ -1036,7 +1052,11 @@ function ManagerBranchDashboard() {
         </TableCard>
 
         <TableCard className="max-h-none overflow-hidden">
-          <SectionHeading title="Day-end closings" meta={`${(data.dayEnds || []).length} recorded`} />
+          <SectionHeading
+            title="Day-end closings"
+            meta={`${(data.dayEnds || []).length} recorded`}
+            subtitle="Tap a closing to see petty cash, pickups, and shift cash-outs for that day"
+          />
           {submittedToday && (
             <div className="mx-4 my-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-3 py-2.5 text-xs text-brand-warn">
               <span>
@@ -1089,7 +1109,13 @@ function ManagerBranchDashboard() {
           {dayEndPageRows.map((entry) => (
             <div
               key={entry.id}
-              className={`grid grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 text-xs max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem] ${tableRowDenseClass}`}
+              role="button"
+              tabIndex={0}
+              className={`tap-row grid cursor-pointer grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 text-xs max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem] ${tableRowDenseClass}`}
+              onClick={() => setViewingDayEnd(entry)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') setViewingDayEnd(entry)
+              }}
             >
               <div className="min-w-0">
                 <strong className="block truncate text-brand-ink">{entry.date}</strong>
@@ -1117,7 +1143,10 @@ function ManagerBranchDashboard() {
                     type="button"
                     className="border-0 bg-transparent text-[11px] font-bold whitespace-nowrap text-brand-ink underline disabled:opacity-40"
                     disabled={approving === entry.id}
-                    onClick={() => handleApprove(entry)}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      handleApprove(entry)
+                    }}
                   >
                     {approving === entry.id ? '…' : 'Approve'}
                   </button>
@@ -1130,7 +1159,8 @@ function ManagerBranchDashboard() {
                     type="button"
                     className="border-0 bg-transparent text-[11px] font-bold whitespace-nowrap text-brand-ink underline disabled:opacity-40"
                     disabled={reopening === entry.id}
-                    onClick={() => {
+                    onClick={(event) => {
+                      event.stopPropagation()
                       setReopenTarget(entry)
                       setReopenReason('')
                     }}
@@ -2188,6 +2218,31 @@ function ManagerBranchDashboard() {
             setDetail(null)
             setRefundSummary(null)
           }}
+          onPrint={async (row) => {
+            try {
+              const header =
+                (hasSupabase && branchId
+                  ? await fetchBranchFiscalHeader(branchId).catch(() => null)
+                  : null) || branch || { name: branch?.name, business_name: branch?.name }
+              const receipt = buildReceipt({
+                branch: header,
+                user: { name: row.cashier || user?.name },
+                transaction: row,
+                lines: row.lines || [],
+              })
+              await receiptPrinter.printReceipt(receipt)
+            } catch (err) {
+              setError(formatSupportError(err, 'DEV04'))
+            }
+          }}
+        />
+      )}
+
+      {viewingDayEnd && (
+        <DayEndClosingDetail
+          entry={viewingDayEnd}
+          branchId={branchId}
+          onClose={() => setViewingDayEnd(null)}
         />
       )}
 

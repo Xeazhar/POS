@@ -7,14 +7,11 @@
 -- what is actually true.
 --
 -- HOW TO RUN: paste the whole file into the Supabase SQL editor and run. It is a single
--- statement returning one table, sorted worst-first. No psql meta-commands (\echo and
--- friends are a psql client feature; the Supabase editor sends raw SQL to Postgres, which
--- rejects them with `syntax error at or near "\"`).
+-- statement returning one table, sorted worst-first. No psql meta-commands.
 --
--- Act on anything with severity CRITICAL or REVIEW.
+-- Act on CRITICAL rows. REVIEW rows need a human decision. OK / OK-ish / INFO are expected.
 
 with rls_off as (
-  -- Table is readable/writable by any signed-in user regardless of any policies present.
   select
     'CRITICAL'::text as severity,
     '1. RLS disabled'::text as section,
@@ -29,7 +26,6 @@ with rls_off as (
   where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity
 ),
 rls_no_policy as (
-  -- Not a breach: it fails closed. But it usually shows up as "the page is empty".
   select
     'REVIEW'::text,
     '2. RLS on, no policies'::text,
@@ -43,11 +39,9 @@ rls_no_policy as (
     )
 ),
 unrestricted as (
-  -- A USING clause of `true` means every authenticated user sees every row, cross-branch.
-  -- Legitimate for reference data (categories, roles); a finding on anything branch-scoped.
   select
     case
-      when tablename in ('categories', 'roles', 'catalog_products') then 'OK-ish'
+      when tablename in ('categories', 'roles', 'catalog_products', 'company_profile') then 'OK-ish'
       else 'REVIEW'
     end::text,
     '3. Unrestricted policy'::text,
@@ -56,30 +50,96 @@ unrestricted as (
       case
         when tablename in ('categories', 'roles', 'catalog_products')
           then 'Shared reference data, so this is expected.'
+        when tablename = 'company_profile'
+          then 'Singleton company TIN/name for receipts; write policy is manager-only.'
         else 'This table is branch-scoped elsewhere; confirm cross-branch read is intended.'
       end
     )::text
   from pg_policies
   where schemaname = 'public' and qual = 'true'
 ),
-definer_no_check as (
-  -- SECURITY DEFINER runs as the function owner and bypasses RLS entirely. Each one must
-  -- do its own authorisation check or it is a privilege-escalation path any authenticated
-  -- user can reach over RPC.
-  select
-    'CRITICAL'::text,
-    '4. SECURITY DEFINER without auth check'::text,
-    p.proname::text,
-    'Bypasses RLS and shows no is_manager() / current_staff_branch() / raise exception. Read the body and confirm it cannot be abused cross-branch.'::text
+-- Names every RLS policy and trigger helper relies on. SECURITY DEFINER here is expected.
+rls_helper_names(proname) as (
+  values
+    ('current_staff_id'),
+    ('current_staff_role'),
+    ('current_staff_branch'),
+    ('is_manager'),
+    ('is_master'),
+    ('is_supervisor_or_above'),
+    ('rls_auto_enable')
+),
+-- Functions wired as triggers (not direct RPC entry points).
+trigger_bound as (
+  select distinct p.oid
   from pg_proc p
   join pg_namespace n on n.oid = p.pronamespace
+  join pg_trigger t on t.tgfoid = p.oid
+  where n.nspname = 'public' and p.prosecdef and not t.tgisinternal
+),
+-- PostgREST-exposed routines (anon or authenticated may call).
+client_rpcs(proname) as (
+  select distinct routine_name
+  from information_schema.routine_privileges
+  where specific_schema = 'public'
+    and grantee in ('authenticated', 'anon')
+),
+definer_auth_ok as (
+  select p.oid
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  cross join lateral (select pg_get_functiondef(p.oid) as body) b
   where n.nspname = 'public' and p.prosecdef
-    and pg_get_functiondef(p.oid) not ilike '%is_manager%'
-    and pg_get_functiondef(p.oid) not ilike '%current_staff_branch%'
-    and pg_get_functiondef(p.oid) not ilike '%raise exception%'
+    and (
+      b.body ilike '%is_manager%'
+      or b.body ilike '%is_master%'
+      or b.body ilike '%is_supervisor_or_above%'
+      or b.body ilike '%current_staff_branch%'
+      or b.body ilike '%current_staff_id%'
+      or b.body ilike '%auth.uid()%'
+      or b.body ilike '%assert_audit_log_caller%'
+      or b.body ilike '%raise exception%'
+    )
+),
+definer_no_check as (
+  select
+    case
+      when h.proname is not null then 'OK'
+      when tb.oid is not null then 'OK'
+      when ao.oid is not null then 'OK'
+      when cr.proname is null then 'INFO'
+      else 'CRITICAL'
+    end::text as severity,
+    '4. SECURITY DEFINER'::text as section,
+    p.proname::text as item,
+    case
+      when h.proname is not null then
+        'RLS helper — reads auth.uid() / staff row for policies; not a data RPC.'::text
+      when tb.oid is not null then
+        'Trigger function — runs on table DML, not a direct client RPC.'::text
+      when ao.oid is not null then
+        'Body contains auth.uid(), role/branch helper, or raise exception — review if logic is sufficient.'::text
+      when cr.proname is null then
+        'SECURITY DEFINER but not granted to authenticated/anon — internal/trigger-only.'::text
+      else
+        'Client-callable RPC with no obvious auth check in body. Read the function; apply migrate_security_definer_hardening_v1.sql if listed there.'::text
+    end as detail
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  left join rls_helper_names h on h.proname = p.proname
+  left join trigger_bound tb on tb.oid = p.oid
+  left join definer_auth_ok ao on ao.oid = p.oid
+  left join client_rpcs cr on cr.proname = p.proname
+  where n.nspname = 'public' and p.prosecdef
+    and case
+      when h.proname is not null then false
+      when tb.oid is not null then false
+      when ao.oid is not null then false
+      when cr.proname is null then false
+      else true
+    end
 ),
 anon_writes as (
-  -- The publishable key runs as `anon` before sign-in. It should never hold write grants.
   select
     'CRITICAL'::text,
     '5. anon role can write'::text,
@@ -118,12 +178,16 @@ order by
     when 'CRITICAL' then 0
     when 'REVIEW' then 1
     when 'OK-ish' then 2
-    else 3
+    when 'OK' then 3
+    else 4
   end,
   section, item;
 
--- If this returns only the '6. Summary' row, nothing needs attention.
+-- If this returns only OK / OK-ish / INFO rows (plus maybe company_profile under §3), you are clean.
 --
 -- To see the full policy inventory rather than just the unrestricted ones, run separately:
 --   select tablename, policyname, cmd, qual from pg_policies
 --   where schemaname = 'public' order by tablename, policyname;
+--
+-- To inspect a flagged RPC body:
+--   select pg_get_functiondef('public.FUNCTION_NAME'::regproc);

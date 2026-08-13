@@ -97,7 +97,7 @@ export default function CartRemoveApprove({ item, cartId = null, onCancel, onAll
         ack: isSelf,
       })
     }
-    await onAllowed({ staffId, name, role, via })
+    await onAllowed({ staffId, name, role, via, requestId })
   }
 
   const approveAsManager = async () => {

@@ -24,16 +24,7 @@ import {
 import { formatSupportError } from '../../utils/errors'
 import ImportPreviewLines from '../shared/ImportPreviewLines'
 
-/**
- * xlsx is ~410KB — the single largest chunk in the app. It is only needed the moment
- * someone actually picks a spreadsheet or exports one, which most sessions never do,
- * so it is loaded on demand instead of riding along with this page's bundle.
- */
-let xlsxPromise = null
-function loadXlsx() {
-  if (!xlsxPromise) xlsxPromise = import('xlsx')
-  return xlsxPromise
-}
+import { readSpreadsheetBuffer, loadXlsx } from '../../lib/xlsxLoader'
 
 /**
  * CSV/XLSX restock import for supervisors on Inventory.
@@ -68,8 +59,8 @@ export default function InventoryImportPanel({ products, onDone }) {
     setBusy(true)
     try {
       const buf = await file.arrayBuffer()
+      const wb = await readSpreadsheetBuffer(buf)
       const XLSX = await loadXlsx()
-      const wb = XLSX.read(buf, { type: 'array' })
       const sheet = wb.Sheets[wb.SheetNames[0]]
       const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' })
       const restaurant = user?.branchType === 'restaurant'

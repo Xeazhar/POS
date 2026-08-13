@@ -1121,7 +1121,7 @@ function Cart({
                   </div>
                 </>
               )}
-              <div className="mt-2 flex justify-between text-sm text-brand-ink">
+              <div className="mt-2 flex justify-between text-2xl text-brand-ink">
                 <span>Change</span>
                 <strong className="text-brand-success">
                   {money(Math.max(0, Number(tendered || 0) - payTotal))}
@@ -1205,7 +1205,7 @@ function Cart({
           item={{ name: removeGroup.name }}
           cartId={cartId}
           onCancel={() => setRemoveGroup(null)}
-          onAllowed={async ({ staffId, name, role, via }) => {
+          onAllowed={async ({ staffId, name, role, via, requestId }) => {
             void logApprovalEvent({
               branchId: user?.branchId,
               requestedBy: user?.id,
@@ -1218,6 +1218,7 @@ function Cart({
               meta: {
                 action: 'REMOVE_CART_ITEM',
                 cart_id: cartId || null,
+                till_action_id: requestId || null,
                 promo_group: removeGroup.id,
                 promo_name: removeGroup.name,
                 line_count: removeGroup.entries?.length ?? null,
@@ -1238,7 +1239,7 @@ function Cart({
           item={items[removeIndex]}
           cartId={cartId}
           onCancel={() => setRemoveIndex(null)}
-          onAllowed={async ({ staffId, name, role, via }) => {
+          onAllowed={async ({ staffId, name, role, via, requestId }) => {
             const removed = items[removeIndex]
             void logApprovalEvent({
               branchId: user?.branchId,
@@ -1252,6 +1253,7 @@ function Cart({
               meta: {
                 action: 'REMOVE_CART_ITEM',
                 cart_id: cartId || null,
+                till_action_id: requestId || null,
                 product_id: removed?.id || null,
                 product_name: removed?.name || null,
                 quantity_removed: removed?.quantity ?? removed?.weight ?? null,

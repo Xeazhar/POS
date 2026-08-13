@@ -1,3 +1,4 @@
+import { aggregatePromoSalesOffers } from '../utils/promo'
 import { allowDemoMode, supabase } from './supabase'
 import { mapDayReport } from '../utils/dayEndReport'
 import { appError } from '../utils/errors'
@@ -470,8 +471,8 @@ export async function signIn(email, password, { captchaToken } = {}) {
 /** Cashier/supervisor PIN login via staff code + PIN. */
 export async function signInWithPin(loginCode, pin, { captchaToken } = {}) {
   const code = String(loginCode || '').replace(/\D/g, '')
-  // Complex PINs: keep letters/symbols (do not strip to digits).
-  const pinVal = String(pin || '').trim()
+  // Till PIN is exactly 6 digits (cashier/supervisor).
+  const pinVal = String(pin || '').replace(/\D/g, '').slice(0, 6)
   if (!captchaToken) {
     throw new Error('Complete the security check before signing in.')
   }
@@ -965,6 +966,27 @@ export async function bootstrapBranchData(branchId) {
     transactions: activity.transactions,
     movements: activity.movements,
     dayEnds: activity.dayEnds,
+  }
+}
+
+/**
+ * Products + movements for inventory views — skips transactions and day-ends.
+ * Lighter than bootstrapBranchData when the page never shows receipts or day-end state.
+ */
+export async function bootstrapBranchInventory(branchId) {
+  const [catalog, activity] = await Promise.all([
+    bootstrapPosCatalog(branchId),
+    bootstrapBranchActivity(branchId),
+  ])
+  const products = (catalog.products || []).map((p) => ({
+    ...p,
+    lastMovementAt: activity.lastMoveMap?.[p.id] || p.lastMovementAt || null,
+  }))
+  return {
+    products,
+    categories: catalog.categories,
+    dayOpenHour: catalog.dayOpenHour,
+    movements: activity.movements,
   }
 }
 
@@ -2235,12 +2257,14 @@ async function reconcileResolvedPendingApprovals({ branchId, staffId, manager } 
       }, Date.now())
       const { data: auditRows } = await supabase
         .from('audit_events')
-        .select('event_type, meta, created_at, branch_id')
+        .select('event_type, meta, created_at, branch_id, staff_id')
         .in('branch_id', branchIds)
         .gte('created_at', new Date(oldest - 60_000).toISOString())
         .in('event_type', [
           'cart_line_remove',
           'cart_line_remove_self',
+          'approval:cart_line_remove',
+          'approval:cart_line_remove_self',
           'till_action_approved',
           'till_action_denied',
           'till_action_self_allowed',
@@ -2249,20 +2273,33 @@ async function reconcileResolvedPendingApprovals({ branchId, staffId, manager } 
       for (const row of pendingTill) {
         const productId = row.meta?.product_id || row.meta?.productId || null
         const requestedAt = row.requested_at ? new Date(row.requested_at).getTime() : 0
+        let approverId = null
         const resolvedOnSite = (auditRows || []).some((ev) => {
           if (new Date(ev.created_at).getTime() < requestedAt - 1000) return false
           if (ev.branch_id !== row.branch_id) return false
-          if (ev.meta?.till_action_id === row.id) return true
-          if (ev.event_type !== 'cart_line_remove' && ev.event_type !== 'cart_line_remove_self') {
-            return false
+          if (ev.meta?.till_action_id === row.id) {
+            approverId = ev.meta?.approved_by || ev.staff_id || null
+            return true
           }
+          const evType = String(ev.event_type || '')
+          const isCartRemove =
+            evType === 'cart_line_remove'
+            || evType === 'cart_line_remove_self'
+            || evType === 'approval:cart_line_remove'
+            || evType === 'approval:cart_line_remove_self'
+          if (!isCartRemove) return false
           const evProduct = ev.meta?.product_id || ev.meta?.productId || null
           if (productId && evProduct && evProduct !== productId) return false
+          approverId = ev.meta?.approved_by || ev.staff_id || null
           return true
         })
         if (!resolvedOnSite) continue
         try {
-          await resolveTillActionRequest({ id: row.id, resolvedBy: staffId, status: 'denied' })
+          await resolveTillActionRequest({
+            id: row.id,
+            resolvedBy: approverId || staffId,
+            status: 'approved',
+          })
         } catch {
           /* already gone or permission — next fetch will retry */
         }
@@ -3204,9 +3241,10 @@ export async function fetchStaffRoster({ branchId = null, isManager = false } = 
   })
   if (error) {
     if (/branch_staff_roster|Could not find the function/i.test(String(error.message || ''))) {
-      // Migration not applied yet — fall back to the direct read. RLS will trim it to the
-      // caller's own row, which is the old (wrong but harmless) behaviour, not a crash.
-      return fetchAllStaff()
+      throw appError(
+        'STAFF01',
+        'Supervisor staff roster is not installed. Run migrate_branch_staff_roster.sql in Supabase.',
+      )
     }
     throw error
   }
@@ -3495,12 +3533,19 @@ export async function updateStaffRow(id, changes) {
 }
 
 export async function revealStaffPin(staffId) {
-  const { data, error } = await supabase
-    .from('staff')
-    .select('id, full_name, login_code, login_pin, role')
-    .eq('id', staffId)
-    .maybeSingle()
-  if (error) throw error
+  const { data, error } = await supabase.rpc('reveal_staff_pin', { p_staff_id: staffId })
+  if (error) {
+    if (/reveal_staff_pin|Could not find the function/i.test(String(error.message || ''))) {
+      throw appError(
+        'STAFF02',
+        'PIN reveal is not installed. Run migrate_reveal_staff_pin.sql in Supabase.',
+      )
+    }
+    if (/not authorized/i.test(String(error.message || ''))) {
+      throw appError('STAFF03', error.message)
+    }
+    throw error
+  }
   if (!data) throw new Error('Staff not found')
   await logAuditEvent({
     branchId: null,
@@ -3509,7 +3554,12 @@ export async function revealStaffPin(staffId) {
     detail: `PIN viewed for ${data.full_name}`,
     meta: { targetStaffId: staffId },
   }).catch(() => {})
-  return { loginCode: data.login_code, loginPin: data.login_pin, name: data.full_name, role: data.role }
+  return {
+    loginCode: data.login_code,
+    loginPin: data.login_pin,
+    name: data.full_name,
+    role: data.role,
+  }
 }
 
 /**
@@ -6532,6 +6582,103 @@ export async function rejectStopPromo({ id, staffId }) {
   return data
 }
 
+async function fetchPromoAttributedLines({ branchId, promoName, startsAt, endsAt, minimal = false }) {
+  const window = promoQueryWindow(startsAt, endsAt)
+  const select = minimal
+    ? 'transaction_id, discount_amount, transactions!inner(id, total_amount, created_at, status, branch_id)'
+    : 'transaction_id, product_id, quantity, unit_price, line_total, discount_amount, promo_name, promo_group_id, transactions!inner(id, or_number, total_amount, discount_amount, created_at, status, staff_id, refunded_amount, branch_id)'
+
+  const build = (from, to) => {
+    let q = supabase
+      .from('transaction_items')
+      .select(select)
+      .eq('promo_name', promoName)
+      .eq('transactions.branch_id', branchId)
+      .neq('transactions.status', 'voided')
+      .gte('transactions.created_at', window.startsAt)
+      .lte('transactions.created_at', window.endsAt)
+      .order('transaction_id', { ascending: false })
+      .range(from, to)
+    return q
+  }
+
+  const { data, error } = await fetchAllRows(build)
+  if (error) {
+    if (/promo_name|promo_group_id|schema cache|column/i.test(String(error.message || ''))) {
+      return { lines: null, legacy: true }
+    }
+    throw error
+  }
+  return { lines: data || [], legacy: false }
+}
+
+/** Never scan unbounded promo history — bound to the event window (or a sane default). */
+function promoQueryWindow(startsAt, endsAt) {
+  const end = endsAt ? new Date(endsAt) : new Date()
+  const endMs = Number.isNaN(end.getTime()) ? Date.now() : end.getTime()
+  let start = startsAt ? new Date(startsAt) : new Date(endMs - 90 * 86400000)
+  const startMs = Number.isNaN(start.getTime()) ? endMs - 90 * 86400000 : start.getTime()
+  const boundedStart = Math.min(startMs, endMs)
+  return {
+    startsAt: new Date(boundedStart).toISOString(),
+    endsAt: new Date(endMs).toISOString(),
+  }
+}
+
+const promoRulesByEventId = new Map()
+
+async function loadPromoRulesCached(promoEventId) {
+  if (!promoEventId) return []
+  if (promoRulesByEventId.has(promoEventId)) return promoRulesByEventId.get(promoEventId)
+  const rules = await fetchPromoRulesForEvent(promoEventId).catch(() => [])
+  promoRulesByEventId.set(promoEventId, rules)
+  return rules
+}
+
+async function hydratePromoLineProducts(lines = []) {
+  const ids = [...new Set(lines.map((l) => l.product_id).filter(Boolean))]
+  if (!ids.length) return lines
+  const { data, error } = await supabase
+    .from('products')
+    .select('id, name, sku, pricing_mode')
+    .in('id', ids)
+  if (error) return lines
+  const byId = Object.fromEntries((data || []).map((p) => [p.id, p]))
+  return lines.map((line) => ({
+    ...line,
+    products: byId[line.product_id] || line.products || null,
+  }))
+}
+
+function promoStatsFromAttributedLines(matchedLines, rules = [], { receiptLimit = null } = {}) {
+  const txnMap = new Map()
+  for (const line of matchedLines) {
+    const t = line.transactions
+    if (t?.id && !txnMap.has(t.id)) txnMap.set(t.id, t)
+  }
+  const matchedTxns = [...txnMap.values()].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  )
+  const receiptTxns =
+    receiptLimit && matchedTxns.length > receiptLimit
+      ? matchedTxns.slice(0, receiptLimit)
+      : matchedTxns
+  const discountTotal = Number(
+    matchedLines.reduce((sum, l) => sum + Number(l.discount_amount || 0), 0).toFixed(2),
+  )
+  const saleTotal = Number(
+    matchedTxns.reduce((sum, t) => sum + Number(t.total_amount || 0), 0).toFixed(2),
+  )
+  return {
+    receiptCount: matchedTxns.length,
+    discountTotal,
+    saleTotal,
+    offers: aggregatePromoSalesOffers(matchedLines, rules),
+    items: aggregatePromoItems(matchedLines),
+    matchedTxns: receiptTxns,
+  }
+}
+
 function aggregatePromoItems(lines = []) {
   const byProduct = {}
   for (const line of lines) {
@@ -6599,7 +6746,8 @@ async function buildPromoReceipts(rows) {
  * a joined label like "A + B", not an exact match for either promo's name) —
  * see fetchPromoSalesStats below for the accurate per-line path.
  */
-async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt }) {
+async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt, rules = [] }) {
+  const window = promoQueryWindow(startsAt, endsAt)
   let txnQ = supabase
     .from('transactions')
     .select(
@@ -6608,16 +6756,15 @@ async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsA
     .eq('branch_id', branchId)
     .eq('discount_type', promoName)
     .neq('status', 'voided')
+    .gte('created_at', window.startsAt)
+    .lte('created_at', window.endsAt)
     .order('created_at', { ascending: false })
     .limit(500)
-
-  if (startsAt) txnQ = txnQ.gte('created_at', new Date(startsAt).toISOString())
-  if (endsAt) txnQ = txnQ.lte('created_at', new Date(endsAt).toISOString())
 
   const { data: txns, error: txnErr } = await txnQ
   if (txnErr) {
     if (/discount_type|discount_amount|schema cache|column/i.test(String(txnErr.message || ''))) {
-      return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+      return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], offers: [], receipts: [] }
     }
     throw txnErr
   }
@@ -6629,23 +6776,71 @@ async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsA
   const txnIds = rows.map((r) => r.id)
   const receipts = await buildPromoReceipts(rows)
   if (!txnIds.length) {
-    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], offers: [], receipts: [] }
   }
 
   const { data: lines, error: lineErr } = await supabase
     .from('transaction_items')
-    .select('quantity, unit_price, line_total, discount_amount, products(id, name, sku, pricing_mode)')
+    .select(
+      'transaction_id, quantity, unit_price, line_total, discount_amount, promo_group_id, products(id, name, sku, pricing_mode)',
+    )
     .in('transaction_id', txnIds)
     .gt('discount_amount', 0)
   if (lineErr) {
-    return { receiptCount, discountTotal, saleTotal, items: [], receipts }
+    return { receiptCount, discountTotal, saleTotal, items: [], offers: [], receipts }
   }
 
-  return { receiptCount, discountTotal, saleTotal, items: aggregatePromoItems(lines || []), receipts }
+  const matchedLines = lines || []
+  return {
+    receiptCount,
+    discountTotal,
+    saleTotal,
+    items: aggregatePromoItems(matchedLines),
+    offers: aggregatePromoSalesOffers(matchedLines, rules),
+    receipts,
+  }
 }
 
 /**
- * Promo performance: receipts + discounted line items sold under a promo name.
+ * Lightweight promo totals for history tables — no rules, offers, receipts, or product joins.
+ */
+export async function fetchPromoSalesStatsSummary({
+  branchId,
+  promoName,
+  startsAt = null,
+  endsAt = null,
+} = {}) {
+  const empty = { receiptCount: 0, discountTotal: 0, saleTotal: 0 }
+  if (!branchId || !promoName) return empty
+
+  const lineResult = await fetchPromoAttributedLines({
+    branchId,
+    promoName,
+    startsAt,
+    endsAt,
+    minimal: true,
+  })
+  if (lineResult.legacy) {
+    const full = await fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt, rules: [] })
+    return {
+      receiptCount: full.receiptCount,
+      discountTotal: full.discountTotal,
+      saleTotal: full.saleTotal,
+    }
+  }
+
+  const matchedLines = lineResult.lines || []
+  if (!matchedLines.length) return empty
+  const stats = promoStatsFromAttributedLines(matchedLines, [])
+  return {
+    receiptCount: stats.receiptCount,
+    discountTotal: stats.discountTotal,
+    saleTotal: stats.saleTotal,
+  }
+}
+
+/**
+ * Promo performance: receipts + offer-level sales under a promo name.
  *
  * Attribution is per-line (transaction_items.promo_name), not by matching the
  * whole transaction's discount_type — that stays accurate even when a single
@@ -6655,65 +6850,38 @@ async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsA
 export async function fetchPromoSalesStats({
   branchId,
   promoName,
+  promoEventId = null,
   startsAt = null,
   endsAt = null,
+  receiptLimit = 200,
 } = {}) {
-  if (!branchId || !promoName) {
-    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+  const empty = { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], offers: [], receipts: [] }
+  if (!branchId || !promoName) return empty
+
+  const [rules, lineResult] = await Promise.all([
+    loadPromoRulesCached(promoEventId),
+    fetchPromoAttributedLines({ branchId, promoName, startsAt, endsAt, minimal: false }),
+  ])
+
+  if (lineResult.legacy) {
+    return fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt, rules })
   }
 
-  // Cheap superset prefilter: any receipt with a discount on this branch/date range.
-  let txnQ = supabase
-    .from('transactions')
-    .select('id, or_number, total_amount, discount_amount, created_at, status, staff_id, refunded_amount')
-    .eq('branch_id', branchId)
-    .gt('discount_amount', 0)
-    .neq('status', 'voided')
-    .order('created_at', { ascending: false })
-    .limit(1000)
+  let matchedLines = lineResult.lines || []
+  if (!matchedLines.length) return empty
 
-  if (startsAt) txnQ = txnQ.gte('created_at', new Date(startsAt).toISOString())
-  if (endsAt) txnQ = txnQ.lte('created_at', new Date(endsAt).toISOString())
-
-  const { data: candidateTxns, error: txnErr } = await txnQ
-  if (txnErr) {
-    if (/discount_amount|schema cache|column/i.test(String(txnErr.message || ''))) {
-      return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
-    }
-    throw txnErr
+  matchedLines = await hydratePromoLineProducts(matchedLines)
+  const stats = promoStatsFromAttributedLines(matchedLines, rules, { receiptLimit })
+  const receipts = await buildPromoReceipts(stats.matchedTxns)
+  return {
+    receiptCount: stats.receiptCount,
+    discountTotal: stats.discountTotal,
+    saleTotal: stats.saleTotal,
+    items: stats.items,
+    offers: stats.offers,
+    receipts,
+    receiptsTruncated: stats.receiptCount > receipts.length,
   }
-  const candidates = candidateTxns || []
-  if (!candidates.length) {
-    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
-  }
-  const candidateIds = candidates.map((r) => r.id)
-
-  // Exact attribution: which of those receipts had a line this specific promo won.
-  const { data: lines, error: lineErr } = await supabase
-    .from('transaction_items')
-    .select('transaction_id, quantity, unit_price, line_total, discount_amount, promo_name, products(id, name, sku, pricing_mode)')
-    .in('transaction_id', candidateIds)
-    .eq('promo_name', promoName)
-
-  if (lineErr) {
-    if (/promo_name|schema cache|column/i.test(String(lineErr.message || ''))) {
-      return fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt })
-    }
-    throw lineErr
-  }
-
-  const matchedLines = lines || []
-  const matchedTxnIds = new Set(matchedLines.map((l) => l.transaction_id))
-  const matchedTxns = candidates.filter((t) => matchedTxnIds.has(t.id))
-
-  const receiptCount = matchedTxns.length
-  // This promo's own line discounts only — accurate even when the same receipt
-  // also carries lines discounted by a different concurrently-live promo.
-  const discountTotal = Number(matchedLines.reduce((sum, l) => sum + Number(l.discount_amount || 0), 0).toFixed(2))
-  const saleTotal = Number(matchedTxns.reduce((sum, t) => sum + Number(t.total_amount || 0), 0).toFixed(2))
-  const receipts = await buildPromoReceipts(matchedTxns)
-
-  return { receiptCount, discountTotal, saleTotal, items: aggregatePromoItems(matchedLines), receipts }
 }
 
 async function fetchPromoEventStatus(promoEventId) {

@@ -17,7 +17,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * WHAT THIS DOES
  * ─────────────────────────────────────────────────────────────────────────────
- *  - PBKDF2-HMAC-SHA256, 210,000 iterations (OWASP guidance for this primitive),
+ *  - PBKDF2-HMAC-SHA256, 600,000 iterations (OWASP Password Storage Cheat Sheet minimum),
  *    with 16 random bytes of per-device salt. Pure Web Crypto: no network, no library,
  *    works exactly the same offline.
  *  - Constant-time comparison, so a wrong guess leaks nothing through timing.
@@ -29,7 +29,7 @@
  * somebody standing at the counter guessing — and that matters more day to day.
  */
 
-const PBKDF2_ITERATIONS = 210_000
+const PBKDF2_ITERATIONS = 600_000
 const SALT_BYTES = 16
 const KEY_BITS = 256
 export const VERIFIER_VERSION = 2

@@ -178,6 +178,7 @@ export default function RequestNotifications() {
         type="button"
         className="relative grid h-[35px] w-[35px] place-items-center rounded-full border-0 bg-white/10 text-white transition-[transform,opacity] hover:bg-white/15 active:scale-95"
         title={label}
+        data-tooltip={count > 0 ? `${label} — ${count} pending` : `${label} — none pending`}
         aria-label={label}
         aria-expanded={open}
         onClick={() => {

@@ -82,6 +82,9 @@ migrate_shift_cash_void_fix.sql                -- fixes a voided cash sale wrong
 migrate_backfill_cash_drawer_shift_id.sql      -- one-off: attaches orphaned petty-cash/pickup rows to their shift
 migrate_admin_session_release.sql
 migrate_branch_staff_roster.sql
+migrate_reveal_staff_pin.sql                    -- needs migrate_branch_staff_roster.sql above; manager-only PIN reveal RPC
+migrate_security_definer_hardening_v1.sql       -- session/audit/price/promo RPC auth checks; run after session + audit migrations
+migrate_revoke_cash_movement_internal_grants.sql -- revoke EXECUTE on internal cash-movement definer helpers
 migrate_company_tin.sql
 migrate_promo_expired_status.sql
 migrate_day_end_supervisor_autoclose.sql       -- needs migrate_day_end_dual_control.sql above
@@ -144,6 +147,8 @@ migrate_cash_movement_cancel.sql               -- cancel_cash_movement — cashi
 migrate_cash_movement_resolve_flagged.sql      -- manager-only flagged → Resolved (confirmed)
 migrate_till_action_requests.sql               -- till_action_requests + RPCs; POS cart line
                                                 -- remove Notify manager (30s) / self-allow
+migrate_till_action_on_site_resolve.sql        -- needs migrate_notification_cleanup.sql;
+                                                -- cashier session clears alert after on-site PIN
 migrate_realtime_broadcast_v1.sql              -- private Broadcast topics; inventory
                                                 -- change_version; ops triggers; cashiers
                                                 -- cannot direct-write branch_inventory;
@@ -212,6 +217,6 @@ pin_login_attempts   ← lockout only (no client access; security definer RPCs)
 
 ## PIN security
 
-- Till PIN is complex (letters + numbers + symbols) — enforced in app UI.
+- Till PIN is exactly 6 digits (cashier/supervisor) — enforced in app UI (`src/utils/pin.js`).
 - `resolve_pin_login` returns **auth email only** (never Auth password).
 - Failed attempts recorded in `pin_login_attempts` (5 fails → 15 min lock).
