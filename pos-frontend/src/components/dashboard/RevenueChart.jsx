@@ -1,23 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { money } from '../../utils/format'
+import { chartPointY, computeChartYScale, formatChartAxisPeso } from '../../utils/chartScale'
 import { TableCard } from '../ui'
 
 /** Plot height used on Branch / Overview / supervisor dashboards (wide card, readable labels). */
 export const REVENUE_CHART_PLOT_HEIGHT = 420
 
 /**
- * Revenue line with a hover tooltip showing the exact date, revenue and order count.
- *
- * Hand-rolled rather than pulled from a charting library because the project has none —
- * every chart here is plain SVG, and adding Recharts (~500KB with its D3 dependencies)
- * for one tooltip would cost more than the whole rest of the dashboard on a shop tablet.
- *
- * The hit targets are invisible full-height <rect> bands, one per point, not the 4.5px
- * dots. Requiring a cashier to land on a 9px circle on a touchscreen is not a usable
- * chart; the band means anywhere in that column works.
- *
- * Width is measured; height is a fixed plot size so axis/label fonts never scale up when
- * the card stretches beside the metrics column (`fill` only grows the card chrome).
+ * Render a responsive revenue chart with interactive point details.
+ * @param {Array} points - Revenue data points to plot.
+ * @param {string} period - Selected reporting period displayed in the chart header.
+ * @param {number} [chartHeight=REVENUE_CHART_PLOT_HEIGHT] - Plot height in pixels.
+ * @param {boolean} [fill=false] - Whether the chart fills the available card height.
+ * @returns {JSX.Element} The revenue chart card.
  */
 function RevenueChart({
   points = [],
@@ -27,68 +22,75 @@ function RevenueChart({
 }) {
   const [hoverIndex, setHoverIndex] = useState(null)
   const containerRef = useRef(null)
-  const [width, setWidth] = useState(640)
+  const [width, setWidth] = useState(0)
+
+  const measure = useCallback(() => {
+    const node = containerRef.current
+    if (!node) return
+    const nextW = Math.round(node.getBoundingClientRect().width)
+    if (nextW > 0) setWidth((prev) => (prev === nextW ? prev : nextW))
+  }, [])
+
+  useLayoutEffect(() => {
+    measure()
+  }, [measure])
 
   useEffect(() => {
     const node = containerRef.current
     if (!node || typeof ResizeObserver === 'undefined') return undefined
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0]
-      if (!entry) return
-      const nextW = Math.round(entry.contentRect.width)
-      if (nextW > 0) setWidth(nextW)
-    })
+    const observer = new ResizeObserver(() => measure())
     observer.observe(node)
     return () => observer.disconnect()
-  }, [])
+  }, [measure])
 
   const height = chartHeight
-  const left = 56
+  const left = 52
   const bottom = 28
   const top = 16
   const plotHeight = Math.max(80, height - top - bottom)
   const plotWidth = Math.max(120, width - left - 16)
-  const max = Math.max(...points.map((item) => item.total), 1)
+  const dataMax = Math.max(...points.map((item) => Number(item.total) || 0), 0)
+  const { yMax, ticks: yTicks } = computeChartYScale(dataMax)
   const coords = points.map((item, index) => ({
     item,
     x: left + (points.length <= 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth),
-    y: top + plotHeight - (item.total / max) * plotHeight,
+    y: chartPointY(item.total, yMax, top, plotHeight),
   }))
 
   const active = hoverIndex != null ? coords[hoverIndex] : null
   const tooltipWidth = 148
   const tooltipFlips = active ? active.x + tooltipWidth + 12 > width : false
 
-  const plot = points.length === 0 ? (
-    <div
-      className="flex w-full items-center justify-center text-xs text-brand-muted"
-      style={{ height }}
-    >
-      No paid sales in this period.
-    </div>
-  ) : (
-    <div ref={containerRef} className="w-full min-w-0" style={{ height }}>
-      {/*
-        Explicit width/height attributes (= viewBox) — never h-full/w-full + meet.
-        Percentage SVG sizing was scaling axis labels when the card stretched.
-      */}
+  const plotBody =
+    points.length === 0 ? (
+      <div
+        className="flex w-full items-center justify-center text-xs text-brand-muted"
+        style={{ height }}
+      >
+        No paid sales in this period.
+      </div>
+    ) : width > 0 ? (
+      /*
+       * Pixel width must match the container — viewBox width drives plot coords.
+       * CSS-only stretch (w-full + fixed viewBox) letterboxes when the card is wider.
+       */
       <svg
         width={width}
         height={height}
         viewBox={`0 0 ${width} ${height}`}
-        className="line-chart block max-w-full"
+        className="line-chart block w-full"
         role="img"
         aria-label="Revenue over time"
         onPointerLeave={() => setHoverIndex(null)}
       >
         <g className="chart-grid-lines">
-          {[0, 1, 2, 3, 4].map((step) => {
-            const y = top + (step / 4) * plotHeight
+          {yTicks.map((tickValue) => {
+            const y = chartPointY(tickValue, yMax, top, plotHeight)
             return (
-              <g key={step}>
+              <g key={tickValue}>
                 <line x1={left} x2={width - 16} y1={y} y2={y} />
                 <text x="4" y={y + 3} fontSize="9">
-                  ₱{Math.round(max - (step / 4) * max)}
+                  {formatChartAxisPeso(tickValue)}
                 </text>
               </g>
             )
@@ -187,12 +189,13 @@ function RevenueChart({
           </g>
         )}
       </svg>
-    </div>
-  )
+    ) : (
+      <div className="w-full" style={{ height }} aria-hidden />
+    )
 
   return (
     <TableCard
-      className={`max-h-none overflow-hidden p-0 ${fill ? 'flex h-full min-h-0 flex-col' : ''}`}
+      className={`w-full max-h-none overflow-hidden p-0 ${fill ? 'flex h-full min-h-0 flex-col' : ''}`}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 border-b border-brand-line bg-white px-3.5 py-2.5">
         <h3 className="m-0 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
@@ -201,9 +204,10 @@ function RevenueChart({
         <span className="text-[10px] text-brand-subtle">{period} · PHP</span>
       </div>
       <div
-        className={`px-4 pt-3 pb-4 ${fill ? 'flex min-h-0 flex-1 flex-col justify-center' : ''}`}
+        ref={containerRef}
+        className={`w-full min-w-0 px-3 pt-3 pb-4 ${fill ? 'flex min-h-0 flex-1 flex-col' : ''}`}
       >
-        {plot}
+        {plotBody}
       </div>
     </TableCard>
   )

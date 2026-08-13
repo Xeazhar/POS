@@ -84,8 +84,37 @@ export const today = (openHour) => businessDate(new Date(), openHour ?? DEFAULT_
 export const rowBusinessDate = (row, openHour = DEFAULT_OPEN_HOUR) =>
   row?.createdAt ? businessDate(row.createdAt, openHour) : row?.date || null
 
+/**
+ * Assigns a priority score to a day-end entry for selection.
+ * @param {Object} entry - The day-end entry to rank.
+ * @returns {number} A priority score, where lower values indicate higher priority.
+ */
+function dayEndEntryRank(entry) {
+  const syncRank = entry.syncStatus === 'pending' || entry.syncStatus === 'local' ? 0 : 10
+  const statusRank =
+    {
+      reopened: 5,
+      requested: 4,
+      rejected: 3,
+      submitted: 2,
+      closed: 1,
+    }[entry.status] ?? 0
+  return syncRank + statusRank
+}
+
+/**
+ * Selects the highest-priority day-end entry for a business date.
+ * @param {Array<Object>} dayEnds - The day-end entries to search.
+ * @param {string} date - The business date to match.
+ * @return {Object|null} The highest-priority matching entry, or `null` when no entry matches.
+ */
 export function dayEndForBusinessDate(dayEnds, date) {
-  return (dayEnds || []).find((item) => item.date === date) || null
+  const matches = (dayEnds || []).filter((item) => item.date === date)
+  if (!matches.length) return null
+  if (matches.length === 1) return matches[0]
+  return matches.reduce((best, item) =>
+    dayEndEntryRank(item) > dayEndEntryRank(best) ? item : best,
+  )
 }
 
 /** Till is locked when current business day is submitted (awaiting approval) or closed. */

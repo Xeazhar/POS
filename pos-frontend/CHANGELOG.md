@@ -17,6 +17,210 @@ computation, OR numbering).
 
 ---
 
+## Unreleased
+
+## 0.20.0 — 2026-08-14
+
+### Added: Go-live checklist doc
+
+`docs/GO_LIVE_CHECKLIST.md` — business/BIR/NPC, hosting, wipe, store setup, smoke test,
+and ops reminders for before live sales.
+
+### Added: Rearrange sidebar
+
+Staff can drag sidebar tabs into any order (**Order** → Done, or Reset). Control sits at
+the **bottom** of the sidebar (not above nav) so it is harder to misclick. Dragging shows
+a floating card that follows the pointer; the list leaves a dashed placeholder where the
+tab will land. Saved on this till per login (`localStorage`); permissions still decide
+which tabs exist. Login landing path is unchanged.
+
+**Branches** reorder uses the same floating-card drag (card follows pointer; dashed
+placeholder in the grid). Open dashboard / Edit still click normally.
+
+### Changed: Legal contact email
+
+Terms, Privacy, and `LICENSE` contact address is `jazpera.bustria@gmail.com`
+(`src/legal/meta.js`).
+
+### Added: Terms and Conditions + Privacy Policy
+
+Public `/legal/terms` and `/legal/privacy` (readable signed out or in, outside the
+shift-gated Shell). Copy matches how CalePOS actually works: staff PINs, SC/PWD ID
+notes, offline IndexedDB, BIR record retention, Supabase + Cloudflare processors,
+RA 10173 rights. Linked from the login card and Settings → About.
+
+### Added: Settings
+
+Role-split Settings in the sidebar (not a Staff permission checkbox — every signed-in
+role can open it). Manager/master: Business Information (`company_profile`), Tax & VAT
+explainer (fixed 12%, not editable), Receipts & Invoices (read-only fiscal layout),
+Session & Auto-lock (5 / 10 / 15 minutes, company-wide), Security Activity (10 per page),
+Sync Status, About. Cashier/supervisor: Employee Information, Sync Status, About. Devices
+stays its own `/settings/devices` module. PINs stay on Staff. No queue-wipe or local-DB
+reset.
+
+- **Auto-lock preference** — managers pick 5, 10, or 15 minutes
+  (`company_profile.idle_lock_minutes`, `migrate_idle_lock_minutes.sql`). Floor 5, ceiling
+  15, never off. Tills cache the last pulled value for offline use.
+- **Security Activity** — 10 events per page with Previous / Next.
+- **Manager/master Devices** — network table of till online/offline plus scanner / printer
+  / drawer status per branch (cashier heartbeat). Enable/disable stays on the branch
+  dashboard. Managers now get the `devices` module by default.
+
+### Security hardening (audit follow-up)
+
+- **Staff PIN reveal** — managers use `reveal_staff_pin()` RPC (`migrate_reveal_staff_pin.sql`)
+  instead of a direct `staff` SELECT; supervisors no longer silently fall back when
+  `branch_staff_roster()` is missing (STAFF01).
+- **Turnstile** — removed `public/captcha.json`; production/staging require
+  `VITE_TURNSTILE_SITEKEY` in the hosting dashboard (local dev keeps Cloudflare test key).
+- **Idle lock** — clears the manager unlock PBKDF2 verifier from sessionStorage when the
+  10-minute screen lock engages (stolen unlocked session must re-enter password).
+- **Receipt browser print** — uses blob URL instead of `document.write`.
+- **`audit_security.sql`** — smarter §4: excludes RLS helpers and trigger functions;
+  flags only client-callable definer RPCs without auth patterns. **`migrate_security_definer_hardening_v1.sql`**
+  adds auth to session, audit, price-change, and promo-expire RPCs.
+- **Function `search_path`** — `migrate_function_search_path_v1.sql` pins
+  `SET search_path = public` on nine invoker helpers/triggers that advisors flagged
+  as mutable. Audit §7 reports any remaining unset paths.
+- **Query/index hygiene** — `migrate_perf_fk_indexes_v1.sql` drops the duplicate
+  `transactions (branch_id, client_id)` unique index and redundant product sku/barcode
+  indexes, adds FK indexes on line items / audit / refunds / till actions, and wraps
+  `auth.uid()` in `(select …)` on `read staff` and `read audit events`.
+- **Offline OR reserve** — `migrate_offline_or_reserve.sql` adds `reserve_or_number` so
+  a till-printed OR is accepted on sync without shrinking `branches.or_next`. Was missing
+  from the apply order; Demo now has it.
+
+### Fixed: browser “Save password?” on login and till credentials
+
+Credential forms use masked `type="text"` (not `password`), honeypot decoy fields, and
+read-only-until-focus so Chrome/Edge/LastPass stop offering autofill and save prompts on
+login, lock screen, supervisor approval, and staff PIN entry.
+
+### Fixed: revenue line chart Y-axis
+
+Chart uses rounded peso ticks (₱0, ₱5k, ₱10k, …) with headroom above the peak so the
+line no longer hugs the top edge on spike days.
+
+### Fixed: revenue line chart width (supervisor → master dashboards)
+
+`RevenueChart` now measures the full card column on first paint and on resize, so the plot
+uses the wide left grid cell instead of staying at a fixed ~640px width.
+
+### Changed: Google Sans typography + button tooltips
+
+- App UI uses **Google Sans** (400/500/600/700) with clearer weight hierarchy: body 400,
+  labels 500, controls 600, page titles 700.
+- `PrimaryButton`, `SecondaryButton`, `ToggleSwitch`, and `IconButton` auto-set `title` /
+  `data-tooltip` from label text or an explicit `tooltip` prop; shell icon controls updated.
+- CSP `_headers` allow `fonts.googleapis.com` / `fonts.gstatic.com`.
+
+### Security review (static)
+
+- **Shell injection:** no server-side shell/exec in this repo; frontend is static JS only.
+- **Offline lock PBKDF2** raised to **600,000** iterations (OWASP minimum); existing verifiers
+  re-upgrade on successful unlock via `needsUpgrade`.
+- **Webhooks:** no webhook/edge-function endpoints in the codebase — Supabase PostgREST + RPC only.
+- **Raw HTML:** React has no `dangerouslySetInnerHTML`; print/PDF HTML uses `esc()` (now also
+  escapes quotes). Receipt print uses blob URLs, not `document.write`.
+- **Stored XSS:** user-facing strings render through React text nodes or `esc()` in print HTML;
+  Turnstile `innerHTML = ''` is widget cleanup only.
+- **CORS:** enforced on Supabase project settings (not in repo) — verify Dashboard → API allows
+  only your deploy origins, not `*`.
+- **API overfetch:** several `select('*')` paths remain in `api.js` (insert-return and internal
+  row reads); UI-facing list queries mostly use column constants — tighten over time per endpoint.
+- Re-run `supabase/audit_security.sql` after pending migrations for live DB posture.
+
+### Fixed: stale cart-remove manager notification after on-site supervisor PIN
+
+Cashier session can now resolve pending `till_action_requests` when a supervisor approves
+on the till (`migrate_till_action_on_site_resolve.sql`). Inbox reconcile also matches
+`approval:cart_line_remove` audit events (was looking for the wrong event type).
+
+- **`apply_counted_cash_movement_effects`** — revoke client EXECUTE
+  (`migrate_revoke_cash_movement_internal_grants.sql`); internal helper only, not a PostgREST RPC.
+
+`Turnstile.jsx` used `useRef` without importing it after the captcha.json removal — fixed.
+
+### Added: Branch day-end closing detail + receipt reprint
+
+On manager Branch view (`BranchDashboard.jsx`), day-end closings are clickable and open a
+read-only breakdown for that business date: expected/counted/variance, shift cash-outs, and
+petty / pickups / cash-in (`DayEndClosingDetail.jsx`). Recent receipts can reprint the
+existing OR from the transaction detail modal (browser print; no new OR).
+
+### Fixed: Cashiers stay locked after manager reopens till
+
+Staff POS / ShiftGate read `dayEnds` from `useInventoryStore`, which was not refreshed when
+a manager reopened the business day from Branch view. `Shell` now listens for
+`OPERATIONS_CHANGED` and refetches branch activity (`useBranchOperationsLive.js`); manager
+reopen also triggers an immediate refresh on that branch. Re-login no longer paints a stale
+`closed` row from IndexedDB: `loadBranch` always refetches day-end activity when online,
+`syncBranch` refreshes day ends even when the outbox still has pending sales, local pending
+day-end copies for dates the server already owns are dropped on merge, and
+`dayEndForBusinessDate` prefers synced `reopened` over duplicate rows.
+
+### Fixed: Drawer Activity only shows the current business day
+
+Day End / End shift Drawer Activity was merging cash movements by shift and by requester
+without a date filter, so yesterday's petty/pickups appeared on today's list. Those fetches
+are now scoped to the business date.
+
+### Changed: Supervisor Day end shows own shift panel
+
+Supervisor+ **Day end** now opens with the same **Your shift so far** block cashiers get
+(`OwnShiftSoFar.jsx`): started / on-shift duration, cash position, shift-scoped drawer
+activity, and **End shift**. Branch-wide sales, accountability, and review queue stay below.
+
+### Fixed: Cash on hand draft resets on Day end
+
+Supervisor **Cash on hand** no longer pre-fills from a stored day-end row; the field starts
+blank every visit and is not kept after navigating away (notes draft clears the same way).
+Closed/submitted days still show the filed amount read-only.
+
+### Fixed: Login welcome splash not showing
+
+`LoginIntro` was rendered inside `Login.jsx`, but `App.jsx` switches to Shell as soon as
+`user` is set — the login page unmounted before the splash appeared. Intro now runs as a
+global overlay via `loginIntroUser` in the auth store (`App.jsx` → `LoginIntroGate`).
+Company logo (`constants/brand.js`) shows on the **post-login welcome splash only** — not
+on the staff login form (that stays generic CalePOS “C”).
+
+### Fixed: Mobile desktop mode + stale-tab recovery
+
+Touch devices in browser **Desktop site** mode keep mobile layout via `compact-chrome` on
+`<html>` (`useCompactChrome` + Tailwind `compact:` variants on Shell/POS). A dismissible
+banner explains when desktop mode is likely on. Stale PWA tabs that fail lazy route chunks
+after deploy auto-attempt one `hardReload`; uncaught errors show `AppErrorBoundary` with
+**Reload app** (IndexedDB / queued sales untouched).
+
+### Fixed: Loading scheme + xlsx security
+
+Page loads use lighter bootstrap paths where full branch activity is not needed:
+`bootstrapPosCatalog` / `fetchBranchProducts` for product-only views, `bootstrapBranchInventory`
+for inventory (products + movements, no transactions/day-ends). Branch dashboard initial load
+parallelizes branches + catalog/activity and fans out day ops in one wave. Promo history stats
+use `fetchPromoSalesStatsSummary` with `mapLimit` concurrency; Sales modal still loads detail
+in the background. Overview RPC fallback uses bounded branch fan-out. Spreadsheet import/export
+uses `@e965/xlsx` (patched SheetJS) via `src/lib/xlsxLoader.js` with safe parse defaults —
+`npm audit` clean.
+
+### Fixed: Promo Sales drill-down speed + offer labels
+
+Promo **Sales** modal loads faster by querying attributed `transaction_items` directly
+(instead of scanning 1000 discounted receipts then all their lines). **Offers sold** groups
+sales by bundle name, Buy 1 take 1, pair, or item % — not a flat per-SKU list. History table
+stats use a lightweight summary query; opening **Sales** shows cached totals immediately and
+loads transactions/offers in the background. Promo line scans are date-bounded to the event window.
+
+### Added: Login welcome intro
+
+After a successful sign-in, a short splash shows “Welcome to POS”, company logo watermark,
+“By Xeazhar”, and © All rights reserved, then continues to the staff home path
+(`LoginIntro.jsx`). Session restore / refresh skips it.
+
+---
+
 ## 0.19.0 — 2026-08-13
 
 ### Added: Private Realtime Broadcast (branch-scoped)

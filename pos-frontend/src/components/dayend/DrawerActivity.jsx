@@ -70,9 +70,19 @@ function sortMovements(rows) {
 }
 
 /**
- * Day End / End shift Drawer Activity — full ledger of Open Drawer movements.
- * Unauthorized (`self_recorded`) rows must be Confirm/Flag reviewed by a different
- * supervisor/manager before Close day.
+ * Renders the current session's drawer-movement ledger and review controls.
+ *
+ * @param {Object} props - Component properties.
+ * @param {Array<Object>} [props.rows=[]] - Drawer movements to display.
+ * @param {number|null} [props.expectedCash=null] - Expected cash remaining in the drawer.
+ * @param {boolean} [props.canReview=false] - Whether the current user may review unauthorized movements.
+ * @param {string|null} [props.currentUserId=null] - ID of the current user, used to prevent self-review.
+ * @param {Function} [props.onReviewed] - Called after a movement is successfully reviewed.
+ * @param {number} [props.openReviewNonce=0] - Change this value to open the first reviewable movement.
+ * @param {boolean} [props.showInlineBanner=true] - Whether to display the unapproved-movement banner.
+ * @param {string} [props.title='Drawer Activity'] - Header title.
+ * @param {string} [props.subtitle] - Header description.
+ * @return {JSX.Element} The drawer-activity ledger.
  */
 export default function DrawerActivity({
   rows = [],
@@ -84,6 +94,8 @@ export default function DrawerActivity({
   openReviewNonce = 0,
   /** When false, parent renders the page-top banner instead. */
   showInlineBanner = true,
+  title = 'Drawer Activity',
+  subtitle = "Today's petty cash and pickups from POS → Open Drawer (amount, reason, who requested, who approved). Unauthorized rows must be Confirmed or Flagged before Close day.",
 }) {
   const [reviewing, setReviewing] = useState(null)
   const [notes, setNotes] = useState('')
@@ -157,11 +169,8 @@ export default function DrawerActivity({
   return (
     <div className="mb-3.5 overflow-hidden rounded-md border border-brand-softline">
       <div className="border-b border-brand-softline px-3 py-2.5">
-        <strong className="block text-xs text-brand-ink">Drawer Activity</strong>
-        <p className="m-0 text-[11px] text-brand-subtle">
-          Every petty cash and pickup from POS → Open Drawer (amount, reason, who requested,
-          who approved). Unauthorized rows must be Confirmed or Flagged before Close day.
-        </p>
+        <strong className="block text-xs text-brand-ink">{title}</strong>
+        <p className="m-0 text-[11px] text-brand-subtle">{subtitle}</p>
       </div>
 
       {showInlineBanner && unreviewed.length > 0 && (

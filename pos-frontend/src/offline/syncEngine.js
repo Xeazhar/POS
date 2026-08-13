@@ -514,8 +514,10 @@ export async function drainQueueInBackground(branchId) {
 }
 
 /**
- * Full sync cycle: push local ops first (so sales land), then pull.
- * Reads always from IndexedDB after this.
+ * Synchronizes a branch by pushing pending local operations before retrieving remote data.
+ * Falls back to the local snapshot when synchronization is unavailable or fails.
+ * @param {string} branchId - The branch identifier.
+ * @return {Promise<Object|null>} The synchronized or locally stored branch snapshot.
  */
 export async function syncBranch(branchId) {
   if (!branchId) return null
@@ -541,10 +543,16 @@ export async function syncBranch(branchId) {
           void drainQueueInBackground(branchId)
         })
       }
-      const data =
-        pushResult.remaining === 0 && !pushResult.error
-          ? await pullFromRemote(branchId)
-          : await readBranchSnapshot(branchId)
+      let data
+      if (pushResult.remaining === 0 && !pushResult.error) {
+        data = await pullFromRemote(branchId)
+      } else {
+        // Pending sales must not block day-end refresh — manager reopen has to reach
+        // ShiftGate on re-login even while the outbox still holds local sales.
+        const { refreshBranchActivity } = await import('../hooks/useBranchOperationsLive')
+        await refreshBranchActivity(branchId).catch(() => {})
+        data = await readBranchSnapshot(branchId)
+      }
       emit({
         status: pushResult.error ? 'error' : 'idle',
         online: true,

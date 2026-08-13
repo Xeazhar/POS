@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   hasSupabase,
-  bootstrapBranchData,
+  bootstrapPosCatalog,
   fetchActivePromoEventsWithRules,
   fetchPromoEventsForBranch,
   deletePromoEvent,
@@ -14,6 +14,7 @@ import {
   rejectStopPromo,
   requestPromoEdit,
   fetchPromoSalesStats,
+  fetchPromoSalesStatsSummary,
   fetchActivePromosAcrossBranches,
   fetchPromoEventsAcrossBranches,
   fetchTransactionDetail,
@@ -30,6 +31,7 @@ import { useAuthStore, useProductStore } from '../../stores/posStore'
 import { useLiveData } from '../../hooks/useLiveData'
 import { money, qty } from '../../utils/format'
 import { summarizePromoRuleTypes } from '../../utils/promo'
+import { mapLimit } from '../../utils/mapLimit'
 import { isManagerRole } from '../../utils/roles'
 import { isUuid } from '../../utils/transactionDetail'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
@@ -388,7 +390,7 @@ export default function ManagerPromos() {
           const local = await readBranchSnapshot(branchId)
           if (alive) setProducts(local.products || [])
         } else {
-          const data = await withTimeout(bootstrapBranchData(branchId), 15000, 'Promo catalog')
+          const data = await withTimeout(bootstrapPosCatalog(branchId), 15000, 'Promo catalog')
           if (alive) setProducts(data.products || [])
         }
 
@@ -406,15 +408,13 @@ export default function ManagerPromos() {
           return
         }
 
-        const next = await withTimeout(
-          fetchActivePromoEventsWithRules(branchId, { respectDuration: false }),
-          15000,
-          'Active promos',
-        )
+        const [next, rows] = await Promise.all([
+          withTimeout(fetchActivePromoEventsWithRules(branchId, { respectDuration: false }), 15000, 'Active promos'),
+          withTimeout(fetchPromoEventsForBranch(branchId), 15000, 'Promo history'),
+        ])
         if (!alive) return
         setActiveEvents(next)
         setManagingId((prev) => (next.some((e) => e.event.id === prev) ? prev : next[0]?.event.id || null))
-        const rows = await withTimeout(fetchPromoEventsForBranch(branchId), 15000, 'Promo history')
         if (alive) setHistory(rows)
         await writePromoCache(branchId, { active: next, history: rows })
       } catch (e) {
@@ -476,25 +476,23 @@ export default function ManagerPromos() {
   // row's Sales modal. Fetch the currently-visible page eagerly and keep it live off the
   // same realtime+poll pattern POS.jsx uses for promos, so a sale bumps the count without
   // anyone clicking in. Scoped to the visible page, not all history — each event's stats
-  // query scans up to 1000 transactions, so doing this for every row ever created would be
+  // query scans attributed promo lines directly, so doing this for every row ever created would be
   // a lot of redundant work for rows nobody is looking at.
   const refreshVisibleStats = useCallback(async () => {
     if (!branchId || !historyPageRows.length) return
-    const entries = await Promise.all(
-      historyPageRows.map(async (e) => {
-        try {
-          const stats = await fetchPromoSalesStats({
-            branchId,
-            promoName: e.name,
-            startsAt: e.starts_at || null,
-            endsAt: e.ends_at || null,
-          })
-          return [e.id, { receiptCount: stats.receiptCount, discountTotal: stats.discountTotal, saleTotal: stats.saleTotal }]
-        } catch {
-          return null
-        }
-      }),
-    )
+    const entries = await mapLimit(historyPageRows, 3, async (e) => {
+      try {
+        const stats = await fetchPromoSalesStatsSummary({
+          branchId,
+          promoName: e.name,
+          startsAt: e.starts_at || null,
+          endsAt: e.ends_at || null,
+        })
+        return [e.id, { receiptCount: stats.receiptCount, discountTotal: stats.discountTotal, saleTotal: stats.saleTotal }]
+      } catch {
+        return null
+      }
+    })
     setHistoryStats((prev) => ({ ...prev, ...Object.fromEntries(entries.filter(Boolean)) }))
   }, [branchId, historyPageRows])
 
@@ -509,21 +507,19 @@ export default function ManagerPromos() {
 
   const refreshNetworkVisibleStats = useCallback(async () => {
     if (!networkHistoryPageRows.length) return
-    const entries = await Promise.all(
-      networkHistoryPageRows.map(async (e) => {
-        try {
-          const stats = await fetchPromoSalesStats({
-            branchId: e.branch_id,
-            promoName: e.name,
-            startsAt: e.starts_at || null,
-            endsAt: e.ends_at || null,
-          })
-          return [e.id, { receiptCount: stats.receiptCount, discountTotal: stats.discountTotal, saleTotal: stats.saleTotal }]
-        } catch {
-          return null
-        }
-      }),
-    )
+    const entries = await mapLimit(networkHistoryPageRows, 3, async (e) => {
+      try {
+        const stats = await fetchPromoSalesStatsSummary({
+          branchId: e.branch_id,
+          promoName: e.name,
+          startsAt: e.starts_at || null,
+          endsAt: e.ends_at || null,
+        })
+        return [e.id, { receiptCount: stats.receiptCount, discountTotal: stats.discountTotal, saleTotal: stats.saleTotal }]
+      } catch {
+        return null
+      }
+    })
     setNetworkHistoryStats((prev) => ({ ...prev, ...Object.fromEntries(entries.filter(Boolean)) }))
   }, [networkHistoryPageRows])
 
@@ -793,11 +789,24 @@ export default function ManagerPromos() {
   const openPromoTrackingForRow = async (eventRow, rowBranchId) => {
     const bId = rowBranchId || branchId
     if (!bId || !eventRow?.name) return
-    setTrackingEvent({ event: eventRow, stats: null, busy: true, branchId: bId, branchName: eventRow.branchName })
+    const statsMap = bId === branchId ? historyStats : networkHistoryStats
+    const cached = statsMap[eventRow.id]
+    const partialStats = cached
+      ? { ...cached, receipts: [], offers: [], items: [] }
+      : null
+    setTrackingEvent({
+      event: eventRow,
+      stats: partialStats,
+      busy: !partialStats,
+      detailBusy: true,
+      branchId: bId,
+      branchName: eventRow.branchName,
+    })
     try {
       const stats = await fetchPromoSalesStats({
         branchId: bId,
         promoName: eventRow.name,
+        promoEventId: eventRow.id,
         startsAt: eventRow.starts_at || null,
         endsAt: eventRow.ends_at || null,
       })
@@ -811,7 +820,14 @@ export default function ManagerPromos() {
       } else {
         setNetworkHistoryStats((prev) => ({ ...prev, [eventRow.id]: patch }))
       }
-      setTrackingEvent({ event: eventRow, stats, busy: false, branchId: bId, branchName: eventRow.branchName })
+      setTrackingEvent({
+        event: eventRow,
+        stats,
+        busy: false,
+        detailBusy: false,
+        branchId: bId,
+        branchName: eventRow.branchName,
+      })
     } catch (e) {
       setError(e?.message || 'Failed to load promo transactions.')
       setTrackingEvent(null)
@@ -1657,7 +1673,7 @@ export default function ManagerPromos() {
           <Eyebrow>PROMO TRANSACTIONS</Eyebrow>
           <h2 className="m-0 text-lg">{trackingEvent.event?.name}</h2>
           <p className="m-0 mt-1 text-xs text-brand-muted">
-            Receipts and items sold under this promo
+            Receipts and promo offers sold under this event
             {trackingEvent.branchName ? ` · ${trackingEvent.branchName}` : ''}
             {trackingEvent.event?.status ? ` · ${trackingEvent.event.status}` : ''}
           </p>
@@ -1686,9 +1702,22 @@ export default function ManagerPromos() {
                 </div>
               </div>
 
+              {trackingEvent.detailBusy ? (
+                <div className="mt-4 space-y-2" role="status" aria-label="Loading transactions">
+                  <Skeleton className="h-3 w-32" />
+                  <Skeleton className="h-24 w-full" />
+                  <SkeletonRows rows={2} cols={3} />
+                </div>
+              ) : (
+                <>
               <div className="mt-4">
                 <p className="m-0 mb-2 text-[11px] font-bold uppercase tracking-wide text-brand-subtle">
                   Transactions
+                  {trackingEvent.stats.receiptsTruncated ? (
+                    <span className="ml-1 font-normal normal-case text-brand-muted">
+                      (showing latest {trackingEvent.stats.receipts?.length || 0})
+                    </span>
+                  ) : null}
                 </p>
                 <div className="max-h-[240px] overflow-auto rounded border border-brand-softline">
                   <div className="grid grid-cols-[1fr_1fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
@@ -1728,33 +1757,54 @@ export default function ManagerPromos() {
                 </div>
               </div>
 
-              {(trackingEvent.stats.items || []).length > 0 && (
+              {(trackingEvent.stats.offers || trackingEvent.stats.items || []).length > 0 && (
                 <div className="mt-4">
                   <p className="m-0 mb-2 text-[11px] font-bold uppercase tracking-wide text-brand-subtle">
-                    Items sold
+                    Offers sold
                   </p>
                   <div className="max-h-[200px] overflow-auto rounded border border-brand-softline">
-                    <div className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
-                      <span>Item</span>
+                    <div className="grid grid-cols-[1.2fr_0.8fr_0.7fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
+                      <span>Offer</span>
+                      <span>Type</span>
                       <span className="text-right">Qty</span>
                       <span className="text-right">Discount</span>
                       <span className="text-right">Net</span>
                     </div>
-                    {trackingEvent.stats.items.map((row) => (
+                    {(trackingEvent.stats.offers?.length
+                      ? trackingEvent.stats.offers
+                      : trackingEvent.stats.items.map((row) => ({
+                          label: row.name,
+                          badge: 'Item',
+                          sets: 0,
+                          qty: row.qty,
+                          pricingMode: row.pricingMode,
+                          discount: row.discount,
+                          net: row.net,
+                        }))
+                    ).map((row) => (
                       <div
-                        key={row.productId}
-                        className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr] gap-2 border-t border-brand-softline px-3 py-2 text-xs"
+                        key={`${row.label}-${row.badge}-${row.sets}-${row.qty}`}
+                        className="grid grid-cols-[1.2fr_0.8fr_0.7fr_0.9fr_0.9fr] gap-2 border-t border-brand-softline px-3 py-2 text-xs"
                       >
-                        <strong className="truncate text-brand-ink">{row.name}</strong>
+                        <strong className="truncate text-brand-ink" title={row.label}>
+                          {row.label}
+                        </strong>
+                        <span className="truncate text-[10px] text-brand-subtle">{row.badge || '—'}</span>
                         <span className="text-right tabular-nums">
-                          {qty(row.qty, row.pricingMode === 'kg' ? 'kg' : 'pc')}
+                          {row.sets > 0
+                            ? `${row.sets} set${row.sets === 1 ? '' : 's'}`
+                            : qty(row.qty, row.pricingMode === 'kg' ? 'kg' : 'pc')}
                         </span>
-                        <span className="text-right tabular-nums text-brand-danger">−{money(row.discount)}</span>
+                        <span className="text-right tabular-nums text-brand-danger">
+                          −{money(row.discount)}
+                        </span>
                         <span className="text-right tabular-nums">{money(row.net)}</span>
                       </div>
                     ))}
                   </div>
                 </div>
+              )}
+                </>
               )}
             </>
           )}

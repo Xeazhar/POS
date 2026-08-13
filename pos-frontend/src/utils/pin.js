@@ -1,69 +1,55 @@
 /**
- * Staff till PIN / passcode helpers.
- * Staff codes stay numeric. PINs must be complex (letters + numbers + symbols).
+ * Staff till PIN helpers (cashier / supervisor).
+ * Staff codes stay numeric. PINs are exactly 6 digits — no letters or symbols.
  */
 
-const PIN_MIN = 8
-const PIN_MAX = 64
-const LETTER = /[A-Za-z]/
-const DIGIT = /\d/
-const SYMBOL = /[^A-Za-z0-9\s]/
+export const PIN_LENGTH = 6
 
-/** Allowed printable ASCII (no spaces/control chars). */
+/**
+ * Sanitizes a PIN input to contain at most six digits.
+ * @param {*} value - The input value to sanitize.
+ * @return {string} The first six digits found in the input.
+ */
 export function sanitizePinInput(value) {
   return String(value || '')
-    .replace(/[\u0000-\u001F\u007F\s]/g, '')
-    .slice(0, PIN_MAX)
+    .replace(/\D/g, '')
+    .slice(0, PIN_LENGTH)
 }
 
+/**
+ * Validates a PIN against the required six-digit format.
+ * @param {*} pin - The PIN to validate.
+ * @return {string} An error message when the PIN is invalid, or an empty string when valid.
+ */
 export function validateComplexPin(pin) {
   const value = String(pin || '')
-  if (value.length < PIN_MIN) {
-    return `PIN must be at least ${PIN_MIN} characters.`
-  }
-  if (value.length > PIN_MAX) {
-    return `PIN must be at most ${PIN_MAX} characters.`
-  }
-  if (/\s/.test(value)) {
-    return 'PIN cannot contain spaces.'
-  }
-  if (!LETTER.test(value)) {
-    return 'PIN must include at least one letter.'
-  }
-  if (!DIGIT.test(value)) {
-    return 'PIN must include at least one number.'
-  }
-  if (!SYMBOL.test(value)) {
-    return 'PIN must include at least one symbol (e.g. !@#$%).'
+  if (!new RegExp(`^\\d{${PIN_LENGTH}}$`).test(value)) {
+    return `PIN must be exactly ${PIN_LENGTH} digits.`
   }
   return ''
 }
 
+/**
+ * Determines whether a PIN meets the six-digit numeric requirement.
+ * @param {string} pin - The PIN to validate.
+ * @return {boolean} `true` if the PIN contains exactly six digits, `false` otherwise.
+ */
 export function isComplexPin(pin) {
   return !validateComplexPin(pin)
 }
 
-const LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
-const DIGITS = '23456789'
-const SYMBOLS = '!@#$%&*?'
-
-function pick(charset) {
-  return charset[Math.floor(Math.random() * charset.length)]
-}
-
-/** Generate a random complex PIN (not just digits). */
-export function randomComplexPin(length = 10) {
-  const len = Math.max(PIN_MIN, Math.min(PIN_MAX, Number(length) || 10))
-  const chars = [pick(LETTERS), pick(DIGITS), pick(SYMBOLS)]
-  const pool = LETTERS + DIGITS + SYMBOLS
-  while (chars.length < len) chars.push(pick(pool))
-  // Shuffle
-  for (let i = chars.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[chars[i], chars[j]] = [chars[j], chars[i]]
+/**
+ * Generates a random numeric PIN with a length between one and six digits.
+ * @param {number} [length=6] - The desired PIN length.
+ * @return {string} A numeric PIN that may include leading zeros.
+ */
+export function randomComplexPin(length = PIN_LENGTH) {
+  const len = Math.max(1, Math.min(PIN_LENGTH, Number(length) || PIN_LENGTH))
+  let out = ''
+  for (let i = 0; i < len; i += 1) {
+    out += String(Math.floor(Math.random() * 10))
   }
-  return chars.join('')
+  return out
 }
 
-export const PIN_RULES_HINT =
-  'At least 8 characters with a letter, a number, and a symbol (e.g. Ka!9mP2$).'
+export const PIN_RULES_HINT = `Exactly ${PIN_LENGTH} digits (0–9). No letters or symbols.`

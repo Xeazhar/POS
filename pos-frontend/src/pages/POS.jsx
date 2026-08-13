@@ -53,6 +53,9 @@ function menuSetupKey(branchId, bizDate) {
   return `cale-menu-setup:${branchId || 'x'}:${bizDate}`
 }
 
+/**
+ * Render and manage the point-of-sale screen, including product selection, cart operations, promotions, menu availability, price changes, and day-end restrictions.
+ */
 function POS() {
   const user = useAuthStore((state) => state.user)
   const isRestaurant = user?.branchType === 'restaurant'
@@ -432,7 +435,7 @@ function POS() {
         </div>
       )}
       <div
-        className={`relative grid min-h-0 flex-1 gap-4 max-[800px]:grid-cols-1 max-[800px]:gap-3 max-[800px]:overflow-auto ${
+        className={`relative grid min-h-0 flex-1 gap-4 max-[800px]:grid-cols-1 max-[800px]:gap-3 max-[800px]:overflow-auto compact:grid-cols-1 compact:gap-3 compact:overflow-auto ${
           isRestaurant && manageMenu
             ? 'grid-cols-1'
             : barcodeTableMode
@@ -447,7 +450,7 @@ function POS() {
                 ? 'max-h-none'
                 : barcodeTableMode
                   ? 'h-auto'
-                  : 'h-full max-[800px]:min-h-[390px] max-[800px]:h-auto'
+                  : 'h-full max-[800px]:min-h-[390px] max-[800px]:h-auto compact:min-h-[390px] compact:h-auto'
             }`}
           >
           <div className="mb-3.5 flex min-w-0 flex-col gap-3">
@@ -596,7 +599,7 @@ function POS() {
               className={`grid min-h-0 flex-1 content-start gap-2 overflow-auto px-0.5 pt-1.5 pb-1 pr-1 ${
                 manageMenu && isRestaurant
                   ? 'grid-cols-4 max-[1050px]:grid-cols-3 max-[700px]:grid-cols-2'
-                  : 'grid-cols-6 max-[1200px]:grid-cols-5 max-[1050px]:grid-cols-4 max-[800px]:grid-cols-3 max-[800px]:max-h-[52vh] max-[520px]:grid-cols-2'
+                  : 'grid-cols-6 max-[1200px]:grid-cols-5 max-[1050px]:grid-cols-4 max-[800px]:grid-cols-3 max-[800px]:max-h-[52vh] max-[520px]:grid-cols-2 compact:grid-cols-3 compact:max-h-[52vh]'
               }`}
             >
               {!manageMenu &&
@@ -606,7 +609,7 @@ function POS() {
                       type="button"
                       disabled={tillClosed}
                       title={set.sublabel}
-                      className="tap-target flex h-[104px] w-full flex-col items-start gap-0.5 overflow-hidden rounded-[6px] border border-brand-gold/55 bg-brand-gold/10 p-2.5 text-left transition-[border-color,box-shadow,transform,filter] duration-150 hover:border-brand-gold hover:bg-brand-gold/15 hover:shadow-[0_2px_8px_#00000012] active:scale-[0.98] disabled:cursor-not-allowed max-[800px]:h-[124px] max-[800px]:p-3"
+                      className="tap-target flex h-[104px] w-full flex-col items-start gap-0.5 overflow-hidden rounded-[6px] border border-brand-gold/55 bg-brand-gold/10 p-2.5 text-left transition-[border-color,box-shadow,transform,filter] duration-150 hover:border-brand-gold hover:bg-brand-gold/15 hover:shadow-[0_2px_8px_#00000012] active:scale-[0.98] disabled:cursor-not-allowed max-[800px]:h-[124px] max-[800px]:p-3 compact:h-[124px] compact:p-3"
                       onClick={() => addPromoQuickSet(set)}
                     >
                       <span className="rounded bg-brand-gold px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-dark uppercase">
@@ -638,7 +641,7 @@ function POS() {
                     <button
                       type="button"
                       disabled={tillClosed || (isRestaurant && !manageMenu && offToday)}
-                      className={`tap-target flex h-[104px] w-full flex-col items-start gap-0.5 overflow-hidden rounded-[6px] border p-2.5 text-left transition-[border-color,box-shadow,transform,filter,opacity,background-color] duration-150 disabled:cursor-not-allowed max-[800px]:h-[124px] max-[800px]:p-3 ${
+                      className={`tap-target flex h-[104px] w-full flex-col items-start gap-0.5 overflow-hidden rounded-[6px] border p-2.5 text-left transition-[border-color,box-shadow,transform,filter,opacity,background-color] duration-150 disabled:cursor-not-allowed max-[800px]:h-[124px] max-[800px]:p-3 compact:h-[124px] compact:p-3 ${
                         manageMenu && isRestaurant
                           ? offToday
                             ? `border-brand-danger-line bg-brand-danger-tint-alt ${flashing ? 'scale-[0.98]' : ''}`

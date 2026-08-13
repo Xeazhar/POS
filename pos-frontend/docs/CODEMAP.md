@@ -3,7 +3,7 @@
 Guide to `pos-frontend`: where code lives, and **how data / control flow moves** through the app.  
 Paths are relative to `pos-frontend/`. Product name: **CalePOS**.
 
-**Current release:** `0.19.0` (see `package.json` + `CHANGELOG.md`). Pre-1.0 — not for live trading.
+**Current release:** `0.20.0` (see `package.json` + `CHANGELOG.md`). Pre-1.0 — not for live trading.
 
 ---
 
@@ -17,6 +17,7 @@ Browser (Vite + React)
   │
   ├─ Shell ……………………… src/components/shared/Shell.jsx
   │     sidebar ← navLinksFor(user) ← src/constants/nav.js
+  │              custom order ← src/utils/navOrder.js (this till, this staff id)
   │     shift gate → ShiftGate.jsx (useShiftStore)
   │     logout → plain sign out; the shift stays open and resumes on next login
   │     ending a shift lives on /day-end (cashier view) → ShiftCashOut.jsx
@@ -89,9 +90,9 @@ When changing behavior, the usual path is:
 |------|------|
 | `src/components/pos/` | cart, numpad, weight modal, POS-specific behavior |
 | `src/components/transactions/` | transaction detail / refund display |
-| `src/components/dayend/` | day-end report panels, restock alert UI |
+| `src/components/dayend/` | day-end report panels, restock alert UI, manager closing detail |
 | `src/components/shared/` | shell, supervisor approval, cross-feature widgets |
-| `src/components/ui/` | primitive UI kit used across the app |
+| `src/components/ui/` | primitive UI kit (`Modal` / `ModalActions`, buttons, fields, banners) |
 | `src/components/dashboard/` | dashboard/overview widgets |
 
 ---
@@ -106,7 +107,10 @@ When changing behavior, the usual path is:
 | `/inventory` | `src/pages/Products.jsx` | staff inventory/menu operations — tabs: stock + **Movement history** (`src/components/inventory/MovementHistoryPanel.jsx`) |
 | `/data` | `src/pages/manager/Data.jsx` | supervisor branch catalog tools |
 | `/day-end` | `src/pages/DayEnd.jsx` | **role-split**: cashier → "End shift" (own drawer only); supervisor+ → "Day end" (branch, petty approval queue, submit for closing) |
-| `/settings/devices` | `src/pages/Devices.jsx` | staff device awareness |
+| `/settings` | `src/pages/Settings.jsx` | role-split: manager General/Security/Sync/About; cashier/supervisor My Account/Sync/About. About links to `/legal/*` |
+| `/legal/terms` | `src/pages/Legal.jsx` | public Terms and Conditions — no auth, no Shell (shift gate must not block reading) |
+| `/legal/privacy` | `src/pages/Legal.jsx` | public Privacy Policy (RA 10173). Copy lives in `src/legal/` |
+| `/settings/devices` | `src/pages/Devices.jsx` | cashier/supervisor: this till. Manager/master: per-branch presence + hardware. **Not** inside the Settings tree |
 | `/shifts` | `src/pages/manager/Staff.jsx` | **merged Staff page** (supervisor+) — tabs: Staff roster + Shifts log |
 | `/manager/branches` | `src/pages/manager/Branches.jsx` | branch list |
 | `/manager/branches/:branchId` | `src/pages/manager/BranchDashboard.jsx` | manager branch operations dashboard |
@@ -193,6 +197,10 @@ terminal that happens to be offline during the upgrade must not get locked out.
 **Never** reintroduce a fast hash here, and never store the password itself. PBKDF2 buys
 time proportional to password strength; it is not a substitute for one.
 
+Idle auto-lock delay is company-wide: `company_profile.idle_lock_minutes` (allowed 5, 10,
+or 15 — never off). Settings → Session & Auto-lock writes it; Shell reads it on sign-in
+and caches the last value in localStorage for offline tills (`src/utils/sessionPolicy.js`).
+
 ## Route Gates and Permissions
 
 Main permission files:
@@ -219,6 +227,10 @@ Permission behavior:
   master. The former `admin` role is **retired** (`migrate_retire_admin_role.sql` remaps to
   `manager`); only master has that top power. `manager` uses `DEFAULTS` / explicit `permissions`
   (devices not in manager defaults).
+- **Public legal pages** (`/legal/terms`, `/legal/privacy`) are rendered *before* the
+  signed-in Shell / signed-out Login split. They skip shift gate and auth. Copy is in
+  `src/legal/terms.js` and `src/legal/privacy.js`; keep those in sync with real data
+  practices (staff PINs, SC/PWD `discount_id_note`, IndexedDB, processors).
 
 ---
 
@@ -263,10 +275,12 @@ Offline is a real first-class flow, not just cached reads. Many writes are:
 | App entry | `src/main.jsx` |
 | Routes / role gates | `src/App.jsx` |
 | Page exports | `src/pages/index.js` |
-| Nav order + labels + home path | `src/constants/nav.js` |
+| Nav order + labels + home path | `src/constants/nav.js` + `src/utils/navOrder.js` (per-staff sidebar rearrange on this till) |
 | Roles / default module lists | `src/utils/roles.js` |
-| UI kit | `src/components/ui/index.jsx` |
-| Shell (sidebar, logout, sync chip) | `src/components/shared/Shell.jsx` |
+| UI kit | `src/components/ui/index.jsx` (`Modal` / `ModalActions` — see below) |
+| Till PIN rules (cashier/supervisor) | `src/utils/pin.js` (exactly 6 digits) |
+| Shell (sidebar, logout, sync chip) | `src/components/shared/Shell.jsx` + `SidebarNav.jsx` |
+| Go-live / sell readiness checklist | `docs/GO_LIVE_CHECKLIST.md` |
 | Supabase client | `src/lib/supabase.js` |
 | All remote API / RPCs | `src/lib/api.js` |
 | Auth / cart / products / inventory stores | `src/stores/posStore.js` |
@@ -279,14 +293,34 @@ Offline is a real first-class flow, not just cached reads. Many writes are:
 
 ### Login → home → shell
 
-1. `Login.jsx` — PIN (`signInWithPin` / `resolve_pin_login`) or email password.
+1. `Login.jsx` — PIN (`signInWithPin` / `resolve_pin_login`; cashier/supervisor **6-digit**
+   till PIN via `utils/pin.js`) or email password (manager+).
 2. `useAuthStore.login` sets `user` (role, branchId, branchType, permissions, deviceSettings).
-3. Navigate via `staffHomePath(user)` (`nav.js`): cashiers → `/pos` (restaurant may `?menu=1`); others → first allowed nav link.
+3. `LoginIntro.jsx` — short welcome splash (logo watermark, By Xeazhar, ©); then navigate via
+   `staffHomePath(user)` (`nav.js`): cashiers → `/pos`; others → first allowed nav link.
+   Session restore skips the splash.
 4. `App.jsx` wraps authenticated UI in `Shell`; routes gated by `RequireModule` + role wrappers.
 5. Shift gate: `Shell.jsx` calls `useShiftStore.resolve(user)`, which answers from IndexedDB
    first and refines with the server. `ready` lets work proceed; anything else renders
    `ShiftGate.jsx` over the app. Login itself no longer decides this — see "Shifts & change
    fund" below for why.
+
+### Modal layout (`components/ui/index.jsx`)
+
+`Modal` is a flex column capped at `max-h-[calc(100dvh-1.5rem)]` with `min-h-0` (so the
+flex item can shrink — without that, `max-height` is ignored and long dialogs clip).
+Body scrolls in an inner `overflow-y-auto` region; **Cancel/Save never live in that scroll
+region** (they used to be `sticky` and covered fields such as Module access on Edit staff).
+
+Prefer one of:
+
+- **`footer` prop** — pinned bar outside the scroll body (Staff create/edit uses this:
+  `footer={<ModalActions>…</ModalActions>}` + `form="staff-edit-form"` on the submit
+  button so Save still posts the form).
+- **`ModalActions` as a child** — auto-pulled out of the scroll body (also when the sole
+  child is a `<form>` wrapping fields + `ModalActions`).
+
+`ModalActions` is `shrink-0` with a top border — not sticky inside the scroller.
 
 ### Permissions
 
@@ -295,6 +329,14 @@ Offline is a real first-class flow, not just cached reads. Many writes are:
 - Check: `canAccessModule(user, moduleId)` (master always true except `inventory`; others use
   DEFAULTS / `permissions[]`. `admin` role retired — see `migrate_retire_admin_role.sql`).
 - Nav filters the same way in `staffLinksFor` / `managerLinksFor`.
+- **Settings** is always in the sidebar for signed-in users (`navLinksFor`); it is not a
+  `MODULES` id, so Staff cannot strip it. Default order puts it last; staff may drag any
+  tab (including Settings) via `SidebarNav` — order is per login on this till
+  (`utils/navOrder.js`) and does not change `staffHomePath`. Manager-only sections are gated in
+  `pages/Settings.jsx`; `company_profile` writes still require `is_manager()` RLS.
+  Devices remains module `devices` at `/settings/devices` (manager/master see network
+  status; cashiers/supervisors see this till). Session auto-lock minutes live on
+  `company_profile.idle_lock_minutes` (5 / 10 / 15 only).
 
 ### Logout
 
@@ -350,7 +392,9 @@ receipt.js → printer device (if enabled)
 **OR number at print time:** Each branch keeps its own sequence in IndexedDB
 (`branchMeta.orPrefix` / `orNext`, seeded from `branches.or_prefix` / `or_next` on pull).
 At sale commit, `allocateLocalOrNumber` assigns the next OR immediately; checkout never
-awaits sync. Branch fiscal header for receipts is cached in `branchMeta.fiscalHeader` on
+awaits sync. On push, `completeSale` calls `reserve_or_number` with that printed OR so
+`branches.or_next` jumps forward (never backward) and a duplicate OR is rejected. If the
+RPC is missing, it falls back to `allocate_or_number`. Branch fiscal header for receipts is cached in `branchMeta.fiscalHeader` on
 pull so offline print does not call Supabase. Sync drains the outbox in batches
 (`PUSH_BATCH_SIZE`, default 8) via `drainQueueInBackground` so a large offline backlog
 does not freeze the UI when connectivity returns.
@@ -412,7 +456,8 @@ VAT/exempt breakdown is surfaced everywhere a transaction's money is shown: the 
 preview, the printed receipt, and `TransactionDetailModal.jsx` (shared by staff
 `Transactions.jsx` and manager `BranchDashboard.jsx` — same component, same fields, both get
 it automatically). The manager "Recent receipts" panel additionally tags a row `VAT-exempt`
-when `vatExemptSales > 0`.
+when `vatExemptSales > 0`, and the same detail modal offers **Print receipt** (browser reprint
+of the existing OR; see Manager tracking).
 
 ```
 Cart.jsx pricing useMemo
@@ -439,11 +484,10 @@ appended (`00000` head office, then `00001`…). `company_profile.tin` + `branch
 receipt, the X/Z reading and the settings screen cannot print three different numbers.
 `branches.tin` survives as a per-branch override and as the pre-migration fallback.
 
-**No admin UI edits `company_profile` right now.** `manager/Branches.jsx` used to have a
-"Company details" card (business name/TIN/address) editing it directly; removed at the
-owner's request pending a proper settings surface — the data model, `api.fetchCompanyProfile`/
-`saveCompanyProfile`, and the TIN composition above are all still in place, only that one
-page's form is gone. Existing `company_profile` rows are untouched.
+Company identity and idle-lock minutes are edited in **Settings → Business Information**
+and **Settings → Session & Auto-lock** (`fetchCompanyProfile` / `saveCompanyProfile`).
+`company_profile` writes still require `is_manager()` RLS. Branch dashboard does not
+edit company TIN.
 
 `buildReceipt` must be handed the **real branch row** (`fetchBranchFiscalHeader(branchId)`,
 cached). Passing a `{ name, business_name }` stub is what made the POS print `TIN: —`,
@@ -857,8 +901,8 @@ FKs `staff` three times, so an embed needs disambiguating at every call site).
 
 | Role | Screen | Sees |
 |---|---|---|
-| cashier | **End shift** | shift detail (Started / On shift duration / drawer / period), own cash-sales-so-far (`useShiftStore.cashPosition`), **Drawer Activity** (own shift movements, read-only), **End shift** clock-out (`ShiftCashOut`), **Request day end**. No creation of petty/pickup here — use POS → Open Drawer. |
-| supervisor+ | **Day end** | branch sales, Accountability (open shifts), **Drawer Activity** (review `self_recorded`), pending handoffs / day-end request, Close day (blocked until own shift ended, cashier shifts closed, handoffs received, and self-recorded movements reviewed). |
+| cashier | **End shift** | `OwnShiftSoFar.jsx`: shift detail (Started / On shift duration / drawer / period), own cash-sales-so-far (`useShiftStore.cashPosition`), **Drawer Activity** (own shift movements, read-only), **End shift** clock-out (`ShiftCashOut`), **Request day end**. No creation of petty/pickup here — use POS → Open Drawer. |
+| supervisor+ | **Day end** | Same **`OwnShiftSoFar`** block at the top (own shift figures + shift-scoped drawer activity), then branch sales, Accountability (open shifts), branch-wide **Drawer Activity** (review `self_recorded`), pending handoffs / day-end request, Close day (blocked until own shift ended, cashier shifts closed, handoffs received, and self-recorded movements reviewed). Floor supervisors (`holdsDrawer: false`) see cash sales only; till-holding cashiers see the full drawer breakdown. |
 
 **`cashPosition()` merges server + not-yet-synced local sales.** The server RPC
 (`shift_cash_summary`) only knows about a sale once it has synced — a sale rung up is
@@ -909,13 +953,13 @@ calendar `date` only when `createdAt` is absent. Applied in `DayEnd.jsx` (`inBus
 This is the transaction-side sibling of the existing "query shifts by `business_date`, never by
 `clock_in`" rule above — same failure, different table.
 
-**`SupervisorDayEnd`'s "Cash on hand" field starts blank, not `0`** (`cashOnHand === ''`
-until the supervisor types something) — `hasCashOnHand` gates both the "Variance vs
-expected" display and `noteRequired`, so the screen reads "—  Enter cash on hand to
-compare" instead of a false "₱X Short" the instant the page loads with nothing counted
-yet. The "Close day" button was already correctly disabled on a blank field before this
-fix (`disabled={cashOnHand === '' || ...}`) — only the premature on-screen variance was
-wrong, not what could actually be submitted. Also shows Card/E-wallet sales (net of
+**`SupervisorDayEnd`'s "Cash on hand" field starts blank, not `0`** — draft input is never
+pre-filled from a prior visit, a reopened day row, or IndexedDB; leaving Day end and returning
+always shows an empty field until someone counts again (submitted/closed days show filed
+`existing.cashOnHand` read-only). `hasCashOnHand` gates both the "Variance vs expected"
+display and `noteRequired`, so the screen reads "— Enter cash on hand to compare" instead of
+a false "₱X Short" the instant the page loads with nothing counted yet. The "Close day"
+button stays disabled until the draft field has a value. Also shows Card/E-wallet sales (net of
 refunds, same as `cashSales`, informational — never enter `expectedCash`) alongside Cash
 sales under "All sales (POS)", so a supervisor can see the tender split without leaving
 this screen.
@@ -1032,13 +1076,15 @@ they closed; that boundary was deliberately left alone.
 
 **Reopen is current-day only.** `BranchDashboard.jsx` offers Reopen on a closed day-end row
 only while `entry.date === todayKey`; past closings render `Locked` with no override at any
-role. `DayEnd.jsx`'s Cancel closing only ever acts on `dayEndForBusinessDate(dayEnds, date)`
+role. Clicking the row still opens the read-only closing detail (petty / cash-outs) for
+that past day. `DayEnd.jsx`'s Cancel closing only ever acts on `dayEndForBusinessDate(dayEnds, date)`
 for the CURRENT business date, so it inherits the same restriction without a separate check.
 Reopening a passed day would move cash figures under a Z-reading already filed.
 
 **`DayEnd.jsx` has no historical closings list of its own.** It used to render its own
 "Previous day-end closings" table, duplicating `BranchDashboard.jsx`'s paginated "Day-end
-closings" section (which also has Reopen) with a plainer read-only copy. Removed — a
+closings" section (which also has Reopen, and a click-through detail for petty / cash-outs)
+with a plainer read-only copy. Removed — a
 supervisor closing today's day doesn't need yesterday's numbers on the same screen, and a
 manager wanting history already has the richer version. `DayEnd.jsx` still fetches `dayEnds`
 (`useInventoryStore`) for `dayEndForBusinessDate(dayEnds, date)` — only the list *rendering*
@@ -1095,6 +1141,7 @@ the two screens disagree.
 |-------|------|
 | Page | `src/pages/DayEnd.jsx` |
 | Report panels | `src/components/dayend/DayEndReportPanels.jsx` |
+| Own shift panel | `src/components/dayend/OwnShiftSoFar.jsx` (cashier End shift + supervisor Day end header) |
 | Snapshot builder | `src/utils/dayEndReport.js` |
 | Nudge | `Cart.jsx` `shouldNudgeDayEnd` |
 | API | `closeDayEnd`, `reopenDayEnd`, `requestDayReopen`, `addPettyCash`, `fetchPettyCash`, `fetchPettyCashTimeline` |
@@ -1121,8 +1168,9 @@ POS → **Open Drawer** (`OpenDrawer.jsx` on `POS.jsx`):
   Both write IndexedDB + `CASH_MOVEMENT_APPROVED` queue and sync when online. Notify manager
   is unavailable offline (needs server) — self-record replaces that path while offline.
 - Cancel (X): voids `pending_remote` via `cancel_cash_movement` (`migrate_cash_movement_cancel.sql`)
-- Day End **Drawer Activity** (`DrawerActivity.jsx`) lists all Open Drawer rows (amount,
-  reason, requester, approver/reviewer, status). `self_recorded` = **Unauthorized**;
+- Day End **Drawer Activity** (`DrawerActivity.jsx`) lists **this business day's** Open Drawer
+  rows only (amount, reason, requester, approver/reviewer, status) — `useDayEndData` scopes
+  every `fetchCashMovements` path to the current date. `self_recorded` = **Unauthorized**;
   page-top banner + row/banner open Mark Resolved / Flag modal. Reviewer must be
   supervisor/manager **other than** `requested_by` (RPC `review_cash_movement` + UI).
   Close day hard-blocked until every unauthorized row is `confirmed` (Resolved) or
@@ -1155,7 +1203,20 @@ Manager tracking lives in:
   - **Cash drawer log** = today’s `fetchCashMovements` + legacy `fetchPettyCashTimeline`;
     unauthorized → Mark Resolved / Flag; Flagged → Mark Resolved (**manager only** via
     `resolveFlaggedCashMovement`); end-state labels Approved / Resolved / Flagged
+  - **Day-end closings** rows are clickable → `DayEndClosingDetail.jsx` loads that business
+    date’s shift cash-outs (`fetchStaffShifts`) plus petty / pickups / cash-in
+    (`fetchCashMovements` + `fetchPettyCashTimeline`). Approve / Reopen stay on the row
+    (stopPropagation). Reopen remains current-day only.
+  - **Recent receipts** open `TransactionDetailModal` with **Print receipt** — browser reprint
+    of the existing OR (`buildReceipt` + `receiptPrinter.printReceipt`); uses the *viewed*
+    branch fiscal header (`fetchBranchFiscalHeader`), does not mint a new OR, and is not
+    gated on the manager’s own till printer toggle (this is a copy, not a counter print).
   - live reload on `cash_movements` / `cash_drawer_entries` / day_ends / refunds / till actions
+  - **Staff terminals:** `Shell.jsx` → `useBranchOperationsLive` refetches
+    `bootstrapBranchActivity` into `useInventoryStore` on `OPERATIONS_CHANGED` (manager reopen,
+    day-end submit/approve, etc.) so POS / ShiftGate unlock without a full reload; `loadBranch`
+    also refetches day-end activity on login when online (even if the sync outbox is non-empty),
+    and `putDayEnds` drops stale local pending rows when the server already has that business date
 
 Managers do **not** get a Day end sidebar tab (`nav.js` hides `day_end` for `isManagerRole`);
 module access remains so `/day-end` still works for cashier “request manager” closes.
@@ -1167,10 +1228,15 @@ module access remains so `/day-end` still works for cashier “request manager�
 
 | Piece | File |
 |-------|------|
-| Staff Devices page | `src/pages/Devices.jsx` |
+| Staff Devices page (this till) | `src/pages/Devices.jsx` `TillDevices` |
+| Manager/master network status | `src/pages/Devices.jsx` `NetworkDevicesOverview` via `fetchBranchTelemetry` |
 | Capability helpers | `src/devices/index.js` |
 | Manager toggles | `BranchDashboard.jsx` → `saveBranch` device_settings |
-| Presence / heartbeat | `useBranchHeartbeat.js`, `migrate_branch_presence.sql` |
+| Presence / heartbeat | `useBranchHeartbeat.js` (cashiers only), `migrate_branch_presence.sql` |
+
+Cashiers and supervisors report presence + device stubs every 45s. Manager Devices treats a till as
+offline when that heartbeat is older than 3 minutes (`DEVICE_STALE_MS`). Enable/disable
+stays on the branch dashboard; Devices is status only.
 
 UI copy: when manager enables a device, show **Enabled by manager · Connected/Not connected** (not stale “Disabled”).
 
@@ -1183,6 +1249,7 @@ UI copy: when manager enables a device, show **Enabled by manager · Connected/N
 | Overview | `/` (manager) | `manager/Overview.jsx` |
 | Branches | `/manager/branches` | `manager/Branches.jsx` |
 | Branch detail | `/manager/branches/:id` | `manager/BranchDashboard.jsx` |
+| Devices (network status) | `/settings/devices` | `Devices.jsx` (manager/master view) |
 | Staff | `/manager/staff` | `manager/Staff.jsx` |
 | Shifts | `/manager/shifts` | `Shifts.jsx` (manager mode) |
 | Data / catalog | `/manager/data` | `manager/Data.jsx` |
@@ -1212,6 +1279,13 @@ PBKDF2 verifier the lock screen uses (`src/utils/unlockVerifier.js`), not a live
 sign-in, so it still works offline. Only gated for `hasSupabase` — the local demo fallback
 skips the check (nothing real to protect).
 
+**Cashier / supervisor till PIN** is exactly **6 digits** (no letters/symbols). Rules and
+helpers live in `src/utils/pin.js` (`sanitizePinInput`, `validateComplexPin` name kept for
+call-site stability, `randomComplexPin`, `PIN_RULES_HINT`). Enforced on Staff create/edit;
+login (`signInWithPin`), `SupervisorApprove` / `SupervisorPinWait`, and lock-screen PIN mode
+strip input to digits. **Generate** on the staff form emits a random 6-digit PIN. Manager+
+still use email + password. Legacy complex PINs must be reset to 6 digits before login.
+
 ### Dashboard metrics: Sales performance / Payment & cash impact / Audit
 
 All three dashboards a manager or supervisor lands on — `manager/Overview.jsx`
@@ -1229,6 +1303,17 @@ disagree between screens:
   product bootstrap.
 - Login/`loadBranch` paints POS from `bootstrapPosCatalog` first, then completes sync via
   `bootstrapBranchData` (catalog + activity in parallel for IndexedDB).
+- **Bootstrap tiers:** `bootstrapPosCatalog` (products + branch fiscal header only) →
+  `bootstrapBranchInventory` (catalog + movements, no txs/day-ends) → `bootstrapBranchData`
+  (full offline snapshot). Inventory page reload uses `fetchBranchProducts`; Promos editor
+  uses `bootstrapPosCatalog`. Branch dashboard initial load runs branches + full bootstrap
+  in parallel, then one `Promise.all` wave for day ops. Promo history stats use
+  `fetchPromoSalesStatsSummary` with `utils/mapLimit.js` (concurrency 3); Sales modal
+  detail uses `fetchPromoSalesStats`. Spreadsheet I/O: `src/lib/xlsxLoader.js` (lazy
+  `@e965/xlsx`, safe `read` defaults).
+- **Resilience:** `AppErrorBoundary` (root), `lazyWithRetry` on route chunks (one hard
+  reload on chunk failure), `useCompactChrome` + `compact:` layout for touch devices in
+  desktop-site mode, `DesktopModeHint` banner.
 - POS promo reads no longer call `expireEndedPromos` (write-on-read); manager promo screens
   still sweep. Display truth is `promoHasEnded` / `promoEffectiveStatus` (`status` only —
   `promo_events.is_active` was dropped in `migrate_schema_cleanup_v1.sql`).
@@ -1400,6 +1485,7 @@ Do not delete `src/utils/ulam.js` (`lineTotal` is shared with retail).
 | Unique login codes | `migrate_staff_login_code_unique.sql` |
 | PIN auth fix | `migrate_fix_pin_login_auth.sql` |
 | BIR / sale immutability | `migrate_bir_pos_compliance.sql` |
+| Offline OR reserve on sync | `migrate_offline_or_reserve.sql` (`reserve_or_number`) |
 | Refunds | `migrate_refund_sale_items.sql`, `migrate_refund_amount_on_transactions.sql` |
 | Import batches (managers + branch staff write) | `migrate_import_batches.sql`, `migrate_import_batches_branch_staff.sql` |
 | Ulam / restaurant | `migrate_ulam_ordering.sql` |
@@ -1417,7 +1503,10 @@ Do not delete `src/utils/ulam.js` (`lineTotal` is shared with retail).
 | Promo auto-expire | `migrate_promo_auto_expire.sql` |
 | VAT breakdown (BIR) | `migrate_vat_breakdown.sql` |
 | Realtime (live POS/notification updates) | `migrate_enable_realtime.sql`, `migrate_realtime_broadcast_v1.sql` |
+| Function `search_path` pin | `migrate_function_search_path_v1.sql` |
+| Duplicate-index drop + hot FK indexes + RLS initplan | `migrate_perf_fk_indexes_v1.sql` |
 | Company TIN + per-branch BIR branch code | `migrate_company_tin.sql` |
+| Idle auto-lock minutes (5/10/15) | `migrate_idle_lock_minutes.sql` |
 | Petty cash `fulfilled` state (+ rewrites `close_staff_shift`/`shift_cash_summary`) | `migrate_petty_cash_fulfilment.sql` |
 | Master force sign-out of a stuck session | `migrate_admin_session_release.sql` |
 
@@ -1429,11 +1518,18 @@ Run migrations in the Supabase SQL editor; respect comments about order / depend
 column-level, so any policy letting a role SELECT a staff row lets it read that row's PIN.
 That is why supervisors read the roster through `branch_staff_roster()`
 (`migrate_branch_staff_roster.sql`) — a definer function with an explicit safe column list —
-rather than a widened `read staff` policy. Never "simplify" it into a policy change, and
-never add a secret column to that function's select list.
+rather than a widened `read staff` policy. Managers reveal a till PIN only through
+`reveal_staff_pin()` (`migrate_reveal_staff_pin.sql`), not a client-side `SELECT login_pin`.
+Client-callable SECURITY DEFINER RPCs must enforce scope in-function — see
+`migrate_security_definer_hardening_v1.sql` and `supabase/audit_security.sql` §4.
+Public functions should `SET search_path = public` (`migrate_function_search_path_v1.sql`;
+audit §7).
+Never "simplify" it into a policy change, and never add a secret column to the roster
+function's select list.
 
 **Schema cleanup (`migrate_schema_cleanup_v1.sql`):** `promo_events.is_active` removed
-(status-only); duplicate `(branch_id, client_id)` unique index dropped; dormant
+(status-only); duplicate `(branch_id, client_id)` unique index dropped (re-drop in
+`migrate_perf_fk_indexes_v1.sql` if `migrate_sale_dedupe_hardening.sql` was re-run); dormant
 `closed_without_supervisor` / `acknowledge_shift_review` removed; `refund_requests` has no
 client UPDATE policy (RPC-only mutations); `sale_events`/`audit_events` RLS uses
 `is_manager()` / `current_staff_branch()`. App: `voidSale` is RPC-only; cash drawer reads
@@ -1459,14 +1555,22 @@ client UPDATE policy (RPC-only mutations); `sale_events`/`audit_events` RLS uses
 | Inventory stock adjust | `Products.jsx` |
 | Who lands where after login | `nav.js` `staffHomePath`, `Login.jsx` |
 | Who can open a page | `roles.js` + `App.jsx` gates |
-| Sidebar links | `nav.js` + `Shell.jsx` |
+| Sidebar links | `nav.js` + `Shell.jsx` + `SidebarNav.jsx`; drag order in `utils/navOrder.js` |
+| Settings (company TIN, VAT, auto-lock, security activity, sync) | `pages/Settings.jsx` + `pages/settings/*` + `utils/sessionPolicy.js` |
+| Terms / Privacy Policy | `pages/Legal.jsx` + `src/legal/{meta,terms,privacy}.js` — public `/legal/terms` and `/legal/privacy`; linked from Login and Settings → About |
+| Network device status (manager/master) | `pages/Devices.jsx` + `api.fetchBranchTelemetry` |
+| Staff roster / shift log / hours | `manager/Staff.jsx` (merged tab) |
 | Refund totals | `TransactionDetailModal.jsx` + refund migrations |
 | Day-end cash / Drawer Activity | `DayEnd.jsx`, `DrawerActivity.jsx` |
+| Branch day-end closing detail | `BranchDashboard.jsx` + `dayend/DayEndClosingDetail.jsx` |
+| Reprint a branch receipt | `BranchDashboard.jsx` Recent receipts → `TransactionDetailModal` Print |
 | POS Open Drawer (petty/pickup) | `OpenDrawer.jsx`, `POS.jsx` |
 | Cart line remove approval | `CartRemoveApprove.jsx`, `SupervisorPinWait.jsx` |
 | Cash movements (Open Drawer) | `components/pos/OpenDrawer.jsx`, `components/dayend/DrawerActivity.jsx` |
 | Staff roster / shift log / hours | `manager/Staff.jsx` (merged tab) |
-| TIN on receipts / reports | `api.composeTin` + `fetchBranches` `full_tin` |
+| Staff create/edit modal / till PIN | `manager/Staff.jsx` + `utils/pin.js` (6-digit PIN); Modal `footer` in `ui/index.jsx` |
+| Modal scroll vs action bar | `components/ui/index.jsx` (`Modal` / `ModalActions` / optional `footer`) |
+| TIN on receipts / reports | `api.composeTin` + `fetchBranches` `full_tin`; edit company TIN in Settings → Business Information |
 | Stuck "already signed in" | `api.fetchActiveSessions` / `forceReleaseStaffSession` |
 | Receipt layout | `receipt.js` |
 | New report | `manager/Reports.jsx` |
@@ -1478,9 +1582,9 @@ client UPDATE policy (RPC-only mutations); `sale_events`/`audit_events` RLS uses
 
 | Role | Login | Main areas |
 |------|-------|------------|
-| Cashier | PIN | POS, Transactions, Inventory (view/adjust), Day end, Devices |
-| Supervisor | PIN | Same + Shifts (branch) + **Products `/data`** (add/import) |
-| Manager | Email | Overview, Branches, Staff, Shifts (all), Data, Reports |
+| Cashier | PIN (6 digits) | POS, Transactions, Inventory (view/adjust), Day end, Devices |
+| Supervisor | PIN (6 digits) | Same + Shifts (branch) + **Products `/data`** (add/import) |
+| Manager | Email | Overview, Branches, Staff, Devices (network status), Data, Reports |
 | Master | Email | Manager + staff routes combined (sole top account; `admin` role retired) |
 
 ---
@@ -1723,7 +1827,7 @@ exactly why some products discounted correctly and others never did. Fixed three
 - **Cart** (`src/components/pos/Cart.jsx`): no longer takes a single `promoLabel` prop — it derives the discount label itself from `computePromoDiscounts`' `appliedEventNames` (joined, e.g. "Valentines + Payday Sale"), and per-line breakdown rows show the actual promo that won that line via `linePromoNames`. The "Promo ended — … Re-quote" banner only fires when an event name that was pricing a still-present line has left the live `promoRules` set (real expire/stop) — not when removing a line or breaking a BOGO/bundle threshold merely drops eligibility on remaining items.
 - **Promos UI** (`src/pages/manager/Promos.jsx`): `activeEvents` (array, was `active` singular) renders one card per live promo with its own Stop/Approve-stop controls. `managingId` + `managedEvent` track which live event's rules/sales-stats panel is currently shown ("Manage rules" button per card); a fresh pending draft (`workingEvent`) always takes priority for rule-building over an already-live event, so creating promo B while promo A is still live doesn't block adding rules to B.
 
-**Mixed-cart reporting fix:** `transactions.discount_type` is still a single text column (joined label like "Promo A + Promo B" when a cart mixes promos) — exact-matching that per promo would undercount mixed carts. Fixed via **per-line attribution**: `migrate_promo_line_attribution.sql` adds `transaction_items.promo_name` (which promo won that specific line, null for PWD/Senior/undiscounted). `src/lib/api.js` `fetchPromoSalesStats` now attributes by that column (prefilters candidate receipts by branch/date/`discount_amount > 0`, then matches lines by `promo_name = promoName`) instead of matching the whole transaction's `discount_type`. `fetchPromoSalesStatsLegacy` (same file) is the pre-migration fallback and is used automatically if the `promo_name` column doesn't exist yet.
+**Mixed-cart reporting fix:** `transactions.discount_type` is still a single text column (joined label like "Promo A + Promo B" when a cart mixes promos) — exact-matching that per promo would undercount mixed carts. Fixed via **per-line attribution**: `migrate_promo_line_attribution.sql` adds `transaction_items.promo_name` (which promo won that specific line, null for PWD/Senior/undiscounted). `src/lib/api.js` `fetchPromoSalesStats` attributes by that column (paged query on `transaction_items` with `promo_name = promoName` + branch/date join on `transactions`, then derives receipts from matched lines) instead of scanning up to 1000 discounted receipts first. Sales drill-down groups lines into **offers** (`aggregatePromoSalesOffers` in `utils/promo.js`) — bundle name, Buy 1 take 1, pair, item % — using `promo_group_id` + event rules, not a flat SKU list. `fetchPromoSalesStatsLegacy` (same file) is the pre-migration fallback and is used automatically if the `promo_name` column doesn't exist yet.
 - **Cart** (`Cart.jsx`): tags each checkout line with `promoName` (from `computePromoDiscounts`' `linePromoNames`) before calling `addTransaction`.
 - **Store** (`posStore.js` `addTransaction`): passes `promoName` through to the `QUEUE_TYPES.COMPLETE_SALE` payload.
 - **API** (`api.js` `completeSale`): writes `transaction_items.promo_name`; falls back to omitting the column (like the existing `price_tier` fallback) on old schemas.

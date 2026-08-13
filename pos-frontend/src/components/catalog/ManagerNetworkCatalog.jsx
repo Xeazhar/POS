@@ -54,16 +54,7 @@ import ImportPreviewLines from '../shared/ImportPreviewLines'
 import { categoryForMenuKind, hasBudgetTier, MENU_KINDS } from '../../utils/ulam'
 import { decimalOnly, digitsOnly, sanitizeText } from '../../utils/validate'
 
-/**
- * xlsx is ~410KB — the single largest chunk in the app. It is only needed the moment
- * someone actually picks a spreadsheet or exports one, which most sessions never do,
- * so it is loaded on demand instead of riding along with this page's bundle.
- */
-let xlsxPromise = null
-function loadXlsx() {
-  if (!xlsxPromise) xlsxPromise = import('xlsx')
-  return xlsxPromise
-}
+import { readSpreadsheetBuffer, loadXlsx } from '../../lib/xlsxLoader'
 
 const PAGE_SIZE = 12
 
@@ -85,8 +76,10 @@ const emptyForm = (branchType = 'retail') => ({
 })
 
 /**
- * Manager Data — network / universal product catalog.
- * Manual add creates catalog_products; branches adopt via supervisor Catalog.
+ * Manage the shared network product catalog that branches can adopt.
+ *
+ * Supports adding, importing, exporting, filtering, editing, and synchronizing
+ * retail and restaurant catalog items.
  */
 export default function ManagerNetworkCatalog() {
   const user = useAuthStore((state) => state.user)
@@ -230,8 +223,8 @@ export default function ManagerNetworkCatalog() {
     try {
       const buf = await file.arrayBuffer()
       await sha256Hex(buf)
+      const wb = await readSpreadsheetBuffer(buf)
       const XLSX = await loadXlsx()
-      const wb = XLSX.read(buf, { type: 'array' })
       const rawRows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' })
       const format = validateImportHeaders(rawRows, { restaurant: isRestaurant, mode: 'catalog' })
       if (!format.ok) {

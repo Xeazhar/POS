@@ -18,7 +18,7 @@ import {
 } from '../ui'
 import {
   adoptCatalogProducts,
-  bootstrapBranchData,
+  bootstrapPosCatalog,
   fetchCatalogProducts,
   hasSupabase,
   updateProductRow,
@@ -37,9 +37,7 @@ import { formatSupportError } from '../../utils/errors'
 const PAGE_SIZE = 10
 
 /**
- * Supervisor Catalog — same branch product table as before.
- * "Add item" opens a picker from the network catalog (filtered by branch type).
- * No manual field form, no CSV import (import lives on Inventory).
+ * Manage products assigned to a supervisor's branch and add products from the branch-type network catalog.
  */
 export default function SupervisorCatalogAdopt() {
   const user = useAuthStore((s) => s.user)
@@ -82,7 +80,7 @@ export default function SupervisorCatalogAdopt() {
     }
     try {
       const [branch, catRows] = await Promise.all([
-        withTimeout(bootstrapBranchData(user.branchId), 15000, 'Branch catalog'),
+        withTimeout(bootstrapPosCatalog(user.branchId), 15000, 'Branch catalog'),
         withTimeout(fetchCatalogProducts({ branchType }), 15000, 'Network catalog'),
       ])
       setProducts(branch.products || [])

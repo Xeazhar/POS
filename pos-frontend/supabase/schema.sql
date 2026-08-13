@@ -45,7 +45,7 @@ create table if not exists staff (
   full_name text not null,
   role text not null references roles(name) on update cascade on delete restrict,
   is_active boolean not null default true,
-  -- Till login (cashiers / supervisors): numeric staff code + complex PIN
+  -- Till login (cashiers / supervisors): numeric staff code + 6-digit PIN
   login_code text,
   login_pin text,
   auth_secret text,

@@ -54,6 +54,16 @@ export function normalizeDeviceSettings(raw) {
   return next
 }
 
+/** Heartbeat is 45s; treat a till/device as gone if nothing landed for this long. */
+export const DEVICE_STALE_MS = 3 * 60 * 1000
+
+export function isTelemetryFresh(iso, now = Date.now()) {
+  if (!iso) return false
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return false
+  return now - t < DEVICE_STALE_MS
+}
+
 export function isDeviceEnabled(settings, keyOrId) {
   const normalized = normalizeDeviceSettings(settings)
   const key =

@@ -6,11 +6,14 @@ import { usesPinLogin } from '../../utils/roles'
 import { sanitizePinInput } from '../../utils/pin'
 import { clearUnlockFailures, getUnlockLockout, recordUnlockFailure } from '../../offline/session'
 import { Eyebrow, Field, PrimaryButton, SecondaryButton, ErrorBanner } from '../ui'
+import { CredentialAutofillTrap, secureFormProps } from './SecureCredential'
 
 /**
- * Full-screen lock — keeps auth session + shift + cart intact.
- * Unlock with till PIN (cashier/supervisor) or account password (manager/admin).
- * No Turnstile: this is not a new sign-in.
+ * Displays a full-screen lock interface that preserves the current session, shift, and cart.
+ * Supports PIN authentication for PIN-based roles and account-password authentication for other roles.
+ * @param {Function} onUnlock - Callback invoked after successful authentication.
+ * @param {Function} onLogout - Callback invoked when the user signs out completely.
+ * @return {JSX.Element} The lock screen interface.
  */
 function LockScreen({ onUnlock, onLogout }) {
   const user = useAuthStore((s) => s.user)
@@ -99,20 +102,19 @@ function LockScreen({ onUnlock, onLogout }) {
 
       <form
         onSubmit={unlock}
-        className="w-full max-w-xs rounded-xl bg-white p-5 text-brand-ink shadow-lg"
-        autoComplete="off"
-        data-lpignore="true"
-        data-1p-ignore="true"
+        className="relative w-full max-w-xs rounded-xl bg-white p-5 text-brand-ink shadow-lg"
+        {...secureFormProps}
       >
+        <CredentialAutofillTrap />
         <Eyebrow>UNLOCK</Eyebrow>
         <h2 className="mb-3 text-lg">{pinMode ? 'Enter your PIN' : 'Enter your password'}</h2>
         <Field
           label={pinMode ? 'PIN' : 'Password'}
           name="cale-unlock-secret"
-          type="password"
-          autoComplete="new-password"
-          data-lpignore="true"
-          data-1p-ignore="true"
+          noSave
+          secret
+          inputMode={pinMode ? 'numeric' : undefined}
+          maxLength={pinMode ? 6 : undefined}
           value={secret}
           onChange={(e) =>
             setSecret(pinMode ? sanitizePinInput(e.target.value) : e.target.value)

@@ -1,14 +1,65 @@
+import { Children, cloneElement, isValidElement } from 'react'
 import { FiX } from 'react-icons/fi'
 import { isKnownErrorCode, saleImpactGuidance } from '../../utils/errors'
 
-export function PrimaryButton({ className = '', compact = false, children, ...props }) {
+/**
+ * Separates modal action elements from the rest of the children.
+ * @param {React.ReactNode} children - The modal content to partition.
+ * @returns {{body: React.ReactNode[], actions: React.ReactNode[]}} The regular content and modal action elements.
+ */
+function splitModalActions(children) {
+  const items = Children.toArray(children)
+  const body = []
+  const actions = []
+  for (const child of items) {
+    if (
+      isValidElement(child) &&
+      (child.type === ModalActions || child.type?.displayName === 'ModalActions')
+    ) {
+      actions.push(child)
+    } else {
+      body.push(child)
+    }
+  }
+  return { body, actions }
+}
+
+/**
+ * Derive tooltip text for a shared button from its explicit label sources or string content.
+ * @param {Object} options - Button label and tooltip values.
+ * @param {string} [options.tooltip] - Explicit tooltip text.
+ * @param {string} [options.title] - Fallback title text.
+ * @param {*} [options.children] - Button content used as a fallback when it is a string.
+ * @param {string} [options['aria-label']] - Accessible label used as a fallback.
+ * @return {string|undefined} The selected tooltip text, or `undefined` when no text is available.
+ */
+function buttonTooltip({ tooltip, title, children, 'aria-label': ariaLabel }) {
+  if (tooltip) return tooltip
+  if (title) return title
+  if (ariaLabel) return ariaLabel
+  if (typeof children === 'string') return children
+  return undefined
+}
+
+/**
+ * Renders a primary-styled button with optional compact sizing and tooltip text.
+ * @param {string} [className=''] - Additional CSS classes for the button.
+ * @param {boolean} [compact=false] - Whether to use the compact button layout.
+ * @param {string} [tooltip] - Explicit tooltip text.
+ * @param {string} [title] - Fallback tooltip text.
+ * @return {JSX.Element} The styled button element.
+ */
+export function PrimaryButton({ className = '', compact = false, tooltip, title, children, ...props }) {
+  const tip = buttonTooltip({ tooltip, title, children, 'aria-label': props['aria-label'] })
   return (
     <button
-      className={`inline-flex items-center justify-center gap-2 rounded-[5px] border-0 bg-brand-gold font-bold text-brand-dark hover:brightness-105 active:brightness-97 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:brightness-100 ${
+      className={`inline-flex items-center justify-center gap-2 rounded-[5px] border-0 bg-brand-gold font-semibold text-brand-dark hover:brightness-105 active:brightness-97 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:brightness-100 ${
         compact
           ? 'h-10 w-auto min-w-0 px-3 text-xs whitespace-nowrap max-[700px]:h-9 max-[700px]:px-2.5 max-[700px]:text-[11px]'
           : 'w-full px-4 py-[13px] max-[700px]:px-3 max-[700px]:py-3 max-[700px]:text-sm'
       } ${className}`}
+      title={tip}
+      data-tooltip={tip}
       {...props}
     >
       {children}
@@ -16,14 +67,25 @@ export function PrimaryButton({ className = '', compact = false, children, ...pr
   )
 }
 
-export function SecondaryButton({ className = '', compact = false, children, ...props }) {
+/**
+ * Render a secondary-styled button with optional compact sizing and tooltip text.
+ * @param {string} [className=''] - Additional CSS classes.
+ * @param {boolean} [compact=false] - Whether to use compact button dimensions.
+ * @param {string} [tooltip] - Explicit tooltip text.
+ * @param {string} [title] - Fallback tooltip text.
+ * @param {React.ReactNode} children - Button content.
+ */
+export function SecondaryButton({ className = '', compact = false, tooltip, title, children, ...props }) {
+  const tip = buttonTooltip({ tooltip, title, children, 'aria-label': props['aria-label'] })
   return (
     <button
-      className={`inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-brand-n400 bg-brand-n100 font-bold text-brand-n800 hover:bg-brand-n200 hover:border-brand-n400 active:bg-brand-n300 disabled:cursor-not-allowed disabled:opacity-35 ${
+      className={`inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-brand-n400 bg-brand-n100 font-semibold text-brand-n800 hover:bg-brand-n200 hover:border-brand-n400 active:bg-brand-n300 disabled:cursor-not-allowed disabled:opacity-35 ${
         compact
           ? 'h-10 w-auto min-w-0 px-3 text-xs whitespace-nowrap max-[700px]:h-9 max-[700px]:px-2.5 max-[700px]:text-[11px]'
           : 'px-3.5 py-[11px] max-[700px]:px-3 max-[700px]:text-sm'
       } ${className}`}
+      title={tip}
+      data-tooltip={tip}
       {...props}
     >
       {children}
@@ -31,21 +93,79 @@ export function SecondaryButton({ className = '', compact = false, children, ...
   )
 }
 
-export function Field({ label, className = '', inputClassName = '', ...props }) {
+/**
+ * Render an icon-only button with an accessible label and derived tooltip.
+ * @param {string} label - The accessible label for the button.
+ * @param {string} [tooltip] - Optional tooltip text.
+ * @param {string} [title] - Optional title text used as a tooltip fallback.
+ * @param {string} [className=''] - Additional CSS classes.
+ */
+export function IconButton({ label, tooltip, title, className = '', children, ...props }) {
+  const tip = buttonTooltip({ tooltip, title, 'aria-label': label, children })
   return (
-    <label className={`block text-[11px] font-bold text-brand-n700 ${className}`}>
+    <button
+      type="button"
+      className={className}
+      aria-label={label}
+      title={tip ?? label}
+      data-tooltip={tip ?? label}
+      {...props}
+    >
+      {children}
+    </button>
+  )
+}
+
+/**
+ * Render a labeled text input with optional secure-entry and anti-autofill behavior.
+ * @param {string} label - The label displayed above the input.
+ * @param {boolean} noSave - Whether to discourage browser and password-manager autofill.
+ * @param {boolean} secret - Whether to render the input as a secure-entry field.
+ * @returns {JSX.Element} The labeled input element.
+ */
+export function Field({ label, className = '', inputClassName = '', noSave = false, secret = false, onFocus, type, ...props }) {
+  const handleFocus = (e) => {
+    if (noSave) e.target.removeAttribute('readonly')
+    onFocus?.(e)
+  }
+
+  const antiSaveProps = noSave
+    ? {
+        readOnly: true,
+        onFocus: handleFocus,
+        autoComplete: 'off',
+        'data-lpignore': 'true',
+        'data-1p-ignore': 'true',
+        'data-bwignore': 'true',
+        'data-form-type': 'other',
+      }
+    : {}
+
+  const inputType = secret ? 'text' : type
+
+  return (
+    <label className={`block text-[11px] font-medium text-brand-n700 ${className}`}>
       {label}
       <input
-        className={`mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px] font-normal outline-none ${inputClassName}`}
+        className={`mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px] font-normal outline-none ${secret ? 'secure-secret-input ' : ''}${inputClassName}`}
+        type={inputType}
+        {...antiSaveProps}
         {...props}
       />
     </label>
   )
 }
 
+/**
+ * Render a labeled select control with shared styling.
+ * @param {string} label - The text displayed above the select control.
+ * @param {string} [className=''] - Additional classes applied to the label container.
+ * @param {React.ReactNode} children - The select options or other contents.
+ * @returns {JSX.Element} The labeled select control.
+ */
 export function SelectField({ label, className = '', children, ...props }) {
   return (
-    <label className={`block text-[11px] font-bold text-brand-n700 ${className}`}>
+    <label className={`block text-[11px] font-medium text-brand-n700 ${className}`}>
       {label}
       <select
         className="mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px] font-normal outline-none"
@@ -57,15 +177,27 @@ export function SelectField({ label, className = '', children, ...props }) {
   )
 }
 
+/**
+ * Renders uppercase introductory text above a heading.
+ * @param {React.ReactNode} children - The introductory content.
+ * @param {string} [className=''] - Additional CSS classes.
+ */
 export function Eyebrow({ children, className = '' }) {
   return (
-    <p className={`mb-2 text-[10px] font-bold tracking-[1.4px] text-brand-eyebrow uppercase ${className}`}>
+    <p className={`mb-2 text-[10px] font-semibold tracking-[1.4px] text-brand-eyebrow uppercase ${className}`}>
       {children}
     </p>
   )
 }
 
-/** Panel section title — clean type above card content. */
+/**
+ * Render a titled panel header with optional subtitle, metadata, and tone styling.
+ * @param {string} title - The panel title.
+ * @param {string} [subtitle] - Supporting text displayed below the title.
+ * @param {*} [meta] - Metadata displayed alongside the title.
+ * @param {string} [className=''] - Additional CSS classes for the header.
+ * @param {'default'|'warn'|'danger'} [tone='default'] - Text tone applied to the title.
+ */
 export function SectionHeading({ title, subtitle, meta, className = '', tone = 'default' }) {
   const accent =
     tone === 'warn'
@@ -78,7 +210,7 @@ export function SectionHeading({ title, subtitle, meta, className = '', tone = '
       className={`flex items-end justify-between gap-3 border-b border-brand-line bg-white px-4 py-3.5 ${className}`}
     >
       <div className="min-w-0">
-        <h2 className={`m-0 text-lg font-bold tracking-[-0.02em] ${accent}`}>{title}</h2>
+        <h2 className={`m-0 text-lg font-semibold tracking-[-0.02em] ${accent}`}>{title}</h2>
         {subtitle ? (
           <p className="m-0 mt-1 text-[12px] leading-snug text-brand-muted">{subtitle}</p>
         ) : null}
@@ -103,12 +235,12 @@ export function PageHeader({ eyebrow, title, children, className = '' }) {
 }
 
 /**
- * Search input.
+ * Render a search input with an optional aligned label and clear control.
  *
- * `label` exists so a search box can sit in a filter row next to `SelectField`s and line
- * up with them. Without it the labelled controls carry ~18px of label above the input and
- * the search box does not, so the row reads as two different heights. When labelled, the
- * box is `h-10` — the exact height a `SelectField` select renders at (`p-2.5 text-[13px]`).
+ * @param {React.ReactNode} icon - Icon displayed before the input.
+ * @param {string} [className=''] - Additional styling classes.
+ * @param {React.ReactNode} [label] - Optional label displayed above the input.
+ * @returns {React.ReactElement} The search input component.
  */
 export function SearchBox({ icon, className = '', label = null, ...props }) {
   const { value, onChange } = props
@@ -147,7 +279,7 @@ export function SearchBox({ icon, className = '', label = null, ...props }) {
   )
   if (!label) return box
   return (
-    <label className={`block text-[11px] font-bold text-brand-n700 ${className}`}>
+    <label className={`block text-[11px] font-medium text-brand-n700 ${className}`}>
       {label}
       {box}
     </label>
@@ -312,16 +444,15 @@ export function varianceToneClass(variance) {
 }
 
 /**
- * Period-over-period change badge for a KPI ("+12.4%" against last week).
+ * Displays the percentage change between the current and previous periods.
  *
- * Designed to sit on the dark KPI cards, so the tones are the on-dark status colours.
+ * Shows “New” when no comparable period exists or the previous value is zero.
  *
- * Two cases deliberately do NOT get a percentage:
- *   - No prior period at all (a new shop's first week). 0 → 200 is not "+∞%" or "+100%",
- *     it is simply the first data there has ever been, so it reads "New".
- *   - Previous period existed but was exactly zero revenue. Same divide-by-zero problem.
- * Both are shown as neutral, because inventing a number here would put a green arrow on
- * a shop that has no trend to report.
+ * @param {*} current - The current period value.
+ * @param {*} previous - The previous period value.
+ * @param {boolean} [hasPrevious=true] - Whether a comparable previous period exists.
+ * @param {string} [className=''] - Additional CSS classes.
+ * @return {JSX.Element} A badge showing the period change or “New”.
  */
 export function DeltaBadge({ current, previous, hasPrevious = true, className = '' }) {
   const cur = Number(current) || 0
@@ -358,22 +489,87 @@ export function DeltaBadge({ current, previous, hasPrevious = true, className = 
   )
 }
 
-export function Modal({ wide = false, xl = false, layer = false, className = '', onClose, children }) {
-  // `xl` is for content that genuinely needs two columns (checkout). Cramming a long
-  // breakdown into the 460px `wide` column made it scroll under the sticky action bar.
+/**
+ * Renders a responsive dialog with scrollable content and an optional fixed footer.
+ * Explicit footer content takes precedence over action elements provided as children.
+ * @param {Object} props - Dialog configuration and content.
+ * @param {boolean} [props.wide=false] - Uses a wider dialog layout.
+ * @param {boolean} [props.xl=false] - Uses the extra-wide dialog layout.
+ * @param {boolean} [props.layer=false] - Places the dialog above standard modal layers.
+ * @param {string} [props.className=''] - Additional CSS classes for the dialog panel.
+ * @param {Function} [props.onClose] - Called when the close button is selected.
+ * @param {React.ReactNode} [props.footer=null] - Explicit footer content.
+ * @param {React.ReactNode} props.children - Dialog content.
+ * @returns {JSX.Element} The rendered dialog.
+ */
+export function Modal({
+  wide = false,
+  xl = false,
+  layer = false,
+  className = '',
+  onClose,
+  footer = null,
+  children,
+}) {
+  // `xl` is for content that genuinely needs two columns (checkout).
+  // Actions are pinned below the scroll body so long forms (Edit staff) never clip
+  // fields under Cancel/Save. Panel uses min-h-0 + dvh max-height — without min-h-0,
+  // flex default min-height:auto ignores max-height and the dialog overflows the viewport.
   const width = xl
     ? 'sm:w-[min(920px,100%)]'
     : wide
       ? 'sm:w-[min(460px,100%)]'
       : 'sm:w-[min(420px,100%)]'
+
+  const childList = Children.toArray(children)
+  const sole = childList.length === 1 && isValidElement(childList[0]) ? childList[0] : null
+  // Prefer an explicit `footer` prop. Otherwise pull ModalActions out of children
+  // (including when wrapped in a single <form> so type=submit still works).
+  let panelBody
+  const scrollClass =
+    'min-h-0 flex-1 overflow-y-auto overscroll-contain p-5 max-[700px]:p-4'
+
+  if (footer) {
+    panelBody = (
+      <>
+        <div className={scrollClass}>{children}</div>
+        {footer}
+      </>
+    )
+  } else {
+    const formSplit =
+      sole && sole.type === 'form' ? splitModalActions(sole.props.children) : null
+    const topSplit = formSplit ? null : splitModalActions(children)
+    if (formSplit) {
+      const formClass = [sole.props.className, 'flex min-h-0 flex-1 flex-col overflow-hidden']
+        .filter(Boolean)
+        .join(' ')
+      panelBody = cloneElement(
+        sole,
+        { className: formClass },
+        <>
+          <div className={scrollClass}>{formSplit.body}</div>
+          {formSplit.actions}
+        </>,
+      )
+    } else {
+      panelBody = (
+        <>
+          <div className={scrollClass}>{topSplit.body}</div>
+          {topSplit.actions}
+        </>
+      )
+    }
+  }
+
   return (
     <div
-      className={`fixed inset-0 flex items-center justify-center bg-brand-scrim p-3 max-[700px]:items-end max-[700px]:p-0 max-[700px]:pt-8 ${
+      className={`fixed inset-0 flex min-h-0 items-center justify-center bg-brand-scrim p-3 max-[700px]:items-end max-[700px]:p-0 max-[700px]:pt-8 ${
         layer ? 'z-[6]' : 'z-[4]'
       }`}
     >
       <div
-        className={`relative flex max-h-full w-full flex-col overflow-hidden rounded-[10px] bg-white max-[700px]:max-h-[min(100%,calc(100dvh-2rem))] max-[700px]:rounded-b-none max-[700px]:rounded-t-[12px] ${width} ${className}`}
+        className={`relative flex max-h-[calc(100dvh-1.5rem)] min-h-0 w-full flex-col overflow-hidden rounded-[10px] bg-white max-[700px]:max-h-[min(100%,calc(100dvh-2rem))] max-[700px]:rounded-b-none max-[700px]:rounded-t-[12px] ${width} ${className}`}
       >
         {onClose && (
           <button
@@ -385,23 +581,27 @@ export function Modal({ wide = false, xl = false, layer = false, className = '',
             <FiX />
           </button>
         )}
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5 max-[700px]:p-4">
-          {children}
-        </div>
+        {panelBody}
       </div>
     </div>
   )
 }
 
+/**
+ * Render a responsive footer area for modal actions.
+ * @param {React.ReactNode} children - The controls to display in the action area.
+ * @param {string} [className=''] - Additional CSS classes.
+ */
 export function ModalActions({ children, className = '' }) {
   return (
     <div
-      className={`sticky bottom-0 -mx-5 -mb-1 mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-brand-softline bg-white px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-[700px]:-mx-4 max-[700px]:px-4 max-[700px]:[&>button]:min-w-0 max-[700px]:[&>button]:flex-1 ${className}`}
+      className={`flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-brand-softline bg-white px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-[700px]:px-4 max-[700px]:[&>button]:min-w-0 max-[700px]:[&>button]:flex-1 ${className}`}
     >
       {children}
     </div>
   )
 }
+ModalActions.displayName = 'ModalActions'
 
 /**
  * Shows a support code so staff can text/call you with the exact failure — and, when the
@@ -561,21 +761,35 @@ export function StockBadge({ tone, children }) {
   )
 }
 
-/** Clear on/off control — looks like a switch, not a text pill. */
+/**
+ * Renders an accessible switch control.
+ * @param {boolean} [checked=false] - Whether the switch is on.
+ * @param {boolean} [disabled=false] - Whether the switch is disabled.
+ * @param {boolean} [busy=false] - Whether the switch is temporarily unavailable.
+ * @param {function(boolean): void} [onChange] - Called with the next checked state.
+ * @param {string} [label='Toggle'] - Accessible label for the switch.
+ * @param {string} [tooltip] - Tooltip text displayed for the switch.
+ * @param {string} [className=''] - Additional CSS classes.
+ * @returns {JSX.Element} The switch control.
+ */
 export function ToggleSwitch({
   checked = false,
   disabled = false,
   busy = false,
   onChange,
   label = 'Toggle',
+  tooltip,
   className = '',
 }) {
+  const tip = tooltip ?? label
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      title={tip}
+      data-tooltip={tip}
       disabled={disabled || busy}
       onClick={() => onChange?.(!checked)}
       className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-0 p-0.5 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-55 ${

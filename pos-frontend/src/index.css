@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Touch/narrow chrome — see hooks/useCompactChrome.js (phones in “Desktop site” mode). */
+@custom-variant compact (.compact-chrome &);
+
 /*
   CalePOS design tokens.
 
@@ -124,7 +127,7 @@
   --color-brand-cart-input: #353b3a;
   --color-brand-cart-border: #59605d;
   --color-brand-label: #555b58;
-  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-sans: "Google Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 :root {
@@ -133,6 +136,22 @@
   background: var(--color-brand-canvas);
   font-synthesis: none;
   font-size: 15px;
+  font-weight: 400;
+  /* Type hierarchy — 400 body, 500 labels/meta, 600 UI controls, 700 page titles */
+  --font-weight-body: 400;
+  --font-weight-label: 500;
+  --font-weight-ui: 600;
+  --font-weight-heading: 700;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: var(--font-weight-heading);
+}
+
+strong {
+  font-weight: var(--font-weight-ui);
 }
 
 body {
@@ -253,4 +272,132 @@ input[type="number"] {
   display: none;
   width: 0;
   height: 0;
+}
+
+/* Post-login welcome splash */
+@keyframes login-intro-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes login-intro-logo {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.login-intro {
+  transition: opacity 0.4s ease;
+}
+
+.login-intro--out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.login-intro__logo-wrap {
+  margin-bottom: 0.5rem;
+}
+
+.login-intro__logo {
+  width: min(72vw, 280px);
+  max-height: min(40vh, 220px);
+  object-fit: contain;
+  border-radius: 12px;
+  background: #fff;
+  padding: 12px 16px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  animation: login-intro-logo 0.75s ease both;
+}
+
+.login-intro__eyebrow {
+  animation: login-intro-fade-up 0.55s ease both;
+}
+
+.login-intro__title {
+  animation: login-intro-fade-up 0.65s ease 0.12s both;
+}
+
+.login-intro__hello {
+  animation: login-intro-fade-up 0.55s ease 0.22s both;
+}
+
+.login-intro__foot {
+  animation: login-intro-fade-up 0.55s ease 0.35s both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-intro__logo,
+  .login-intro__eyebrow,
+  .login-intro__title,
+  .login-intro__hello,
+  .login-intro__foot {
+    animation: none;
+  }
+}
+
+/* Masked credential entry — type="text" so browsers do not offer save-password. */
+.secure-secret-input {
+  -webkit-text-security: disc;
+  text-security: disc;
+}
+
+/* Context tooltips — hover/focus on desktop; long-press shows native title on touch. */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]:not(:disabled):hover::after,
+[data-tooltip]:not(:disabled):focus-visible::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 60;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  max-width: min(240px, 70vw);
+  transform: translateX(-50%);
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: var(--color-brand-dark);
+  color: var(--color-brand-ondark);
+  font-size: 11px;
+  font-weight: var(--font-weight-label);
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgb(32 36 38 / 28%);
+}
+
+[data-tooltip]:not(:disabled):hover::before,
+[data-tooltip]:not(:disabled):focus-visible::before {
+  content: "";
+  position: absolute;
+  z-index: 60;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--color-brand-dark);
+  pointer-events: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  [data-tooltip]:not(:disabled):hover::after,
+  [data-tooltip]:not(:disabled):hover::before,
+  [data-tooltip]:not(:disabled):focus-visible::after,
+  [data-tooltip]:not(:disabled):focus-visible::before {
+    display: none;
+  }
 }

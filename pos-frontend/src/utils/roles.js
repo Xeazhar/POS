@@ -26,6 +26,10 @@ export const MODULES = [
   { id: 'manager_reports', label: 'Reports' },
 ]
 
+/** Settings is available to every signed-in role. Not listed in MODULES — it is not
+ *  optional per-person access the way Devices or Reports are. Manager-only *sections*
+ *  are gated inside the Settings page; RLS still owns writes. */
+
 const DEFAULTS = {
   // A cashier's job is: ring sales, look up a past sale, close the drawer. Nothing else.
   // Dashboard/Inventory/Devices used to be included, which meant every cashier could see
@@ -52,6 +56,7 @@ const DEFAULTS = {
     'manager_promos',
     'manager_reports',
     'shifts',
+    'devices',
     // A cashier's "request manager" day-end (no supervisor available) needs a manager to
     // reach the same Day End / Close Day screen a supervisor uses — see DayEnd.jsx.
     'day_end',
@@ -65,6 +70,7 @@ const DEFAULTS = {
     'manager_promos',
     'manager_reports',
     'shifts',
+    'devices',
     'day_end',
   ],
   master: [

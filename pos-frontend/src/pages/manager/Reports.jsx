@@ -55,16 +55,7 @@ import {
   reportCounters,
 } from '../../utils/terminalReports'
 
-/**
- * xlsx is ~410KB — the single largest chunk in the app. It is only needed the moment
- * someone actually picks a spreadsheet or exports one, which most sessions never do,
- * so it is loaded on demand instead of riding along with this page's bundle.
- */
-let xlsxPromise = null
-function loadXlsx() {
-  if (!xlsxPromise) xlsxPromise = import('xlsx')
-  return xlsxPromise
-}
+import { loadXlsx } from '../../lib/xlsxLoader'
 
 const TERMINAL_IDS = new Set(['x-read', 'z-read', 'cashier', 'department', 'plu'])
 

@@ -39,6 +39,8 @@ migrate_day_end_till_lock.sql
 migrate_branch_presence.sql
 migrate_price_change_history.sql
 migrate_bir_pos_compliance.sql
+migrate_offline_or_reserve.sql                 -- reserve_or_number: accept till-assigned OR
+                                                -- on sync without shrinking branches.or_next
 migrate_restaurant_branch.sql
 migrate_ulam_ordering.sql
 migrate_product_code.sql
@@ -82,6 +84,9 @@ migrate_shift_cash_void_fix.sql                -- fixes a voided cash sale wrong
 migrate_backfill_cash_drawer_shift_id.sql      -- one-off: attaches orphaned petty-cash/pickup rows to their shift
 migrate_admin_session_release.sql
 migrate_branch_staff_roster.sql
+migrate_reveal_staff_pin.sql                    -- needs migrate_branch_staff_roster.sql above; manager-only PIN reveal RPC
+migrate_security_definer_hardening_v1.sql       -- session/audit/price/promo RPC auth checks; run after session + audit migrations
+migrate_revoke_cash_movement_internal_grants.sql -- revoke EXECUTE on internal cash-movement definer helpers
 migrate_company_tin.sql
 migrate_promo_expired_status.sql
 migrate_day_end_supervisor_autoclose.sql       -- needs migrate_day_end_dual_control.sql above
@@ -144,6 +149,8 @@ migrate_cash_movement_cancel.sql               -- cancel_cash_movement — cashi
 migrate_cash_movement_resolve_flagged.sql      -- manager-only flagged → Resolved (confirmed)
 migrate_till_action_requests.sql               -- till_action_requests + RPCs; POS cart line
                                                 -- remove Notify manager (30s) / self-allow
+migrate_till_action_on_site_resolve.sql        -- needs migrate_notification_cleanup.sql;
+                                                -- cashier session clears alert after on-site PIN
 migrate_realtime_broadcast_v1.sql              -- private Broadcast topics; inventory
                                                 -- change_version; ops triggers; cashiers
                                                 -- cannot direct-write branch_inventory;
@@ -153,6 +160,14 @@ migrate_realtime_broadcast_v1.sql              -- private Broadcast topics; inve
 migrate_realtime_broadcast_policies.sql        -- optional: CREATE POLICY on
                                                 -- realtime.messages if main migrate
                                                 -- could not (Dashboard Realtime Auth ON)
+migrate_function_search_path_v1.sql            -- SET search_path = public on 9 invoker
+                                                -- helpers/triggers flagged by advisors;
+                                                -- safe to re-run
+migrate_perf_fk_indexes_v1.sql                 -- drop duplicate client_id / sku / barcode
+                                                -- indexes; hot FK indexes; wrap auth.uid()
+                                                -- in (select …) on read staff / audit RLS
+migrate_idle_lock_minutes.sql                  -- company_profile.idle_lock_minutes (5/10/15);
+                                                -- needs migrate_company_tin.sql
 ```
 
 **Dev wipe (optional, non-user data only):** `wipe_non_user_data.sql` truncates sales/inventory/promos/shifts/drawer while **keeping** `staff`, `branches`, `roles`, `company_profile`, and Auth users. Run on DEV before cleanup if you want a clean slate.
@@ -212,6 +227,6 @@ pin_login_attempts   ← lockout only (no client access; security definer RPCs)
 
 ## PIN security
 
-- Till PIN is complex (letters + numbers + symbols) — enforced in app UI.
+- Till PIN is exactly 6 digits (cashier/supervisor) — enforced in app UI (`src/utils/pin.js`).
 - `resolve_pin_login` returns **auth email only** (never Auth password).
 - Failed attempts recorded in `pin_login_attempts` (5 fails → 15 min lock).

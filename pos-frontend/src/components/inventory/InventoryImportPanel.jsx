@@ -24,21 +24,16 @@ import {
 import { formatSupportError } from '../../utils/errors'
 import ImportPreviewLines from '../shared/ImportPreviewLines'
 
-/**
- * xlsx is ~410KB — the single largest chunk in the app. It is only needed the moment
- * someone actually picks a spreadsheet or exports one, which most sessions never do,
- * so it is loaded on demand instead of riding along with this page's bundle.
- */
-let xlsxPromise = null
-function loadXlsx() {
-  if (!xlsxPromise) xlsxPromise = import('xlsx')
-  return xlsxPromise
-}
+import { readSpreadsheetBuffer, loadXlsx } from '../../lib/xlsxLoader'
 
 /**
- * CSV/XLSX restock import for supervisors on Inventory.
- * Restocks branch products; may create only when SKU exists in network catalog.
- * Skipped when SKU is not in the network catalog — reasons shown in preview.
+ * Import inventory restock data from a CSV or spreadsheet file for the current branch.
+ * Existing products are restocked, while new products are imported only when their SKU or barcode
+ * exists in the network catalog; other rows are shown as skipped with a reason.
+ * @param {Object} props - Component properties.
+ * @param {Array} props.products - Products currently available at the branch.
+ * @param {Function} props.onDone - Callback invoked after a successful import.
+ * @returns {JSX.Element|null} The import panel, or `null` for restaurant branches.
  */
 export default function InventoryImportPanel({ products, onDone }) {
   const user = useAuthStore((s) => s.user)
@@ -68,8 +63,8 @@ export default function InventoryImportPanel({ products, onDone }) {
     setBusy(true)
     try {
       const buf = await file.arrayBuffer()
+      const wb = await readSpreadsheetBuffer(buf)
       const XLSX = await loadXlsx()
-      const wb = XLSX.read(buf, { type: 'array' })
       const sheet = wb.Sheets[wb.SheetNames[0]]
       const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' })
       const restaurant = user?.branchType === 'restaurant'

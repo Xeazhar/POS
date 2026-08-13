@@ -24,7 +24,7 @@ import { clearLocalSession, clearRequireFreshLogin, loadLocalSession, markRequir
 import { clearAuthSessionStorage, consumeBrowserClosedFlag } from '../offline/sessionLifecycle'
 import { appError } from '../utils/errors'
 import { withTimeout } from '../utils/withTimeout'
-import { isTillClosed, today } from '../utils/format'
+import { dayEndForBusinessDate, isTillClosed, today } from '../utils/format'
 import { isSupervisorOrAbove } from '../utils/roles'
 import { detectUlamCombo, effectiveUnitPrice, hasBudgetTier, lineTotal, normalizeMenuKind } from '../utils/ulam'
 import { useShiftStore } from './shiftStore'
@@ -49,11 +49,14 @@ const offlineDemo = !api.hasSupabase
 
 export const useAuthStore = create(persist((set, get) => ({
   user: null,
+  /** Set only on fresh sign-in (not session restore) — drives LoginIntro overlay in App. */
+  loginIntroUser: null,
   booting: true,
   error: '',
 
   screenLocked: false,
   deviceSessionId: null,
+  clearLoginIntro: () => set({ loginIntroUser: null }),
   login: async (emailOrCode, passwordOrPin, { mode = 'email', captchaToken } = {}) => {
     set({ error: '', booting: true })
     try {
@@ -77,7 +80,7 @@ export const useAuthStore = create(persist((set, get) => ({
           permissions: null,
           vatRate: 0.12,
         }
-        set({ user, booting: false, screenLocked: false, deviceSessionId: 'demo-session' })
+        set({ user, booting: false, screenLocked: false, deviceSessionId: 'demo-session', loginIntroUser: user })
         useCartStore.getState().clear()
         await clearRequireFreshLogin()
         await saveLocalSession(user)
@@ -90,7 +93,7 @@ export const useAuthStore = create(persist((set, get) => ({
         const cached = await loadLocalSession()
         if (cached) {
           useCartStore.getState().clear()
-          set({ user: cached, booting: false, screenLocked: false })
+          set({ user: cached, booting: false, screenLocked: false, loginIntroUser: cached })
           setSyncBranchId(cached.branchId)
           return cached
         }
@@ -117,7 +120,7 @@ export const useAuthStore = create(persist((set, get) => ({
       }
 
       useCartStore.getState().clear()
-      set({ user, booting: false, screenLocked: false, deviceSessionId: sessionId })
+      set({ user, booting: false, screenLocked: false, deviceSessionId: sessionId, loginIntroUser: user })
       await clearRequireFreshLogin()
       await saveLocalSession({ ...user, deviceSessionId: sessionId })
       setSyncBranchId(user.branchId)
@@ -203,7 +206,10 @@ export const useAuthStore = create(persist((set, get) => ({
       return null
     }
   },
-  lockScreen: () => set({ screenLocked: true }),
+  lockScreen: () => {
+    void api.clearManagerUnlockSecret().catch(() => {})
+    set({ screenLocked: true })
+  },
   unlockScreen: () => set({ screenLocked: false }),
   /** Secure lockout after day-end — clears session so next open needs password. */
   lockAfterDayEnd: async () => {
@@ -229,7 +235,7 @@ export const useAuthStore = create(persist((set, get) => ({
     // survives sign-out — an open shift outlives the session, which is what stops a
     // re-login asking the cashier to count the change fund a second time.
     useShiftStore.getState().forget()
-    set({ user: null, screenLocked: false, deviceSessionId: null })
+    set({ user: null, screenLocked: false, deviceSessionId: null, loginIntroUser: null })
   },
   logout: async () => {
     const user = get().user
@@ -253,7 +259,7 @@ export const useAuthStore = create(persist((set, get) => ({
     // survives sign-out — an open shift outlives the session, which is what stops a
     // re-login asking the cashier to count the change fund a second time.
     useShiftStore.getState().forget()
-    set({ user: null, screenLocked: false, deviceSessionId: null })
+    set({ user: null, screenLocked: false, deviceSessionId: null, loginIntroUser: null })
   },
 }), { name: 'cale-pos-auth-v4', partialize: (state) => ({ user: api.hasSupabase ? null : state.user }) }))
 
@@ -516,6 +522,25 @@ export const useProductStore = create((set, get) => ({
       }
     } catch {
       /* keep last good snapshot */
+    }
+
+    // Day-end status gates ShiftGate immediately on login — always refetch it when
+    // online, even if syncBranch skipped a full pull due to a pending outbox.
+    if (await isBackendReachable()) {
+      try {
+        const { refreshBranchActivity } = await import('../hooks/useBranchOperationsLive')
+        const activity = await refreshBranchActivity(branchId)
+        if (activity) {
+          data = {
+            ...data,
+            transactions: activity.transactions,
+            movements: activity.movements,
+            dayEnds: activity.dayEnds,
+          }
+        }
+      } catch {
+        /* keep last good snapshot */
+      }
     }
 
     useSyncStore.getState().refresh(branchId)
@@ -1068,7 +1093,7 @@ export const useInventoryStore = create((set, get) => ({
   },
   submitDay: async (entry) => {
     const user = useAuthStore.getState().user
-    const existing = get().dayEnds.find((item) => item.date === entry.date)
+    const existing = dayEndForBusinessDate(get().dayEnds, entry.date)
     if (existing?.status === 'closed') return existing
 
     // submit_day_end auto-closes on the server when the caller is supervisor+ (see
@@ -1132,7 +1157,7 @@ export const useInventoryStore = create((set, get) => ({
     const user = useAuthStore.getState().user
     const dayOpenHour = get().dayOpenHour
     const date = today(dayOpenHour)
-    const existing = get().dayEnds.find((item) => item.date === date)
+    const existing = dayEndForBusinessDate(get().dayEnds, date)
     if (existing?.status === 'submitted' || existing?.status === 'closed') return existing
 
     const mapped = {
@@ -1237,6 +1262,10 @@ export const useInventoryStore = create((set, get) => ({
         set((state) => ({
           dayEnds: state.dayEnds.map((item) => (item.id === id ? mapped : item)),
         }))
+        if (user.branchId) {
+          const { refreshBranchActivity } = await import('../hooks/useBranchOperationsLive')
+          await refreshBranchActivity(user.branchId).catch(() => {})
+        }
         return mapped
       }
       await enqueue(

@@ -791,11 +791,18 @@ ${
 </body></html>`
 }
 
+/**
+ * Escapes HTML-sensitive characters in a value.
+ * @param {*} s - The value to escape.
+ * @return {string} The HTML-escaped string, or an empty string for nullish values.
+ */
 function esc(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 /** Open HTML via blob URL (document.write + noopener leaves a blank tab). */

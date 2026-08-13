@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { FiEye, FiEyeOff, FiSearch } from 'react-icons/fi'
 import Turnstile, { useTurnstileSiteKey } from '../../components/shared/Turnstile'
+import { CredentialAutofillTrap, secureFormProps } from '../../components/shared/SecureCredential'
 import {
   ErrorBanner,
   Eyebrow,
@@ -382,15 +383,8 @@ function ShiftsTab({ rows, adjustments, loading, showBranch, canAdjustCash, onAd
 }
 
 /**
- * Staff — one tab covering both "who works here" and "what did their shifts look like".
- *
- * These used to be two pages listing the same people, and the shift log could not answer
- * "what role is this person" while the staff list could not answer "did their drawer
- * balance". One row per person, expanding into that person's shifts, answers both.
- *
- * Role-aware rather than role-gated: supervisors get the roster + hours + drawer detail
- * for their own branch (what the old Shifts page gave them); account creation, role
- * changes and PIN reveal stay manager-only, exactly as before the merge.
+ * Manage staff accounts and review their shift activity, including hours, drawer balances, and variances.
+ * Supervisors are limited to staff and shift data from their own branch, while managers can manage accounts and access broader branch data.
  */
 function ManagerStaff() {
   const currentUser = useAuthStore((state) => state.user)
@@ -677,7 +671,7 @@ function ManagerStaff() {
                 branch_id: branches[0]?.id || '',
                 role: startRole,
                 login_code: uniqueStaffCode(staff),
-                login_pin: randomComplexPin(10),
+                login_pin: randomComplexPin(),
                 permissions: defaultPermissionsFor(startRole),
               })
             }}
@@ -873,9 +867,8 @@ function ManagerStaff() {
               onKeyDown={(e) => e.stopPropagation()}
               role="presentation"
             >
-              {/* Revealing a PIN is impersonation of that person for every future audit
-                  entry, so it follows the same ceiling as editing them. */}
-              {usesPinLogin(person.role) && editable && (
+              {/* Manager/master only — supervisors never see this (canManageAccounts). */}
+              {canManageAccounts && usesPinLogin(person.role) && editable && (
                 <button
                   type="button"
                   className="border-0 bg-transparent text-xs font-bold text-brand-ink"
@@ -1167,8 +1160,39 @@ function ManagerStaff() {
             setFormError('')
             setShowPin(false)
           }}
+          footer={
+            <ModalActions>
+              <SecondaryButton
+                compact
+                type="button"
+                onClick={() => {
+                  setForm(null)
+                  setFormError('')
+                  setShowPin(false)
+                }}
+              >
+                Cancel
+              </SecondaryButton>
+              <PrimaryButton
+                compact
+                type="submit"
+                form="staff-edit-form"
+                disabled={!form.id && captchaActive && !captchaLoading && !captchaToken}
+                title={
+                  !form.id && captchaActive && !captchaToken
+                    ? 'Complete the security check first'
+                    : undefined
+                }
+              >
+                {form.id ? 'Save' : 'Create login'}
+              </PrimaryButton>
+            </ModalActions>
+          }
         >
           <form
+            id="staff-edit-form"
+            className="relative"
+            {...secureFormProps}
             onSubmit={async (event) => {
               event.preventDefault()
               setFormError('')
@@ -1292,6 +1316,7 @@ function ManagerStaff() {
                 {formError}
               </p>
             )}
+            <CredentialAutofillTrap />
             <div className="grid gap-3">
               <Field
                 label="Full name"
@@ -1303,14 +1328,18 @@ function ManagerStaff() {
                 <>
                   <Field
                     label="Email"
-                    type="email"
+                    type="text"
+                    inputMode="email"
+                    autoCapitalize="none"
+                    noSave
                     required
                     value={form.email}
                     onChange={(e) => setForm({ ...form, email: e.target.value })}
                   />
                   <Field
                     label="Password"
-                    type="password"
+                    noSave
+                    secret
                     required
                     minLength={6}
                     value={form.password}
@@ -1322,6 +1351,7 @@ function ManagerStaff() {
                 <>
                   <Field
                     label="Staff code (unique, 4–6 digits)"
+                    noSave
                     required={!form.id}
                     value={form.login_code}
                     onChange={(e) =>
@@ -1336,15 +1366,23 @@ function ManagerStaff() {
                     <label className="relative block min-w-0 flex-1 text-[11px] font-bold text-brand-n700">
                       {form.id ? 'New PIN (leave blank to keep)' : 'PIN'}
                       <input
-                        className="mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 pr-10 text-[13px] font-normal outline-none"
+                        className={`mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 pr-10 text-[13px] font-normal outline-none ${showPin ? '' : 'secure-secret-input'}`}
                         required={!form.id}
                         value={form.login_pin}
                         onChange={(e) =>
                           setForm({ ...form, login_pin: sanitizePinInput(e.target.value) })
                         }
-                        type={showPin ? 'text' : 'password'}
-                        autoComplete="new-password"
-                        placeholder="e.g. Ka!9mP2$"
+                        type="text"
+                        readOnly
+                        onFocus={(e) => e.target.removeAttribute('readonly')}
+                        inputMode="numeric"
+                        autoComplete="off"
+                        data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-bwignore="true"
+                        data-form-type="other"
+                        maxLength={6}
+                        placeholder="e.g. 482917"
                       />
                       <button
                         type="button"
@@ -1362,7 +1400,7 @@ function ManagerStaff() {
                         setForm({
                           ...form,
                           login_code: form.login_code || uniqueStaffCode(staff, form.id || null),
-                          login_pin: randomComplexPin(10),
+                          login_pin: randomComplexPin(),
                         })
                       }
                     >
@@ -1397,7 +1435,7 @@ function ManagerStaff() {
                     ...(usesPinLogin(role) && !form.login_code
                       ? {
                           login_code: uniqueStaffCode(staff, form.id || null),
-                          login_pin: form.login_pin || randomComplexPin(10),
+                          login_pin: form.login_pin || randomComplexPin(),
                         }
                       : {}),
                   })
@@ -1501,31 +1539,6 @@ function ManagerStaff() {
                 </div>
               )}
             </div>
-            <ModalActions>
-              <SecondaryButton
-                compact
-                type="button"
-                onClick={() => {
-                  setForm(null)
-                  setFormError('')
-                  setShowPin(false)
-                }}
-              >
-                Cancel
-              </SecondaryButton>
-              <PrimaryButton
-                compact
-                type="submit"
-                disabled={!form.id && captchaActive && !captchaLoading && !captchaToken}
-                title={
-                  !form.id && captchaActive && !captchaToken
-                    ? 'Complete the security check first'
-                    : undefined
-                }
-              >
-                {form.id ? 'Save' : 'Create login'}
-              </PrimaryButton>
-            </ModalActions>
           </form>
         </Modal>
       )}
@@ -1545,8 +1558,9 @@ function ManagerStaff() {
             <Field
               className="mt-3"
               label="Your password"
-              type="password"
-              autoComplete="current-password"
+              name="cale-manager-confirm"
+              noSave
+              secret
               value={pinRevealPassword}
               onChange={(e) => setPinRevealPassword(e.target.value)}
               onKeyDown={(e) => {

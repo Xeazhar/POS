@@ -1,3 +1,4 @@
+import { aggregatePromoSalesOffers } from '../utils/promo'
 import { allowDemoMode, supabase } from './supabase'
 import { mapDayReport } from '../utils/dayEndReport'
 import { appError } from '../utils/errors'
@@ -7,6 +8,7 @@ import { pinAuthEmail, isSupervisorOrAbove, isManagerRole } from '../utils/roles
 import { normalizeMenuKind } from '../utils/ulam'
 import { clearUnlockSecret, loadUnlockSecret, saveUnlockSecret } from '../offline/session'
 import { createVerifier, isVerifierExpired, verifyAgainst } from '../utils/unlockVerifier'
+import { clampIdleLockMinutes, IDLE_LOCK_MINUTES_DEFAULT } from '../utils/sessionPolicy'
 import { APP_VERSION } from '../utils/version'
 
 export const hasSupabase = Boolean(supabase)
@@ -467,11 +469,19 @@ export async function signIn(email, password, { captchaToken } = {}) {
   return fetchSessionStaff()
 }
 
-/** Cashier/supervisor PIN login via staff code + PIN. */
+/**
+ * Authenticates a cashier or supervisor using a staff code and PIN.
+ * @param {string|number} loginCode - The staff code; non-digit characters are ignored.
+ * @param {string|number} pin - The six-digit PIN; non-digit characters are ignored.
+ * @param {Object} [options] - Sign-in options.
+ * @param {string} options.captchaToken - CAPTCHA verification token.
+ * @returns {Promise<Object>} The authenticated user.
+ * @throws {Error} If the CAPTCHA token is missing or the staff code and PIN are invalid.
+ */
 export async function signInWithPin(loginCode, pin, { captchaToken } = {}) {
   const code = String(loginCode || '').replace(/\D/g, '')
-  // Complex PINs: keep letters/symbols (do not strip to digits).
-  const pinVal = String(pin || '').trim()
+  // Till PIN is exactly 6 digits (cashier/supervisor).
+  const pinVal = String(pin || '').replace(/\D/g, '').slice(0, 6)
   if (!captchaToken) {
     throw new Error('Complete the security check before signing in.')
   }
@@ -965,6 +975,28 @@ export async function bootstrapBranchData(branchId) {
     transactions: activity.transactions,
     movements: activity.movements,
     dayEnds: activity.dayEnds,
+  }
+}
+
+/**
+ * Loads branch inventory data without exposing transaction or day-end records.
+ * @param {string} branchId - The branch identifier.
+ * @returns {Promise<Object>} Inventory products, categories, opening hour, and stock movements.
+ */
+export async function bootstrapBranchInventory(branchId) {
+  const [catalog, activity] = await Promise.all([
+    bootstrapPosCatalog(branchId),
+    bootstrapBranchActivity(branchId),
+  ])
+  const products = (catalog.products || []).map((p) => ({
+    ...p,
+    lastMovementAt: activity.lastMoveMap?.[p.id] || p.lastMovementAt || null,
+  }))
+  return {
+    products,
+    categories: catalog.categories,
+    dayOpenHour: catalog.dayOpenHour,
+    movements: activity.movements,
   }
 }
 
@@ -2213,8 +2245,10 @@ export async function dismissPendingTillActionsOnSite({
 }
 
 /**
- * Drop inbox rows whose underlying issue was already handled on the till but the
- * pending DB flag was never cleared (supervisor PIN on-site, day closed, etc.).
+ * Reconciles pending till-action and day-end approval requests that were already completed.
+ * @param {string} [branchId] - Branch to reconcile when the caller is not a manager.
+ * @param {string} staffId - Staff member performing the reconciliation.
+ * @param {boolean} [manager=false] - Whether to reconcile requests across all branches.
  */
 async function reconcileResolvedPendingApprovals({ branchId, staffId, manager } = {}) {
   if (!hasSupabase || !staffId) return
@@ -2235,12 +2269,14 @@ async function reconcileResolvedPendingApprovals({ branchId, staffId, manager } 
       }, Date.now())
       const { data: auditRows } = await supabase
         .from('audit_events')
-        .select('event_type, meta, created_at, branch_id')
+        .select('event_type, meta, created_at, branch_id, staff_id')
         .in('branch_id', branchIds)
         .gte('created_at', new Date(oldest - 60_000).toISOString())
         .in('event_type', [
           'cart_line_remove',
           'cart_line_remove_self',
+          'approval:cart_line_remove',
+          'approval:cart_line_remove_self',
           'till_action_approved',
           'till_action_denied',
           'till_action_self_allowed',
@@ -2249,20 +2285,33 @@ async function reconcileResolvedPendingApprovals({ branchId, staffId, manager } 
       for (const row of pendingTill) {
         const productId = row.meta?.product_id || row.meta?.productId || null
         const requestedAt = row.requested_at ? new Date(row.requested_at).getTime() : 0
+        let approverId = null
         const resolvedOnSite = (auditRows || []).some((ev) => {
           if (new Date(ev.created_at).getTime() < requestedAt - 1000) return false
           if (ev.branch_id !== row.branch_id) return false
-          if (ev.meta?.till_action_id === row.id) return true
-          if (ev.event_type !== 'cart_line_remove' && ev.event_type !== 'cart_line_remove_self') {
-            return false
+          if (ev.meta?.till_action_id === row.id) {
+            approverId = ev.meta?.approved_by || ev.staff_id || null
+            return true
           }
+          const evType = String(ev.event_type || '')
+          const isCartRemove =
+            evType === 'cart_line_remove'
+            || evType === 'cart_line_remove_self'
+            || evType === 'approval:cart_line_remove'
+            || evType === 'approval:cart_line_remove_self'
+          if (!isCartRemove) return false
           const evProduct = ev.meta?.product_id || ev.meta?.productId || null
           if (productId && evProduct && evProduct !== productId) return false
+          approverId = ev.meta?.approved_by || ev.staff_id || null
           return true
         })
         if (!resolvedOnSite) continue
         try {
-          await resolveTillActionRequest({ id: row.id, resolvedBy: staffId, status: 'denied' })
+          await resolveTillActionRequest({
+            id: row.id,
+            resolvedBy: approverId || staffId,
+            status: 'approved',
+          })
         } catch {
           /* already gone or permission — next fetch will retry */
         }
@@ -2796,47 +2845,71 @@ export function composeTin(companyTin, branchCode, legacyBranchTin = null) {
 
 let companyProfileCache = null
 
+const COMPANY_PROFILE_SELECT = 'id, business_name, tin, address, idle_lock_minutes'
+const COMPANY_PROFILE_SELECT_LEGACY = 'id, business_name, tin, address'
+
+function mapCompanyProfile(row, { missing = false } = {}) {
+  return {
+    id: row?.id ?? true,
+    business_name: row?.business_name ?? null,
+    tin: row?.tin ?? null,
+    address: row?.address ?? null,
+    idle_lock_minutes: clampIdleLockMinutes(row?.idle_lock_minutes ?? IDLE_LOCK_MINUTES_DEFAULT),
+    missing,
+  }
+}
+
 /** The single company-level fiscal identity row. Cached — it changes about never. */
 export async function fetchCompanyProfile({ force = false } = {}) {
   if (!supabase) return null
   if (companyProfileCache && !force) return companyProfileCache
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('company_profile')
-    .select('id, business_name, tin, address')
+    .select(COMPANY_PROFILE_SELECT)
     .limit(1)
     .maybeSingle()
+  if (error && /idle_lock_minutes|schema cache|column/i.test(String(error.message || ''))) {
+    ;({ data, error } = await supabase
+      .from('company_profile')
+      .select(COMPANY_PROFILE_SELECT_LEGACY)
+      .limit(1)
+      .maybeSingle())
+  }
   if (error) {
     // Table not created yet (migration not applied) — degrade to branch-level TIN rather
     // than failing every screen that prints a receipt.
     if (/company_profile|schema cache|does not exist/i.test(String(error.message || ''))) {
-      companyProfileCache = { business_name: null, tin: null, address: null, missing: true }
+      companyProfileCache = mapCompanyProfile(null, { missing: true })
       return companyProfileCache
     }
     throw error
   }
-  companyProfileCache = data || { business_name: null, tin: null, address: null }
+  companyProfileCache = mapCompanyProfile(data)
   return companyProfileCache
 }
 
-export async function saveCompanyProfile({ businessName, tin, address }) {
-  const { data, error } = await supabase
-    .from('company_profile')
-    .upsert(
-      {
-        id: true,
-        business_name: businessName ?? null,
-        tin: tin ?? null,
-        address: address ?? null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'id' },
-    )
-    .select('id, business_name, tin, address')
-    .single()
+export async function saveCompanyProfile({ businessName, tin, address, idleLockMinutes } = {}) {
+  const payload = {
+    id: true,
+    updated_at: new Date().toISOString(),
+  }
+  if (businessName !== undefined) payload.business_name = businessName ?? null
+  if (tin !== undefined) payload.tin = tin ?? null
+  if (address !== undefined) payload.address = address ?? null
+  if (idleLockMinutes !== undefined) payload.idle_lock_minutes = clampIdleLockMinutes(idleLockMinutes)
+
+  const run = (selectCols) =>
+    supabase.from('company_profile').upsert(payload, { onConflict: 'id' }).select(selectCols).single()
+
+  let { data, error } = await run(COMPANY_PROFILE_SELECT)
+  if (error && /idle_lock_minutes|schema cache|column/i.test(String(error.message || ''))) {
+    if (idleLockMinutes !== undefined) throw error
+    ;({ data, error } = await run(COMPANY_PROFILE_SELECT_LEGACY))
+  }
   if (error) throw error
-  companyProfileCache = data
+  companyProfileCache = mapCompanyProfile(data)
   branchHeaderCache.clear()
-  return data
+  return companyProfileCache
 }
 
 export async function fetchBranches({ includeCompany = true } = {}) {
@@ -3188,14 +3261,11 @@ export async function saveBranch(payload) {
 }
 
 /**
- * Staff roster for the Staff page.
- *
- * Managers read the `staff` table directly (RLS allows it). Supervisors CANNOT — the
- * `read staff` policy is `auth_user_id = auth.uid() or is_manager()`, so a direct read
- * returns them exactly one row, which is why their Staff page looked empty. They go
- * through `branch_staff_roster()`, a definer function that returns their branch's people
- * WITHOUT login_pin / auth_secret (see migrate_branch_staff_roster.sql — widening the
- * table policy instead would expose every cashier's PIN).
+ * Fetches staff members available to the current user's branch.
+ * @param {string|null} [branchId=null] - The branch whose staff roster should be fetched.
+ * @param {boolean} [isManager=false] - Whether to use the manager-accessible staff roster.
+ * @return {Promise<Array>} The staff roster, including branch and role details.
+ * @throws {Error} If the supervisor roster function is unavailable or the request fails.
  */
 export async function fetchStaffRoster({ branchId = null, isManager = false } = {}) {
   if (isManager) return fetchAllStaff()
@@ -3204,9 +3274,10 @@ export async function fetchStaffRoster({ branchId = null, isManager = false } = 
   })
   if (error) {
     if (/branch_staff_roster|Could not find the function/i.test(String(error.message || ''))) {
-      // Migration not applied yet — fall back to the direct read. RLS will trim it to the
-      // caller's own row, which is the old (wrong but harmless) behaviour, not a crash.
-      return fetchAllStaff()
+      throw appError(
+        'STAFF01',
+        'Supervisor staff roster is not installed. Run migrate_branch_staff_roster.sql in Supabase.',
+      )
     }
     throw error
   }
@@ -3459,6 +3530,13 @@ async function persistStaffPinVerifier(staffId, loginPin, { loginCode, fullName,
   }
 }
 
+/**
+ * Updates a staff member and synchronizes PIN authentication data when provided.
+ * @param {string} id - The staff member's identifier.
+ * @param {Object} changes - Staff fields to update.
+ * @returns {Object} The updated staff record, including its branch.
+ * @throws {Error} If the update fails or the staff code is already in use.
+ */
 export async function updateStaffRow(id, changes) {
   const payload = { ...changes }
   const pinForVerifier = changes.loginPin ?? changes.login_pin ?? null
@@ -3494,13 +3572,26 @@ export async function updateStaffRow(id, changes) {
   return data
 }
 
+/**
+ * Reveals the login credentials for a staff member.
+ * @param {string} staffId - The identifier of the staff member.
+ * @returns {{loginCode: string, loginPin: string, name: string, role: string}} The staff member's login code, PIN, name, and role.
+ * @throws {Error} If the staff member is not found, the reveal capability is unavailable, or the caller is unauthorized.
+ */
 export async function revealStaffPin(staffId) {
-  const { data, error } = await supabase
-    .from('staff')
-    .select('id, full_name, login_code, login_pin, role')
-    .eq('id', staffId)
-    .maybeSingle()
-  if (error) throw error
+  const { data, error } = await supabase.rpc('reveal_staff_pin', { p_staff_id: staffId })
+  if (error) {
+    if (/reveal_staff_pin|Could not find the function/i.test(String(error.message || ''))) {
+      throw appError(
+        'STAFF02',
+        'PIN reveal is not installed. Run migrate_reveal_staff_pin.sql in Supabase.',
+      )
+    }
+    if (/not authorized/i.test(String(error.message || ''))) {
+      throw appError('STAFF03', error.message)
+    }
+    throw error
+  }
   if (!data) throw new Error('Staff not found')
   await logAuditEvent({
     branchId: null,
@@ -3509,7 +3600,12 @@ export async function revealStaffPin(staffId) {
     detail: `PIN viewed for ${data.full_name}`,
     meta: { targetStaffId: staffId },
   }).catch(() => {})
-  return { loginCode: data.login_code, loginPin: data.login_pin, name: data.full_name, role: data.role }
+  return {
+    loginCode: data.login_code,
+    loginPin: data.login_pin,
+    name: data.full_name,
+    role: data.role,
+  }
 }
 
 /**
@@ -5244,6 +5340,32 @@ export async function fetchAuditEvents({ start, end, branchId, limit = 500 } = {
   return data || []
 }
 
+const SECURITY_AUDIT_TYPES = [
+  'login',
+  'logout',
+  'day_end_lock',
+  'pin_viewed',
+  'company_profile_updated',
+]
+
+/** Recent security-relevant audit rows. Never selects PIN or password fields. */
+export async function fetchSecurityAuditEvents({ limit = 10, offset = 0 } = {}) {
+  if (!supabase) return { rows: [], total: 0 }
+  const from = Math.max(0, offset)
+  const size = Math.max(1, limit)
+  const { data, error, count } = await supabase
+    .from('audit_events')
+    .select('id, created_at, event_type, detail, staff_id, branch_id, staff(full_name), branches(name)', {
+      count: 'exact',
+    })
+    .in('event_type', SECURITY_AUDIT_TYPES)
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(from, from + size - 1)
+  if (error) throw error
+  return { rows: data || [], total: count ?? 0 }
+}
+
 /** Void / refund events. `limit: null` reads everything — see fetchAuditEvents. */
 export async function fetchSaleEvents({ start, end, branchId, eventType, limit = 500 } = {}) {
   const build = (from, to) => {
@@ -6523,6 +6645,12 @@ export async function approveStopPromo({ id, staffId }) {
   return data
 }
 
+/**
+ * Rejects a pending request to stop a promotion.
+ * @param {string} id - The promotion event identifier.
+ * @param {string} staffId - The staff member approving the rejection.
+ * @returns {*} The result returned by the rejection operation.
+ */
 export async function rejectStopPromo({ id, staffId }) {
   const { data, error } = await supabase.rpc('reject_stop_promo', {
     p_promo_event_id: id,
@@ -6532,6 +6660,142 @@ export async function rejectStopPromo({ id, staffId }) {
   return data
 }
 
+/**
+ * Fetches transaction lines attributed to a promotion within a date range.
+ * @param {Object} params - Query parameters.
+ * @param {string} params.branchId - Branch whose transactions to query.
+ * @param {string} params.promoName - Promotion name assigned to the transaction lines.
+ * @param {string} [params.startsAt] - Inclusive start of the query period.
+ * @param {string} [params.endsAt] - Inclusive end of the query period.
+ * @param {boolean} [params.minimal=false] - Whether to return only summary fields.
+ * @returns {Promise<{lines: Array<Object>|null, legacy: boolean}>} The matching lines and whether legacy promotion reporting is required.
+ * @throws {Error} If the query fails for a reason unrelated to unavailable promotion columns.
+ */
+async function fetchPromoAttributedLines({ branchId, promoName, startsAt, endsAt, minimal = false }) {
+  const window = promoQueryWindow(startsAt, endsAt)
+  const select = minimal
+    ? 'transaction_id, discount_amount, transactions!inner(id, total_amount, created_at, status, branch_id)'
+    : 'transaction_id, product_id, quantity, unit_price, line_total, discount_amount, promo_name, promo_group_id, transactions!inner(id, or_number, total_amount, discount_amount, created_at, status, staff_id, refunded_amount, branch_id)'
+
+  const build = (from, to) => {
+    let q = supabase
+      .from('transaction_items')
+      .select(select)
+      .eq('promo_name', promoName)
+      .eq('transactions.branch_id', branchId)
+      .neq('transactions.status', 'voided')
+      .gte('transactions.created_at', window.startsAt)
+      .lte('transactions.created_at', window.endsAt)
+      .order('transaction_id', { ascending: false })
+      .range(from, to)
+    return q
+  }
+
+  const { data, error } = await fetchAllRows(build)
+  if (error) {
+    if (/promo_name|promo_group_id|schema cache|column/i.test(String(error.message || ''))) {
+      return { lines: null, legacy: true }
+    }
+    throw error
+  }
+  return { lines: data || [], legacy: false }
+}
+
+/**
+ * Defines the bounded time window used for promotion history queries.
+ * @param {string|Date} [startsAt] - The beginning of the query window.
+ * @param {string|Date} [endsAt] - The end of the query window.
+ * @returns {{startsAt: string, endsAt: string}} ISO 8601 timestamps for the query window, defaulting to the preceding 90 days when dates are omitted or invalid.
+ */
+function promoQueryWindow(startsAt, endsAt) {
+  const end = endsAt ? new Date(endsAt) : new Date()
+  const endMs = Number.isNaN(end.getTime()) ? Date.now() : end.getTime()
+  let start = startsAt ? new Date(startsAt) : new Date(endMs - 90 * 86400000)
+  const startMs = Number.isNaN(start.getTime()) ? endMs - 90 * 86400000 : start.getTime()
+  const boundedStart = Math.min(startMs, endMs)
+  return {
+    startsAt: new Date(boundedStart).toISOString(),
+    endsAt: new Date(endMs).toISOString(),
+  }
+}
+
+const promoRulesByEventId = new Map()
+
+/**
+ * Loads and caches the rules associated with a promotion event.
+ * @param {string} promoEventId - The promotion event identifier.
+ * @returns {Promise<Array>} The promotion rules, or an empty array when no identifier is provided or the rules cannot be loaded.
+ */
+async function loadPromoRulesCached(promoEventId) {
+  if (!promoEventId) return []
+  if (promoRulesByEventId.has(promoEventId)) return promoRulesByEventId.get(promoEventId)
+  const rules = await fetchPromoRulesForEvent(promoEventId).catch(() => [])
+  promoRulesByEventId.set(promoEventId, rules)
+  return rules
+}
+
+/**
+ * Enriches promotional sales lines with their associated product details.
+ * @param {Array<Object>} lines - Promotional sales lines containing product IDs.
+ * @returns {Promise<Array<Object>>} The sales lines with product information attached when available.
+ */
+async function hydratePromoLineProducts(lines = []) {
+  const ids = [...new Set(lines.map((l) => l.product_id).filter(Boolean))]
+  if (!ids.length) return lines
+  const { data, error } = await supabase
+    .from('products')
+    .select('id, name, sku, pricing_mode')
+    .in('id', ids)
+  if (error) return lines
+  const byId = Object.fromEntries((data || []).map((p) => [p.id, p]))
+  return lines.map((line) => ({
+    ...line,
+    products: byId[line.product_id] || line.products || null,
+  }))
+}
+
+/**
+ * Summarize sales attributed to a promotion.
+ * @param {Array<Object>} matchedLines - Promotion-attributed transaction lines.
+ * @param {Array<Object>} [rules=[]] - Promotion rules used to aggregate offers.
+ * @param {Object} [options] - Summary options.
+ * @param {number|null} [options.receiptLimit=null] - Maximum number of transactions included in `matchedTxns`.
+ * @returns {Object} Aggregated receipt count, discount total, sale total, offers, items, and matching transactions.
+ */
+function promoStatsFromAttributedLines(matchedLines, rules = [], { receiptLimit = null } = {}) {
+  const txnMap = new Map()
+  for (const line of matchedLines) {
+    const t = line.transactions
+    if (t?.id && !txnMap.has(t.id)) txnMap.set(t.id, t)
+  }
+  const matchedTxns = [...txnMap.values()].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  )
+  const receiptTxns =
+    receiptLimit && matchedTxns.length > receiptLimit
+      ? matchedTxns.slice(0, receiptLimit)
+      : matchedTxns
+  const discountTotal = Number(
+    matchedLines.reduce((sum, l) => sum + Number(l.discount_amount || 0), 0).toFixed(2),
+  )
+  const saleTotal = Number(
+    matchedTxns.reduce((sum, t) => sum + Number(t.total_amount || 0), 0).toFixed(2),
+  )
+  return {
+    receiptCount: matchedTxns.length,
+    discountTotal,
+    saleTotal,
+    offers: aggregatePromoSalesOffers(matchedLines, rules),
+    items: aggregatePromoItems(matchedLines),
+    matchedTxns: receiptTxns,
+  }
+}
+
+/**
+ * Aggregates promotional sales lines by product and ranks them by discount amount.
+ * @param {Array<Object>} lines - Promotional sales lines to aggregate.
+ * @returns {Array<Object>} Product summaries with quantity, gross sales, discount, and net sales totals.
+ */
 function aggregatePromoItems(lines = []) {
   const byProduct = {}
   for (const line of lines) {
@@ -6593,13 +6857,17 @@ async function buildPromoReceipts(rows) {
 }
 
 /**
- * Legacy path for DBs that haven't run migrate_promo_line_attribution.sql yet:
- * match by the whole transaction's discount_type. Misses/undercounts carts that
- * mixed lines from more than one concurrently-live promo (their discount_type is
- * a joined label like "A + B", not an exact match for either promo's name) —
- * see fetchPromoSalesStats below for the accurate per-line path.
+ * Aggregates promotion sales by matching transactions whose discount type equals the promotion name.
+ *
+ * @param {string} branchId - The branch whose promotion sales are queried.
+ * @param {string} promoName - The promotion name stored as the transaction discount type.
+ * @param {string} [startsAt] - Inclusive start of the reporting period.
+ * @param {string} [endsAt] - Inclusive end of the reporting period.
+ * @param {Array} [rules=[]] - Promotion rules used to aggregate matching offer data.
+ * @returns {{receiptCount: number, discountTotal: number, saleTotal: number, items: Array, offers: Array, receipts: Array}} Aggregated receipt, discount, sale, item, offer, and receipt data.
  */
-async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt }) {
+async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt, rules = [] }) {
+  const window = promoQueryWindow(startsAt, endsAt)
   let txnQ = supabase
     .from('transactions')
     .select(
@@ -6608,16 +6876,15 @@ async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsA
     .eq('branch_id', branchId)
     .eq('discount_type', promoName)
     .neq('status', 'voided')
+    .gte('created_at', window.startsAt)
+    .lte('created_at', window.endsAt)
     .order('created_at', { ascending: false })
     .limit(500)
-
-  if (startsAt) txnQ = txnQ.gte('created_at', new Date(startsAt).toISOString())
-  if (endsAt) txnQ = txnQ.lte('created_at', new Date(endsAt).toISOString())
 
   const { data: txns, error: txnErr } = await txnQ
   if (txnErr) {
     if (/discount_type|discount_amount|schema cache|column/i.test(String(txnErr.message || ''))) {
-      return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+      return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], offers: [], receipts: [] }
     }
     throw txnErr
   }
@@ -6629,93 +6896,128 @@ async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsA
   const txnIds = rows.map((r) => r.id)
   const receipts = await buildPromoReceipts(rows)
   if (!txnIds.length) {
-    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], offers: [], receipts: [] }
   }
 
   const { data: lines, error: lineErr } = await supabase
     .from('transaction_items')
-    .select('quantity, unit_price, line_total, discount_amount, products(id, name, sku, pricing_mode)')
+    .select(
+      'transaction_id, quantity, unit_price, line_total, discount_amount, promo_group_id, products(id, name, sku, pricing_mode)',
+    )
     .in('transaction_id', txnIds)
     .gt('discount_amount', 0)
   if (lineErr) {
-    return { receiptCount, discountTotal, saleTotal, items: [], receipts }
+    return { receiptCount, discountTotal, saleTotal, items: [], offers: [], receipts }
   }
 
-  return { receiptCount, discountTotal, saleTotal, items: aggregatePromoItems(lines || []), receipts }
+  const matchedLines = lines || []
+  return {
+    receiptCount,
+    discountTotal,
+    saleTotal,
+    items: aggregatePromoItems(matchedLines),
+    offers: aggregatePromoSalesOffers(matchedLines, rules),
+    receipts,
+  }
 }
 
 /**
- * Promo performance: receipts + discounted line items sold under a promo name.
- *
- * Attribution is per-line (transaction_items.promo_name), not by matching the
- * whole transaction's discount_type — that stays accurate even when a single
- * cart mixed lines from two different concurrently-live promos, since each
- * line records exactly which promo discounted it.
+ * Summarize sales totals attributed to a promotion within an optional date range.
+ * @param {Object} params - Promotion and date-range filters.
+ * @param {string} params.branchId - Branch identifier.
+ * @param {string} params.promoName - Promotion name.
+ * @param {string|null} [params.startsAt=null] - Inclusive start timestamp.
+ * @param {string|null} [params.endsAt=null] - Inclusive end timestamp.
+ * @returns {{receiptCount: number, discountTotal: number, saleTotal: number}} Aggregate receipt count, discount total, and sale total.
  */
-export async function fetchPromoSalesStats({
+export async function fetchPromoSalesStatsSummary({
   branchId,
   promoName,
   startsAt = null,
   endsAt = null,
 } = {}) {
-  if (!branchId || !promoName) {
-    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
-  }
+  const empty = { receiptCount: 0, discountTotal: 0, saleTotal: 0 }
+  if (!branchId || !promoName) return empty
 
-  // Cheap superset prefilter: any receipt with a discount on this branch/date range.
-  let txnQ = supabase
-    .from('transactions')
-    .select('id, or_number, total_amount, discount_amount, created_at, status, staff_id, refunded_amount')
-    .eq('branch_id', branchId)
-    .gt('discount_amount', 0)
-    .neq('status', 'voided')
-    .order('created_at', { ascending: false })
-    .limit(1000)
-
-  if (startsAt) txnQ = txnQ.gte('created_at', new Date(startsAt).toISOString())
-  if (endsAt) txnQ = txnQ.lte('created_at', new Date(endsAt).toISOString())
-
-  const { data: candidateTxns, error: txnErr } = await txnQ
-  if (txnErr) {
-    if (/discount_amount|schema cache|column/i.test(String(txnErr.message || ''))) {
-      return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
+  const lineResult = await fetchPromoAttributedLines({
+    branchId,
+    promoName,
+    startsAt,
+    endsAt,
+    minimal: true,
+  })
+  if (lineResult.legacy) {
+    const full = await fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt, rules: [] })
+    return {
+      receiptCount: full.receiptCount,
+      discountTotal: full.discountTotal,
+      saleTotal: full.saleTotal,
     }
-    throw txnErr
-  }
-  const candidates = candidateTxns || []
-  if (!candidates.length) {
-    return { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], receipts: [] }
-  }
-  const candidateIds = candidates.map((r) => r.id)
-
-  // Exact attribution: which of those receipts had a line this specific promo won.
-  const { data: lines, error: lineErr } = await supabase
-    .from('transaction_items')
-    .select('transaction_id, quantity, unit_price, line_total, discount_amount, promo_name, products(id, name, sku, pricing_mode)')
-    .in('transaction_id', candidateIds)
-    .eq('promo_name', promoName)
-
-  if (lineErr) {
-    if (/promo_name|schema cache|column/i.test(String(lineErr.message || ''))) {
-      return fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt })
-    }
-    throw lineErr
   }
 
-  const matchedLines = lines || []
-  const matchedTxnIds = new Set(matchedLines.map((l) => l.transaction_id))
-  const matchedTxns = candidates.filter((t) => matchedTxnIds.has(t.id))
-
-  const receiptCount = matchedTxns.length
-  // This promo's own line discounts only — accurate even when the same receipt
-  // also carries lines discounted by a different concurrently-live promo.
-  const discountTotal = Number(matchedLines.reduce((sum, l) => sum + Number(l.discount_amount || 0), 0).toFixed(2))
-  const saleTotal = Number(matchedTxns.reduce((sum, t) => sum + Number(t.total_amount || 0), 0).toFixed(2))
-  const receipts = await buildPromoReceipts(matchedTxns)
-
-  return { receiptCount, discountTotal, saleTotal, items: aggregatePromoItems(matchedLines), receipts }
+  const matchedLines = lineResult.lines || []
+  if (!matchedLines.length) return empty
+  const stats = promoStatsFromAttributedLines(matchedLines, [])
+  return {
+    receiptCount: stats.receiptCount,
+    discountTotal: stats.discountTotal,
+    saleTotal: stats.saleTotal,
+  }
 }
 
+/**
+ * Aggregates sales performance for a promotion by its per-line attribution.
+ * @param {Object} options - Promotion sales query options.
+ * @param {string} options.branchId - Branch to query.
+ * @param {string} options.promoName - Promotion name used for line attribution.
+ * @param {string|null} [options.promoEventId=null] - Promotion event identifier used to resolve its rules.
+ * @param {string|null} [options.startsAt=null] - Inclusive start of the sales period.
+ * @param {string|null} [options.endsAt=null] - Inclusive end of the sales period.
+ * @param {number} [options.receiptLimit=200] - Maximum number of receipt details to include.
+ * @returns {Promise<Object>} Aggregated receipt count, discount total, sale total, item and offer summaries, receipt details, and whether the receipt list was truncated.
+ */
+export async function fetchPromoSalesStats({
+  branchId,
+  promoName,
+  promoEventId = null,
+  startsAt = null,
+  endsAt = null,
+  receiptLimit = 200,
+} = {}) {
+  const empty = { receiptCount: 0, discountTotal: 0, saleTotal: 0, items: [], offers: [], receipts: [] }
+  if (!branchId || !promoName) return empty
+
+  const [rules, lineResult] = await Promise.all([
+    loadPromoRulesCached(promoEventId),
+    fetchPromoAttributedLines({ branchId, promoName, startsAt, endsAt, minimal: false }),
+  ])
+
+  if (lineResult.legacy) {
+    return fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt, rules })
+  }
+
+  let matchedLines = lineResult.lines || []
+  if (!matchedLines.length) return empty
+
+  matchedLines = await hydratePromoLineProducts(matchedLines)
+  const stats = promoStatsFromAttributedLines(matchedLines, rules, { receiptLimit })
+  const receipts = await buildPromoReceipts(stats.matchedTxns)
+  return {
+    receiptCount: stats.receiptCount,
+    discountTotal: stats.discountTotal,
+    saleTotal: stats.saleTotal,
+    items: stats.items,
+    offers: stats.offers,
+    receipts,
+    receiptsTruncated: stats.receiptCount > receipts.length,
+  }
+}
+
+/**
+ * Retrieves the status of a promotion event.
+ * @param {string} promoEventId - The promotion event identifier.
+ * @return {string|null} The event status, or `null` if no matching event exists.
+ */
 async function fetchPromoEventStatus(promoEventId) {
   const { data, error } = await supabase.from('promo_events').select('status').eq('id', promoEventId).maybeSingle()
   if (error) throw error

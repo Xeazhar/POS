@@ -138,13 +138,22 @@ export async function putMovements(branchId, movements) {
   })
 }
 
+/**
+ * Synchronize branch day-end records while preserving local records for dates absent from the server response.
+ * @param {string} branchId - The branch whose day-end records are synchronized.
+ * @param {Array<Object>} dayEnds - Day-end records received from the server.
+ */
 export async function putDayEnds(branchId, dayEnds) {
   await db.transaction('rw', db.dayEnds, async () => {
-    const localOnly = await db.dayEnds
+    const serverDates = new Set((dayEnds || []).map((d) => d.date))
+    const localOnly = (await db.dayEnds
       .where('branchId')
       .equals(branchId)
       .filter((d) => d.syncStatus === 'pending' || d.syncStatus === 'local')
-      .toArray()
+      .toArray())
+      // Server row for a business date wins — a stale local "closed" copy must not
+      // survive a manager reopen and block ShiftGate after re-login.
+      .filter((d) => !serverDates.has(d.date))
     await db.dayEnds
       .where('branchId')
       .equals(branchId)

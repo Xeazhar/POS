@@ -2,6 +2,7 @@ import {
   Field,
   PrimaryButton,
 } from '../ui'
+import { CredentialAutofillTrap, secureFormProps } from './SecureCredential'
 import { sanitizePinInput } from '../../utils/pin'
 
 /** Cash drawer Open Drawer — manager wait before self-record. */
@@ -11,7 +12,18 @@ export const OPEN_DRAWER_WAIT_SEC = 60
 export const CART_REMOVE_WAIT_SEC = 30
 
 /**
- * Reusable supervisor PIN block (Open Drawer, cart remove, future till gates).
+ * Render a supervisor authorization form for protected operations.
+ * @param {Object} props - Component properties.
+ * @param {string} props.loginCode - Staff code entered by the supervisor.
+ * @param {string} props.pin - Supervisor PIN entered by the supervisor.
+ * @param {Function} props.onLoginCode - Handles staff code changes.
+ * @param {Function} props.onPin - Handles PIN changes.
+ * @param {Function} props.onSubmit - Handles form submission.
+ * @param {boolean} [props.busy=false] - Disables submission while authorization is being checked.
+ * @param {string} [props.submitLabel='Approve'] - Label displayed on the submit button when idle.
+ * @param {string|null} [props.hint=null] - Optional hint displayed beside the form title.
+ * @param {boolean} [props.autoFocusCode=true] - Whether to focus the staff-code field initially.
+ * @returns {JSX.Element} The supervisor authorization form.
  */
 export function SupervisorPinPanel({
   loginCode,
@@ -26,12 +38,14 @@ export function SupervisorPinPanel({
 }) {
   return (
     <form
-      className="rounded-lg border border-brand-softline bg-brand-n50 px-3.5 py-3.5"
+      className="relative rounded-lg border border-brand-softline bg-brand-n50 px-3.5 py-3.5"
+      {...secureFormProps}
       onSubmit={(e) => {
         e.preventDefault()
         onSubmit?.()
       }}
     >
+      <CredentialAutofillTrap />
       <div className="mb-2.5 flex items-baseline justify-between gap-2">
         <strong className="text-sm text-brand-ink">Supervisor PIN</strong>
         {hint ? <span className="text-[10px] text-brand-subtle">{hint}</span> : null}
@@ -39,19 +53,21 @@ export function SupervisorPinPanel({
       <div className="grid grid-cols-1 gap-2.5">
         <Field
           label="Staff code"
+          noSave
           value={loginCode}
           onChange={(e) => onLoginCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
           inputMode="numeric"
-          autoComplete="off"
           autoFocus={autoFocusCode}
           inputClassName="h-12 text-base tracking-wider"
         />
         <Field
           label="PIN"
-          type="password"
+          noSave
+          secret
           value={pin}
           onChange={(e) => onPin(sanitizePinInput(e.target.value))}
-          autoComplete="off"
+          inputMode="numeric"
+          maxLength={6}
           inputClassName="h-12 text-base"
         />
       </div>

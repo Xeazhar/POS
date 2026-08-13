@@ -1,16 +1,20 @@
 import { useState } from 'react'
 import { Eyebrow, Field, Modal, ModalActions, PrimaryButton, SecondaryButton, ErrorBanner } from '../ui'
 import { verifySupervisorPin, hasSupabase } from '../../lib/api'
+import { CredentialAutofillTrap, secureFormProps } from './SecureCredential'
 import { useAuthStore } from '../../stores/posStore'
 import { formatSupportError } from '../../utils/errors'
 import { sanitizePinInput } from '../../utils/pin'
 import { isManagerRole } from '../../utils/roles'
 
 /**
- * Modal for sensitive actions.
- * - Supervisors: staff code + PIN (branch-scoped).
- * - Managers/admin/master already signed in: can approve in place (supervisor unavailable).
- * - Managers with a PIN can also approve via code+PIN for any branch (RPC).
+ * Renders a modal for approving sensitive actions with supervisor credentials or an authorized manager session.
+ * @param {string} branchId - The branch whose approval is being requested.
+ * @param {string} [title='Approval required'] - The modal title.
+ * @param {string} [detail] - Supporting text displayed beneath the title.
+ * @param {Function} onCancel - Called when the approval flow is canceled.
+ * @param {Function} onApproved - Called with the approving staff member's identity and approval method.
+ * @returns {JSX.Element} The approval modal.
  */
 function SupervisorApprove({
   branchId,
@@ -68,9 +72,8 @@ function SupervisorApprove({
       )}
 
       <form
-        autoComplete="off"
-        data-lpignore="true"
-        data-1p-ignore="true"
+        className="relative"
+        {...secureFormProps}
         onSubmit={async (event) => {
           event.preventDefault()
           setError('')
@@ -105,6 +108,7 @@ function SupervisorApprove({
           }
         }}
       >
+        <CredentialAutofillTrap />
         {managerCanApprove && (
           <p className="mb-2 text-[11px] font-bold tracking-wide text-brand-subtle uppercase">
             Or use supervisor / manager PIN
@@ -113,12 +117,10 @@ function SupervisorApprove({
         <Field
           label="Staff code"
           name="cale-supervisor-code"
+          noSave
           value={loginCode}
           onChange={(e) => setLoginCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
           inputMode="numeric"
-          autoComplete="off"
-          data-lpignore="true"
-          data-1p-ignore="true"
           autoFocus={!managerCanApprove}
           required
         />
@@ -126,12 +128,12 @@ function SupervisorApprove({
           label="PIN"
           className="mt-3"
           name="cale-supervisor-pin"
+          noSave
+          secret
           value={pin}
           onChange={(e) => setPin(sanitizePinInput(e.target.value))}
-          type="password"
-          autoComplete="new-password"
-          data-lpignore="true"
-          data-1p-ignore="true"
+          inputMode="numeric"
+          maxLength={6}
           required
         />
         {error && <ErrorBanner className="mt-3 mb-0" error={error} />}
