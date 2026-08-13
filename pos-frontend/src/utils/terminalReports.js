@@ -791,6 +791,11 @@ ${
 </body></html>`
 }
 
+/**
+ * Escapes HTML-sensitive characters in a value.
+ * @param {*} s - The value to escape.
+ * @return {string} The HTML-escaped string, or an empty string for nullish values.
+ */
 function esc(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;')

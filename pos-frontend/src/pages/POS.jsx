@@ -53,6 +53,9 @@ function menuSetupKey(branchId, bizDate) {
   return `cale-menu-setup:${branchId || 'x'}:${bizDate}`
 }
 
+/**
+ * Render and manage the point-of-sale screen, including product selection, cart operations, promotions, menu availability, price changes, and day-end restrictions.
+ */
 function POS() {
   const user = useAuthStore((state) => state.user)
   const isRestaurant = user?.branchType === 'restaurant'

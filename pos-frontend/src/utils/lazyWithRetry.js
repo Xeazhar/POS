@@ -2,7 +2,11 @@ import { lazy } from 'react'
 
 const CHUNK_RELOAD_KEY = 'calepos_chunk_reload'
 
-/** Stale PWA tabs often fail lazy imports after a deploy — recover once via hard reload. */
+/**
+ * Determines whether an error indicates a dynamic module or chunk-loading failure.
+ * @param {*} err - The error to inspect.
+ * @return {boolean} `true` if the error matches a known chunk-loading failure, `false` otherwise.
+ */
 export function isChunkLoadError(err) {
   const msg = String(err?.message || err || '')
   return /Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk [\d]+ failed|error loading dynamically imported module/i.test(
@@ -10,6 +14,9 @@ export function isChunkLoadError(err) {
   )
 }
 
+/**
+ * Clears the session marker that tracks attempted chunk-error reloads.
+ */
 export function clearChunkReloadFlag() {
   try {
     sessionStorage.removeItem(CHUNK_RELOAD_KEY)
@@ -19,8 +26,9 @@ export function clearChunkReloadFlag() {
 }
 
 /**
- * React.lazy wrapper: on chunk load failure, hard-reload once per tab session then retry.
- * If reload does not happen (offline probe fail), the error propagates to AppErrorBoundary.
+ * Creates a lazy-loaded React component that handles chunk-loading failures with one hard reload per session.
+ * @param {Function} importFn - Function that loads the component module.
+ * @returns {React.LazyExoticComponent} A lazy React component backed by the import function.
  */
 export function lazyWithRetry(importFn) {
   return lazy(async () => {

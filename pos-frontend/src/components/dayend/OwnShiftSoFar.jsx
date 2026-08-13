@@ -6,6 +6,11 @@ import { useInventoryStore } from '../../stores/posStore'
 import { cashPositionNotice, useShiftStore } from '../../stores/shiftStore'
 import { money } from '../../utils/format'
 
+/**
+ * Formats a shift timestamp as a localized abbreviated date and time.
+ * @param {string|number|Date} iso - The timestamp to format.
+ * @return {string} The localized date and time, or `—` for a missing or invalid timestamp.
+ */
 function formatShiftWhen(iso) {
   if (!iso) return '—'
   const d = new Date(iso)
@@ -13,6 +18,13 @@ function formatShiftWhen(iso) {
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+/**
+ * Formats the elapsed time between shift start and end times.
+ * @param {string|Date|number} clockIn - The shift start timestamp.
+ * @param {string|Date|number|null} [clockOut=null] - The shift end timestamp, or the current time when omitted.
+ * @param {number} [nowMs=Date.now()] - The timestamp used as the current time when the shift is active.
+ * @return {string} The elapsed duration in minutes or hours and minutes, or `—` for missing, invalid, or reversed timestamps.
+ */
 function formatShiftDuration(clockIn, clockOut = null, nowMs = Date.now()) {
   if (!clockIn) return '—'
   const start = new Date(clockIn).getTime()
@@ -24,8 +36,14 @@ function formatShiftDuration(clockIn, clockOut = null, nowMs = Date.now()) {
 }
 
 /**
- * Cashier End shift + supervisor Day end: own shift timing, cash position, and
- * shift-scoped drawer activity — same figures as ShiftCashOut uses.
+ * Display the current user's shift timing, cash position, drawer activity, and shift-ending controls.
+ * @param {Object} user - The current user.
+ * @param {Array} movements - Drawer movements to filter to the active shift or current user.
+ * @param {Function} onReload - Callback invoked after drawer activity is reviewed.
+ * @param {Function} onShiftEnded - Callback invoked after the shift ends.
+ * @param {boolean} showDrawerActivity - Whether to display drawer activity.
+ * @param {string} drawerTitle - Title shown above drawer activity.
+ * @param {string} drawerSubtitle - Subtitle shown above drawer activity.
  */
 export default function OwnShiftSoFar({
   user,

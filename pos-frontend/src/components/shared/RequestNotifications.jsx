@@ -24,9 +24,10 @@ import { Skeleton } from '../ui'
 const POLL_MS = 30_000
 
 /**
- * Header inbox for important approval requests.
- * Manager: day-end, promo, refund, cash movements, cart-remove (inline Approve/Deny).
- * Supervisor: day-end + cash movements + cart-remove on their branch.
+ * Displays pending approval requests for managers and supervisors.
+ * Managers see network-wide requests, while supervisors see requests for their branch.
+ * Supports inline approval, denial, and dismissal of actionable notifications.
+ * @returns {JSX.Element|null} The notification bell and request menu, or `null` for unauthorized users.
  */
 export default function RequestNotifications() {
   const user = useAuthStore((s) => s.user)

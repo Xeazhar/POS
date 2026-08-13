@@ -3,7 +3,9 @@ import { readTouchUi } from '../../hooks/useIsTouchUi'
 
 const DISMISS_KEY = 'calepos_dismiss_desktop_hint'
 
-/** Warn when a touch device is likely in browser “Desktop site” mode (wide layout viewport). */
+/**
+ * Warns touch-capable users when the browser is using a wide layout that may indicate “Desktop site” mode.
+ */
 export default function DesktopModeHint() {
   const [visible, setVisible] = useState(false)
 

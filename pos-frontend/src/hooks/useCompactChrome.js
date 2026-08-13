@@ -1,15 +1,17 @@
 import { useEffect } from 'react'
 import { readTouchUi } from './useIsTouchUi'
 
-/** Phones in “Desktop site” mode report a wide viewport but still need mobile chrome. */
+/**
+ * Determines whether the interface should use compact chrome.
+ * @returns {boolean} `true` for touch-enabled interfaces or viewports 700 pixels wide or less, `false` during server-side rendering or otherwise.
+ */
 export function isCompactChrome() {
   if (typeof window === 'undefined') return false
   return readTouchUi() || window.innerWidth <= 700
 }
 
 /**
- * Toggle `compact-chrome` on `<html>` so Tailwind `compact:` variants match touch/narrow UIs
- * even when the browser lies about viewport width (mobile desktop mode).
+ * Synchronize the `compact-chrome` class on the document root with touch-enabled or narrow UI conditions.
  */
 export function useCompactChrome() {
   useEffect(() => {

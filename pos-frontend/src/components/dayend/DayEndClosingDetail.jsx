@@ -18,6 +18,11 @@ import {
 } from '../../lib/api'
 import { money } from '../../utils/format'
 
+/**
+ * Formats a timestamp as localized hour and minute text.
+ * @param {string} iso - The timestamp to format.
+ * @return {string} The localized time, or `—` when the timestamp is missing or invalid.
+ */
 function timeLabel(iso) {
   if (!iso) return '—'
   const d = new Date(iso)
@@ -25,6 +30,11 @@ function timeLabel(iso) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+/**
+ * Converts a cash movement type into its display label.
+ * @param {string} type - The cash movement type.
+ * @return {string} The display label for the movement type.
+ */
 function movementTypeLabel(type) {
   if (type === 'pickup') return 'Cash pickup'
   if (type === 'cash_in') return 'Cash in'
@@ -32,6 +42,11 @@ function movementTypeLabel(type) {
   return 'Paid-out'
 }
 
+/**
+ * Converts a cash movement status into a display label.
+ * @param {string} status - The cash movement status.
+ * @return {string} The corresponding display label, the original status, or `—` when no status is provided.
+ */
 function movementStatusLabel(status) {
   const map = {
     pending_remote: 'Waiting manager',
@@ -46,6 +61,11 @@ function movementStatusLabel(status) {
   return map[status] || status || '—'
 }
 
+/**
+ * Converts a legacy cash record into a display label.
+ * @param {Object} row - The legacy cash record containing movement kind and status.
+ * @return {string} The corresponding display label.
+ */
 function legacyKindLabel(row) {
   if (row.kind === 'change_fund') return 'Change fund'
   if (row.kind === 'pickup') return 'Cash pickup'
@@ -55,6 +75,11 @@ function legacyKindLabel(row) {
   return 'Paid-out'
 }
 
+/**
+ * Maps a closing status to its corresponding display tone.
+ * @param {string} status - The closing status.
+ * @return {string} The display tone: `success`, `warn`, `danger`, or `neutral`.
+ */
 function statusTone(status) {
   if (status === 'closed') return 'success'
   if (status === 'submitted' || status === 'requested') return 'warn'
@@ -63,8 +88,10 @@ function statusTone(status) {
 }
 
 /**
- * Manager BranchDashboard — full picture of one filed day-end: count vs expected,
- * shift cash-outs, and petty / pickup / cash-in for that business date.
+ * Displays detailed day-end cash information for a branch and business date.
+ * @param {Object} entry - The day-end closing record to display.
+ * @param {string} branchId - The branch identifier used to load related cash data.
+ * @param {Function} onClose - Callback invoked when the modal is closed.
  */
 export default function DayEndClosingDetail({ entry, branchId, onClose }) {
   const [loading, setLoading] = useState(true)
