@@ -2,7 +2,11 @@ import { Children, cloneElement, isValidElement } from 'react'
 import { FiX } from 'react-icons/fi'
 import { isKnownErrorCode, saleImpactGuidance } from '../../utils/errors'
 
-/** Pull ModalActions out of the scroll body so the footer never covers fields. */
+/**
+ * Separates modal action elements from the rest of the children.
+ * @param {React.ReactNode} children - The modal content to partition.
+ * @returns {{body: React.ReactNode[], actions: React.ReactNode[]}} The regular content and modal action elements.
+ */
 function splitModalActions(children) {
   const items = Children.toArray(children)
   const body = []
@@ -20,7 +24,15 @@ function splitModalActions(children) {
   return { body, actions }
 }
 
-/** Derive hover tooltip text for shared buttons. */
+/**
+ * Derive tooltip text for a shared button from its explicit label sources or string content.
+ * @param {Object} options - Button label and tooltip values.
+ * @param {string} [options.tooltip] - Explicit tooltip text.
+ * @param {string} [options.title] - Fallback title text.
+ * @param {*} [options.children] - Button content used as a fallback when it is a string.
+ * @param {string} [options['aria-label']] - Accessible label used as a fallback.
+ * @return {string|undefined} The selected tooltip text, or `undefined` when no text is available.
+ */
 function buttonTooltip({ tooltip, title, children, 'aria-label': ariaLabel }) {
   if (tooltip) return tooltip
   if (title) return title
@@ -29,6 +41,14 @@ function buttonTooltip({ tooltip, title, children, 'aria-label': ariaLabel }) {
   return undefined
 }
 
+/**
+ * Renders a primary-styled button with optional compact sizing and tooltip text.
+ * @param {string} [className=''] - Additional CSS classes for the button.
+ * @param {boolean} [compact=false] - Whether to use the compact button layout.
+ * @param {string} [tooltip] - Explicit tooltip text.
+ * @param {string} [title] - Fallback tooltip text.
+ * @return {JSX.Element} The styled button element.
+ */
 export function PrimaryButton({ className = '', compact = false, tooltip, title, children, ...props }) {
   const tip = buttonTooltip({ tooltip, title, children, 'aria-label': props['aria-label'] })
   return (
@@ -47,6 +67,14 @@ export function PrimaryButton({ className = '', compact = false, tooltip, title,
   )
 }
 
+/**
+ * Render a secondary-styled button with optional compact sizing and tooltip text.
+ * @param {string} [className=''] - Additional CSS classes.
+ * @param {boolean} [compact=false] - Whether to use compact button dimensions.
+ * @param {string} [tooltip] - Explicit tooltip text.
+ * @param {string} [title] - Fallback tooltip text.
+ * @param {React.ReactNode} children - Button content.
+ */
 export function SecondaryButton({ className = '', compact = false, tooltip, title, children, ...props }) {
   const tip = buttonTooltip({ tooltip, title, children, 'aria-label': props['aria-label'] })
   return (
@@ -65,7 +93,13 @@ export function SecondaryButton({ className = '', compact = false, tooltip, titl
   )
 }
 
-/** Icon-only control — always pass `label` (and optional longer `tooltip`). */
+/**
+ * Render an icon-only button with an accessible label and derived tooltip.
+ * @param {string} label - The accessible label for the button.
+ * @param {string} [tooltip] - Optional tooltip text.
+ * @param {string} [title] - Optional title text used as a tooltip fallback.
+ * @param {string} [className=''] - Additional CSS classes.
+ */
 export function IconButton({ label, tooltip, title, className = '', children, ...props }) {
   const tip = buttonTooltip({ tooltip, title, 'aria-label': label, children })
   return (
@@ -82,6 +116,13 @@ export function IconButton({ label, tooltip, title, className = '', children, ..
   )
 }
 
+/**
+ * Render a labeled text input with optional secure-entry and anti-autofill behavior.
+ * @param {string} label - The label displayed above the input.
+ * @param {boolean} noSave - Whether to discourage browser and password-manager autofill.
+ * @param {boolean} secret - Whether to render the input as a secure-entry field.
+ * @returns {JSX.Element} The labeled input element.
+ */
 export function Field({ label, className = '', inputClassName = '', noSave = false, secret = false, onFocus, type, ...props }) {
   const handleFocus = (e) => {
     if (noSave) e.target.removeAttribute('readonly')
@@ -115,6 +156,13 @@ export function Field({ label, className = '', inputClassName = '', noSave = fal
   )
 }
 
+/**
+ * Render a labeled select control with shared styling.
+ * @param {string} label - The text displayed above the select control.
+ * @param {string} [className=''] - Additional classes applied to the label container.
+ * @param {React.ReactNode} children - The select options or other contents.
+ * @returns {JSX.Element} The labeled select control.
+ */
 export function SelectField({ label, className = '', children, ...props }) {
   return (
     <label className={`block text-[11px] font-medium text-brand-n700 ${className}`}>
@@ -129,6 +177,11 @@ export function SelectField({ label, className = '', children, ...props }) {
   )
 }
 
+/**
+ * Renders uppercase introductory text above a heading.
+ * @param {React.ReactNode} children - The introductory content.
+ * @param {string} [className=''] - Additional CSS classes.
+ */
 export function Eyebrow({ children, className = '' }) {
   return (
     <p className={`mb-2 text-[10px] font-semibold tracking-[1.4px] text-brand-eyebrow uppercase ${className}`}>
@@ -137,7 +190,14 @@ export function Eyebrow({ children, className = '' }) {
   )
 }
 
-/** Panel section title — clean type above card content. */
+/**
+ * Render a titled panel header with optional subtitle, metadata, and tone styling.
+ * @param {string} title - The panel title.
+ * @param {string} [subtitle] - Supporting text displayed below the title.
+ * @param {*} [meta] - Metadata displayed alongside the title.
+ * @param {string} [className=''] - Additional CSS classes for the header.
+ * @param {'default'|'warn'|'danger'} [tone='default'] - Text tone applied to the title.
+ */
 export function SectionHeading({ title, subtitle, meta, className = '', tone = 'default' }) {
   const accent =
     tone === 'warn'
@@ -175,12 +235,12 @@ export function PageHeader({ eyebrow, title, children, className = '' }) {
 }
 
 /**
- * Search input.
+ * Render a search input with an optional aligned label and clear control.
  *
- * `label` exists so a search box can sit in a filter row next to `SelectField`s and line
- * up with them. Without it the labelled controls carry ~18px of label above the input and
- * the search box does not, so the row reads as two different heights. When labelled, the
- * box is `h-10` — the exact height a `SelectField` select renders at (`p-2.5 text-[13px]`).
+ * @param {React.ReactNode} icon - Icon displayed before the input.
+ * @param {string} [className=''] - Additional styling classes.
+ * @param {React.ReactNode} [label] - Optional label displayed above the input.
+ * @returns {React.ReactElement} The search input component.
  */
 export function SearchBox({ icon, className = '', label = null, ...props }) {
   const { value, onChange } = props
@@ -384,16 +444,15 @@ export function varianceToneClass(variance) {
 }
 
 /**
- * Period-over-period change badge for a KPI ("+12.4%" against last week).
+ * Displays the percentage change between the current and previous periods.
  *
- * Designed to sit on the dark KPI cards, so the tones are the on-dark status colours.
+ * Shows “New” when no comparable period exists or the previous value is zero.
  *
- * Two cases deliberately do NOT get a percentage:
- *   - No prior period at all (a new shop's first week). 0 → 200 is not "+∞%" or "+100%",
- *     it is simply the first data there has ever been, so it reads "New".
- *   - Previous period existed but was exactly zero revenue. Same divide-by-zero problem.
- * Both are shown as neutral, because inventing a number here would put a green arrow on
- * a shop that has no trend to report.
+ * @param {*} current - The current period value.
+ * @param {*} previous - The previous period value.
+ * @param {boolean} [hasPrevious=true] - Whether a comparable previous period exists.
+ * @param {string} [className=''] - Additional CSS classes.
+ * @return {JSX.Element} A badge showing the period change or “New”.
  */
 export function DeltaBadge({ current, previous, hasPrevious = true, className = '' }) {
   const cur = Number(current) || 0
@@ -430,6 +489,19 @@ export function DeltaBadge({ current, previous, hasPrevious = true, className = 
   )
 }
 
+/**
+ * Renders a responsive dialog with scrollable content and an optional fixed footer.
+ * Explicit footer content takes precedence over action elements provided as children.
+ * @param {Object} props - Dialog configuration and content.
+ * @param {boolean} [props.wide=false] - Uses a wider dialog layout.
+ * @param {boolean} [props.xl=false] - Uses the extra-wide dialog layout.
+ * @param {boolean} [props.layer=false] - Places the dialog above standard modal layers.
+ * @param {string} [props.className=''] - Additional CSS classes for the dialog panel.
+ * @param {Function} [props.onClose] - Called when the close button is selected.
+ * @param {React.ReactNode} [props.footer=null] - Explicit footer content.
+ * @param {React.ReactNode} props.children - Dialog content.
+ * @returns {JSX.Element} The rendered dialog.
+ */
 export function Modal({
   wide = false,
   xl = false,
@@ -515,6 +587,11 @@ export function Modal({
   )
 }
 
+/**
+ * Render a responsive footer area for modal actions.
+ * @param {React.ReactNode} children - The controls to display in the action area.
+ * @param {string} [className=''] - Additional CSS classes.
+ */
 export function ModalActions({ children, className = '' }) {
   return (
     <div
@@ -684,7 +761,17 @@ export function StockBadge({ tone, children }) {
   )
 }
 
-/** Clear on/off control — looks like a switch, not a text pill. */
+/**
+ * Renders an accessible switch control.
+ * @param {boolean} [checked=false] - Whether the switch is on.
+ * @param {boolean} [disabled=false] - Whether the switch is disabled.
+ * @param {boolean} [busy=false] - Whether the switch is temporarily unavailable.
+ * @param {function(boolean): void} [onChange] - Called with the next checked state.
+ * @param {string} [label='Toggle'] - Accessible label for the switch.
+ * @param {string} [tooltip] - Tooltip text displayed for the switch.
+ * @param {string} [className=''] - Additional CSS classes.
+ * @returns {JSX.Element} The switch control.
+ */
 export function ToggleSwitch({
   checked = false,
   disabled = false,

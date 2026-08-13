@@ -9,9 +9,11 @@ import { Eyebrow, Field, PrimaryButton, SecondaryButton, ErrorBanner } from '../
 import { CredentialAutofillTrap, secureFormProps } from './SecureCredential'
 
 /**
- * Full-screen lock — keeps auth session + shift + cart intact.
- * Unlock with till PIN (cashier/supervisor) or account password (manager/admin).
- * No Turnstile: this is not a new sign-in.
+ * Displays a full-screen lock interface that preserves the current session, shift, and cart.
+ * Supports PIN authentication for PIN-based roles and account-password authentication for other roles.
+ * @param {Function} onUnlock - Callback invoked after successful authentication.
+ * @param {Function} onLogout - Callback invoked when the user signs out completely.
+ * @return {JSX.Element} The lock screen interface.
  */
 function LockScreen({ onUnlock, onLogout }) {
   const user = useAuthStore((s) => s.user)

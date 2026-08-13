@@ -514,8 +514,10 @@ export async function drainQueueInBackground(branchId) {
 }
 
 /**
- * Full sync cycle: push local ops first (so sales land), then pull.
- * Reads always from IndexedDB after this.
+ * Synchronizes a branch by pushing pending local operations before retrieving remote data.
+ * Falls back to the local snapshot when synchronization is unavailable or fails.
+ * @param {string} branchId - The branch identifier.
+ * @return {Promise<Object|null>} The synchronized or locally stored branch snapshot.
  */
 export async function syncBranch(branchId) {
   if (!branchId) return null

@@ -581,15 +581,30 @@ const PROMO_RULE_TYPE_LABELS = {
   bogo_pct: 'BOGO %',
 }
 
+/**
+ * Retrieves the product identifier from a line item.
+ * @param {Object} line - The line item containing product information.
+ * @return {*} The product ID, or `null` when no ID is available.
+ */
 function lineProductId(line) {
   return line?.products?.id || line?.product_id || null
 }
 
+/**
+ * Determines whether a line uses kilogram or piece pricing.
+ * @param {Object} line - The line whose product pricing mode is evaluated.
+ * @return {string} `kg` for kilogram pricing; `pc` for all other pricing modes.
+ */
 function linePricingMode(line) {
   return line?.products?.pricing_mode === 'per_kg' ? 'kg' : 'pc'
 }
 
-/** Match sold lines to a promo rule — bundle name, B1T1, pair, or item %. */
+/**
+ * Identifies the promotion associated with sold lines.
+ * @param {Array<Object>} groupLines - Sold lines belonging to the same promotion group.
+ * @param {Array<Object>} rules - Promotion rules used to classify the lines.
+ * @returns {{label: string, badge: string, kind: string}} The promotion label, badge, and classification.
+ */
 function inferPromoOfferMeta(groupLines = [], rules = []) {
   const productIds = [...new Set(groupLines.map(lineProductId).filter(Boolean))]
   const names = [...new Set(groupLines.map((l) => l.products?.name).filter(Boolean))]
@@ -653,6 +668,11 @@ function inferPromoOfferMeta(groupLines = [], rules = []) {
   return { label: names[0] || 'Promo item', badge: 'Promo', kind: 'item' }
 }
 
+/**
+ * Aggregates quantities and monetary totals for transaction lines.
+ * @param {Array<Object>} lines - The transaction lines to aggregate.
+ * @returns {{qty: number, gross: number, discount: number, net: number, pricingMode: string}} The rounded quantity, gross amount, discount, net amount, and pricing mode.
+ */
 function sumLineMoney(lines = []) {
   let gross = 0
   let discount = 0
@@ -679,8 +699,10 @@ function sumLineMoney(lines = []) {
 }
 
 /**
- * Promo tracking: group sold lines by offer (bundle / pair / B1T1 / item %) instead of
- * flattening every SKU — matches how cashiers sold them on POS quick-add tiles.
+ * Aggregates sold lines into promo offer summaries for sales tracking.
+ * @param {Array<Object>} lines - Sold transaction lines to aggregate.
+ * @param {Array<Object>} rules - Promotion rules used to identify each offer.
+ * @returns {Array<Object>} Offer summaries containing sets, quantities, pricing mode, gross amount, discount, and net amount, sorted by discount descending.
  */
 export function aggregatePromoSalesOffers(lines = [], rules = []) {
   const setInstances = new Map()
@@ -749,7 +771,11 @@ export function aggregatePromoSalesOffers(lines = [], rules = []) {
     .sort((a, b) => b.discount - a.discount)
 }
 
-/** One label for an event's rules — "Mixed" when more than one rule_type is present. */
+/**
+ * Summarize the rule types associated with a promotion.
+ * @param {string[]} ruleTypes - Rule type identifiers to summarize.
+ * @return {string} An em dash for no types, the label for one type, or `Mixed` for multiple types.
+ */
 export function summarizePromoRuleTypes(ruleTypes = []) {
   const unique = [...new Set((ruleTypes || []).filter(Boolean))]
   if (!unique.length) return '—'

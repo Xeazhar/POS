@@ -70,9 +70,19 @@ function sortMovements(rows) {
 }
 
 /**
- * Day End / End shift Drawer Activity — full ledger of Open Drawer movements.
- * Unauthorized (`self_recorded`) rows must be Confirm/Flag reviewed by a different
- * supervisor/manager before Close day.
+ * Renders the current session's drawer-movement ledger and review controls.
+ *
+ * @param {Object} props - Component properties.
+ * @param {Array<Object>} [props.rows=[]] - Drawer movements to display.
+ * @param {number|null} [props.expectedCash=null] - Expected cash remaining in the drawer.
+ * @param {boolean} [props.canReview=false] - Whether the current user may review unauthorized movements.
+ * @param {string|null} [props.currentUserId=null] - ID of the current user, used to prevent self-review.
+ * @param {Function} [props.onReviewed] - Called after a movement is successfully reviewed.
+ * @param {number} [props.openReviewNonce=0] - Change this value to open the first reviewable movement.
+ * @param {boolean} [props.showInlineBanner=true] - Whether to display the unapproved-movement banner.
+ * @param {string} [props.title='Drawer Activity'] - Header title.
+ * @param {string} [props.subtitle] - Header description.
+ * @return {JSX.Element} The drawer-activity ledger.
  */
 export default function DrawerActivity({
   rows = [],

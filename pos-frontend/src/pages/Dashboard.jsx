@@ -151,6 +151,13 @@ function aggregateSoldLines(rows, products) {
   return { top, mix }
 }
 
+/**
+ * Render the branch sales and operations dashboard.
+ * @param {Object} [options] - Optional dashboard scope settings.
+ * @param {string} [options.branchId] - Branch identifier used to scope dashboard data.
+ * @param {string} [options.branchName] - Branch name displayed in the dashboard header.
+ * @return {JSX.Element} The dashboard view.
+ */
 function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const user = useAuthStore((state) => state.user)
   const isRestaurant = user?.branchType === 'restaurant'

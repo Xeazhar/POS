@@ -31,6 +31,10 @@ const ManagerData = lazyWithRetry(() => import('./pages/manager/Data.jsx'))
 const ManagerPromos = lazyWithRetry(() => import('./pages/manager/Promos.jsx'))
 const ManagerReports = lazyWithRetry(() => import('./pages/manager/Reports.jsx'))
 
+/**
+ * Renders a table-style loading skeleton for lazy-loaded pages.
+ * @returns {JSX.Element} The table-style page skeleton.
+ */
 function PageFallback() {
   return <PageSkeleton variant="table" className="px-1 py-2" />
 }
@@ -88,6 +92,11 @@ function RequireModule({ moduleId, children, fallback }) {
   return children
 }
 
+/**
+ * Renders the user's home page or redirects them to their first available screen.
+ *
+ * @returns {JSX.Element} The user's home page or a redirect to their first screen.
+ */
 function Home() {
   const user = useAuthStore((state) => state.user)
   const first = firstHomePath(user)
@@ -97,6 +106,9 @@ function Home() {
   return <Dashboard />
 }
 
+/**
+ * Displays the configured post-login introduction and navigates to the user's staff home when it is completed.
+ */
 function LoginIntroGate() {
   const loginIntroUser = useAuthStore((state) => state.loginIntroUser)
   const clearLoginIntro = useAuthStore((state) => state.clearLoginIntro)
@@ -112,6 +124,10 @@ function LoginIntroGate() {
   return <LoginIntro staffName={loginIntroUser.name} onDone={finishIntro} />
 }
 
+/**
+ * Coordinates application initialization and renders authenticated or login routes.
+ * @returns {JSX.Element} The application route content.
+ */
 function AppRoutes() {
   const user = useAuthStore((state) => state.user)
   const booting = useAuthStore((state) => state.booting)
@@ -321,6 +337,10 @@ function AppRoutes() {
   )
 }
 
+/**
+ * Render the application within browser-based routing and desktop-mode guidance.
+ * @returns {JSX.Element} The application router and desktop-mode hint.
+ */
 function App() {
   return (
     <BrowserRouter>

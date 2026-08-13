@@ -7,18 +7,12 @@ import { TableCard } from '../ui'
 export const REVENUE_CHART_PLOT_HEIGHT = 420
 
 /**
- * Revenue line with a hover tooltip showing the exact date, revenue and order count.
- *
- * Hand-rolled rather than pulled from a charting library because the project has none —
- * every chart here is plain SVG, and adding Recharts (~500KB with its D3 dependencies)
- * for one tooltip would cost more than the whole rest of the dashboard on a shop tablet.
- *
- * The hit targets are invisible full-height <rect> bands, one per point, not the 4.5px
- * dots. Requiring a cashier to land on a 9px circle on a touchscreen is not a usable
- * chart; the band means anywhere in that column works.
- *
- * Width is measured; height is a fixed plot size so axis/label fonts never scale up when
- * the card stretches beside the metrics column (`fill` only grows the card chrome).
+ * Render a responsive revenue chart with interactive point details.
+ * @param {Array} points - Revenue data points to plot.
+ * @param {string} period - Selected reporting period displayed in the chart header.
+ * @param {number} [chartHeight=REVENUE_CHART_PLOT_HEIGHT] - Plot height in pixels.
+ * @param {boolean} [fill=false] - Whether the chart fills the available card height.
+ * @returns {JSX.Element} The revenue chart card.
  */
 function RevenueChart({
   points = [],

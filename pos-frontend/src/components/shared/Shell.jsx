@@ -88,6 +88,11 @@ const toneText = {
   off: 'text-brand-sync-off-ink',
 }
 
+/**
+ * Render the application shell with navigation, session controls, synchronization status, and route content.
+ * @param {React.ReactNode} children - The content displayed within the application shell.
+ * @return {JSX.Element} The application layout and its session or synchronization overlays.
+ */
 function Shell({ children }) {
   const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)

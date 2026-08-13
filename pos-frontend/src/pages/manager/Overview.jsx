@@ -60,6 +60,9 @@ const PAYMENT_BAR_CLASS = {
   'E-wallet': 'bg-brand-gold',
 }
 
+/**
+ * Display network-wide manager metrics and branch performance for the selected period.
+ */
 function ManagerOverview() {
   const user = useAuthStore((state) => state.user)
   const [period, setPeriod] = useState('week')

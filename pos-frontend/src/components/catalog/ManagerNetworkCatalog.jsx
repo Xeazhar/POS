@@ -76,8 +76,10 @@ const emptyForm = (branchType = 'retail') => ({
 })
 
 /**
- * Manager Data — network / universal product catalog.
- * Manual add creates catalog_products; branches adopt via supervisor Catalog.
+ * Manage the shared network product catalog that branches can adopt.
+ *
+ * Supports adding, importing, exporting, filtering, editing, and synchronizing
+ * retail and restaurant catalog items.
  */
 export default function ManagerNetworkCatalog() {
   const user = useAuthStore((state) => state.user)

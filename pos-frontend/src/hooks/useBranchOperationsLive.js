@@ -6,11 +6,9 @@ import { useInventoryStore } from '../stores/posStore'
 import { useLiveData } from './useLiveData'
 
 /**
- * Keep branch activity (day_ends, transactions, movements) fresh on staff terminals.
- *
- * Manager reopen / day-end submit / refunds emit OPERATIONS_CHANGED — but POS and
- * ShiftGate read `useInventoryStore.dayEnds`, which only refreshed on login/sync before.
- * Without this, cashiers stayed on "day closed" until a full reload.
+ * Refreshes branch transactions, movements, and day-end records for the current device.
+ * @param {string} branchId - The branch whose activity should be refreshed.
+ * @return {Object|null} The refreshed activity data, or `null` when the refresh is unavailable or fails.
  */
 export async function refreshBranchActivity(branchId) {
   if (!hasSupabase || !branchId || !isOnline()) return null
@@ -32,6 +30,10 @@ export async function refreshBranchActivity(branchId) {
   return activity
 }
 
+/**
+ * Keeps branch operational data synchronized through live updates and periodic polling.
+ * @param {string} branchId - The identifier of the branch to synchronize.
+ */
 export function useBranchOperationsLive(branchId) {
   const fetch = useCallback(async () => {
     await refreshBranchActivity(branchId)

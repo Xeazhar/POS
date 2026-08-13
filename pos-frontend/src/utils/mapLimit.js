@@ -1,6 +1,9 @@
 /**
- * Run an async mapper over items with bounded concurrency — avoids stampeding
- * Supabase when a page fans out many parallel queries (promo stats, branch summaries).
+ * Map items asynchronously while limiting concurrent mapper calls.
+ * @param {Array} items - The items to process.
+ * @param {number} limit - The maximum number of concurrent mapper calls.
+ * @param {Function} mapper - The function applied to each item and its index.
+ * @return {Array} The mapped results in input order.
  */
 export async function mapLimit(items, limit, mapper) {
   const list = items || []
@@ -9,6 +12,9 @@ export async function mapLimit(items, limit, mapper) {
   const results = new Array(list.length)
   let next = 0
 
+  /**
+   * Processes assigned items and stores their mapped results in input order.
+   */
   async function worker() {
     while (next < list.length) {
       const i = next

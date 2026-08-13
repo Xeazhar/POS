@@ -53,6 +53,11 @@ const rowKind = (row) =>
 
 const rowStatus = (row) => row.status || (rowKind(row) === 'paid_out' ? 'fulfilled' : 'recorded')
 
+/**
+ * Counts cash-movement rows recorded by the current user that still require review.
+ * @param {Array<Object>} rows - Cash-movement rows to inspect.
+ * @return {number} The number of rows with a `self_recorded` status.
+ */
 function countUnreviewedSelfRecorded(rows = []) {
   return rows.filter((r) => r.status === 'self_recorded').length
 }
@@ -88,9 +93,15 @@ function DayEnd() {
   return isSupervisorOrAbove(user?.role) ? <SupervisorDayEnd /> : <CashierEndShift />
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
-   Shared data hook — both views read the same two sources.
-   ──────────────────────────────────────────────────────────────────────────── */
+/**
+ * Loads petty cash, staff shifts, and cash movements for a business date.
+ * @param {Object} user - Current user context, including the branch identifier.
+ * @param {string} date - Business date used to scope the data.
+ * @param {Object} [options] - Optional filters for a shift or staff member.
+ * @param {string|null} [options.shiftServerId=null] - Server identifier of a shift to include.
+ * @param {string|null} [options.staffId=null] - Staff identifier whose requested movements should be included.
+ * @returns {{petty: Array, shifts: Array, movements: Array, loading: boolean, reload: Function}} The loaded petty cash records, shifts, cash movements, loading state, and reload function.
+ */
 function useDayEndData(user, date, { shiftServerId = null, staffId = null } = {}) {
   const [petty, setPetty] = useState([])
   const [shifts, setShifts] = useState([])
@@ -229,11 +240,10 @@ function useDayEndData(user, date, { shiftServerId = null, staffId = null } = {}
   return { petty, shifts, movements, loading, reload }
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
-   CASHIER — "End shift"
-   Own drawer only. No aggregate sales, no other cashiers, no restock list, and
-   no Submit for closing — that action belongs to a supervisor.
-   ──────────────────────────────────────────────────────────────────────────── */
+/**
+ * Displays the cashier's shift activity and day-end request controls for their own drawer.
+ * @return {JSX.Element} The cashier end-of-shift view.
+ */
 function CashierEndShift() {
   const user = useAuthStore((state) => state.user)
   const dayOpenHour = useInventoryStore((state) => state.dayOpenHour)
@@ -333,11 +343,10 @@ function CashierEndShift() {
   )
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
-   SUPERVISOR+ — "Day end"
-   Branch-wide: aggregate sales, every shift side by side, restock, the petty
-   cash approval queue, and Submit for closing (the Z-reading gate).
-   ──────────────────────────────────────────────────────────────────────────── */
+/**
+ * Provides branch-wide day-end oversight for supervisors and managers.
+ * @returns {JSX.Element} The day-end dashboard with sales, drawer accountability, cash variance, and close controls.
+ */
 function SupervisorDayEnd() {
   const user = useAuthStore((state) => state.user)
   const isRestaurant = user?.branchType === 'restaurant'

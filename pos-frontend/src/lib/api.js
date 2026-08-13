@@ -468,7 +468,15 @@ export async function signIn(email, password, { captchaToken } = {}) {
   return fetchSessionStaff()
 }
 
-/** Cashier/supervisor PIN login via staff code + PIN. */
+/**
+ * Authenticates a cashier or supervisor using a staff code and PIN.
+ * @param {string|number} loginCode - The staff code; non-digit characters are ignored.
+ * @param {string|number} pin - The six-digit PIN; non-digit characters are ignored.
+ * @param {Object} [options] - Sign-in options.
+ * @param {string} options.captchaToken - CAPTCHA verification token.
+ * @returns {Promise<Object>} The authenticated user.
+ * @throws {Error} If the CAPTCHA token is missing or the staff code and PIN are invalid.
+ */
 export async function signInWithPin(loginCode, pin, { captchaToken } = {}) {
   const code = String(loginCode || '').replace(/\D/g, '')
   // Till PIN is exactly 6 digits (cashier/supervisor).
@@ -970,8 +978,9 @@ export async function bootstrapBranchData(branchId) {
 }
 
 /**
- * Products + movements for inventory views — skips transactions and day-ends.
- * Lighter than bootstrapBranchData when the page never shows receipts or day-end state.
+ * Loads branch inventory data without exposing transaction or day-end records.
+ * @param {string} branchId - The branch identifier.
+ * @returns {Promise<Object>} Inventory products, categories, opening hour, and stock movements.
  */
 export async function bootstrapBranchInventory(branchId) {
   const [catalog, activity] = await Promise.all([
@@ -2235,8 +2244,10 @@ export async function dismissPendingTillActionsOnSite({
 }
 
 /**
- * Drop inbox rows whose underlying issue was already handled on the till but the
- * pending DB flag was never cleared (supervisor PIN on-site, day closed, etc.).
+ * Reconciles pending till-action and day-end approval requests that were already completed.
+ * @param {string} [branchId] - Branch to reconcile when the caller is not a manager.
+ * @param {string} staffId - Staff member performing the reconciliation.
+ * @param {boolean} [manager=false] - Whether to reconcile requests across all branches.
  */
 async function reconcileResolvedPendingApprovals({ branchId, staffId, manager } = {}) {
   if (!hasSupabase || !staffId) return
@@ -3225,14 +3236,11 @@ export async function saveBranch(payload) {
 }
 
 /**
- * Staff roster for the Staff page.
- *
- * Managers read the `staff` table directly (RLS allows it). Supervisors CANNOT — the
- * `read staff` policy is `auth_user_id = auth.uid() or is_manager()`, so a direct read
- * returns them exactly one row, which is why their Staff page looked empty. They go
- * through `branch_staff_roster()`, a definer function that returns their branch's people
- * WITHOUT login_pin / auth_secret (see migrate_branch_staff_roster.sql — widening the
- * table policy instead would expose every cashier's PIN).
+ * Fetches staff members available to the current user's branch.
+ * @param {string|null} [branchId=null] - The branch whose staff roster should be fetched.
+ * @param {boolean} [isManager=false] - Whether to use the manager-accessible staff roster.
+ * @return {Promise<Array>} The staff roster, including branch and role details.
+ * @throws {Error} If the supervisor roster function is unavailable or the request fails.
  */
 export async function fetchStaffRoster({ branchId = null, isManager = false } = {}) {
   if (isManager) return fetchAllStaff()
@@ -3497,6 +3505,13 @@ async function persistStaffPinVerifier(staffId, loginPin, { loginCode, fullName,
   }
 }
 
+/**
+ * Updates a staff member and synchronizes PIN authentication data when provided.
+ * @param {string} id - The staff member's identifier.
+ * @param {Object} changes - Staff fields to update.
+ * @returns {Object} The updated staff record, including its branch.
+ * @throws {Error} If the update fails or the staff code is already in use.
+ */
 export async function updateStaffRow(id, changes) {
   const payload = { ...changes }
   const pinForVerifier = changes.loginPin ?? changes.login_pin ?? null
@@ -3532,6 +3547,12 @@ export async function updateStaffRow(id, changes) {
   return data
 }
 
+/**
+ * Reveals the login credentials for a staff member.
+ * @param {string} staffId - The identifier of the staff member.
+ * @returns {{loginCode: string, loginPin: string, name: string, role: string}} The staff member's login code, PIN, name, and role.
+ * @throws {Error} If the staff member is not found, the reveal capability is unavailable, or the caller is unauthorized.
+ */
 export async function revealStaffPin(staffId) {
   const { data, error } = await supabase.rpc('reveal_staff_pin', { p_staff_id: staffId })
   if (error) {
@@ -6573,6 +6594,12 @@ export async function approveStopPromo({ id, staffId }) {
   return data
 }
 
+/**
+ * Rejects a pending request to stop a promotion.
+ * @param {string} id - The promotion event identifier.
+ * @param {string} staffId - The staff member approving the rejection.
+ * @returns {*} The result returned by the rejection operation.
+ */
 export async function rejectStopPromo({ id, staffId }) {
   const { data, error } = await supabase.rpc('reject_stop_promo', {
     p_promo_event_id: id,
@@ -6582,6 +6609,17 @@ export async function rejectStopPromo({ id, staffId }) {
   return data
 }
 
+/**
+ * Fetches transaction lines attributed to a promotion within a date range.
+ * @param {Object} params - Query parameters.
+ * @param {string} params.branchId - Branch whose transactions to query.
+ * @param {string} params.promoName - Promotion name assigned to the transaction lines.
+ * @param {string} [params.startsAt] - Inclusive start of the query period.
+ * @param {string} [params.endsAt] - Inclusive end of the query period.
+ * @param {boolean} [params.minimal=false] - Whether to return only summary fields.
+ * @returns {Promise<{lines: Array<Object>|null, legacy: boolean}>} The matching lines and whether legacy promotion reporting is required.
+ * @throws {Error} If the query fails for a reason unrelated to unavailable promotion columns.
+ */
 async function fetchPromoAttributedLines({ branchId, promoName, startsAt, endsAt, minimal = false }) {
   const window = promoQueryWindow(startsAt, endsAt)
   const select = minimal
@@ -6612,7 +6650,12 @@ async function fetchPromoAttributedLines({ branchId, promoName, startsAt, endsAt
   return { lines: data || [], legacy: false }
 }
 
-/** Never scan unbounded promo history — bound to the event window (or a sane default). */
+/**
+ * Defines the bounded time window used for promotion history queries.
+ * @param {string|Date} [startsAt] - The beginning of the query window.
+ * @param {string|Date} [endsAt] - The end of the query window.
+ * @returns {{startsAt: string, endsAt: string}} ISO 8601 timestamps for the query window, defaulting to the preceding 90 days when dates are omitted or invalid.
+ */
 function promoQueryWindow(startsAt, endsAt) {
   const end = endsAt ? new Date(endsAt) : new Date()
   const endMs = Number.isNaN(end.getTime()) ? Date.now() : end.getTime()
@@ -6627,6 +6670,11 @@ function promoQueryWindow(startsAt, endsAt) {
 
 const promoRulesByEventId = new Map()
 
+/**
+ * Loads and caches the rules associated with a promotion event.
+ * @param {string} promoEventId - The promotion event identifier.
+ * @returns {Promise<Array>} The promotion rules, or an empty array when no identifier is provided or the rules cannot be loaded.
+ */
 async function loadPromoRulesCached(promoEventId) {
   if (!promoEventId) return []
   if (promoRulesByEventId.has(promoEventId)) return promoRulesByEventId.get(promoEventId)
@@ -6635,6 +6683,11 @@ async function loadPromoRulesCached(promoEventId) {
   return rules
 }
 
+/**
+ * Enriches promotional sales lines with their associated product details.
+ * @param {Array<Object>} lines - Promotional sales lines containing product IDs.
+ * @returns {Promise<Array<Object>>} The sales lines with product information attached when available.
+ */
 async function hydratePromoLineProducts(lines = []) {
   const ids = [...new Set(lines.map((l) => l.product_id).filter(Boolean))]
   if (!ids.length) return lines
@@ -6650,6 +6703,14 @@ async function hydratePromoLineProducts(lines = []) {
   }))
 }
 
+/**
+ * Summarize sales attributed to a promotion.
+ * @param {Array<Object>} matchedLines - Promotion-attributed transaction lines.
+ * @param {Array<Object>} [rules=[]] - Promotion rules used to aggregate offers.
+ * @param {Object} [options] - Summary options.
+ * @param {number|null} [options.receiptLimit=null] - Maximum number of transactions included in `matchedTxns`.
+ * @returns {Object} Aggregated receipt count, discount total, sale total, offers, items, and matching transactions.
+ */
 function promoStatsFromAttributedLines(matchedLines, rules = [], { receiptLimit = null } = {}) {
   const txnMap = new Map()
   for (const line of matchedLines) {
@@ -6679,6 +6740,11 @@ function promoStatsFromAttributedLines(matchedLines, rules = [], { receiptLimit 
   }
 }
 
+/**
+ * Aggregates promotional sales lines by product and ranks them by discount amount.
+ * @param {Array<Object>} lines - Promotional sales lines to aggregate.
+ * @returns {Array<Object>} Product summaries with quantity, gross sales, discount, and net sales totals.
+ */
 function aggregatePromoItems(lines = []) {
   const byProduct = {}
   for (const line of lines) {
@@ -6740,11 +6806,14 @@ async function buildPromoReceipts(rows) {
 }
 
 /**
- * Legacy path for DBs that haven't run migrate_promo_line_attribution.sql yet:
- * match by the whole transaction's discount_type. Misses/undercounts carts that
- * mixed lines from more than one concurrently-live promo (their discount_type is
- * a joined label like "A + B", not an exact match for either promo's name) —
- * see fetchPromoSalesStats below for the accurate per-line path.
+ * Aggregates promotion sales by matching transactions whose discount type equals the promotion name.
+ *
+ * @param {string} branchId - The branch whose promotion sales are queried.
+ * @param {string} promoName - The promotion name stored as the transaction discount type.
+ * @param {string} [startsAt] - Inclusive start of the reporting period.
+ * @param {string} [endsAt] - Inclusive end of the reporting period.
+ * @param {Array} [rules=[]] - Promotion rules used to aggregate matching offer data.
+ * @returns {{receiptCount: number, discountTotal: number, saleTotal: number, items: Array, offers: Array, receipts: Array}} Aggregated receipt, discount, sale, item, offer, and receipt data.
  */
 async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsAt, rules = [] }) {
   const window = promoQueryWindow(startsAt, endsAt)
@@ -6802,7 +6871,13 @@ async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsA
 }
 
 /**
- * Lightweight promo totals for history tables — no rules, offers, receipts, or product joins.
+ * Summarize sales totals attributed to a promotion within an optional date range.
+ * @param {Object} params - Promotion and date-range filters.
+ * @param {string} params.branchId - Branch identifier.
+ * @param {string} params.promoName - Promotion name.
+ * @param {string|null} [params.startsAt=null] - Inclusive start timestamp.
+ * @param {string|null} [params.endsAt=null] - Inclusive end timestamp.
+ * @returns {{receiptCount: number, discountTotal: number, saleTotal: number}} Aggregate receipt count, discount total, and sale total.
  */
 export async function fetchPromoSalesStatsSummary({
   branchId,
@@ -6840,12 +6915,15 @@ export async function fetchPromoSalesStatsSummary({
 }
 
 /**
- * Promo performance: receipts + offer-level sales under a promo name.
- *
- * Attribution is per-line (transaction_items.promo_name), not by matching the
- * whole transaction's discount_type — that stays accurate even when a single
- * cart mixed lines from two different concurrently-live promos, since each
- * line records exactly which promo discounted it.
+ * Aggregates sales performance for a promotion by its per-line attribution.
+ * @param {Object} options - Promotion sales query options.
+ * @param {string} options.branchId - Branch to query.
+ * @param {string} options.promoName - Promotion name used for line attribution.
+ * @param {string|null} [options.promoEventId=null] - Promotion event identifier used to resolve its rules.
+ * @param {string|null} [options.startsAt=null] - Inclusive start of the sales period.
+ * @param {string|null} [options.endsAt=null] - Inclusive end of the sales period.
+ * @param {number} [options.receiptLimit=200] - Maximum number of receipt details to include.
+ * @returns {Promise<Object>} Aggregated receipt count, discount total, sale total, item and offer summaries, receipt details, and whether the receipt list was truncated.
  */
 export async function fetchPromoSalesStats({
   branchId,
@@ -6884,6 +6962,11 @@ export async function fetchPromoSalesStats({
   }
 }
 
+/**
+ * Retrieves the status of a promotion event.
+ * @param {string} promoEventId - The promotion event identifier.
+ * @return {string|null} The event status, or `null` if no matching event exists.
+ */
 async function fetchPromoEventStatus(promoEventId) {
   const { data, error } = await supabase.from('promo_events').select('status').eq('id', promoEventId).maybeSingle()
   if (error) throw error

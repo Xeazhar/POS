@@ -12,7 +12,18 @@ export const OPEN_DRAWER_WAIT_SEC = 60
 export const CART_REMOVE_WAIT_SEC = 30
 
 /**
- * Reusable supervisor PIN block (Open Drawer, cart remove, future till gates).
+ * Render a supervisor authorization form for protected operations.
+ * @param {Object} props - Component properties.
+ * @param {string} props.loginCode - Staff code entered by the supervisor.
+ * @param {string} props.pin - Supervisor PIN entered by the supervisor.
+ * @param {Function} props.onLoginCode - Handles staff code changes.
+ * @param {Function} props.onPin - Handles PIN changes.
+ * @param {Function} props.onSubmit - Handles form submission.
+ * @param {boolean} [props.busy=false] - Disables submission while authorization is being checked.
+ * @param {string} [props.submitLabel='Approve'] - Label displayed on the submit button when idle.
+ * @param {string|null} [props.hint=null] - Optional hint displayed beside the form title.
+ * @param {boolean} [props.autoFocusCode=true] - Whether to focus the staff-code field initially.
+ * @returns {JSX.Element} The supervisor authorization form.
  */
 export function SupervisorPinPanel({
   loginCode,
