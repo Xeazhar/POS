@@ -404,6 +404,19 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
         </div>
       </PageHeader>
 
+      {selectedPoint && (
+        <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-brand-gold/40 bg-brand-gold/10 px-3.5 py-2 text-xs">
+          <span className="text-brand-ink">
+            Showing <strong>{selectedPoint.full || selectedPoint.short}</strong> — Revenue, Orders,
+            Sales performance, Top products/categories, Payment methods and Audit are all
+            filtered to this point. Payment & cash impact and Low-stock always show today.
+          </span>
+          <SecondaryButton compact type="button" onClick={() => setSelectedPointIndex(null)}>
+            Clear selection
+          </SecondaryButton>
+        </div>
+      )}
+
       <div className="mb-4 grid grid-cols-3 gap-3.5 max-[700px]:grid-cols-1">
         {(isRestaurant
           ? [
@@ -475,18 +488,6 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
         </div>
       )}
 
-      {selectedPoint && (
-        <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-brand-gold/40 bg-brand-gold/10 px-3.5 py-2 text-xs">
-          <span className="text-brand-ink">
-            Showing <strong>{selectedPoint.full || selectedPoint.short}</strong> — Revenue, Orders,
-            Sales performance, Top products/categories, Payment methods and Audit are all
-            filtered to this point. Payment & cash impact and Low-stock always show today.
-          </span>
-          <SecondaryButton compact type="button" onClick={() => setSelectedPointIndex(null)}>
-            Clear selection
-          </SecondaryButton>
-        </div>
-      )}
       <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
         <div className="min-h-0 min-w-0 w-full">
           <RevenueChart
@@ -498,12 +499,12 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
           />
         </div>
         <div className="flex min-w-0 flex-col gap-2.5">
+          <StatTiles title="Payment & cash impact" subtitle={`${todayKey} · today`} items={cashImpactItems} />
           <StatTiles
             title="Sales performance"
             subtitle={`${period}${filterSubtitleSuffix}`}
             items={salesPerformanceItems}
           />
-          <StatTiles title="Payment & cash impact" subtitle={`${todayKey} · today`} items={cashImpactItems} />
           <AuditSummary
             events={effectiveAuditEvents}
             linkHref={canOpenReports ? '/manager/reports' : null}

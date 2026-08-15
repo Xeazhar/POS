@@ -849,7 +849,7 @@ function ManagerBranchDashboard() {
     if (type === 'pickup') return 'Cash pickup'
     if (type === 'cash_in') return 'Cash in'
     if (type === 'opening_float') return 'Opening float'
-    return 'Paid-out'
+    return 'Petty cash'
   }
   const movementStatusLabel = (status) => {
     const map = {
@@ -1640,7 +1640,7 @@ function ManagerBranchDashboard() {
             <strong className="text-brand-ink">{money(cashStats.pickup)}</strong>
           </div>
           <div>
-            <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Paid-out</span>
+            <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Petty cash</span>
             <strong className="text-brand-ink">{money(cashStats.paidOut)}</strong>
           </div>
         </div>
@@ -1775,7 +1775,7 @@ function ManagerBranchDashboard() {
                         ? 'Petty (rejected)'
                         : row.status === 'approved'
                           ? 'Petty (approved, not handed over)'
-                          : 'Paid-out'}
+                          : 'Petty cash (handed over)'}
               </strong>
               <span className="text-right tabular-nums">{money(row.amount)}</span>
               <span className="truncate max-[900px]:hidden">{row.staffName}</span>
@@ -2325,7 +2325,7 @@ function ManagerBranchDashboard() {
       {selectedProduct && !isRestaurant && (
         <div className="fixed inset-0 z-[5] bg-brand-scrim" onClick={() => setSelectedProduct(null)}>
           <aside
-            className="absolute top-0 right-0 h-full w-[min(520px,92vw)] overflow-auto bg-brand-card p-5 shadow-[-8px_0_24px_#20242622]"
+            className="absolute top-0 right-0 h-full w-[min(520px,92vw)] overflow-auto border-l border-brand-line bg-brand-card p-5 shadow-[-8px_0_24px_#20242622]"
             onClick={(event) => event.stopPropagation()}
           >
             <button

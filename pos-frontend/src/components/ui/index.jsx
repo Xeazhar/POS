@@ -547,7 +547,7 @@ export function Modal({
       }`}
     >
       <div
-        className={`relative flex max-h-[calc(100dvh-1.5rem)] min-h-0 w-full flex-col overflow-hidden rounded-[10px] bg-brand-card max-[700px]:max-h-[min(100%,calc(100dvh-2rem))] max-[700px]:rounded-b-none max-[700px]:rounded-t-[12px] ${width} ${className}`}
+        className={`relative flex max-h-[calc(100dvh-1.5rem)] min-h-0 w-full flex-col overflow-hidden rounded-[10px] border border-brand-line bg-brand-card max-[700px]:max-h-[min(100%,calc(100dvh-2rem))] max-[700px]:rounded-b-none max-[700px]:rounded-t-[12px] ${width} ${className}`}
       >
         {onClose && (
           <button
@@ -678,7 +678,7 @@ export function StatusOverlay({
 
   return (
     <div className="fixed inset-0 z-[8] grid place-items-center bg-brand-scrim p-4">
-      <div className="w-[min(340px,100%)] rounded-[10px] bg-brand-card px-6 py-7 text-center shadow-sm">
+      <div className="w-[min(340px,100%)] rounded-[10px] border border-brand-line bg-brand-card px-6 py-7 text-center shadow-sm">
         <SettlingDial done={done} />
         <h2 className="m-0 text-base text-brand-ink">{title}</h2>
         {message && <p className="mt-2 mb-0 text-xs text-brand-muted">{message}</p>}

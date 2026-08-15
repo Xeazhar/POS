@@ -398,6 +398,7 @@ function ManagerStaff() {
   const [roles, setRoles] = useState(fallbackRoles)
   const [form, setForm] = useState(null)
   const [formError, setFormError] = useState('')
+  const [formBusy, setFormBusy] = useState(false)
   const [error, setError] = useState('')
   const [reveal, setReveal] = useState(null)
   const [pinRevealTarget, setPinRevealTarget] = useState(null) // person whose PIN to reveal once password is confirmed
@@ -1146,16 +1147,21 @@ function ManagerStaff() {
       {form && (
         <Modal
           wide
-          onClose={() => {
-            setForm(null)
-            setFormError('')
-            setShowPin(false)
-          }}
+          onClose={
+            formBusy
+              ? undefined
+              : () => {
+                  setForm(null)
+                  setFormError('')
+                  setShowPin(false)
+                }
+          }
           footer={
             <ModalActions>
               <SecondaryButton
                 compact
                 type="button"
+                disabled={formBusy}
                 onClick={() => {
                   setForm(null)
                   setFormError('')
@@ -1168,14 +1174,14 @@ function ManagerStaff() {
                 compact
                 type="submit"
                 form="staff-edit-form"
-                disabled={!form.id && captchaActive && !captchaLoading && !captchaToken}
+                disabled={formBusy || (!form.id && captchaActive && !captchaLoading && !captchaToken)}
                 title={
                   !form.id && captchaActive && !captchaToken
                     ? 'Complete the security check first'
                     : undefined
                 }
               >
-                {form.id ? 'Save' : 'Create login'}
+                {formBusy ? (form.id ? 'Saving…' : 'Creating…') : form.id ? 'Save' : 'Create login'}
               </PrimaryButton>
             </ModalActions>
           }
@@ -1186,7 +1192,9 @@ function ManagerStaff() {
             {...secureFormProps}
             onSubmit={async (event) => {
               event.preventDefault()
+              if (formBusy) return
               setFormError('')
+              setFormBusy(true)
               try {
                 // Re-checked on submit, not only when rendering the picker: the role
                 // field can still be driven by a stale form object, and this is the last
@@ -1298,6 +1306,8 @@ function ManagerStaff() {
                 setCaptchaToken('')
                 setCaptchaKey((k) => k + 1)
                 setFormError(err.message || 'Could not save staff.')
+              } finally {
+                setFormBusy(false)
               }
             }}
           >

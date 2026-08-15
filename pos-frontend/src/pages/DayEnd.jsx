@@ -585,6 +585,12 @@ function SupervisorDayEnd() {
   )
   const report = isLocked && existing?.dayReport ? existing.dayReport : liveReport
 
+  // Petty cash handed over now comes from two sources — the legacy paid-out request flow
+  // and Open Drawer's cash_movements — same merge `expectedCash` above already does. The
+  // persisted record and the Close Day confirmation must agree with that same total, or
+  // the filed dayReport under-reports whatever moved through Open Drawer.
+  const pettyCashHandedOver = Number((paidOutTotal + movePaidOutTotal).toFixed(2))
+
   const buildEntry = () => {
     const dayReport = buildDayEndReport({
       date,
@@ -601,9 +607,11 @@ function SupervisorDayEnd() {
       cashOnHand: Number(countingActive ? cashOnHandDraft : cashOnHand || 0),
       variance,
       expectedCash,
-      note: [note, paidOutTotal ? `Petty cash ${paidOutTotal}` : ''].filter(Boolean).join(' · '),
+      note: [note, pettyCashHandedOver ? `Petty cash ${pettyCashHandedOver}` : '']
+        .filter(Boolean)
+        .join(' · '),
       cashier: user?.name || 'Staff',
-      dayReport: { ...dayReport, pettyCashTotal: paidOutTotal, expectedCash },
+      dayReport: { ...dayReport, pettyCashTotal: pettyCashHandedOver, expectedCash },
     }
   }
 
@@ -679,7 +687,8 @@ function SupervisorDayEnd() {
     }
   }
 
-  // Confirm received handoff → end own floor shift → close day. Handoff can be confirmed
+  // Confirm received handoff → end own shift (floor, or a drawer if this supervisor chose
+  // "Working the register" — ShiftGate.jsx) → close day. Handoff can be confirmed
   // while the supervisor's own shift is still open (they're still working the floor when
   // cashiers hand over their drawers); ending their own shift and closing the day come after.
   const ownShiftOpen = trackOwnShift && Boolean(ownShift)
@@ -973,10 +982,10 @@ function SupervisorDayEnd() {
               already reflected in Cash sales above, not deducted again)
             </span>
           )}
-          <span className="text-brand-subtle">− Paid out (handed over)</span>
-          <strong className={`text-right ${moneyClass}`}>−{money(paidOutTotal)}</strong>
+          <span className="text-brand-subtle">− Petty cash (handed over)</span>
+          <strong className={`text-right ${moneyClass}`}>−{money(paidOutTotal + movePaidOutTotal)}</strong>
           <span className="text-brand-subtle">− Pickups to safe</span>
-          <strong className={`text-right ${moneyClass}`}>−{money(pickupTotal)}</strong>
+          <strong className={`text-right ${moneyClass}`}>−{money(pickupTotal + movePickupTotal)}</strong>
           <span className="border-t border-brand-softline pt-1.5 font-bold">
             = Expected in drawer
           </span>
@@ -1099,7 +1108,7 @@ function SupervisorDayEnd() {
             <span>Recorded</span>
             <strong className={`text-right ${moneyClass}`}>{money(recorded)}</strong>
             <span>Petty cash handed over</span>
-            <strong className={`text-right ${moneyClass}`}>{money(paidOutTotal)}</strong>
+            <strong className={`text-right ${moneyClass}`}>{money(pettyCashHandedOver)}</strong>
             <span>Expected drawer</span>
             <strong className={`text-right ${moneyClass}`}>{money(expectedCash)}</strong>
             <span>Cash on hand</span>

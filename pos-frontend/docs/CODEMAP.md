@@ -712,6 +712,20 @@ so it works with no network — asking the server would make "cannot reach the s
 like "no open shift", and the safe-looking default (ask for the float again) is the wrong
 one: it opens a second shift on a drawer that was already counted.
 
+**A pending local close beats a stale remote "still open."** `fetchOpenShift` filters on the
+SERVER's `clock_out`, so a `CLOSE_SHIFT` that has not pushed yet (still in the outbox) makes
+the server genuinely, correctly report the shift as open — it does not know about the close.
+`resolve()` used to trust that read unconditionally and re-save the shift locally as open
+(`upsertFromRemote`), silently undoing `endShift()`'s local close; re-logging in shortly after
+ending a shift (before the queue item synced) resurrected it as open, so the cashier had to
+end it a second time before the supervisor's (server-sourced) view ever agreed it was closed.
+`resolve()` now checks for a local record matching the remote row's `client_id` that is
+`status: 'closed'` with `syncStatus: 'pending'` before accepting the remote's "open" answer,
+and skips the overwrite when found — falls through to `gate: 'start'` instead, same as any
+other resumed-after-close cashier. Same root cause as the `resolve()`-after-`endShift()` rule
+below; different call site (a fresh `resolve()`, not a redundant one), so both guards are
+needed.
+
 **Drawer identity** is `src/utils/drawer.js`: a localStorage id that survives sign-out,
 because the drawer does not move when the cashier does. It defaults to the shared `'main'`
 rather than a random per-device id — most shops have one cash box and several devices
@@ -719,6 +733,56 @@ pointed at it, and those must share a drawer identity or two people could count 
 same till unnoticed. A till with its own cash box gets its own id in Settings → Devices.
 Same cashier on a different drawer is a different pile of cash, so that is gate `moved`
 (supervisor override), never a resume.
+
+**A supervisor may hold a drawer too — chosen per shift, not fixed by role, and never on
+click alone.** `Shell.jsx`'s `holdsDrawer = user?.role === 'cashier'` is only the DEFAULT
+handed to `ShiftGate`/the first `resolve()` call at sign-in. `ShiftGate.jsx` (`canChooseDrawer
+= role === 'supervisor'`) renders a "Floor" vs "Working the register" card pair on the start
+screen — pure selection (`setWantsDrawer`), it does not fire the shift; a supervisor confirms
+with the same "Start shift" button everyone uses (`canChooseDrawer` is excluded from
+`autoStarting` specifically so this never silently auto-fires the moment an option is
+clicked, unlike a real cashier's shift). On that click, if "Working the register" is selected,
+`onStartClick` first re-resolves (`resolve(user, { holdsDrawer: true })`, same call the
+`moved` gate's "Check again" button already makes) so an existing open drawer shift on
+another till is still caught — a supervisor's first `resolve()` ran with `holdsDrawer: false`
+and skipped that check entirely, unlike a cashier who gets it for free at sign-in. Only a
+clean `start` result continues to `doStart()`, at ₱0 same as a cashier's shift (see
+`needsFreshCount` below for the one case that still asks for a typed count — gated on
+`needsFreshCount` itself, not bare `holdsDrawer`, so an ordinary "working the register" day
+never shows the change-fund field). `resolve()`'s own returned `handoff` — not the
+component's `handoff` state — is what gets passed as `doStart({ carriedFrom })`: `doStart` is
+a closure captured at render time, so the currently-running `onStartClick` would otherwise
+still be holding whatever `handoff` was BEFORE this re-resolve ran (a state update doesn't
+rewrite a closure already executing); threading the fresh value through explicitly is what
+lets a reopened-day recount still link `carriedFromShiftId` correctly instead of always
+carrying `null` for a supervisor's drawer shift. This is a genuine per-shift choice, not a per-account
+setting — nothing is written back to the `staff` row. Everything downstream (Open Drawer's
+petty-cash/opening-float button, Day End's cashier-drawer accountability list, `cashStats`/
+cash-impact totals) already keys off `shift.holdsDrawer`, never off role, so a supervisor's
+drawer shift needs no special-casing anywhere else — it is swept into the same "open cashier
+shifts" checks a real cashier's shift is. The one place that does NOT read the live selection:
+the `gate === 'ended'` screen reads `handoff.holdsDrawer` (the ended shift's own field, from
+`endShift()`'s return value) rather than the component's `holdsDrawer`, because `wantsDrawer`
+is local state that resets on remount and cannot be trusted to still describe a shift that
+already closed.
+
+**Master gets a shift lazily, on first real use — never on sign-in, never just from opening
+POS.** `Shell.jsx`'s `worksShifts` (gates `resolveShift`/`ShiftGate` entirely) is still
+cashier/supervisor only — a master signing in to check Reports must not be forced through a
+shift lifecycle it has no use for. But selling and Open Drawer are both fundamentally
+shift-scoped (`transactions.shift_id`/`cash_movements.shift_id`), so master needs one the
+moment it actually does either. `useShiftStore.ensureMasterShift(user)` is the lazy path
+(no-op for every other role, which already has a shift by the time either caller below can
+run): `posStore.addTransaction` awaits it before reading the active shift (first sale), and
+POS.jsx's Open Drawer button awaits it before the modal opens (surfacing any failure via
+`window.alert(formatSupportError(...))` rather than opening the modal regardless). `resolve()`'s
+`moved` gate (master already has an open shift on a different drawer) is not auto-resolved
+here either — `ensureMasterShift` throws `SHIFT06` instead of silently opening a second
+concurrent shift, same reasoning as `ShiftGate`'s `moved` screen below, just without a UI of
+its own since master never renders `ShiftGate`. `POS.jsx`'s `canOpenDrawer` is the one other
+spot that special-cases master — true whenever the till isn't closed, regardless of `shift`
+(master may not have one yet), where every other role still requires `Boolean(shift) &&
+shift.holdsDrawer !== false`.
 
 | Gate | Meaning | Remedy |
 |------|---------|--------|
@@ -869,6 +933,17 @@ apply the same rule: exclude a carried shift's `startingCash` only when it still
 branch+business-date set being summed; count it in full otherwise. Before this, the two React
 call sites (unconditional exclude) and the SQL RPC (no exclusion at all) disagreed with each
 other in opposite directions on the exact same data.
+
+**Cash impact must merge both drawer tables — `cash_drawer_entries` (legacy petty cash) and
+`cash_movements` (POS → Open Drawer dual control).** `DayEnd.jsx` (`paidOutTotal`/
+`pickupTotal` + `movePaidOutTotal`/`movePickupTotal`/`moveCashInTotal`), `BranchDashboard.jsx`'s
+`cashStats`, and `DayEndClosingDetail.jsx` all sum both; only counting-status `cash_movements`
+rows count (`CASH_MOVEMENT_COUNTING_STATUSES` — a `pending_remote` request has not moved cash
+yet), and `opening_float`-type rows are excluded (already counted via `staff_shifts
+.starting_cash`). `api.fetchBranchCashImpact` and `manager_overview_metrics()`
+(`migrate_fix_overview_cash_impact_movements.sql`) mirror the same merge — both previously read
+`cash_drawer_entries` only, so a petty cash paid-out or pickup recorded through Open Drawer
+never moved the network Overview page's "Cash in / out" card even once approved.
 
 **A cashier stuck on "Day closed" can ask for it back, not just sign out.** Reopening stays
 manager-only (`reopen_day_end`), but a cashier (or anyone on the branch) can
@@ -1304,6 +1379,18 @@ POS → **Open Drawer** (`OpenDrawer.jsx` on `POS.jsx`):
   Managers may later Mark Resolved on Flagged rows (Branch Cash drawer log).
 - Reports → **Cash Movements** (`Reports.jsx` id `cash-movements`) for cross-session analysis
 - RPCs in `api.js`: `createCashMovementApproved|Pending`, `approveCashMovementPin|Manager`, `denyCashMovement`, `cancelCashMovement`, `selfRecordCashMovement`, `reviewCashMovement`, `resolveFlaggedCashMovement`
+- **Self-approve for supervisor+.** A cashier's request still needs a real second person
+  (PIN, remote manager approval, or the flagged self-record fallback) — dual control (approver
+  ≠ requester) is untouched for them. A supervisor/manager/master recording their OWN drawer
+  skips the whole PIN/notify screen: `OpenDrawer.jsx`'s `canSelfApprove` (`isSupervisorOrAbove`)
+  calls `createCashMovementApproved` directly with `approvedBy === requestedBy`, landing
+  straight on **Approved** (never Flagged). The actual control is server-side —
+  `migrate_cash_movement_self_approve.sql` only accepts that equality when
+  `is_supervisor_or_above()` is true for the CALLING session (`auth.uid()`'s own staff row,
+  not anything the client sends), so a cashier cannot reach this path by passing their own id
+  twice. Audit event type is `cash_movement_self_approved` (`meta.via = 'self'`), distinct
+  from a PIN-approved `cash_movement_approved` (`via = 'pin'`), so Reports/Audit can tell the
+  two apart.
 
 **Cart line remove (`till_action_requests`, `migrate_till_action_requests.sql`)** —
 `CartRemoveApprove.jsx` on cart trash/void-from-cart:
@@ -1726,7 +1813,7 @@ receipts stay legible on paper regardless of the on-screen theme.
 | Ulam / restaurant | `migrate_ulam_ordering.sql` |
 | Devices / presence | `migrate_device_settings.sql`, `migrate_branch_presence.sql` |
 | Petty cash rename | `migrate_rename_petty_cash_to_cash_drawer_entries.sql` |
-| Cash movements (POS Open Drawer) | `migrate_cash_movements.sql` |
+| Cash movements (POS Open Drawer) | `migrate_cash_movements.sql`, `migrate_cash_movement_cash_in.sql`, `migrate_cash_movement_self_approve.sql` (supervisor+ self-approve) |
 | Cart remove / till action notify | `migrate_till_action_requests.sql` |
 | Manager cross-branch approve | `migrate_manager_can_approve_any_branch.sql` |
 | PIN lockout hardening | `migrate_pin_security_hardening.sql` |
@@ -1734,7 +1821,7 @@ receipts stay legible on paper regardless of the on-screen theme.
 | Hot-table perf indexes | `migrate_perf_indexes_hot_tables.sql` (run each `CREATE INDEX CONCURRENTLY` statement individually — cannot run inside a transaction block) |
 | Multiple concurrent promos + per-line attribution | `migrate_promo_multi_active.sql`, `migrate_promo_line_attribution.sql` |
 | Schema cleanup (drop promo `is_active`, duplicate client_id index, dormant shift-review, tighten refund RLS) | `migrate_schema_cleanup_v1.sql` |
-| Manager Overview one-shot aggregates | `migrate_network_manager_overview.sql` (`manager_overview_metrics`), `migrate_fix_manager_overview_revenue_net.sql`, `migrate_fix_overview_cash_impact_carry.sql` |
+| Manager Overview one-shot aggregates | `migrate_network_manager_overview.sql` (`manager_overview_metrics`), `migrate_fix_manager_overview_revenue_net.sql`, `migrate_fix_overview_cash_impact_carry.sql`, `migrate_fix_overview_cash_impact_movements.sql` |
 | Promo auto-expire | `migrate_promo_auto_expire.sql` |
 | VAT breakdown (BIR) | `migrate_vat_breakdown.sql` |
 | Realtime (live POS/notification updates) | `migrate_enable_realtime.sql`, `migrate_realtime_broadcast_v1.sql`, `migrate_sale_ops_broadcast.sql` (transactions on the ops trigger) |

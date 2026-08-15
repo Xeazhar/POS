@@ -403,6 +403,22 @@ function ManagerOverview() {
       {error && (
         <p className="mb-4 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
       )}
+      {/* Clicking a point on Revenue over time cross-filters the KPI row below, Sales
+          performance, Top products, Top categories, Payment methods, and Audit to that
+          single bucket; Clear returns them to the whole period. */}
+      {selectedPoint && (
+        <div className="mb-3.5 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-brand-gold/40 bg-brand-gold/10 px-3.5 py-2 text-xs">
+          <span className="text-brand-ink">
+            Showing <strong>{selectedPoint.full || selectedPoint.short}</strong> — Revenue, Orders,
+            Sales performance, Top products, Top categories, Payment methods and Audit are all
+            filtered to this point. Low-stock items and Payment & cash impact always show their
+            current/today figure.
+          </span>
+          <SecondaryButton compact type="button" onClick={() => setSelectedPointIndex(null)}>
+            Clear selection
+          </SecondaryButton>
+        </div>
+      )}
       {/* KPI row. `Menu items on today` is restaurant-only and this build is focused on
           retail/meat, so it is not rendered — totals.menuOn and branchSummary's menu
           counting are left intact so re-enabling it is a one-line change, not a rebuild. */}
@@ -431,14 +447,14 @@ function ManagerOverview() {
         </div>
         <div className="flex min-w-0 flex-col gap-2.5">
           <StatTiles
-            title="Sales performance"
-            subtitle={`${periodLabel}${filterSubtitleSuffix}`}
-            items={salesPerformanceItems}
-          />
-          <StatTiles
             title="Payment & cash impact"
             subtitle={`${businessDate(new Date())} · today, network-wide`}
             items={cashImpactItems}
+          />
+          <StatTiles
+            title="Sales performance"
+            subtitle={`${periodLabel}${filterSubtitleSuffix}`}
+            items={salesPerformanceItems}
           />
           <AuditSummary
             events={effectiveAuditEvents}
@@ -450,22 +466,8 @@ function ManagerOverview() {
       </div>
 
       {/* Top products, Top categories, Payment methods — one row of supporting detail,
-          same visual weight, so none reads as more important than another. Clicking a
-          point on Revenue over time cross-filters all three (and Audit above) to that
-          single bucket; Clear returns them to the whole period. */}
-      {selectedPoint && (
-        <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-brand-gold/40 bg-brand-gold/10 px-3.5 py-2 text-xs">
-          <span className="text-brand-ink">
-            Showing <strong>{selectedPoint.full || selectedPoint.short}</strong> — Revenue, Orders,
-            Sales performance, Top products, Top categories, Payment methods and Audit are all
-            filtered to this point. Low-stock items and Payment & cash impact always show their
-            current/today figure.
-          </span>
-          <SecondaryButton compact type="button" onClick={() => setSelectedPointIndex(null)}>
-            Clear selection
-          </SecondaryButton>
-        </div>
-      )}
+          same visual weight, so none reads as more important than another. Cross-filter
+          notice for these lives above the KPI row now — see selectedPoint banner there. */}
       <div className="mb-4 grid grid-cols-3 items-start gap-3.5 max-[900px]:grid-cols-1">
         <SalesMixBar
           mix={effectiveTopProducts}

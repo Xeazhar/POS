@@ -5,6 +5,7 @@ import {
   enqueue,
   getLastClosedShiftOnDrawer,
   getLocalOpenShift,
+  getLocalShift,
   isOnline,
   markShiftSynced,
   newShiftClientId,
@@ -84,7 +85,18 @@ export const useShiftStore = create((set, get) => ({
         const remote = await api.fetchOpenShift(user.id, { drawerId }).catch(() => undefined)
         if (remote !== undefined) {
           if (remote?.id) {
-            local = await upsertFromRemote(remote, local)
+            // fetchOpenShift filters on the SERVER's clock_out, so a close made on this
+            // device that has not pushed yet (still sitting in the outbox) still reads back
+            // as open here — the server genuinely does not know about it yet. Trust our own
+            // unsynced close over that stale read; otherwise ending a shift and re-resolving
+            // shortly after (e.g. signing back in before CLOSE_SHIFT has synced) silently
+            // resurrects the shift as open, and the cashier has to end it a second time.
+            const knownLocal = remote.clientId ? await getLocalShift(remote.clientId) : null
+            const closedPendingLocally =
+              knownLocal?.status === 'closed' && knownLocal.syncStatus === 'pending'
+            if (!closedPendingLocally) {
+              local = await upsertFromRemote(remote, local)
+            }
           } else if (local?.serverId) {
             // Was open here, is closed on the server — someone else ended it.
             local = await closeLocalShift(local.clientId, {
@@ -246,6 +258,32 @@ export const useShiftStore = create((set, get) => ({
       }
     }
     return { ...(await localCashPosition(shift)), source: 'local', reasonOffline: !isOnline() }
+  },
+
+  /**
+   * A master account never goes through ShiftGate — Shell's `worksShifts` only covers
+   * cashier/supervisor, deliberately, since a master signing in to check Reports should not
+   * be forced through a shift lifecycle. But Open Drawer and selling are both fundamentally
+   * shift-scoped (cash_movements/transactions both require a shift_id), so master needs one
+   * lazily, created the moment they actually do either — never on sign-in, never just from
+   * opening the POS page. Callers: `addTransaction` (posStore.js, first sale) and POS.jsx's
+   * Open Drawer button (before the modal opens). No-op for every other role — they already
+   * have a shift by the time either of those can run, via the normal ShiftGate flow.
+   */
+  ensureMasterShift: async (user) => {
+    if (user?.role !== 'master') return get().shift
+    if (get().shift) return get().shift
+    const result = await get().resolve(user, { holdsDrawer: true })
+    if (result?.gate === 'ready') return get().shift
+    // 'moved': this master already holds an open shift on a different drawer. Silently
+    // opening a second one here would leave that drawer's cash unaccounted for — same
+    // reason ShiftGate never auto-resolves 'moved' for cashiers/supervisors either.
+    if (result?.gate === 'moved') throw appError('SHIFT06')
+    return get().startShift(user, {
+      startingCash: 0,
+      shiftPeriod: new Date().getHours() < 12 ? 'am' : 'pm',
+      holdsDrawer: true,
+    })
   },
 
   /**

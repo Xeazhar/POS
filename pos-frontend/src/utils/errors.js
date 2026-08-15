@@ -159,6 +159,15 @@ export const ERROR_CATALOG = {
     cause: 'Staff code / PIN did not match an active supervisor or manager for this branch.',
     fix: 'Re-enter the supervisor staff code and PIN. If the PIN is correct but keeps failing, have a manager re-save that staff member\'s PIN in Staff (refreshes offline verifiers), and confirm migrate_manager_can_approve_any_branch.sql is applied.',
   },
+  AUTH10: {
+    message: 'That staff code or email was already used in an earlier attempt that did not finish.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause:
+      'A previous "Create staff login" attempt created the Auth login but failed before the staff row saved (e.g. a rejected write), leaving an orphaned login with no matching account — Supabase Auth now refuses to reuse that email/code.',
+    fix: 'Pick a different staff code (or email, for a manager/admin account) and save again. Ask an admin to remove the orphaned Auth user for the old code if you need to reuse it.',
+  },
 
   // ── TILL — opening and closing the drawer ────────────────────────────────
   TILL01: {
@@ -797,6 +806,14 @@ export const ERROR_CATALOG = {
     retry: false,
     cause: 'adjust_shift_cash() refused the caller — either the role is too low or the shift is at another branch.',
     fix: 'Ask a supervisor at that branch, or a manager.',
+  },
+  SHIFT06: {
+    message: 'You already have an open shift on another till.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'That drawer still holds cash this account is answerable for, so this terminal cannot silently open a second one.',
+    fix: 'Go back and cash out on that till, or have a supervisor open a separate shift here.',
   },
 
   // ── PRINT ────────────────────────────────────────────────────────────────

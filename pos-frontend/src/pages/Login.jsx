@@ -73,7 +73,7 @@ function Login() {
 
   return (
     <main className="grid min-h-screen place-items-center bg-brand-dark">
-      <div className="w-[min(420px,calc(100%-32px))] rounded-[10px] bg-brand-card p-11">
+      <div className="w-[min(420px,calc(100%-32px))] rounded-[10px] border border-brand-line bg-brand-card p-11">
         <div className="mb-7 grid h-[43px] w-[43px] place-items-center rounded-lg bg-brand-gold text-[21px] font-bold text-brand-on-gold">
           C
         </div>

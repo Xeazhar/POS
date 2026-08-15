@@ -102,7 +102,7 @@ function LockScreen({ onUnlock, onLogout }) {
 
       <form
         onSubmit={unlock}
-        className="relative w-full max-w-xs rounded-xl bg-brand-card p-5 text-brand-ink shadow-lg"
+        className="relative w-full max-w-xs rounded-xl border border-brand-line bg-brand-card p-5 text-brand-ink shadow-lg"
         {...secureFormProps}
       >
         <CredentialAutofillTrap />

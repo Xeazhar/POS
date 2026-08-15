@@ -816,6 +816,13 @@ export const useInventoryStore = create((set, get) => ({
       throw appError('TILL01')
     }
 
+    // Master never goes through ShiftGate (Shell's worksShifts is cashier/supervisor only),
+    // so a master ringing a sale needs its shift created right here, on first use — see
+    // ensureMasterShift's doc comment. No-op for every other role.
+    if (user?.role === 'master' && !useShiftStore.getState().shift) {
+      await useShiftStore.getState().ensureMasterShift(user)
+    }
+
     // Which shift is answerable for this cash. Recorded on the local row too, so an
     // offline cash-out can total the drawer before the sale has a server id.
     const activeShift = useShiftStore.getState().shift

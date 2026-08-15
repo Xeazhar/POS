@@ -30,6 +30,7 @@ import { useShiftStore } from '../../stores/shiftStore'
 import { useSyncStore } from '../../stores/syncStore'
 import { formatSupportError, appError } from '../../utils/errors'
 import { money } from '../../utils/format'
+import { isSupervisorOrAbove } from '../../utils/roles'
 import { decimalOnly } from '../../utils/validate'
 
 /**
@@ -229,6 +230,76 @@ export default function OpenDrawer({ open, onClose, onDone }) {
           /Invalid supervisor|MOVE04|wrong|PIN/i.test(raw) ? 'AUTH09' : 'MOVE01',
         ),
       )
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // A supervisor/manager/master recording their OWN drawer needs no second person — the
+  // dual-control PIN/notify dance exists to catch a lone actor moving cash unchecked, but
+  // that actor IS the approval authority here. migrate_cash_movement_self_approve.sql is the
+  // real control: it only accepts approvedBy === requestedBy when the CALLING session's own
+  // staff row is supervisor+, so this cannot be spoofed by a cashier hitting this path.
+  const canSelfApprove = isSupervisorOrAbove(user?.role)
+
+  const submitSelfApprove = async () => {
+    setError('')
+    setBusy(true)
+    try {
+      if (!hasSupabase) {
+        await finishOk('Demo: movement recorded as approved.')
+        return
+      }
+      if (offlineMode) {
+        if (!user?.branchId || !shift?.clientId) {
+          throw new Error('SHIFT01: Open a shift on this terminal before recording drawer cash.')
+        }
+        const clientId = newUuidClientId()
+        const payload = {
+          clientId,
+          shiftClientId: shift.clientId,
+          shiftId: shift.serverId || null,
+          branchId: user.branchId,
+          drawerId: shift.drawerId,
+          drawerLabel: shift.drawerLabel,
+          type: moveType,
+          amount: Number(amount),
+          reason: movementReason(),
+          requestedBy: user.id,
+          approvedBy: user.id,
+          createdOffline: true,
+        }
+        await putLocalCashMovement({
+          ...payload,
+          status: 'approved',
+          syncStatus: 'pending',
+        })
+        await enqueue(QUEUE_TYPES.CASH_MOVEMENT_APPROVED, payload, {
+          branchId: user.branchId,
+          clientId,
+        })
+        useSyncStore.getState().refresh(user.branchId)
+        await finishOk(`${typeLabel} recorded · ${money(amount)} — will sync when online`)
+        return
+      }
+
+      const shiftId = await resolveShiftId()
+      if (!shiftId) throw new Error('SHIFT01: Shift is not synced yet. Wait a moment and retry.')
+
+      await createCashMovementApproved({
+        shiftId,
+        branchId: user.branchId,
+        drawerId: shift?.drawerId,
+        drawerLabel: shift?.drawerLabel,
+        type: moveType,
+        amount: Number(amount),
+        reason: movementReason(),
+        requestedBy: user.id,
+        approvedBy: user.id,
+      })
+      await finishOk(`${typeLabel} recorded · ${money(amount)}`)
+    } catch (err) {
+      setError(formatSupportError(err, 'MOVE01'))
     } finally {
       setBusy(false)
     }
@@ -513,12 +584,21 @@ export default function OpenDrawer({ open, onClose, onDone }) {
                 : 'Required — what is this for?'
             }
           />
+          {canSelfApprove && (
+            <p className="mt-2 text-[11px] text-brand-subtle">
+              You&apos;re a supervisor — this records straight away, no PIN needed.
+            </p>
+          )}
           {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
           <ModalActions>
             <PrimaryButton
               type="button"
-              disabled={!amountOk || !reasonOk}
+              disabled={!amountOk || !reasonOk || busy}
               onClick={() => {
+                if (canSelfApprove) {
+                  void submitSelfApprove()
+                  return
+                }
                 setError('')
                 setNotifyConfirm(false)
                 setLoginCode('')
@@ -526,7 +606,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
                 setStep('approve')
               }}
             >
-              Get approval
+              {canSelfApprove ? (busy ? 'Recording…' : 'Record') : 'Get approval'}
             </PrimaryButton>
           </ModalActions>
         </>

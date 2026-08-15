@@ -206,12 +206,24 @@ migrate_login_conditional_rehash.sql           -- needs migrate_fix_pin_login_au
                                                 -- auth.users.encrypted_password when it doesn't
                                                 -- already verify, instead of rehashing + writing
                                                 -- unconditionally on every login
-migrate_complete_sale_rpc.sql                  -- put last: needs assert_till_open,
+migrate_complete_sale_rpc.sql                  -- needs assert_till_open,
                                                 -- reserve_or_number/allocate_or_number,
                                                 -- record_stock_movement, and every
                                                 -- transactions/transaction_items column above.
                                                 -- complete_sale() — one atomic RPC replacing
                                                 -- completeSale()'s 4 separate round trips
+migrate_fix_overview_cash_impact_movements.sql -- needs migrate_fix_overview_cash_impact_carry.sql
+                                                -- and migrate_cash_movements.sql above;
+                                                -- supersedes manager_overview_metrics()'s cash
+                                                -- impact block, which never read cash_movements
+                                                -- (the POS -> Open Drawer ledger), only the legacy
+                                                -- cash_drawer_entries table
+migrate_cash_movement_self_approve.sql         -- put last: needs migrate_cash_movement_cash_in.sql
+                                                -- above; supersedes create_cash_movement_approved's
+                                                -- body so a supervisor/manager/master recording
+                                                -- their OWN Open Drawer activity is cleanly
+                                                -- 'approved' with no PIN/flag; cashiers still need
+                                                -- real dual control. Safe to re-run.
 ```
 
 **Dev wipe (optional, non-user data only):** `wipe_non_user_data.sql` truncates sales/inventory/promos/shifts/drawer while **keeping** `staff`, `branches`, `roles`, `company_profile`, and Auth users. Run on DEV before cleanup if you want a clean slate.
@@ -236,18 +248,31 @@ is to apply everything to a real Postgres and dump the result, not to hand-edit
 `CLAUDE.md`), and a hand-merge across 50+ files is exactly where a policy or a
 superseded function version could be silently dropped.
 
-1. Create a scratch Supabase project (free tier is fine — do **not** do this
-   against the production project).
-2. In its SQL editor, run `schema.sql`, then every file in the full apply
-   order above, in order.
-3. Get the project's connection string from Settings → Database, then dump
-   schema-only (no data, no Supabase-internal `auth`/`storage` schemas):
+**`CalePOS_Demo` (Supabase project `pcasudqyqgzrlpyfdvbe`) is the tested
+reference project** — it already has every file in the full apply order above
+applied (verified against its migration history), so it's the canonical
+source for a dump instead of spinning up a fresh scratch project. Only fall
+back to a scratch project if `CalePOS_Demo` is ever reset or goes stale.
+
+1. Get `CalePOS_Demo`'s connection string from Settings → Database
+   (Session pooler or direct connection; needs the DB password, not the
+   anon/publishable key), then dump schema-only (no data, no
+   Supabase-internal `auth`/`storage` schemas):
    ```bash
    npx supabase db dump --db-url "<connection string>" --schema public -f schema.sql
    ```
-4. Replace this repo's `schema.sql` with the output, and spot-check it against
+2. Replace this repo's `schema.sql` with the output, and spot-check it against
    the table map below.
-5. Delete the scratch project once you've verified the dump.
+3. Before trusting the dump, re-check `list_migrations` (or this file's apply
+   order) against the project's actual migration history so you're not
+   dumping a project that's mid-drift itself.
+
+If you don't have the DB password and only have Supabase MCP / dashboard
+query access, you can reconstruct an equivalent schema by introspecting
+`pg_catalog`/`information_schema` (`pg_get_functiondef`, `pg_indexes`,
+`pg_policies`, `pg_get_constraintdef`) instead of running `pg_dump` — slower
+and needs more careful spot-checking, but doesn't require sharing the DB
+password.
 
 ## Table map (mental model)
 

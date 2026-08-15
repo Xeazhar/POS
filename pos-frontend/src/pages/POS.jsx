@@ -86,8 +86,13 @@ function POS() {
   const [requestManagerNotice, setRequestManagerNotice] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const tillClosed = isTillClosed(dayEnds, dayOpenHour)
+  // Master never goes through ShiftGate (see ensureMasterShift in shiftStore.js), so it has
+  // no `shift` yet the first time it opens this — the button still shows; clicking it
+  // creates the shift lazily instead of requiring one to already exist.
   const canOpenDrawer =
-    Boolean(shift) && shift.holdsDrawer !== false && !tillClosed && Boolean(user?.branchId)
+    user?.role === 'master'
+      ? !tillClosed && Boolean(user?.branchId)
+      : Boolean(shift) && shift.holdsDrawer !== false && !tillClosed && Boolean(user?.branchId)
   const daySubmitted = isDaySubmitted(dayEnds, dayOpenHour)
   const dayFullyClosed = isDayFullyClosed(dayEnds, dayOpenHour)
   // Reopening a fully-closed day is manager-only; approving a submitted one is
@@ -779,7 +784,17 @@ function POS() {
                     type="button"
                     className="rounded-[5px] border border-brand-border bg-brand-card px-3 py-2 text-xs font-bold text-brand-ink"
                     disabled={cartOverlayOpen}
-                    onClick={() => setOpenDrawerOpen(true)}
+                    onClick={async () => {
+                      if (user?.role === 'master') {
+                        try {
+                          await useShiftStore.getState().ensureMasterShift(user)
+                        } catch (err) {
+                          window.alert(formatSupportError(err, 'SHIFT01'))
+                          return
+                        }
+                      }
+                      setOpenDrawerOpen(true)
+                    }}
                   >
                     Open Drawer
                   </button>

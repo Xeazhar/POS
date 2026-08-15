@@ -180,7 +180,7 @@ export default function OwnShiftSoFar({
                     </strong>
                   </>
                 )}
-                <span className="text-brand-subtle">− Paid out (handed over)</span>
+                <span className="text-brand-subtle">− Petty cash (handed over)</span>
                 <strong className={`text-right ${moneyClass}`}>
                   −{money(position?.cashPaidOut)}
                 </strong>

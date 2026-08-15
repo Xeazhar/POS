@@ -3585,8 +3585,26 @@ export async function createStaffAccount({
         'Complete the security check on the staff form before saving, then try again.',
       )
     }
+    // Means an Auth user for this email/staff code already exists. Normally that is a
+    // real duplicate — but it is also exactly what a previous attempt leaves behind when
+    // signUp() succeeded and the staff-row write after it failed for any reason (rejected
+    // write, network drop, closed tab): the login exists with no account attached to it,
+    // and nothing before this fix could ever complete it. Give staff the actionable
+    // version rather than Supabase's raw "already registered".
+    if (/already registered|user_already_exists|already exists/i.test(String(error.message || error.code || ''))) {
+      throw appError('AUTH10', authEmail)
+    }
     throw error
   }
+  // signUp() just switched the client's active session to the BRAND NEW account — restore
+  // the manager's session now, before any staff-table write. Every write below (login_code/
+  // login_pin/permissions via applyStaffPayload) is gated by RLS's "managers manage staff"
+  // policy (requires is_manager() on the CURRENT session); running them while still signed
+  // in as the new low-privilege cashier/supervisor makes RLS silently drop the UPDATE (0
+  // rows touched, no error surfaced) — the row exists (handle_new_user's trigger stub, or
+  // this function's own insert, both SECURITY DEFINER-adjacent) but login_code/login_pin/
+  // permissions stay null forever. Restoring here, before those writes, is the fix.
+  if (managerSession) await supabase.auth.setSession(managerSession)
   // The `staff` row id, distinct from data.user.id (the AUTH user id). The caller needs
   // this one for the audit trail — an audit row keyed to the auth user cannot be joined
   // back to the staff record support is actually looking at.
@@ -3608,15 +3626,30 @@ export async function createStaffAccount({
     // id without this leaves the trigger's stub (full_name/role/branch only) permanently
     // missing PIN credentials.
     const applyStaffPayload = async (targetId) => {
-      let { error: updateError } = await supabase.from('staff').update(staffPayload).eq('id', targetId)
+      let { data: updated, error: updateError } = await supabase
+        .from('staff')
+        .update(staffPayload)
+        .eq('id', targetId)
+        .select('id')
       if (updateError && (isMissingColumnError(updateError, 'login_code') || isMissingColumnError(updateError, 'permissions') || isMissingColumnError(updateError, 'auth_secret'))) {
         const fallback = { branch_id: branchId, full_name: fullName, role, is_active: true }
-        ;({ error: updateError } = await supabase.from('staff').update(fallback).eq('id', targetId))
+        ;({ data: updated, error: updateError } = await supabase
+          .from('staff')
+          .update(fallback)
+          .eq('id', targetId)
+          .select('id'))
       }
       if (updateError) {
         const uniqueErr = staffCodeUniqueError(updateError)
         if (uniqueErr) throw uniqueErr
         throw updateError
+      }
+      // RLS ('managers manage staff', requires is_manager() on the CURRENT session) filters
+      // rather than errors: an UPDATE run under the wrong session matches 0 rows and reports
+      // success with an empty result, which is exactly how login_code/login_pin/permissions
+      // went silently null before. Fail loudly instead of saving a half-written account.
+      if (!updated || updated.length === 0) {
+        throw new Error('Could not save staff credentials — the account session may be out of sync. Try again.')
       }
     }
     const { data: existing } = await supabase
@@ -3666,7 +3699,6 @@ export async function createStaffAccount({
       }
     }
   }
-  if (managerSession) await supabase.auth.setSession(managerSession)
   if (staffId && loginPin && pinRole) {
     await persistStaffPinVerifier(staffId, loginPin, {
       loginCode,
@@ -4871,7 +4903,7 @@ export async function fetchBranchCashImpact(branchId, date, openHour = 7) {
   const windowEnd = new Date(`${date}T00:00:00`)
   windowEnd.setDate(windowEnd.getDate() + 2)
 
-  const [txRes, pettyRows, shiftRows] = await Promise.all([
+  const [txRes, pettyRows, shiftRows, moveRows] = await Promise.all([
     fetchAllRows((from, to) =>
       supabase
         .from('transactions')
@@ -4884,6 +4916,7 @@ export async function fetchBranchCashImpact(branchId, date, openHour = 7) {
     ),
     fetchPettyCashTimeline(branchId, { startDate: date, endDate: date }).catch(() => []),
     fetchStaffShifts({ branchId, start: date, end: date }).catch(() => []),
+    fetchCashMovements({ branchId, start: date, end: date, dayOpenHour: openHour }).catch(() => []),
   ])
   if (txRes.error) throw txRes.error
 
@@ -4949,15 +4982,33 @@ export async function fetchBranchCashImpact(branchId, date, openHour = 7) {
     .filter((row) => row.kind === 'paid_out' && row.status === 'fulfilled')
     .reduce((sum, row) => sum + Number(row.amount || 0), 0)
 
+  // POS → Open Drawer requests (cash_movements) are a separate ledger from the legacy
+  // cash_drawer_entries petty-cash table above — same statuses DayEnd.jsx/BranchDashboard.jsx
+  // treat as "left the drawer" (see CASH_MOVEMENT_COUNTING_STATUSES), summed in here too so
+  // this figure doesn't undercount petty cash/pickups recorded through Open Drawer.
+  const countingMoves = (moveRows || []).filter((m) => CASH_MOVEMENT_COUNTING_STATUSES.includes(m.status))
+  const moveCashIn = countingMoves
+    .filter((m) => m.type === 'cash_in')
+    .reduce((sum, m) => sum + Number(m.amount || 0), 0)
+  const movePickup = countingMoves
+    .filter((m) => m.type === 'pickup')
+    .reduce((sum, m) => sum + Number(m.amount || 0), 0)
+  const movePaidOut = countingMoves
+    .filter((m) => m.type === 'petty_cash')
+    .reduce((sum, m) => sum + Number(m.amount || 0), 0)
+  const totalChangeFund = changeFund + moveCashIn
+  const totalPickup = pickup + movePickup
+  const totalPaidOut = paidOut + movePaidOut
+
   return {
     cashSales: Number(cashSales.toFixed(2)),
     cardSales: Number(cardSales.toFixed(2)),
     ewalletSales: Number(ewalletSales.toFixed(2)),
     cashRefunds: Number(cashRefunds.toFixed(2)),
-    changeFund: Number(changeFund.toFixed(2)),
-    pickup: Number(pickup.toFixed(2)),
-    paidOut: Number(paidOut.toFixed(2)),
-    expectedCash: Number((changeFund + cashSales - paidOut - pickup).toFixed(2)),
+    changeFund: Number(totalChangeFund.toFixed(2)),
+    pickup: Number(totalPickup.toFixed(2)),
+    paidOut: Number(totalPaidOut.toFixed(2)),
+    expectedCash: Number((totalChangeFund + cashSales - totalPaidOut - totalPickup).toFixed(2)),
   }
 }
 
