@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eyebrow, Field, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
 import SupervisorApprove from './SupervisorApprove'
@@ -25,8 +25,10 @@ function sinceLabel(iso) {
  * cannot, yet).
  *
  * Cases, each with its own remedy:
- *   start        — count the change fund into the drawer (the routine case) — UNLESS
- *                  today's business day is already closed (see `dayClosed` below).
+ *   start        — auto-starts with startingCash 0, no prompt — UNLESS today's business
+ *                  day is already closed (see `dayClosed` below) or was reopened after a
+ *                  close (see `needsFreshCount`), the one case that still asks for a
+ *                  counted figure.
  *   moved        — this cashier is open on another till, so their cash is somewhere else.
  *   ended        — this session just cashed out; sign out (Shell exempts /day-end from
  *                  this so Request day end stays reachable first — see Shell's
@@ -60,6 +62,14 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
   // a supervisor floor shift (holdsDrawer false) never touches cash, so it is unaffected.
   const todayEntry = dayEndForBusinessDate(dayEnds, businessDate(new Date(), dayOpenHour))
   const dayClosed = holdsDrawer && isDayFullyClosed(dayEnds, dayOpenHour)
+  // Cash counting is a DAY-END activity now, not a shift-boundary one (see endShift's own
+  // doc comment) — an ordinary new shift needs no float count at all; it starts at 0 and
+  // Day End's day-wide total is what reconciles the drawer (Open Drawer → Opening float
+  // covers adding real cash later, and IS counted — see migrate_cash_movement_cash_in.sql).
+  // The one exception: right after a manager reopens a CLOSED day. IRL the supervisor
+  // already took possession of the cash at that close, so the till is genuinely starting
+  // over and a real count is worth asking for again.
+  const needsFreshCount = holdsDrawer && todayEntry?.status === 'reopened'
   const [reopenReason, setReopenReason] = useState('')
   const [reopenBusy, setReopenBusy] = useState(false)
   const [reopenError, setReopenError] = useState('')
@@ -123,7 +133,21 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
       await startShift(user, {
         startingCash: holdsDrawer ? amountNumber : 0,
         shiftPeriod,
-        carriedFrom: differsFromCarried ? null : handoff,
+        // Link to the handoff whenever it has an actual counted ending amount, even if this
+        // shift's own recount differs from it — Day End's float math (shiftFloatTotal) uses
+        // this link to tell "this shift's cash is the same drawer someone recounted" from
+        // "this shift's cash is a fresh float from the safe". A mismatched recount is still
+        // the same physical drawer, just with a variance to flag to a supervisor (above).
+        //
+        // BUT: ending a shift normally records no count at all — counting moved to once per
+        // BUSINESS DAY at Day End, not once per shift boundary (see endShift in
+        // shiftStore.js) — so `handoff.endingCash` is null unless a supervisor specifically
+        // confirmed that handoff (Day End's "Confirm received handoff", which computes and
+        // writes one). With no counted amount, there is nothing genuine to carry: linking
+        // anyway made every plain shift-to-shift handover on the same drawer exclude its
+        // own real starting cash from the day's float total, because Day End treated it as
+        // "already counted in a predecessor" that in fact was never counted at all.
+        carriedFrom: handoff?.endingCash != null ? handoff : null,
         holdsDrawer,
         ...opts,
       })
@@ -134,6 +158,24 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
       setBusy(false)
     }
   }
+
+  // Fires the routine case's auto-start (see needsFreshCount above) — no modal, just a
+  // "Starting shift…" beat while the local-first write lands, which never waits on a
+  // network round trip so this resolves almost immediately. Guarded by a ref, not just the
+  // effect's own dependency array, so React StrictMode's dev-only double-invoke can't fire
+  // startShift twice for the same gate transition.
+  //
+  // holdsDrawer-gated: a floor/supervisor shift never had a count to skip in the first
+  // place (canStart already lets it through immediately) — it still picks its AM/PM window
+  // on the form below, same as always. Only a drawer-holding cashier's count gets skipped.
+  const autoStartedRef = useRef(false)
+  const autoStarting = gate === 'start' && !dayClosed && holdsDrawer && !needsFreshCount
+  useEffect(() => {
+    if (!autoStarting || autoStartedRef.current) return
+    autoStartedRef.current = true
+    void doStart({ startingCash: 0 })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStarting])
 
   const onStartClick = () => {
     if (holdsDrawer && amountNumber === 0) {
@@ -251,6 +293,36 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
     )
   }
 
+  // Routine case — see needsFreshCount above. No count needed; startShift already fired
+  // from the effect. This only renders long enough to cover that local-first write (usually
+  // imperceptible) or to offer a retry if it genuinely failed (offline mid-write, etc.).
+  if (autoStarting) {
+    return (
+      <Modal>
+        <Eyebrow>START SHIFT</Eyebrow>
+        <h2 className="mb-1 text-lg">{error ? 'Could not start shift' : 'Starting shift…'}</h2>
+        <p className="m-0 text-xs text-brand-muted">
+          {error || 'Setting up your drawer — this only takes a moment.'}
+        </p>
+        {error && (
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={busy} onClick={onSignOut}>
+              Sign out
+            </SecondaryButton>
+            <PrimaryButton
+              compact
+              type="button"
+              disabled={busy}
+              onClick={() => void doStart({ startingCash: 0 })}
+            >
+              {busy ? 'Starting…' : 'Retry'}
+            </PrimaryButton>
+          </ModalActions>
+        )}
+      </Modal>
+    )
+  }
+
   if (gate === 'moved' && blocker) {
     return (
       <>
@@ -307,8 +379,9 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
                 detail: `${user?.name || 'Cashier'} allowed a second open drawer`,
                 meta: { other_drawer: blocker.drawerLabel || blocker.drawerId || null },
               })
-              // Falls through to the normal start screen, which still demands a count for
-              // this drawer — the override permits a second shift, it does not skip cash.
+              // Falls through to the normal start flow for this drawer (auto-starts at 0
+              // unless today was reopened, same as any other start — see needsFreshCount).
+              // The override permits a second shift; it doesn't change this drawer's rules.
               useShiftStore.setState({ gate: 'start', blocker: null })
             }}
           />
@@ -322,11 +395,11 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
     <Modal>
       <Eyebrow>START SHIFT</Eyebrow>
       <h2 className="mb-1 text-lg">
-        {holdsDrawer ? 'Count your change fund' : 'Start your shift'}
+        {holdsDrawer ? 'Count the drawer after reopening' : 'Start your shift'}
       </h2>
       <p className="m-0 text-xs text-brand-muted">
         {holdsDrawer
-          ? `Count the cash in ${drawerLabel || 'the drawer'} and enter it. This is asked once per shift — signing out and back in will not ask again.`
+          ? `This business day was reopened, so the drawer needs a fresh count — count the cash in ${drawerLabel || 'the drawer'} and enter it.`
           : 'Choose your shift window. You are not holding a drawer, so there is no change fund to count.'}
       </p>
 
@@ -340,15 +413,15 @@ function ShiftGate({ user, holdsDrawer = true, onSignOut }) {
             type="button"
             className={`rounded-[5px] border px-3 py-2.5 text-left transition-colors ${
               shiftPeriod === opt.id
-                ? 'border-brand-dark bg-brand-dark text-white'
-                : 'border-brand-border bg-white text-brand-ink'
+                ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                : 'border-brand-border bg-brand-card text-brand-ink'
             }`}
             onClick={() => setShiftPeriod(opt.id)}
           >
             <strong className="block text-sm">{opt.label}</strong>
             <span
               className={`mt-0.5 block text-[10px] ${
-                shiftPeriod === opt.id ? 'text-white/70' : 'text-brand-subtle'
+                shiftPeriod === opt.id ? 'text-brand-on-gold/70' : 'text-brand-subtle'
               }`}
             >
               {opt.hint}

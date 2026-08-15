@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { approverLabel } from '../../lib/api'
 import { moneyClass } from '../ui'
 import { money } from '../../utils/format'
 
@@ -15,14 +14,13 @@ const PAGE_SIZE = 5
  * Rows are NOT clickable. They were briefly a button opening a detail popup, but at the
  * size these rows need to be (7px text, near-zero padding) a tap target is genuinely bad
  * touchscreen UX — the same reason RevenueChart uses full-height hit bands instead of
- * relying on a precise dot. A `title` tooltip carries the same detail (performed by,
- * approved by, reason) for anyone hovering on desktop; the full history is still one
- * click away via `linkHref` → Reports.
+ * relying on a precise dot. Performed-by/approved-by/reason detail is one click away via
+ * `linkHref` → Reports.
  *
  * Styled to match `StatTiles` (light bordered card) for the header, but row content is
  * deliberately much smaller — this is a dense supporting list, not a primary table.
  */
-function AuditSummary({ events = [], linkHref = null, subtitle = null }) {
+function AuditSummary({ events = [], linkHref = null, subtitle = null, showBranch = false }) {
   const [page, setPage] = useState(0)
   // A fresh fetch (branch/period change) hands this component a new `events` array —
   // land back on page 1 rather than leaving the reader stranded on a now-stale page.
@@ -59,14 +57,8 @@ function AuditSummary({ events = [], linkHref = null, subtitle = null }) {
   const pageIndex = Math.min(page, pageCount - 1)
   const pageRows = sorted.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
 
-  const rowTitle = (row) =>
-    `${row.event_type === 'void' ? 'Void' : 'Refund'} · ${money(row.amount)}\n` +
-    `Performed by: ${row.staff?.full_name || '—'}\n` +
-    `Approved by: ${approverLabel(row.approver_name, row.approver_role) || '—'}\n` +
-    `Reason: ${row.reason || 'No reason given'}`
-
   return (
-    <div className="mb-2.5 min-w-0 rounded-[10px] border border-brand-line bg-white px-3.5 py-2.5">
+    <div className="mb-2.5 min-w-0 rounded-[10px] border border-brand-line bg-brand-card px-3.5 py-2.5">
       <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
         <h3 className="m-0 text-xs font-bold tracking-wide text-brand-subtle uppercase">Audit</h3>
         <div className="flex items-baseline gap-2">
@@ -97,8 +89,11 @@ function AuditSummary({ events = [], linkHref = null, subtitle = null }) {
           {pageRows.map((row) => (
             <div
               key={row.id}
-              title={rowTitle(row)}
-              className="grid grid-cols-[2.8rem_2.1rem_1fr_1fr] items-center gap-1.5 border-b border-brand-softline py-1.5 text-[11px] leading-[1.4] max-[560px]:grid-cols-[2.8rem_2.1rem_1fr]"
+              className={`grid items-center gap-1.5 border-b border-brand-softline py-1.5 text-[11px] leading-[1.4] max-[560px]:grid-cols-[2.8rem_2.1rem_1fr] ${
+                showBranch
+                  ? 'grid-cols-[2.8rem_2.1rem_5rem_1fr_1fr]'
+                  : 'grid-cols-[2.8rem_2.1rem_1fr_1fr]'
+              }`}
             >
               <span className="text-brand-slate">
                 {row.created_at
@@ -112,6 +107,11 @@ function AuditSummary({ events = [], linkHref = null, subtitle = null }) {
               >
                 {row.event_type === 'void' ? 'Void' : 'Rfnd'}
               </span>
+              {showBranch && (
+                <span className="truncate text-brand-subtle max-[560px]:hidden">
+                  {row.branches?.name || '—'}
+                </span>
+              )}
               <span className="truncate text-brand-ink">
                 {row.staff?.full_name || '—'}
                 <span className="text-brand-subtle"> · {row.reason || 'no reason given'}</span>

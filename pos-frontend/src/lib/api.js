@@ -814,17 +814,27 @@ export async function verifyOwnPin(staffId, pin) {
   return true
 }
 
-/** Persist device session id across reloads of the same browser tab. */
+/**
+ * Stable per-browser device fingerprint for claim_staff_session — deliberately in
+ * localStorage, not sessionStorage. It carries no auth capability (opaque UUID, not a
+ * credential), so it doesn't fall under the "auth token stays sessionStorage-only" rule.
+ * It MUST survive a closed tab: claim_staff_session's same-device self-heal only fires
+ * when this id matches what the server still has recorded, and a plain tab close never
+ * gets a chance to call releaseStaffSession (see sessionLifecycle.js) — closing the tab
+ * without clicking Logout used to leave the server-side claim held for up to the 15-minute
+ * heartbeat window, so reopening on the very same till got rejected with "Already signed
+ * in on another device." Reusing the same id makes that reopen self-heal instantly instead.
+ */
 export function getOrCreateDeviceSessionId() {
   const key = 'cale-pos-device-session'
   try {
-    let id = sessionStorage.getItem(key)
+    let id = localStorage.getItem(key)
     if (!id) {
       id =
         typeof crypto !== 'undefined' && crypto.randomUUID
           ? crypto.randomUUID()
           : `sess_${Date.now()}_${Math.random().toString(36).slice(2)}`
-      sessionStorage.setItem(key, id)
+      localStorage.setItem(key, id)
     }
     return id
   } catch {
@@ -834,7 +844,7 @@ export function getOrCreateDeviceSessionId() {
 
 export function clearDeviceSessionId() {
   try {
-    sessionStorage.removeItem('cale-pos-device-session')
+    localStorage.removeItem('cale-pos-device-session')
   } catch {
     /* ignore */
   }
@@ -1627,6 +1637,61 @@ export async function updateProductRow(id, values, { branchId, staffId, previous
   return data
 }
 
+/**
+ * Hide (or restore) a product from POS/Inventory/low-stock without deleting it.
+ *
+ * `transaction_items.product_id` is `ON DELETE RESTRICT`, so a real DELETE already fails
+ * for anything ever sold — this is the only working "remove" for a product with sales
+ * history. Every product fetch already filters `is_active = true` (fetchBranchProducts,
+ * bootstrapPosCatalog, bootstrapBranchData), so deactivating alone drops it from POS, the
+ * dashboard, and the low-stock count — nothing else needs to change to stop it being
+ * "logged and notified" as low stock.
+ */
+export async function setProductActive(productId, isActive) {
+  const { data, error } = await supabase
+    .from('products')
+    .update({ is_active: Boolean(isActive) })
+    .eq('id', productId)
+    .select('*, categories(name)')
+    .single()
+  if (error) throw error
+  return data
+}
+
+/** Products hidden via setProductActive, for the "Not selling" view + reactivate. */
+export async function fetchInactiveBranchProducts(branchId) {
+  const [productsRes, inventoryRes] = await Promise.all([
+    fetchAllRows((from, to) =>
+      supabase
+        .from('products')
+        .select(BOOTSTRAP_PRODUCT_COLS)
+        .eq('branch_id', branchId)
+        .eq('is_active', false)
+        .order('name')
+        .range(from, to),
+    ),
+    fetchAllRows((from, to) =>
+      supabase
+        .from('branch_inventory')
+        .select('product_id, quantity_on_hand, updated_at')
+        .eq('branch_id', branchId)
+        .order('product_id')
+        .range(from, to),
+    ),
+  ])
+  if (productsRes.error) throw productsRes.error
+  if (inventoryRes.error) throw inventoryRes.error
+  const stockMap = Object.fromEntries(
+    (inventoryRes.data || []).map((row) => [
+      row.product_id,
+      { stock: Number(row.quantity_on_hand), updatedAt: row.updated_at },
+    ]),
+  )
+  return (productsRes.data || []).map((row) =>
+    mapProduct(row, stockMap[row.id]?.stock ?? 0, { updatedAt: stockMap[row.id]?.updatedAt }),
+  )
+}
+
 /** Toggle whether a restaurant menu item is offered today. */
 export async function setMenuAvailableToday(productId, availableToday) {
   const { data, error } = await supabase
@@ -1778,6 +1843,22 @@ export async function adjustStock({ branchId, productId, staffId, action, amount
   return mapMovement({ ...data, products: { name: productName } })
 }
 
+/** The RPC itself is absent — i.e. migrate_complete_sale_rpc.sql is not applied yet. */
+function isMissingFunctionError(error, name) {
+  const raw = String(error?.message || error || '')
+  return new RegExp(`Could not find the function.*${name}|function public\\.${name}.*does not exist`, 'i').test(raw)
+}
+
+/**
+ * Postgres deadlock_detected. complete_sale()'s branch-counter UPDATE can occasionally
+ * deadlock against another concurrent sale on the same branch (see migrate_complete_sale_rpc.sql)
+ * — Postgres always rolls the victim back cleanly (no partial state, atomicity guarantees
+ * that), so a blind retry is safe.
+ */
+function isDeadlockError(error) {
+  return error?.code === '40P01'
+}
+
 export async function completeSale({
   branchId,
   staffId,
@@ -1804,9 +1885,96 @@ export async function completeSale({
 }) {
   if (clientId) {
     const existing = await loadTransactionByClientId(branchId, clientId).catch(() => null)
-    if (existing?.id) return existing
+    // loadTransactionByClientId returns the raw BOOTSTRAP_TX_COLS row (snake_case) — every
+    // other completeSale() return path is mapTransaction()-shaped (camelCase); callers that
+    // persist the result straight to Dexie (syncEngine.js's COMPLETE_SALE case) need that
+    // shape consistently, not just on the non-retry path.
+    if (existing?.id) return mapTransaction(existing)
   }
 
+  // Atomic path: complete_sale() does till check + OR allocation + transaction + items +
+  // stock movements + audit event in ONE server-side transaction (migrate_complete_sale_rpc.sql).
+  // Either the whole sale lands or none of it does — no orphaned money-only transaction rows,
+  // and one network round trip instead of four. Falls through to the legacy multi-step flow
+  // below only when the RPC itself doesn't exist yet (database not yet migrated).
+  try {
+    const branchRes =
+      branchType != null
+        ? { data: { branch_type: branchType } }
+        : await supabase.from('branches').select('branch_type').eq('id', branchId).maybeSingle()
+    const isRestaurant =
+      isRestaurantBranchType(branchType) || isRestaurantBranchType(branchRes?.data?.branch_type)
+
+    const rpcLines = items.map((item) => {
+      const unit = Number(item.unitPrice ?? item.price)
+      const quantity = item.pricingMode === 'kg' ? item.weight : item.quantity
+      const row = {
+        product_id: item.id,
+        quantity,
+        unit_price: unit,
+        line_total: unit * quantity,
+        discount_eligible: item.discountEligible === true,
+        discount_amount: Number(item.discountAmount ?? 0),
+        promo_name: item.promoName || null,
+        promo_group_id: item.promoGroupId || null,
+        vat_category: item.vatCategory || 'vatable',
+        detail: item.name || null,
+      }
+      if (isRestaurant) {
+        row.price_tier = item.priceTier === 'budget' ? 'budget' : 'regular'
+      }
+      return row
+    })
+
+    const rpcParams = {
+      p_branch_id: branchId,
+      p_staff_id: staffId,
+      p_items: rpcLines,
+      p_total: total,
+      p_tendered: tendered,
+      p_client_id: clientId,
+      p_client_or_number: clientOrNumber,
+      p_order_type: orderType,
+      p_ulam_combo: ulamCombo,
+      p_payment_method: paymentMethod,
+      p_payment_reference: paymentReference,
+      p_vat_amount: Number(vatAmount || 0),
+      p_vatable_sales: Number(vatableSales || 0),
+      p_vat_exempt_sales: Number(vatExemptSales || 0),
+      p_zero_rated_sales: Number(zeroRatedSales || 0),
+      p_sc_pwd_discount: Number(scPwdDiscount || 0),
+      p_vat_rate_applied: Number(vatRateApplied || 0.12),
+      p_discount_amount: Number(discountAmount || 0),
+      p_discount_type: discountType || null,
+      p_discount_id_note: discountIdNote || null,
+      p_shift_id: shiftId || null,
+    }
+
+    // Up to one retry on a deadlock victim — safe (clean rollback, no partial state) and
+    // expected occasionally under heavy concurrent same-branch checkout load. A short jittered
+    // delay avoids immediately re-colliding with whichever transaction won the first round.
+    let rpcTxn
+    let rpcError
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      ;({ data: rpcTxn, error: rpcError } = await supabase.rpc('complete_sale', rpcParams))
+      if (!rpcError || !isDeadlockError(rpcError) || attempt === 1) break
+      await new Promise((resolve) => setTimeout(resolve, 50 + Math.random() * 100))
+    }
+    if (rpcError) throw rpcError
+    if (!rpcTxn) throw new Error('complete_sale returned no transaction')
+
+    return mapTransaction(
+      withCashierName(
+        { ...rpcTxn, transaction_items: rpcLines.map((line) => ({ ...line, transaction_id: rpcTxn.id })) },
+        { [staffId]: null },
+      ),
+    )
+  } catch (err) {
+    if (!isMissingFunctionError(err, 'complete_sale')) throw err
+    // DB predates migrate_complete_sale_rpc.sql — fall back to the pre-atomic multi-step flow.
+  }
+
+  // ---- legacy multi-step path (pre migrate_complete_sale_rpc.sql) ----
   // Run till check + OR reserve/allocate (+ branch type if unknown) together
   const tillPromise = supabase.rpc('assert_till_open', { p_branch_id: branchId })
   const orPromise = clientOrNumber
@@ -3434,6 +3602,23 @@ export async function createStaffAccount({
       auth_secret: pinRole ? String(loginPin || '') : null,
       permissions: Array.isArray(permissions) ? permissions : null,
     }
+    // Shared by both branches below: whichever one ends up owning an already-existing
+    // row (found directly, or via the 23505 race with handle_new_user's trigger stub)
+    // must still apply login_code/login_pin/permissions to it — a bare read-back of the
+    // id without this leaves the trigger's stub (full_name/role/branch only) permanently
+    // missing PIN credentials.
+    const applyStaffPayload = async (targetId) => {
+      let { error: updateError } = await supabase.from('staff').update(staffPayload).eq('id', targetId)
+      if (updateError && (isMissingColumnError(updateError, 'login_code') || isMissingColumnError(updateError, 'permissions') || isMissingColumnError(updateError, 'auth_secret'))) {
+        const fallback = { branch_id: branchId, full_name: fullName, role, is_active: true }
+        ;({ error: updateError } = await supabase.from('staff').update(fallback).eq('id', targetId))
+      }
+      if (updateError) {
+        const uniqueErr = staffCodeUniqueError(updateError)
+        if (uniqueErr) throw uniqueErr
+        throw updateError
+      }
+    }
     const { data: existing } = await supabase
       .from('staff')
       .select('id')
@@ -3441,16 +3626,7 @@ export async function createStaffAccount({
       .maybeSingle()
     if (existing?.id) {
       staffId = existing.id
-      let { error: updateError } = await supabase.from('staff').update(staffPayload).eq('id', existing.id)
-      if (updateError && (isMissingColumnError(updateError, 'login_code') || isMissingColumnError(updateError, 'permissions') || isMissingColumnError(updateError, 'auth_secret'))) {
-        const fallback = { branch_id: branchId, full_name: fullName, role, is_active: true }
-        ;({ error: updateError } = await supabase.from('staff').update(fallback).eq('id', existing.id))
-      }
-      if (updateError) {
-        const uniqueErr = staffCodeUniqueError(updateError)
-        if (uniqueErr) throw uniqueErr
-        throw updateError
-      }
+      await applyStaffPayload(staffId)
     } else {
       let { data: inserted, error: insertError } = await supabase
         .from('staff')
@@ -3477,14 +3653,16 @@ export async function createStaffAccount({
       }
       staffId = inserted?.id || null
       if (!staffId) {
-        // 23505 means a trigger (handle_new_user) already created the row — read it back
-        // so the caller still gets an id to audit against.
+        // 23505 means a trigger (handle_new_user) already created the row — apply
+        // staffPayload to it instead of just reading its id back, or its login_code/
+        // login_pin stay null forever (the trigger never sets them).
         const { data: found } = await supabase
           .from('staff')
           .select('id')
           .eq('auth_user_id', data.user.id)
           .maybeSingle()
         staffId = found?.id || null
+        if (staffId) await applyStaffPayload(staffId)
       }
     }
   }
@@ -4477,9 +4655,16 @@ export async function fetchCashMovementById(id) {
 }
 
 /**
- * List cash movements. Prefer shiftIds / requestedBy for live End-shift views (omit start/end
- * so PH timezone vs UTC day clamps cannot hide same-session rows). Pass start+end for
- * day-wide supervisor / report lists.
+ * List cash movements. `start`/`end` are BUSINESS dates (same convention as everywhere
+ * else — see rowBusinessDate) — the SQL range is deliberately buffered a calendar day on
+ * each side and then narrowed precisely below via rowBusinessDate, because `requested_at`
+ * is a plain instant with no idea where the branch's open hour falls: a movement rung
+ * between midnight and openHour carries the NEXT calendar date in local wall-clock terms
+ * while still belonging to the CURRENT business day (identical trap to item.date on
+ * transactions — see utils/format.js's rowBusinessDate doc comment). A tight same-day
+ * clamp silently hid exactly those rows — e.g. a petty-cash entry rung at 12:18 AM PH time
+ * never matched a `{start: end: "yesterday's business date"}` query for the shift that
+ * was still, business-wise, on that day.
  */
 export async function fetchCashMovements({
   branchId = null,
@@ -4490,8 +4675,14 @@ export async function fetchCashMovements({
   status = null,
   requestedBy = null,
   drawerId = null,
+  dayOpenHour = undefined,
 } = {}) {
   if (!hasSupabase) return []
+  const shiftDateKey = (key, days) => {
+    const d = new Date(`${key}T00:00:00`)
+    d.setDate(d.getDate() + days)
+    return localDateKey(d)
+  }
   try {
     const { data, error } = await fetchAllRows((from, to) => {
       let q = supabase
@@ -4502,9 +4693,10 @@ export async function fetchCashMovements({
       if (branchId) q = q.eq('branch_id', branchId)
       if (Array.isArray(shiftIds) && shiftIds.length) q = q.in('shift_id', shiftIds)
       if (requestedBy) q = q.eq('requested_by', requestedBy)
-      // +08:00 matches BIR business-day local wall clock (Philippines).
-      if (start) q = q.gte('requested_at', `${start}T00:00:00+08:00`)
-      if (end) q = q.lte('requested_at', `${end}T23:59:59.999+08:00`)
+      // +08:00 matches PH local wall clock. Buffered a day on each side of the requested
+      // business-date range — see doc comment above — then narrowed exactly below.
+      if (start) q = q.gte('requested_at', `${shiftDateKey(start, -1)}T00:00:00+08:00`)
+      if (end) q = q.lte('requested_at', `${shiftDateKey(end, 1)}T23:59:59.999+08:00`)
       if (type) q = q.eq('type', type)
       if (status) q = q.eq('status', status)
       if (drawerId) q = q.eq('drawer_id', drawerId)
@@ -4514,7 +4706,16 @@ export async function fetchCashMovements({
       if (/cash_movements|schema cache|does not exist/i.test(String(error.message || ''))) return []
       throw error
     }
-    return withCashMovementActors((data || []).map(mapCashMovementRow).filter(Boolean))
+    let rows = await withCashMovementActors((data || []).map(mapCashMovementRow).filter(Boolean))
+    if (start || end) {
+      rows = rows.filter((row) => {
+        const biz = rowBusinessDate({ createdAt: row.requestedAt || row.createdAt }, dayOpenHour)
+        if (start && biz < start) return false
+        if (end && biz > end) return false
+        return true
+      })
+    }
+    return rows
   } catch (err) {
     if (/cash_movements|schema cache|does not exist/i.test(String(err?.message || ''))) return []
     throw err
@@ -4714,7 +4915,24 @@ export async function fetchBranchCashImpact(branchId, date, openHour = 7) {
   const cashRefunds = cashToday.reduce((sum, row) => sum + row.refundedAmount, 0)
 
   const drawerShifts = (shiftRows || []).filter((row) => row.holdsDrawer !== false)
-  const shiftFloatTotal = drawerShifts.reduce((sum, row) => sum + Number(row.startingCash || 0), 0)
+  // Exclude a shift's startingCash when it was carried forward from another shift that
+  // opened on this SAME business date (fetchStaffShifts above is already date-scoped, so a
+  // carry from an earlier date is simply absent from this set and still counts as real
+  // float below) — that cash is not new money, it is the prior shift's drawer contents
+  // re-counted, and its sales are already inside `cashSales` below. Only holds while
+  // startingCash still equals the frozen carriedAmount (a pure recount); once it diverges —
+  // the cashier adjusted the pre-filled count, or declared a fresh 'opening_float' movement
+  // after opening at ₱0 — it is a genuinely different declared amount and must be counted,
+  // same as any non-carried shift. Same reasoning as DayEnd.jsx's shiftFloatTotal — see the
+  // comment there.
+  const drawerShiftIds = new Set(drawerShifts.map((row) => row.id).filter(Boolean))
+  const isDuplicateCarry = (row) =>
+    row.carriedFromShiftId &&
+    drawerShiftIds.has(row.carriedFromShiftId) &&
+    Math.abs(Number(row.startingCash || 0) - Number(row.carriedAmount || 0)) <= 0.004
+  const shiftFloatTotal = drawerShifts
+    .filter((row) => !isDuplicateCarry(row))
+    .reduce((sum, row) => sum + Number(row.startingCash || 0), 0)
   // The float moved from cash_drawer_entries (`change_fund` rows) to staff_shifts.starting_cash
   // mid-project — both sources are summed, same as DayEnd.jsx, so a pre-migration business
   // day still counts its float correctly.
@@ -4822,7 +5040,10 @@ export async function branchSummary(branchId, { days = 1 } = {}) {
   }
 
   return {
-    revenue: paid.reduce((sum, t) => sum + Number(t.total_amount), 0),
+    // Net of refunds — matches BranchDashboard.jsx's own "Revenue today"/"Net sales" figure
+    // (same netTotal = total - refunded convention). This used to be raw total_amount, which
+    // overstated the manager Overview headline by however much had been refunded back.
+    revenue: Number(netSales.toFixed(2)),
     orders: paid.length,
     lowStock,
     menuOn,
@@ -4903,11 +5124,16 @@ export async function fetchManagerOverviewMetrics({ days = 1 } = {}) {
  * the week before, year vs. last year — because comparing a week against a month is not
  * a trend, it is a mistake with an arrow drawn on it.
  *
- * Branch scoping is left entirely to RLS, exactly as fetchNetworkDashboard does: a
- * manager's policy already limits them to branches they may see, so no client-side
- * filter is added that could disagree with it.
+ * Branch scoping: pass `branchId` to scope to one branch (BranchDashboard's "vs. yesterday"
+ * badge); omitted, RLS alone limits a manager to the branches they may see, same as
+ * fetchNetworkDashboard.
+ *
+ * Revenue here is NET of refunds (total_amount - refunded_amount), same convention as
+ * BranchDashboard.jsx's own "Revenue today"/"Net sales" and branchSummary's `netSales` — a
+ * void/refund-heavy period must not look identical to a clean one just because the gross
+ * total_amount was the same.
  */
-export async function fetchPeriodComparison(period = 'week') {
+export async function fetchPeriodComparison(period = 'week', branchId = null) {
   const days = period === 'day' ? 1 : period === 'week' ? 7 : period === 'month' ? 30 : 365
   const currentStart = new Date()
   currentStart.setHours(0, 0, 0, 0)
@@ -4915,15 +5141,15 @@ export async function fetchPeriodComparison(period = 'week') {
   const previousStart = new Date(currentStart)
   previousStart.setDate(previousStart.getDate() - days)
 
-  const { data, error } = await fetchAllRows((from, to) =>
-    supabase
+  const { data, error } = await fetchAllRows((from, to) => {
+    let q = supabase
       .from('transactions')
-      .select('total_amount, created_at')
+      .select('total_amount, refunded_amount, created_at')
       .eq('status', 'completed')
       .gte('created_at', previousStart.toISOString())
-      .order('created_at', { ascending: true })
-      .range(from, to),
-  )
+    if (branchId) q = q.eq('branch_id', branchId)
+    return q.order('created_at', { ascending: true }).range(from, to)
+  })
   if (error) throw error
 
   const boundary = currentStart.getTime()
@@ -4932,7 +5158,7 @@ export async function fetchPeriodComparison(period = 'week') {
   ;(data || []).forEach((row) => {
     const when = new Date(row.created_at).getTime()
     const bucket = when >= boundary ? current : previous
-    bucket.revenue += Number(row.total_amount) || 0
+    bucket.revenue += Number(row.total_amount || 0) - Number(row.refunded_amount || 0)
     bucket.orders += 1
   })
 
@@ -4977,15 +5203,33 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
       .range(from, to)
 
   let { data: txs, error: txError } = await fetchAllRows(
-    txQuery('total_amount, status, created_at, branch_id, payment_method, branches(name)'),
+    txQuery(
+      'total_amount, discount_amount, refunded_amount, status, created_at, branch_id, payment_method, branches(name)',
+    ),
   )
   if (txError && /payment_method|schema cache/i.test(String(txError.message || ''))) {
     ;({ data: txs, error: txError } = await fetchAllRows(
-      txQuery('total_amount, status, created_at, branch_id, branches(name)'),
+      txQuery('total_amount, discount_amount, refunded_amount, status, created_at, branch_id, branches(name)'),
     ))
   }
   if (txError) throw txError
   txs = txs || []
+
+  // Voided sales, same window, bucketed separately — kept out of the main `txQuery` above
+  // (which stays `status.eq.completed` so it never risks a voided sale slipping into
+  // revenue/orders/payment mix) but still needed per-bucket so a clicked chart point can
+  // show Sales performance's Voided figure for that bucket, same as the whole-period one on
+  // `branchSummary`.
+  const { data: voidedTxs, error: voidedError } = await fetchAllRows((from, to) =>
+    supabase
+      .from('transactions')
+      .select('total_amount, created_at')
+      .eq('status', 'voided')
+      .gte('created_at', startIso)
+      .order('created_at', { ascending: true })
+      .range(from, to),
+  )
+  if (voidedError) throw voidedError
 
   const localKey = (value) => {
     const d = new Date(value)
@@ -5020,9 +5264,25 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
     }
   }
 
-  // Network-wide top products / top categories (by revenue) for the same window.
+  const todayKey = localKey(new Date())
+  // Shared by the tx loop and the item-line loop below so a clicked chart point can look
+  // up the exact same bucket in both breakdowns — resolveBucketKey is the one place that
+  // decides which bucket a timestamp belongs to.
+  const resolveBucketKey = (createdAt) => {
+    const when = new Date(createdAt)
+    const dayKey = localKey(when)
+    if (period === 'year') return dayKey.slice(0, 7)
+    if (period === 'day') return dayKey === todayKey ? String(when.getHours()).padStart(2, '0') : null
+    return dayKey
+  }
+
+  // Network-wide top products / top categories (by revenue) for the same window, bucketed
+  // by date too so selecting a point on Revenue over time can show that bucket's own
+  // breakdown instead of the whole-period one (see pointBreakdowns below).
   const byProductNet = {}
   const byCategoryNet = {}
+  const productByBucket = {}
+  const categoryByBucket = {}
   try {
     const { data: itemRows, error: itemsErr } = await fetchAllRows((from, to) =>
       supabase
@@ -5045,13 +5305,22 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
       byProductNet[key].revenue += revenue
       byProductNet[key].qty += Number(row.quantity || 0)
       byCategoryNet[category] = (byCategoryNet[category] || 0) + revenue
+
+      const bucketKey = resolveBucketKey(row.transactions?.created_at)
+      if (bucketKey != null) {
+        const bucketProducts = (productByBucket[bucketKey] ||= {})
+        const bucketCategories = (categoryByBucket[bucketKey] ||= {})
+        if (!bucketProducts[key]) bucketProducts[key] = { id: key, name, revenue: 0, qty: 0 }
+        bucketProducts[key].revenue += revenue
+        bucketProducts[key].qty += Number(row.quantity || 0)
+        bucketCategories[category] = (bucketCategories[category] || 0) + revenue
+      }
     }
   } catch {
     // Product/category breakdown is a nice-to-have on this dashboard — a schema
     // hiccup here shouldn't take down the revenue/branch/payment charts above.
   }
 
-  const todayKey = localKey(new Date())
   // Order COUNT per bucket, alongside revenue. The line chart's tooltip needs it: ₱8,400
   // means something quite different from 4 orders than from 90, and revenue alone cannot
   // distinguish "a quiet day" from "a few big baskets".
@@ -5059,27 +5328,85 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
   Object.keys(byBucket).forEach((key) => {
     ordersByBucket[key] = 0
   })
+  const payByBucket = {}
+  const branchByBucket = {}
+  // Same reductions branchSummary()/terminalReports.js use for Gross/Discounts/Refunds, so
+  // a clicked chart point's Sales performance card reads the same as the whole-period one.
+  const grossByBucket = {}
+  const discountsByBucket = {}
+  const refundsByBucket = {}
   txs.forEach((row) => {
-    const when = new Date(row.created_at)
-    const dayKey = localKey(when)
-    let bucketKey = dayKey
-    if (period === 'year') bucketKey = dayKey.slice(0, 7)
-    else if (period === 'day') {
-      if (dayKey !== todayKey) return
-      bucketKey = String(when.getHours()).padStart(2, '0')
-    }
+    const bucketKey = resolveBucketKey(row.created_at)
     const amount = Number(row.total_amount) || 0
-    if (byBucket[bucketKey] != null) {
-      byBucket[bucketKey] += amount
-      ordersByBucket[bucketKey] += 1
-    }
+    const discountAmount = Number(row.discount_amount) || 0
+    const refundedAmount = Number(row.refunded_amount) || 0
+    // Revenue over time must read the same as the headline Revenue KPI (Gross − Discounts
+    // − Refunds): total_amount is already net of discount, so subtract refunded_amount here
+    // too, not just the gross sale total.
+    const netAmount = amount - refundedAmount
     const name = row.branches?.name || 'Branch'
-    byBranch[name] = (byBranch[name] || 0) + amount
     const method = String(row.payment_method || 'cash').toLowerCase()
+    if (bucketKey != null && byBucket[bucketKey] != null) {
+      byBucket[bucketKey] += netAmount
+      ordersByBucket[bucketKey] += 1
+      grossByBucket[bucketKey] = (grossByBucket[bucketKey] || 0) + amount + discountAmount
+      discountsByBucket[bucketKey] = (discountsByBucket[bucketKey] || 0) + discountAmount
+      refundsByBucket[bucketKey] = (refundsByBucket[bucketKey] || 0) + refundedAmount
+      const bucketPay = (payByBucket[bucketKey] ||= { cash: 0, card: 0, ewallet: 0 })
+      const bucketBranch = (branchByBucket[bucketKey] ||= {})
+      if (method === 'card') bucketPay.card += amount
+      else if (method === 'ewallet' || method === 'e-wallet' || method === 'gcash' || method === 'maya') {
+        bucketPay.ewallet += amount
+      } else bucketPay.cash += amount
+      bucketBranch[name] = (bucketBranch[name] || 0) + amount
+    }
+    byBranch[name] = (byBranch[name] || 0) + amount
     if (method === 'card') byPay.card += amount
     else if (method === 'ewallet' || method === 'e-wallet' || method === 'gcash' || method === 'maya') {
       byPay.ewallet += amount
     } else byPay.cash += amount
+  })
+
+  const voidedByBucket = {}
+  ;(voidedTxs || []).forEach((row) => {
+    const bucketKey = resolveBucketKey(row.created_at)
+    if (bucketKey == null || byBucket[bucketKey] == null) return
+    voidedByBucket[bucketKey] = (voidedByBucket[bucketKey] || 0) + (Number(row.total_amount) || 0)
+  })
+
+  // Per-bucket breakdown so the manager Overview chart can cross-filter Top products/
+  // categories/Payment methods/branch split/Sales performance to whichever point is
+  // selected, without a second round-trip — everything needed is already bucketed above.
+  const pointBreakdowns = {}
+  Object.keys(byBucket).forEach((bucketKey) => {
+    const bp = payByBucket[bucketKey] || { cash: 0, card: 0, ewallet: 0 }
+    const bProd = productByBucket[bucketKey] || {}
+    const bCat = categoryByBucket[bucketKey] || {}
+    pointBreakdowns[bucketKey] = {
+      orders: ordersByBucket[bucketKey] || 0,
+      netSales: Number((byBucket[bucketKey] || 0).toFixed(2)),
+      grossSales: Number((grossByBucket[bucketKey] || 0).toFixed(2)),
+      discounts: Number((discountsByBucket[bucketKey] || 0).toFixed(2)),
+      refunds: Number((refundsByBucket[bucketKey] || 0).toFixed(2)),
+      voidedSales: Number((voidedByBucket[bucketKey] || 0).toFixed(2)),
+      branchBars: Object.entries(branchByBucket[bucketKey] || {}).map(([category, value]) => ({
+        category,
+        value,
+      })),
+      paymentMix: [
+        { id: 'cash', label: 'Cash', value: bp.cash },
+        { id: 'card', label: 'Card', value: bp.card },
+        { id: 'ewallet', label: 'E-wallet', value: bp.ewallet },
+      ],
+      topProducts: Object.values(bProd)
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 5)
+        .map((p) => ({ category: p.name, value: Number(p.revenue.toFixed(2)) })),
+      topCategories: Object.entries(bCat)
+        .map(([category, value]) => ({ category, value: Number(value.toFixed(2)) }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 5),
+    }
   })
 
   return {
@@ -5098,6 +5425,7 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
           const showShort = hour === endHour || hour % 3 === 0
           return {
             label: `${label}:00`,
+            bucketKey: label,
             short: showShort ? `${display} ${suffix}` : '',
             total,
             orders,
@@ -5110,6 +5438,7 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
             : new Date(`${label}T00:00:00`)
         return {
           label,
+          bucketKey: label,
           short:
             period === 'year'
               ? asDate.toLocaleDateString([], { month: 'short', year: '2-digit' })
@@ -5137,6 +5466,9 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
       }
       return entries
     })(),
+    // Keyed by each linePoint's `bucketKey` — selecting a point swaps these four cards to
+    // that bucket's own breakdown; the headline KPIs above the chart stay whole-period.
+    pointBreakdowns,
     branchBars: Object.entries(byBranch).map(([category, value]) => ({ category, value })),
     paymentMix: [
       { id: 'cash', label: 'Cash', value: byPay.cash },
@@ -5149,7 +5481,8 @@ export async function fetchNetworkDashboard(periodOrDays = 'week') {
       .map((p) => ({ category: p.name, value: Number(p.revenue.toFixed(2)) })),
     topCategories: Object.entries(byCategoryNet)
       .map(([category, value]) => ({ category, value: Number(value.toFixed(2)) }))
-      .sort((a, b) => b.value - a.value),
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5),
   }
 }
 
@@ -6179,7 +6512,7 @@ export async function findRecentImportByHash(branchId, fileHash, withinHours = D
 export async function fetchImportBatches(branchId) {
   let query = supabase
     .from('import_batches')
-    .select('*, staff!staff_id(full_name), branches(name)')
+    .select('*, staff!staff_id(full_name), branches(name), requester:staff!revert_requested_by(full_name)')
     .order('created_at', { ascending: false })
     .limit(50)
   if (branchId) query = query.eq('branch_id', branchId)
@@ -6207,6 +6540,12 @@ export async function commitInventoryImport({
   onProgress,
 }) {
   const restaurant = Boolean(preview?.restaurant)
+  // created_count/updated_count start at 0, not the preview's guess — the preview only
+  // knows what it INTENDS to do before a single row is written. Filling them in from the
+  // preview here used to mean a batch that failed on row 1 still sat in Recent Imports
+  // claiming full success, because this insert happens before the loop below runs at all.
+  // See the `finally` block: the real counts get written once we know what actually
+  // happened, whether the loop finishes clean or throws partway through.
   const { data: batch, error: batchError } = await supabase
     .from('import_batches')
     .insert({
@@ -6215,8 +6554,8 @@ export async function commitInventoryImport({
       filename,
       file_hash: fileHash,
       row_count: preview.rowCount,
-      created_count: preview.createCount,
-      updated_count: preview.updateCount,
+      created_count: 0,
+      updated_count: 0,
       skipped_count: preview.skippedCount,
       status: 'committed',
     })
@@ -6226,117 +6565,176 @@ export async function commitInventoryImport({
 
   const itemRows = []
   const total = preview.lines.length || 1
+  let actualCreated = 0
+  let actualUpdated = 0
 
   // Resolve every category the file references in one query, before the loop.
   const categoryIds = await resolveCategoryIds((preview.lines || []).map((l) => l.values?.category))
 
-  for (let index = 0; index < preview.lines.length; index += 1) {
-    const line = preview.lines[index]
-    const values = line.values
-    const price = Number(values?.price)
-    if (!Number.isFinite(price) || price < 0) {
-      throw new Error(`Import rejected: invalid price on row ${index + 1} (${values?.sku || values?.name || 'item'}).`)
-    }
-    if (values?.stock != null && values.stock !== '') {
-      const stock = Number(values.stock)
-      if (!Number.isFinite(stock) || stock < 0) {
-        throw new Error(`Import rejected: invalid stock on row ${index + 1} (${values?.sku || values?.name || 'item'}).`)
+  try {
+    for (let index = 0; index < preview.lines.length; index += 1) {
+      const line = preview.lines[index]
+      const values = line.values
+      const price = Number(values?.price)
+      if (!Number.isFinite(price) || price < 0) {
+        throw new Error(`Import rejected: invalid price on row ${index + 1} (${values?.sku || values?.name || 'item'}).`)
       }
-    }
-    if (!String(values?.name || '').trim() || !String(values?.sku || '').trim()) {
-      throw new Error(`Import rejected: missing name/SKU on row ${index + 1}.`)
-    }
-    const categoryId = categoryIds.get(String(values.category || '').trim() || 'Groceries')
-    let productId = line.existing?.id
-    const barcode =
-      values.barcode ||
-      (restaurant ? `MENU-${values.sku}`.replace(/\W+/g, '').slice(0, 32) : values.barcode)
+      if (values?.stock != null && values.stock !== '') {
+        const stock = Number(values.stock)
+        if (!Number.isFinite(stock) || stock < 0) {
+          throw new Error(`Import rejected: invalid stock on row ${index + 1} (${values?.sku || values?.name || 'item'}).`)
+        }
+      }
+      if (!String(values?.name || '').trim() || !String(values?.sku || '').trim()) {
+        throw new Error(`Import rejected: missing name/SKU on row ${index + 1}.`)
+      }
+      const categoryId = categoryIds.get(String(values.category || '').trim() || 'Groceries')
+      let productId = line.existing?.id
+      let action = line.action
+      const barcode =
+        values.barcode ||
+        (restaurant ? `MENU-${values.sku}`.replace(/\W+/g, '').slice(0, 32) : values.barcode)
 
-    const productPayload = {
-      name: values.name,
-      sku: values.sku,
-      barcode: barcode || null,
-      category_id: categoryId,
-      pricing_mode: toDbPricing(restaurant ? 'pc' : values.pricingMode),
-      price: values.price,
-      low_stock_threshold: values.lowStockAt || 5,
-      available_today: values.availableToday !== false,
-      discount_eligible: values.discountEligible === true,
-      ...(restaurant
-        ? {
-            budget_price: values.budgetPrice,
-            menu_kind: normalizeMenuKind(values.menuKind, values.category),
-          }
-        : {}),
-    }
+      const productPayload = {
+        name: values.name,
+        sku: values.sku,
+        barcode: barcode || null,
+        category_id: categoryId,
+        pricing_mode: toDbPricing(restaurant ? 'pc' : values.pricingMode),
+        price: values.price,
+        low_stock_threshold: values.lowStockAt || 5,
+        available_today: values.availableToday !== false,
+        discount_eligible: values.discountEligible === true,
+        ...(restaurant
+          ? {
+              budget_price: values.budgetPrice,
+              menu_kind: normalizeMenuKind(values.menuKind, values.category),
+            }
+          : {}),
+      }
 
-    if (line.action === 'create') {
-      const product = await writeProductRow('insert', {
-        branch_id: branchId,
-        ...productPayload,
-      })
-      productId = product.id
-      if (!restaurant) {
-        await supabase.from('branch_inventory').upsert({
-          branch_id: branchId,
-          product_id: productId,
-          quantity_on_hand: 0,
+      if (action === 'create') {
+        let product
+        try {
+          product = await writeProductRow('insert', {
+            branch_id: branchId,
+            is_active: true,
+            ...productPayload,
+          })
+        } catch (err) {
+          // The preview classifies create-vs-update against the caller's local product
+          // list, which only ever holds ACTIVE rows (every fetch filters is_active=true —
+          // see setProductActive). A SKU that was deactivated ("Not selling") still
+          // physically holds the UNIQUE(branch_id, sku) slot, so this insert collides
+          // even though the preview called it a "create". Reimporting the SKU is the
+          // user asking for it back — reactivate and update the existing row instead of
+          // failing the entire batch over one already-existing SKU.
+          if (err?.code !== '23505') throw err
+          const { data: existing } = await supabase
+            .from('products')
+            .select('id')
+            .eq('branch_id', branchId)
+            .eq('sku', values.sku)
+            .maybeSingle()
+          if (!existing) throw err
+          product = await writeProductRow(
+            'update',
+            { ...productPayload, is_active: true },
+            { id: existing.id },
+          )
+          action = 'update'
+        }
+        productId = product.id
+        if (action === 'create' && !restaurant) {
+          await supabase.from('branch_inventory').upsert({
+            branch_id: branchId,
+            product_id: productId,
+            quantity_on_hand: 0,
+          })
+        }
+      } else {
+        await writeProductRow('update', { ...productPayload, is_active: true }, { id: productId })
+        // Direct price edits elsewhere (Products.jsx, ManagerNetworkCatalog cascade) log
+        // through recordPriceChange so the Price Change Register sees them — an import
+        // that changes price must not be a silent exception to that.
+        const oldPrice = line.existing?.price != null ? Number(line.existing.price) : null
+        if (oldPrice != null && Number.isFinite(price) && oldPrice !== price) {
+          await recordPriceChange({
+            branchId,
+            productId,
+            staffId,
+            oldPrice,
+            newPrice: price,
+            detail: values.name || 'Price update (import)',
+          })
+        }
+      }
+
+      if (action === 'create') actualCreated += 1
+      else actualUpdated += 1
+
+      if (!restaurant && line.quantityAdded > 0) {
+        const { error: moveError } = await supabase.rpc('record_stock_movement', {
+          p_branch_id: branchId,
+          p_product_id: productId,
+          p_staff_id: staffId,
+          p_movement_type: 'restock',
+          p_quantity_in: line.quantityAdded,
+          p_quantity_out: 0,
+          p_reference: batch.id,
+          p_detail: `Import ${filename}`,
         })
+        if (moveError) throw moveError
       }
-    } else {
-      await writeProductRow('update', productPayload, { id: productId })
-      // Direct price edits elsewhere (Products.jsx, ManagerNetworkCatalog cascade) log
-      // through recordPriceChange so the Price Change Register sees them — an import
-      // that changes price must not be a silent exception to that.
-      const oldPrice = line.existing?.price != null ? Number(line.existing.price) : null
-      if (oldPrice != null && Number.isFinite(price) && oldPrice !== price) {
-        await recordPriceChange({
-          branchId,
-          productId,
-          staffId,
-          oldPrice,
-          newPrice: price,
-          detail: values.name || 'Price update (import)',
-        })
-      }
-    }
 
-    if (!restaurant && line.quantityAdded > 0) {
-      const { error: moveError } = await supabase.rpc('record_stock_movement', {
-        p_branch_id: branchId,
-        p_product_id: productId,
-        p_staff_id: staffId,
-        p_movement_type: 'restock',
-        p_quantity_in: line.quantityAdded,
-        p_quantity_out: 0,
-        p_reference: batch.id,
-        p_detail: `Import ${filename}`,
+      itemRows.push({
+        batch_id: batch.id,
+        product_id: productId,
+        action,
+        quantity_added: restaurant ? 0 : line.quantityAdded,
+        name: values.name,
+        sku: values.sku,
+        barcode: barcode || '',
       })
-      if (moveError) throw moveError
+      onProgress?.(index + 1, total, values.name)
     }
-
-    itemRows.push({
-      batch_id: batch.id,
-      product_id: productId,
-      action: line.action,
-      quantity_added: restaurant ? 0 : line.quantityAdded,
-      name: values.name,
-      sku: values.sku,
-      barcode: barcode || '',
-    })
-    onProgress?.(index + 1, total, values.name)
+  } finally {
+    // Runs whether the loop finished clean or threw partway through, so Recent Imports
+    // and Undo always reflect rows actually written — never the pre-loop guess.
+    if (itemRows.length) {
+      await supabase.from('import_batch_items').insert(itemRows)
+    }
+    await supabase
+      .from('import_batches')
+      .update({ created_count: actualCreated, updated_count: actualUpdated })
+      .eq('id', batch.id)
   }
 
-  if (itemRows.length) {
-    const { error: itemsError } = await supabase.from('import_batch_items').insert(itemRows)
-    if (itemsError) throw itemsError
-  }
-
-  return batch
+  return { ...batch, created_count: actualCreated, updated_count: actualUpdated }
 }
 
 export async function revertInventoryImport(batchId, staffId) {
   const { data, error } = await supabase.rpc('revert_import_batch', {
+    p_batch_id: batchId,
+    p_staff_id: staffId,
+  })
+  if (error) throw error
+  return data
+}
+
+/** Supervisor flags a committed import for a manager to revert — see requestImportRevert. */
+export async function requestImportRevert(batchId, staffId) {
+  const { data, error } = await supabase.rpc('request_import_revert', {
+    p_batch_id: batchId,
+    p_staff_id: staffId,
+  })
+  if (error) throw error
+  return data
+}
+
+/** Manager clears a revert request without reverting — batch goes back to 'committed'. */
+export async function dismissImportRevertRequest(batchId, staffId) {
+  const { data, error } = await supabase.rpc('dismiss_import_revert_request', {
     p_batch_id: batchId,
     p_staff_id: staffId,
   })
@@ -7146,6 +7544,127 @@ export async function createPromoWithRules({
   return event
 }
 
+const PROMO_RULE_MIN_PRODUCTS = { pair_pct: 2, bundle_pct: 2, item_pct: 1, bogo_pct: 1 }
+
+/**
+ * Create the same promo (event + rules) on several branches at once.
+ *
+ * `products` table rows are per-branch — a product id picked while building the rules on
+ * one (reference) branch doesn't exist on any other branch's row set. Each target branch's
+ * catalog is matched by SKU instead, so `rules[].skus` (not productIds) is what this takes.
+ * A branch missing a SKU just drops that product from its copy of the rule; if a rule falls
+ * below its minimum product count on a branch (e.g. only one side of a pair matched), that
+ * rule is skipped for that branch rather than failing the whole promo there.
+ */
+export async function createPromoAcrossBranches({
+  branchIds,
+  name,
+  description = null,
+  startsAt = null,
+  endsAt = null,
+  staffId = null,
+  rules = [], // [{ ruleType, discountPct, buyQty, getQty, bundleName, skus: [...] }]
+  onProgress = null, // ({ branchId, index, total }) => void — called before each branch starts
+}) {
+  const ids = [...new Set((branchIds || []).filter(Boolean))]
+  if (!ids.length) throw new Error('Select at least one branch.')
+  if (!rules?.length) throw new Error('Add at least one promo rule before submitting.')
+
+  const results = []
+  for (const branchId of ids) {
+    onProgress?.({ branchId, index: results.length, total: ids.length })
+    try {
+      const branchProducts = await fetchBranchProducts(branchId)
+      const bySku = new Map(
+        branchProducts.map((p) => [String(p.sku || '').trim().toLowerCase(), p.id]),
+      )
+
+      const skippedSkus = new Set()
+      const branchRules = []
+      for (const rule of rules) {
+        const productIds = (rule.skus || [])
+          .map((sku) => bySku.get(String(sku || '').trim().toLowerCase()))
+          .filter(Boolean)
+        if (productIds.length < (rule.skus || []).length) {
+          for (const sku of rule.skus || []) {
+            if (!bySku.has(String(sku || '').trim().toLowerCase())) skippedSkus.add(sku)
+          }
+        }
+        const minRequired = PROMO_RULE_MIN_PRODUCTS[rule.ruleType] ?? 1
+        if (productIds.length < minRequired) continue
+        branchRules.push({ ...rule, productIds })
+      }
+
+      if (!branchRules.length) {
+        results.push({ branchId, status: 'skipped', reason: 'No matching products on this branch.' })
+        continue
+      }
+
+      const event = await createPromoWithRules({
+        branchId,
+        name,
+        description,
+        startsAt,
+        endsAt,
+        staffId,
+        rules: branchRules,
+      })
+      results.push({
+        branchId,
+        status: 'created',
+        eventId: event.id,
+        skippedSkus: [...skippedSkus],
+        skippedRules: rules.length - branchRules.length,
+      })
+    } catch (e) {
+      results.push({ branchId, status: 'error', error: e?.message || 'Failed to create promo.' })
+    }
+  }
+  return results
+}
+
+/**
+ * Clone an existing promo (any status) — name, dates, and rules — onto other branches, e.g.
+ * a branch left out of the original multi-branch create, or one that only just adopted the
+ * products. Reuses `createPromoAcrossBranches`'s per-branch SKU matching, so a target branch
+ * missing a product just skips it the same way a fresh multi-branch create would.
+ */
+export async function copyPromoEventToBranches({ promoEventId, branchIds, staffId = null }) {
+  let { data: source, error } = await supabase
+    .from('promo_events')
+    .select('name, description, starts_at, ends_at')
+    .eq('id', promoEventId)
+    .single()
+  if (error && isMissingColumnError(error, 'description')) {
+    ;({ data: source, error } = await supabase
+      .from('promo_events')
+      .select('name, starts_at, ends_at')
+      .eq('id', promoEventId)
+      .single())
+  }
+  if (error) throw error
+
+  const rules = await fetchPromoRulesForEvent(promoEventId)
+  if (!rules.length) throw new Error('This promo has no rules to copy.')
+
+  return createPromoAcrossBranches({
+    branchIds,
+    name: source.name,
+    description: source.description || null,
+    startsAt: source.starts_at,
+    endsAt: source.ends_at,
+    staffId,
+    rules: rules.map((r) => ({
+      ruleType: r.ruleType,
+      discountPct: r.discountPct,
+      buyQty: r.buyQty,
+      getQty: r.getQty,
+      bundleName: r.bundleName,
+      skus: (r.products || []).map((p) => p.sku).filter(Boolean),
+    })),
+  })
+}
+
 export async function createPromoRule({
   promoEventId,
   ruleType,
@@ -7554,6 +8073,32 @@ export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, r
     }
   }
 
+  // A supervisor flagged a committed import for a manager to look at (revert_import_batch
+  // itself stays manager-only) — see requestImportRevert / migrate_import_revert_request.sql.
+  if (manager) {
+    const { data: revertRows, error: revertErr } = await supabase
+      .from('import_batches')
+      .select('id, filename, branch_id, revert_requested_at, branches(name), requester:staff!revert_requested_by(full_name)')
+      .eq('status', 'revert_requested')
+      .order('revert_requested_at', { ascending: false })
+      .limit(40)
+    if (!revertErr) {
+      for (const row of revertRows || []) {
+        const branchName = row.branches?.name || 'Branch'
+        items.push({
+          id: `import-revert-${row.id}`,
+          kind: 'import_revert_pending',
+          batchId: row.id,
+          title: 'Import revert requested',
+          detail: `${branchName} · ${row.filename || 'import'} · requested by ${row.requester?.full_name || 'supervisor'}`,
+          href: `/inventory?branch=${row.branch_id}`,
+          createdAt: row.revert_requested_at || null,
+          priority: 2,
+        })
+      }
+    }
+  }
+
   items.sort((a, b) => {
     if (a.priority !== b.priority) return a.priority - b.priority
     return String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
@@ -7591,6 +8136,11 @@ export async function dismissNotificationItem({ item, staffId }) {
     case 'cash_movement_pending':
       if (item.movementId) {
         await denyCashMovement({ id: item.movementId, deniedBy: staffId })
+      }
+      break
+    case 'import_revert_pending':
+      if (item.batchId) {
+        await dismissImportRevertRequest(item.batchId, staffId)
       }
       break
     default:

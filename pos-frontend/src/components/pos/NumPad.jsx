@@ -70,7 +70,7 @@ function NumPad({
   const dark = variant === 'dark'
   const keyClass = dark
     ? 'border border-brand-cart-border bg-brand-cart-input text-white'
-    : 'border border-brand-border bg-white text-brand-ink'
+    : 'border border-brand-border bg-brand-card text-brand-ink'
   const specialClass = dark
     ? 'border border-brand-cart-border bg-brand-dark-inset text-brand-n400'
     : 'border border-brand-border bg-brand-n150 text-brand-n800'

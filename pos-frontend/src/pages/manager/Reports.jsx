@@ -104,6 +104,12 @@ const REPORTS = [
     title: 'Stock Movement Ledger',
     note: 'Every stock in/out with the balance it produced.',
   },
+  {
+    id: 'restock-summary',
+    group: 'Catalog',
+    title: 'Restock Summary',
+    note: 'Per branch, staff, and item — total restocked, and when. Scan for a quantity lower than it should be.',
+  },
   { id: 'sales-invoice', group: 'Sales', title: 'Sales Per Invoice' },
   { id: 'pos-sales-detail', group: 'Sales', title: 'POS Sales Detail' },
   { id: 'order-status', group: 'Sales', title: 'Order Status' },
@@ -752,6 +758,67 @@ function ManagerReports() {
       return
     }
 
+    if (selected === 'restock-summary') {
+      const data = await fetchStockMovementReport({
+        start: filters.start,
+        end: filters.end,
+        branchId,
+        movementTypes: ['restock'],
+      })
+      // A void reversal also writes movement_type='restock' (stock coming BACK from a
+      // cancelled sale) — that is not a restock anyone performed, and counting it here
+      // would inflate a staff member's total for a sale they never actually restocked.
+      //
+      // Grouped down to branch+staff+PRODUCT, not just branch+staff — a count of "12
+      // events" doesn't tell a manager which items moved or by how much; this is meant
+      // to be read line by line against what was actually supposed to arrive.
+      const byGroup = {}
+      data
+        .filter((row) => !String(row.detail || '').startsWith('Void restock'))
+        .forEach((row) => {
+          const key = `${row.branch}::${row.staff}::${row.sku || row.product}`
+          if (!byGroup[key]) {
+            byGroup[key] = {
+              branch: row.branch,
+              staff: row.staff,
+              product: row.product,
+              sku: row.sku,
+              events: 0,
+              qty: 0,
+              first: row.when,
+              last: row.when,
+            }
+          }
+          byGroup[key].events += 1
+          byGroup[key].qty += row.qty_in
+          if (row.when < byGroup[key].first) byGroup[key].first = row.when
+          if (row.when > byGroup[key].last) byGroup[key].last = row.when
+        })
+      setRows(
+        ensureRows(
+          Object.values(byGroup)
+            .map((row) => ({
+              branch: row.branch,
+              staff: row.staff,
+              product: row.product,
+              sku: row.sku,
+              restock_events: row.events,
+              qty_restocked: Number(row.qty.toFixed(2)),
+              first_restock: row.first?.slice(0, 10) || '',
+              last_restock: row.last?.slice(0, 10) || '',
+            }))
+            .sort(
+              (a, b) =>
+                a.branch.localeCompare(b.branch) ||
+                a.staff.localeCompare(b.staff) ||
+                a.product.localeCompare(b.product),
+            ),
+          'No restocks in this range.',
+        ),
+      )
+      return
+    }
+
     if (selected === 'price-changes') {
       const data = await fetchPriceChangeReport({ start: filters.start, end: filters.end, branchId })
       setRows(ensureRows(data, 'No price changes in this range.'))
@@ -927,12 +994,12 @@ function ManagerReports() {
       )}
       <PageHeader eyebrow="MANAGER" title="Reports" />
 
-      <div className="mb-3 rounded-[10px] border border-brand-line bg-white p-4">
+      <div className="mb-3 rounded-[10px] border border-brand-line bg-brand-card p-4">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
           <label className="block text-[11px] font-bold text-brand-n800">
             Report
             <select
-              className="mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px]"
+              className="mt-[7px] block w-full rounded-[5px] border border-brand-input bg-brand-card p-2.5 text-[13px]"
               value={selected}
               onChange={(e) => {
                 setSelected(e.target.value)
@@ -971,17 +1038,10 @@ function ManagerReports() {
                     key={r.id}
                     type="button"
                     disabled={busy || blocked}
-                    title={
-                      blocked
-                        ? 'X-Read and Z-Read cover a single trading period'
-                        : r.id === 'all'
-                          ? 'Every record from the first sale to today'
-                          : undefined
-                    }
                     className={`rounded-[5px] border px-2.5 py-1.5 text-[11px] font-bold disabled:cursor-not-allowed disabled:opacity-40 ${
                       rangeMode === r.id
-                        ? 'border-brand-dark bg-brand-dark text-white'
-                        : 'border-brand-border bg-white text-brand-ink'
+                        ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                        : 'border-brand-border bg-brand-card text-brand-ink'
                     }`}
                     onClick={() => void applyRange(r.id)}
                   >
@@ -1151,7 +1211,7 @@ function ManagerReports() {
         {error && <p className="mt-2 mb-0 text-xs text-brand-danger">{error}</p>}
       </div>
 
-      <div className="overflow-hidden rounded-[10px] border border-brand-line bg-white">
+      <div className="overflow-hidden rounded-[10px] border border-brand-line bg-brand-card">
         {busy ? (
           <div className="p-3" role="status" aria-label="Loading">
             {isTerminal ? (

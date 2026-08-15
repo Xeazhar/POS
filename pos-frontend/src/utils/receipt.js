@@ -4,15 +4,20 @@ import { money, qty } from './format'
  * Build a BIR-oriented receipt payload from branch + transaction detail.
  * Hardware printers can consume this object; browser print uses HTML.
  *
- * Invoice/OR number: allocated per branch at sale commit (`allocateLocalOrNumber`) so
- * receipts print correctly offline. Sync reserves the same number on the server via
- * `reserve_or_number`. Falls back to PENDING only if local allocation failed.
+ * Invoice/OR number: never generated on-device — a client-computed number is only
+ * atomic within one browser's IndexedDB, not across every till selling at the branch, so
+ * it can't be trusted as the official sequential number. The server assigns the real OR
+ * (`allocate_or_number`, row-locked per branch) once this sale's queued write reaches it.
+ * Until then the receipt prints PENDING with the sale's local reference (`transaction.id`,
+ * same short id shown elsewhere in the app for an unsynced row) so this slip can be
+ * matched to the synced sale later and reprinted with its real OR (Transactions → Reprint).
  */
 export function buildReceipt({ branch = {}, transaction = {}, lines = [], user = {} }) {
   const businessName = branch.business_name || branch.name || 'CalePOS Store'
   const rawOrNumber = transaction.orNumber || transaction.or_number || null
   const isPendingOr = !rawOrNumber
-  const orNumber = rawOrNumber || 'PENDING'
+  const localRef = transaction.id ? String(transaction.id).slice(0, 8) : null
+  const orNumber = rawOrNumber || (localRef ? `PENDING-${localRef}` : 'PENDING')
   return {
     header: {
       businessName,
@@ -124,8 +129,8 @@ export function receiptToHtml(receipt) {
           }
           ${line.vatCategory === 'exempt' ? '<div class="line-note">VAT-EXEMPT</div>' : ''}
         </td>
-        <td class="num qty">${qty(line.qty, line.unit)}</td>
         <td class="num">${priceCol}</td>
+        <td class="num qty">${qty(line.qty, line.unit)}</td>
         <td class="num">${amtCol}</td>
       </tr>`
     })
@@ -135,12 +140,15 @@ export function receiptToHtml(receipt) {
   const promoDiscount = Math.max(0, Number(t.discountAmount || 0) - scPwdDiscount)
   const hasScPwdDiscount = scPwdDiscount > 0.004
   const hasPromoDiscount = promoDiscount > 0.004
-  const showVatExempt = Number(t.vatExemptSales || 0) > 0.004
-  const showZeroRated = Number(t.zeroRatedSales || 0) > 0.004
+  // Amount the SC/PWD 20% is computed from — the VAT-exclusive base of exempt lines.
+  const discountableAmount = Number(t.vatExemptSales || 0)
 
   const discountRows = [
     hasScPwdDiscount
-      ? `<tr><td>Less: SC/PWD Discount</td><td class="num">-${money(scPwdDiscount)}</td></tr>`
+      ? `<tr><td>Discountable</td><td class="num">${money(discountableAmount)}</td></tr>`
+      : '',
+    hasScPwdDiscount
+      ? `<tr><td>Senior Citizen 20% / PWD</td><td class="num">-${money(scPwdDiscount)}</td></tr>`
       : '',
     hasPromoDiscount
       ? `<tr><td>Less: Discount${t.discountType ? ` (${escapeHtml(t.discountType)})` : ''}</td><td class="num">-${money(promoDiscount)}</td></tr>`
@@ -203,26 +211,23 @@ export function receiptToHtml(receipt) {
     <table class="items">
       <colgroup>
         <col class="col-item" />
-        <col class="col-qty" />
         <col class="col-price" />
+        <col class="col-qty" />
         <col class="col-amt" />
       </colgroup>
       <thead>
-        <tr><td>Item</td><td class="num">Qty</td><td class="num">Price</td><td class="num">Amt</td></tr>
+        <tr><td>Item</td><td class="num">Price</td><td class="num">Qty</td><td class="num">Amt</td></tr>
       </thead>
       <tbody>${lineRows}</tbody>
     </table>
     <div class="rule"></div>
     <table class="totals">
-      <tr><td>VATable Sales <span class="muted">(net of VAT)</span></td><td class="num">${money(t.vatableSales)}</td></tr>
-      <tr><td>VAT Amount</td><td class="num">${money(t.vatAmount)}</td></tr>
-      ${showVatExempt ? `<tr><td>VAT-Exempt Sales</td><td class="num">${money(t.vatExemptSales)}</td></tr>` : ''}
-      ${showZeroRated ? `<tr><td>Zero-Rated Sales</td><td class="num">${money(t.zeroRatedSales)}</td></tr>` : ''}
-      <tr><td colspan="2"><div class="rule"></div></td></tr>
-      <tr><td><strong>TOTAL SALES</strong> <span class="muted">(VAT inclusive)</span></td><td class="num"><strong>${money(t.totalSales)}</strong></td></tr>
+      <tr><td>Subtotal</td><td class="num">${money(t.totalSales)}</td></tr>
+      <tr><td>Less 12% Vat</td><td class="num">-${money(t.vatAmount)}</td></tr>
+      <tr><td>12% Vat</td><td class="num">${money(t.vatAmount)}</td></tr>
       ${discountRows}
       <tr><td colspan="2"><div class="rule"></div></td></tr>
-      <tr><td>TOTAL AMOUNT DUE</td><td class="num"><strong>${money(t.total)}</strong></td></tr>
+      <tr><td><strong>Total</strong></td><td class="num"><strong>${money(t.total)}</strong></td></tr>
       ${t.tendered != null && (transactionPaymentIsCash(t.payment)) ? `<tr><td>Cash Tendered</td><td class="num">${money(t.tendered)}</td></tr>` : ''}
       ${t.change != null && transactionPaymentIsCash(t.payment) ? `<tr><td>Change</td><td class="num">${money(t.change)}</td></tr>` : ''}
       <tr><td>Payment</td><td class="num">${escapeHtml(t.payment)}</td></tr>

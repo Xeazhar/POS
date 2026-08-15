@@ -18,6 +18,10 @@ export const MANAGER_SETTINGS_SECTIONS = [
     ],
   },
   {
+    group: 'Appearance',
+    items: [{ id: 'appearance', path: '/settings/appearance', label: 'Appearance' }],
+  },
+  {
     group: 'Synchronization',
     items: [{ id: 'sync', path: '/settings/sync', label: 'Sync Status' }],
   },
@@ -32,6 +36,10 @@ export const STAFF_SETTINGS_SECTIONS = [
   {
     group: 'My Account',
     items: [{ id: 'account', path: '/settings/account', label: 'Employee Information' }],
+  },
+  {
+    group: 'Appearance',
+    items: [{ id: 'appearance', path: '/settings/appearance', label: 'Appearance' }],
   },
   {
     group: 'Synchronization',

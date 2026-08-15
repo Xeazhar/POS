@@ -168,6 +168,50 @@ migrate_perf_fk_indexes_v1.sql                 -- drop duplicate client_id / sku
                                                 -- in (select …) on read staff / audit RLS
 migrate_idle_lock_minutes.sql                  -- company_profile.idle_lock_minutes (5/10/15);
                                                 -- needs migrate_company_tin.sql
+migrate_fix_manager_overview_revenue_net.sql   -- needs migrate_network_manager_overview.sql above;
+                                                -- manager_overview_metrics()'s 'revenue' was gross
+                                                -- total_amount (no refund subtraction), disagreeing
+                                                -- with its own 'netSales' and with BranchDashboard's
+                                                -- netted "Revenue today" — now revenue = netSales
+migrate_sale_ops_broadcast.sql                 -- needs migrate_realtime_broadcast_v1.sql above;
+                                                -- attaches tg_ops_broadcast() to transactions so a
+                                                -- new sale/void/refund pushes OPERATIONS_CHANGED
+                                                -- immediately instead of only the 15s poll fallback
+migrate_fix_overview_cash_impact_carry.sql     -- needs migrate_fix_manager_overview_revenue_net.sql
+                                                -- above; supersedes manager_overview_metrics()'s
+                                                -- changeFund sum, which had no carried-shift guard
+                                                -- at all (double-counted a genuine duplicate carry) —
+                                                -- now matches DayEnd.jsx/api.fetchBranchCashImpact's
+                                                -- "exclude only when startingCash still equals
+                                                -- carried_amount" rule
+migrate_revoke_anon_sale_rpc_grants.sql        -- CRITICAL, apply everywhere ASAP: closes an
+                                                -- unauthenticated-bypass gap where the anon/
+                                                -- publishable key alone could call
+                                                -- allocate_or_number/reserve_or_number/
+                                                -- void_sale_secure/refund_sale_items/
+                                                -- record_stock_movement with no login;
+                                                -- needs exact signatures from
+                                                -- migrate_void_sale_approved_by.sql and
+                                                -- migrate_refund_requests.sql above
+migrate_fix_null_unsafe_branch_checks.sql      -- CRITICAL, apply everywhere ASAP: record_stock_movement
+                                                -- and request_import_revert gated cross-branch access
+                                                -- with `<>` against current_staff_branch(), which is
+                                                -- NULL for an anon caller — NULL <> x is NULL, not TRUE,
+                                                -- so the guard silently never raised; switches both to
+                                                -- IS DISTINCT FROM and revokes the anon grant on
+                                                -- request_import_revert (record_stock_movement's anon
+                                                -- grant is already revoked by the migration above)
+migrate_login_conditional_rehash.sql           -- needs migrate_fix_pin_login_auth.sql above;
+                                                -- resolve_pin_login only rewrites
+                                                -- auth.users.encrypted_password when it doesn't
+                                                -- already verify, instead of rehashing + writing
+                                                -- unconditionally on every login
+migrate_complete_sale_rpc.sql                  -- put last: needs assert_till_open,
+                                                -- reserve_or_number/allocate_or_number,
+                                                -- record_stock_movement, and every
+                                                -- transactions/transaction_items column above.
+                                                -- complete_sale() — one atomic RPC replacing
+                                                -- completeSale()'s 4 separate round trips
 ```
 
 **Dev wipe (optional, non-user data only):** `wipe_non_user_data.sql` truncates sales/inventory/promos/shifts/drawer while **keeping** `staff`, `branches`, `roles`, `company_profile`, and Auth users. Run on DEV before cleanup if you want a clean slate.

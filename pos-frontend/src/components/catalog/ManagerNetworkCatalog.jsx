@@ -630,7 +630,7 @@ export default function ManagerNetworkCatalog() {
               <FiDownload className="text-sm" /> Export
             </SecondaryButton>
             <label
-              className={`inline-flex h-8 cursor-pointer items-center gap-1 rounded-[5px] border border-brand-border bg-white px-2.5 text-[11px] font-bold text-brand-n800 ${
+              className={`inline-flex h-8 cursor-pointer items-center gap-1 rounded-[5px] border border-brand-border bg-brand-card px-2.5 text-[11px] font-bold text-brand-n800 ${
                 busy ? 'pointer-events-none opacity-35' : ''
               }`}
             >
@@ -794,7 +794,6 @@ export default function ManagerNetworkCatalog() {
                     type="button"
                     className="inline-flex h-8 w-8 items-center justify-center rounded-[5px] border-0 bg-transparent text-brand-n700 hover:bg-brand-gold/20 hover:text-brand-ink disabled:opacity-40"
                     disabled={busy}
-                    title="Exit bulk edit"
                     aria-label="Exit bulk edit"
                     onClick={exitBulk}
                   >
@@ -953,7 +952,7 @@ export default function ManagerNetworkCatalog() {
                         aria-haspopup="menu"
                         aria-expanded={rowMenuId === row.id}
                         aria-label={`Actions for ${row.name}`}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-[5px] border border-brand-border bg-white text-brand-n700 hover:bg-brand-n50 active:bg-brand-n150"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-[5px] border border-brand-border bg-brand-card text-brand-n700 hover:bg-brand-n50 active:bg-brand-n150"
                         onClick={() => setRowMenuId(rowMenuId === row.id ? null : row.id)}
                       >
                         <FiMoreHorizontal size={16} />
@@ -970,7 +969,7 @@ export default function ManagerNetworkCatalog() {
                           />
                           <div
                             role="menu"
-                            className="absolute right-0 z-20 mt-1 w-44 overflow-hidden rounded-[7px] border border-brand-line bg-white py-1 text-left shadow-lg"
+                            className="absolute right-0 z-20 mt-1 w-44 overflow-hidden rounded-[7px] border border-brand-line bg-brand-card py-1 text-left shadow-lg"
                           >
                             <button
                               type="button"
@@ -1285,7 +1284,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                       <tr key={row.id} className="border-t border-brand-softline align-top">
                         <td className="px-3 py-2">
                           <input
-                            className="w-full rounded border border-brand-line bg-white px-2 py-1 text-brand-ink outline-none"
+                            className="w-full rounded border border-brand-line bg-brand-card px-2 py-1 text-brand-ink outline-none"
                             value={draft.name}
                             aria-label={`Name for ${row.name}`}
                             onChange={(e) => setDraft(row.id, 'name', e.target.value)}
@@ -1293,7 +1292,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                         </td>
                         <td className="px-3 py-2">
                           <input
-                            className="w-full rounded border border-brand-line bg-white px-2 py-1 text-brand-ink outline-none"
+                            className="w-full rounded border border-brand-line bg-brand-card px-2 py-1 text-brand-ink outline-none"
                             value={draft.sku}
                             aria-label={`SKU for ${row.name}`}
                             onChange={(e) => setDraft(row.id, 'sku', e.target.value)}
@@ -1301,7 +1300,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                         </td>
                         <td className="px-3 py-2">
                           <input
-                            className="w-full rounded border border-brand-line bg-white px-2 py-1 text-brand-ink outline-none"
+                            className="w-full rounded border border-brand-line bg-brand-card px-2 py-1 text-brand-ink outline-none"
                             inputMode="numeric"
                             value={draft.barcode}
                             aria-label={`Barcode for ${row.name}`}
@@ -1310,7 +1309,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                         </td>
                         <td className="px-3 py-2">
                           <select
-                            className="w-full rounded border border-brand-line bg-white px-2 py-1 text-brand-ink outline-none"
+                            className="w-full rounded border border-brand-line bg-brand-card px-2 py-1 text-brand-ink outline-none"
                             value={draft.category}
                             aria-label={`Category for ${row.name}`}
                             onChange={(e) => setDraft(row.id, 'category', e.target.value)}
@@ -1324,7 +1323,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                         </td>
                         <td className="px-3 py-2 text-right">
                           <input
-                            className={`w-24 rounded border bg-white px-2 py-1 text-right text-brand-ink outline-none ${
+                            className={`w-24 rounded border bg-brand-card px-2 py-1 text-right text-brand-ink outline-none ${
                               priceChanged ? 'border-brand-gold' : 'border-brand-line'
                             }`}
                             inputMode="decimal"

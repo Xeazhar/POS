@@ -396,7 +396,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
                 </button>
                 <button
                   type="button"
-                  className="rounded-lg border border-brand-softline bg-white px-4 py-3.5 text-left transition-colors hover:border-brand-ink hover:bg-brand-n50"
+                  className="rounded-lg border border-brand-softline bg-brand-card px-4 py-3.5 text-left transition-colors hover:border-brand-ink hover:bg-brand-n50"
                   onClick={() => {
                     setMoveType('cash_in')
                     setStep('form')
@@ -440,7 +440,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
           <div className="flex flex-col gap-2">
             <button
               type="button"
-              className="rounded-lg border border-brand-softline bg-white px-4 py-3.5 text-left transition-colors hover:border-brand-ink hover:bg-brand-n50"
+              className="rounded-lg border border-brand-softline bg-brand-card px-4 py-3.5 text-left transition-colors hover:border-brand-ink hover:bg-brand-n50"
               onClick={() => {
                 setMoveType('petty_cash')
                 setStep('form')
@@ -453,7 +453,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
             </button>
             <button
               type="button"
-              className="rounded-lg border border-brand-softline bg-white px-4 py-3.5 text-left transition-colors hover:border-brand-ink hover:bg-brand-n50"
+              className="rounded-lg border border-brand-softline bg-brand-card px-4 py-3.5 text-left transition-colors hover:border-brand-ink hover:bg-brand-n50"
               onClick={() => {
                 setMoveType('pickup')
                 setStep('form')

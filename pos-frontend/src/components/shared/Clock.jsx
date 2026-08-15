@@ -14,7 +14,7 @@ function Clock({ className = '' }) {
 
   return (
     <span className={`tabular-nums ${className}`}>
-      <strong className="font-semibold text-white">{time}</strong>
+      <strong className="font-semibold text-brand-ondark">{time}</strong>
       <span className="mx-1.5 text-brand-n700">·</span>
       <span className="text-brand-n500">{date}</span>
     </span>

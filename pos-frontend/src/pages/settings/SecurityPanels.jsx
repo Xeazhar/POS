@@ -108,7 +108,7 @@ export function SessionLockPanel() {
                     onClick={() => setMinutes(choice)}
                     className={`h-10 min-w-[4.5rem] rounded-[5px] border px-3 text-xs font-semibold ${
                       selected
-                        ? 'border-brand-gold bg-brand-gold text-brand-dark'
+                        ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
                         : 'border-brand-n400 bg-brand-n100 text-brand-n800 hover:bg-brand-n200'
                     }`}
                   >

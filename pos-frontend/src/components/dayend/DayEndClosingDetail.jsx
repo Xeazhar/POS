@@ -335,10 +335,7 @@ export default function DayEndClosingDetail({ entry, branchId, onClose }) {
                       </span>
                     </strong>
                     <span className={`text-right ${moneyClass}`}>{money(row.amount)}</span>
-                    <span
-                      className="min-w-0 truncate text-brand-slate max-[700px]:hidden"
-                      title={[row.requestedByName, row.reason, row.reviewNotes].filter(Boolean).join(' · ')}
-                    >
+                    <span className="min-w-0 truncate text-brand-slate max-[700px]:hidden">
                       {row.requestedByName || '—'}
                       {row.reason ? ` · ${row.reason}` : ''}
                     </span>
@@ -354,10 +351,7 @@ export default function DayEndClosingDetail({ entry, branchId, onClose }) {
                   <span className="text-brand-slate">{timeLabel(row.createdAt)}</span>
                   <strong className="min-w-0 truncate text-brand-ink">{legacyKindLabel(row)}</strong>
                   <span className={`text-right ${moneyClass}`}>{money(row.amount)}</span>
-                  <span
-                    className="min-w-0 truncate text-brand-slate max-[700px]:hidden"
-                    title={[row.staffName, row.reason, row.receiptRef].filter(Boolean).join(' · ')}
-                  >
+                  <span className="min-w-0 truncate text-brand-slate max-[700px]:hidden">
                     {row.staffName || '—'}
                     {row.reason ? ` · ${row.reason}` : ''}
                     {row.receiptRef ? ` · ${row.receiptRef}` : ''}

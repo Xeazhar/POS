@@ -30,7 +30,7 @@ export default function LoginIntro({ staffName, onDone }) {
 
   return (
     <div
-      className={`login-intro fixed inset-0 z-[100] flex flex-col items-center justify-center overflow-hidden bg-brand-dark text-white ${
+      className={`login-intro fixed inset-0 z-[100] flex flex-col items-center justify-center overflow-hidden bg-brand-dark text-brand-ondark ${
         exiting ? 'login-intro--out' : ''
       }`}
       role="status"
@@ -51,11 +51,11 @@ export default function LoginIntro({ staffName, onDone }) {
         <p className="login-intro__eyebrow m-0 text-[10px] font-bold tracking-[0.22em] text-brand-gold uppercase">
           CalePOS
         </p>
-        <h1 className="login-intro__title m-0 mt-3 text-[clamp(1.75rem,5vw,2.75rem)] font-bold tracking-[-0.03em] text-white">
+        <h1 className="login-intro__title m-0 mt-3 text-[clamp(1.75rem,5vw,2.75rem)] font-bold tracking-[-0.03em] text-brand-ondark">
           Welcome to POS
         </h1>
         {staffName ? (
-          <p className="login-intro__hello m-0 mt-2 text-sm text-white/65">
+          <p className="login-intro__hello m-0 mt-2 text-sm text-brand-ondark/65">
             Hello, {staffName}
           </p>
         ) : null}
@@ -63,9 +63,9 @@ export default function LoginIntro({ staffName, onDone }) {
 
       <footer className="login-intro__foot absolute inset-x-0 bottom-0 z-[1] px-6 pb-8 text-center">
         <p className="m-0 text-[12px] font-semibold tracking-wide text-brand-gold">By Xeazhar</p>
-        <p className="m-0 mt-1.5 text-[10px] leading-relaxed text-white/45">
+        <p className="m-0 mt-1.5 text-[10px] leading-relaxed text-brand-ondark/45">
           © {year} Xeazhar. All rights reserved.
-          <span className="mx-1.5 text-white/25">·</span>
+          <span className="mx-1.5 text-brand-ondark/25">·</span>
           {APP_VERSION_LABEL}
         </p>
       </footer>

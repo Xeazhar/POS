@@ -385,7 +385,6 @@ export default function SupervisorCatalogAdopt() {
                       }`}
                       disabled={discountBusyId === product.id}
                       onClick={() => toggleDiscountable(product)}
-                      title="Toggle PWD/Senior discount eligibility for this branch's product"
                     >
                       {discountBusyId === product.id ? '…' : product.discountEligible ? 'Yes' : 'No'}
                     </button>

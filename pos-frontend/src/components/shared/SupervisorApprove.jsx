@@ -14,6 +14,9 @@ import { isManagerRole } from '../../utils/roles'
  * @param {string} [detail] - Supporting text displayed beneath the title.
  * @param {Function} onCancel - Called when the approval flow is canceled.
  * @param {Function} onApproved - Called with the approving staff member's identity and approval method.
+ * @param {boolean} [pending=false] - Caller is still working after approval (e.g. the void/refund
+ *   itself is in flight) — keeps the buttons showing "Processing…" instead of reverting to idle
+ *   the instant the PIN check succeeds, while the real work continues in the background.
  * @returns {JSX.Element} The approval modal.
  */
 function SupervisorApprove({
@@ -22,6 +25,7 @@ function SupervisorApprove({
   detail = 'Enter a supervisor PIN, or approve as manager if the supervisor is unavailable.',
   onCancel,
   onApproved,
+  pending = false,
 }) {
   const user = useAuthStore((s) => s.user)
   const managerCanApprove = isManagerRole(user?.role)
@@ -29,6 +33,7 @@ function SupervisorApprove({
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const disabled = busy || pending
 
   const approveAsManager = async () => {
     setError('')
@@ -63,10 +68,10 @@ function SupervisorApprove({
             compact
             type="button"
             className="mt-3"
-            disabled={busy}
+            disabled={disabled}
             onClick={() => void approveAsManager()}
           >
-            {busy ? 'Approving…' : 'Approve as manager'}
+            {pending ? 'Processing…' : busy ? 'Approving…' : 'Approve as manager'}
           </PrimaryButton>
         </div>
       )}
@@ -138,11 +143,11 @@ function SupervisorApprove({
         />
         {error && <ErrorBanner className="mt-3 mb-0" error={error} />}
         <ModalActions>
-          <SecondaryButton compact type="button" onClick={onCancel} disabled={busy}>
+          <SecondaryButton compact type="button" onClick={onCancel} disabled={disabled}>
             Cancel
           </SecondaryButton>
-          <PrimaryButton compact type="submit" disabled={busy}>
-            {busy ? 'Checking…' : 'Approve with PIN'}
+          <PrimaryButton compact type="submit" disabled={disabled}>
+            {pending ? 'Processing…' : busy ? 'Checking…' : 'Approve with PIN'}
           </PrimaryButton>
         </ModalActions>
       </form>

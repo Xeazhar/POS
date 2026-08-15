@@ -13,6 +13,7 @@ import {
   approveStopPromo,
   rejectStopPromo,
   requestPromoEdit,
+  copyPromoEventToBranches,
   fetchPromoSalesStats,
   fetchPromoSalesStatsSummary,
   fetchActivePromosAcrossBranches,
@@ -27,10 +28,11 @@ import {
 } from '../../lib/api'
 import { isOnline, readBranchSnapshot, readPromoCache, writePromoCache } from '../../offline'
 import { withTimeout } from '../../utils/withTimeout'
+import { formatSupportError } from '../../utils/errors'
 import { useAuthStore, useProductStore } from '../../stores/posStore'
 import { useLiveData } from '../../hooks/useLiveData'
 import { money, qty } from '../../utils/format'
-import { summarizePromoRuleTypes } from '../../utils/promo'
+import { expandPromoRuleRows, summarizePromoRuleTypes } from '../../utils/promo'
 import { mapLimit } from '../../utils/mapLimit'
 import { isManagerRole } from '../../utils/roles'
 import { isUuid } from '../../utils/transactionDetail'
@@ -111,14 +113,21 @@ export default function ManagerPromos() {
   const [managingId, setManagingId] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
 
   const [history, setHistory] = useState([])
   const [historyPage, setHistoryPage] = useState(0)
   const [pendingDelete, setPendingDelete] = useState(null)
   const [stopReason, setStopReason] = useState('')
   const [stopTarget, setStopTarget] = useState(null)
+  const [stopAttempted, setStopAttempted] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [rejectTarget, setRejectTarget] = useState(null)
+  const [rejectAttempted, setRejectAttempted] = useState(false)
+  const [addBranchTarget, setAddBranchTarget] = useState(null)
+  const [addBranchIds, setAddBranchIds] = useState([])
+  const [addBranchBusy, setAddBranchBusy] = useState(false)
+  const [addBranchError, setAddBranchError] = useState('')
   const [historyStats, setHistoryStats] = useState({})
   const [historyFrom, setHistoryFrom] = useState('')
   const [historyTo, setHistoryTo] = useState('')
@@ -351,7 +360,7 @@ export default function ManagerPromos() {
           if (alive) setNetworkActive(rows)
         })
         .catch((e) => {
-          if (alive) setError(e?.message || 'Failed to load active promos.')
+          if (alive) setError(formatSupportError(e, 'PROMO07'))
         })
         .finally(() => {
           if (alive) setNetworkBusy(false)
@@ -362,7 +371,7 @@ export default function ManagerPromos() {
           if (alive) setNetworkHistory(rows)
         })
         .catch((e) => {
-          if (alive) setError(e?.message || 'Failed to load promo history.')
+          if (alive) setError(formatSupportError(e, 'PROMO07'))
         })
         .finally(() => {
           if (alive) setNetworkHistoryBusy(false)
@@ -423,7 +432,7 @@ export default function ManagerPromos() {
           setActiveEvents(cached.active || [])
           setHistory(cached.history || [])
         } else if (alive) {
-          setError(e?.message || 'Failed to load branch promos.')
+          setError(formatSupportError(e, 'PROMO07'))
         }
       } finally {
         if (alive) setPageLoading(false)
@@ -584,6 +593,7 @@ export default function ManagerPromos() {
 
   const openPromoEditor = async ({ mode, branchId: bId, event = null }) => {
     setError('')
+    setNotice('')
     setOpenActionsId(null)
     setActionsAnchor(null)
     const targetBranch = bId || branchId
@@ -606,7 +616,7 @@ export default function ManagerPromos() {
       else await refreshNetworkOverview()
       await openPromoEditor({ mode: 'edit', branchId: row.branch_id || branchId, event: revision })
     } catch (e) {
-      setError(e?.message || 'Failed to request promo edit.')
+      setError(formatSupportError(e, 'PROMO03'))
     } finally {
       setBusy(false)
     }
@@ -642,7 +652,16 @@ export default function ManagerPromos() {
             <PrimaryButton compact type="button" disabled={busy} onClick={() => onApproveCreate(r.id)}>
               Approve
             </PrimaryButton>
-            <SecondaryButton compact type="button" disabled={busy} onClick={() => setRejectTarget({ id: r.id, name: r.name })}>
+            <SecondaryButton
+              compact
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setRejectReason('')
+                setRejectAttempted(false)
+                setRejectTarget({ id: r.id, name: r.name })
+              }}
+            >
               Reject
             </SecondaryButton>
           </>
@@ -651,9 +670,11 @@ export default function ManagerPromos() {
     </div>
   )
 
-  const onEditorSaved = async () => {
+  const onEditorSaved = async (summary) => {
+    setNotice(summary || '')
     if (branchId) await refreshActive()
     else await refreshNetworkOverview()
+    if (summary) await refreshNetworkOverview()
   }
 
   // refreshActive() is branch-scoped and no-ops with no branch selected — actions taken from
@@ -665,11 +686,11 @@ export default function ManagerPromos() {
     await Promise.all([
       fetchActivePromosAcrossBranches()
         .then(setNetworkActive)
-        .catch((e) => setError(e?.message || 'Failed to load active promos.'))
+        .catch((e) => setError(formatSupportError(e, 'PROMO07')))
         .finally(() => setNetworkBusy(false)),
       fetchPromoEventsAcrossBranches()
         .then(setNetworkHistory)
-        .catch((e) => setError(e?.message || 'Failed to load promo history.'))
+        .catch((e) => setError(formatSupportError(e, 'PROMO07')))
         .finally(() => setNetworkHistoryBusy(false)),
     ])
   }
@@ -683,7 +704,7 @@ export default function ManagerPromos() {
       // branch — refreshActive() only reloads branch-scoped state and no-ops without one.
       await (branchId ? refreshActive() : refreshNetworkOverview())
     } catch (e) {
-      setError(e?.message || 'Failed to approve promo.')
+      setError(formatSupportError(e, 'PROMO04'))
     } finally {
       setBusy(false)
     }
@@ -691,7 +712,7 @@ export default function ManagerPromos() {
 
   const onSubmitReject = async () => {
     if (!rejectTarget?.id || !rejectReason.trim()) {
-      setError('Enter a reason to reject this promo.')
+      setRejectAttempted(true)
       return
     }
     setBusy(true)
@@ -700,9 +721,10 @@ export default function ManagerPromos() {
       await rejectPromoEvent({ id: rejectTarget.id, staffId: user.id, reason: rejectReason.trim() })
       setRejectTarget(null)
       setRejectReason('')
+      setRejectAttempted(false)
       await (branchId ? refreshActive() : refreshNetworkOverview())
     } catch (e) {
-      setError(e?.message || 'Failed to reject promo.')
+      setError(formatSupportError(e, 'PROMO05'))
     } finally {
       setBusy(false)
     }
@@ -710,7 +732,7 @@ export default function ManagerPromos() {
 
   const onRequestStop = async () => {
     if (!stopTarget?.id || !stopReason.trim()) {
-      setError(managerView ? 'Enter a reason to stop this promo.' : 'Enter a reason to request stop.')
+      setStopAttempted(true)
       return
     }
     setBusy(true)
@@ -723,9 +745,10 @@ export default function ManagerPromos() {
       }
       setStopTarget(null)
       setStopReason('')
+      setStopAttempted(false)
       await refreshActive()
     } catch (e) {
-      setError(e?.message || (managerView ? 'Failed to stop promo.' : 'Failed to request stop.'))
+      setError(formatSupportError(e, 'PROMO06'))
     } finally {
       setBusy(false)
     }
@@ -738,7 +761,7 @@ export default function ManagerPromos() {
       await approveStopPromo({ id, staffId: user.id })
       await refreshActive()
     } catch (e) {
-      setError(e?.message || 'Failed to approve stop.')
+      setError(formatSupportError(e, 'PROMO06'))
     } finally {
       setBusy(false)
     }
@@ -751,9 +774,65 @@ export default function ManagerPromos() {
       await rejectStopPromo({ id, staffId: user.id })
       await refreshActive()
     } catch (e) {
-      setError(e?.message || 'Failed to reject stop.')
+      setError(formatSupportError(e, 'PROMO06'))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const openAddBranch = (evt) => {
+    setAddBranchError('')
+    setAddBranchIds([])
+    setAddBranchTarget(evt)
+  }
+
+  const closeAddBranch = () => {
+    if (addBranchBusy) return
+    setAddBranchTarget(null)
+    setAddBranchIds([])
+    setAddBranchError('')
+  }
+
+  const onSubmitAddBranch = async () => {
+    if (!addBranchTarget?.id || !addBranchIds.length) {
+      setAddBranchError('Select at least one branch.')
+      return
+    }
+    setAddBranchBusy(true)
+    setAddBranchError('')
+    try {
+      const results = await copyPromoEventToBranches({
+        promoEventId: addBranchTarget.id,
+        branchIds: addBranchIds,
+        staffId: user.id,
+      })
+      const branchName = (id) => branches.find((b) => b.id === id)?.name || id
+      const created = results.filter((r) => r.status === 'created')
+      const skipped = results.filter((r) => r.status === 'skipped')
+      const errored = results.filter((r) => r.status === 'error')
+      if (!created.length) {
+        setAddBranchError(
+          `Could not add the promo to any selected branch — ${[...skipped, ...errored]
+            .map((r) => `${branchName(r.branchId)}: ${r.reason || r.error}`)
+            .join('; ')}`,
+        )
+        return
+      }
+      const parts = [`Added to ${created.length} of ${results.length} branch${results.length === 1 ? '' : 'es'}.`]
+      if (skipped.length) {
+        parts.push(`Skipped (no matching products): ${skipped.map((r) => branchName(r.branchId)).join(', ')}.`)
+      }
+      if (errored.length) {
+        parts.push(`Failed: ${errored.map((r) => `${branchName(r.branchId)} (${r.error})`).join('; ')}.`)
+      }
+      setNotice(parts.join(' '))
+      setAddBranchTarget(null)
+      setAddBranchIds([])
+      await refreshNetworkOverview()
+    } catch (e) {
+      setAddBranchError(formatSupportError(e, 'PROMO01'))
+    } finally {
+      setAddBranchBusy(false)
     }
   }
 
@@ -765,10 +844,26 @@ export default function ManagerPromos() {
       await deletePromoEvent(promoEventId)
       await (branchId ? refreshActive() : refreshNetworkOverview())
     } catch (e) {
-      setError(e?.message || 'Failed to delete promo event.')
+      setError(formatSupportError(e, 'PROMO08'))
     } finally {
       setBusy(false)
     }
+  }
+
+  const closeStopModal = () => {
+    if (busy) return
+    setStopTarget(null)
+    setStopReason('')
+    setStopAttempted(false)
+    setError('')
+  }
+
+  const closeRejectModal = () => {
+    if (busy) return
+    setRejectTarget(null)
+    setRejectReason('')
+    setRejectAttempted(false)
+    setError('')
   }
 
   const openDeleteConfirm = (payload) => {
@@ -829,7 +924,7 @@ export default function ManagerPromos() {
         branchName: eventRow.branchName,
       })
     } catch (e) {
-      setError(e?.message || 'Failed to load promo transactions.')
+      setError(formatSupportError(e, 'PROMO07'))
       setTrackingEvent(null)
     }
   }
@@ -872,7 +967,7 @@ export default function ManagerPromos() {
         </button>
         {openActionsId === e.id && actionsAnchor && createPortal(
           <div
-            className="fixed z-50 flex min-w-[170px] flex-col rounded-md border border-brand-line bg-white p-1 text-left shadow-lg"
+            className="fixed z-50 flex min-w-[170px] flex-col rounded-md border border-brand-line bg-brand-card p-1 text-left shadow-lg"
             style={{ top: actionsAnchor.top, right: actionsAnchor.right }}
           >
             <button
@@ -918,6 +1013,8 @@ export default function ManagerPromos() {
                   disabled={busy}
                   onClick={() => {
                     setOpenActionsId(null)
+                    setRejectReason('')
+                    setRejectAttempted(false)
                     setRejectTarget({ id: e.id, name: e.name })
                   }}
                 >
@@ -987,7 +1084,8 @@ export default function ManagerPromos() {
   return (
     <div>
       <PageHeader eyebrow={managerView ? 'MANAGER' : 'SUPERVISOR'} title="Manage promo events" />
-      {error && <div className="mb-3 rounded-md border border-brand-danger bg-white px-3 py-2 text-xs text-brand-danger">{error}</div>}
+      {error && <div className="mb-3 rounded-md border border-brand-danger bg-brand-card px-3 py-2 text-xs text-brand-danger">{error}</div>}
+      {notice && <div className="mb-3 rounded-md bg-brand-success-bg px-3 py-2 text-xs text-brand-success">{notice}</div>}
 
       {pageLoading ? (
         <PageSkeleton variant="table" />
@@ -1004,7 +1102,7 @@ export default function ManagerPromos() {
               onChange={(e) => setBranchId(e.target.value)}
             >
               <option value="">All branches · active overview</option>
-              {branches.map((branch) => (
+              {branches.filter((branch) => branch.is_active !== false).map((branch) => (
                 <option key={branch.id} value={branch.id}>
                   {branch.name}
                 </option>
@@ -1203,7 +1301,7 @@ export default function ManagerPromos() {
                       setNetworkHistoryFrom(e.target.value)
                       setNetworkHistoryPage(0)
                     }}
-                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-white p-2 text-[12px] outline-none"
+                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-brand-card p-2 text-[12px] outline-none"
                   />
                 </label>
                 <label className="block text-[11px] font-bold text-brand-n700">
@@ -1215,7 +1313,7 @@ export default function ManagerPromos() {
                       setNetworkHistoryTo(e.target.value)
                       setNetworkHistoryPage(0)
                     }}
-                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-white p-2 text-[12px] outline-none"
+                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-brand-card p-2 text-[12px] outline-none"
                   />
                 </label>
                 {(networkHistoryFrom || networkHistoryTo) && (
@@ -1382,7 +1480,16 @@ export default function ManagerPromos() {
               {managedEvent && (
                 <>
                   {managedEvent.event.status === 'active' && (
-                    <PrimaryButton compact type="button" disabled={busy} onClick={() => setStopTarget(managedEvent.event)}>
+                    <PrimaryButton
+                      compact
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setStopReason('')
+                        setStopAttempted(false)
+                        setStopTarget(managedEvent.event)
+                      }}
+                    >
                       {managerView ? 'Stop promo' : 'Request stop'}
                     </PrimaryButton>
                   )}
@@ -1395,6 +1502,11 @@ export default function ManagerPromos() {
                         Reject stop
                       </SecondaryButton>
                     </>
+                  )}
+                  {managerView && (
+                    <SecondaryButton compact type="button" disabled={busy} onClick={() => openAddBranch(managedEvent.event)}>
+                      Add to branch…
+                    </SecondaryButton>
                   )}
                 </>
               )}
@@ -1412,6 +1524,38 @@ export default function ManagerPromos() {
               <p className="mt-1 mb-0 text-[11px] text-brand-warn">
                 Stop awaiting manager approval: {managedEvent.event.stopReason}
               </p>
+            )}
+            {managedEvent?.rules?.length > 0 && (
+              <div className="mt-3 overflow-x-auto rounded border border-brand-softline">
+                <table className="min-w-full text-left text-xs">
+                  <thead className={tableHeadClass}>
+                    <tr>
+                      <th className="px-3 py-2">Rule type</th>
+                      <th className="px-3 py-2">Discount %</th>
+                      <th className="px-3 py-2">Products</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expandPromoRuleRows(managedEvent.rules).map((r) => (
+                      <tr key={r.key} className="border-t border-brand-softline">
+                        <td className="px-3 py-2 font-bold text-brand-ink">
+                          {r.ruleType}
+                          {r.bundleName && <span className="block font-normal text-brand-subtle">{r.bundleName}</span>}
+                        </td>
+                        <td className="px-3 py-2">{r.discountPct}% off</td>
+                        <td className="px-3 py-2">
+                          {(r.products || []).map((p, idx) => (
+                            <span key={p.productId || idx} className="block">
+                              {p.productName || p.productId}
+                              {p.sku ? ` (${p.sku})` : ''}
+                            </span>
+                          ))}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </>
         )}
@@ -1463,7 +1607,7 @@ export default function ManagerPromos() {
                       setHistoryFrom(e.target.value)
                       setHistoryPage(0)
                     }}
-                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-white p-2 text-[12px] outline-none"
+                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-brand-card p-2 text-[12px] outline-none"
                   />
                 </label>
                 <label className="block text-[11px] font-bold text-brand-n700">
@@ -1475,7 +1619,7 @@ export default function ManagerPromos() {
                       setHistoryTo(e.target.value)
                       setHistoryPage(0)
                     }}
-                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-white p-2 text-[12px] outline-none"
+                    className="mt-[7px] block rounded-[5px] border border-brand-input bg-brand-card p-2 text-[12px] outline-none"
                   />
                 </label>
                 {(historyFrom || historyTo) && (
@@ -1619,7 +1763,7 @@ export default function ManagerPromos() {
       )}
 
       {stopTarget && (
-        <Modal onClose={() => !busy && setStopTarget(null)}>
+        <Modal onClose={closeStopModal}>
           <Eyebrow>{managerView ? 'STOP PROMO' : 'REQUEST STOP'}</Eyebrow>
           <h2 className="m-0 mb-2 text-lg">Stop {stopTarget.name}?</h2>
           <p className="m-0 mb-3 text-xs text-brand-muted">
@@ -1627,17 +1771,23 @@ export default function ManagerPromos() {
               ? 'This ends the promo on POS immediately.'
               : 'Promo stays live until a manager approves this stop request.'}
           </p>
+          {error && (
+            <div className="mb-3 rounded-md border border-brand-danger bg-brand-card px-3 py-2 text-xs text-brand-danger">
+              {error}
+            </div>
+          )}
           <Field
             label="Reason (required)"
             value={stopReason}
             onChange={(e) => setStopReason(e.target.value.replace(/[<>]/g, ''))}
             placeholder="Why end this promo early?"
+            error={stopAttempted && !stopReason.trim() ? 'Required' : ''}
           />
           <ModalActions>
-            <SecondaryButton compact type="button" disabled={busy} onClick={() => setStopTarget(null)}>
+            <SecondaryButton compact type="button" disabled={busy} onClick={closeStopModal}>
               Cancel
             </SecondaryButton>
-            <PrimaryButton compact type="button" disabled={busy || !stopReason.trim()} onClick={onRequestStop}>
+            <PrimaryButton compact type="button" disabled={busy} onClick={onRequestStop}>
               {busy ? (managerView ? 'Stopping…' : 'Submitting…') : managerView ? 'Stop now' : 'Submit stop request'}
             </PrimaryButton>
           </ModalActions>
@@ -1645,24 +1795,76 @@ export default function ManagerPromos() {
       )}
 
       {rejectTarget && (
-        <Modal onClose={() => !busy && setRejectTarget(null)}>
+        <Modal onClose={closeRejectModal}>
           <Eyebrow>REJECT PROMO</Eyebrow>
           <h2 className="m-0 mb-2 text-lg">Reject {rejectTarget.name}?</h2>
           <p className="m-0 mb-3 text-xs text-brand-muted">
             This declines the promo request. It stays on record with the reason below.
           </p>
+          {error && (
+            <div className="mb-3 rounded-md border border-brand-danger bg-brand-card px-3 py-2 text-xs text-brand-danger">
+              {error}
+            </div>
+          )}
           <Field
             label="Reason (required)"
             value={rejectReason}
             onChange={(e) => setRejectReason(e.target.value.replace(/[<>]/g, ''))}
             placeholder="Why reject this promo?"
+            error={rejectAttempted && !rejectReason.trim() ? 'Required' : ''}
           />
           <ModalActions>
-            <SecondaryButton compact type="button" disabled={busy} onClick={() => setRejectTarget(null)}>
+            <SecondaryButton compact type="button" disabled={busy} onClick={closeRejectModal}>
               Cancel
             </SecondaryButton>
-            <PrimaryButton compact type="button" disabled={busy || !rejectReason.trim()} onClick={onSubmitReject}>
+            <PrimaryButton compact type="button" disabled={busy} onClick={onSubmitReject}>
               {busy ? 'Rejecting…' : 'Reject promo'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {addBranchTarget && (
+        <Modal onClose={closeAddBranch}>
+          <Eyebrow>ADD TO BRANCH</Eyebrow>
+          <h2 className="m-0 mb-2 text-lg">Add {addBranchTarget.name} to more branches</h2>
+          <p className="m-0 mb-3 text-xs text-brand-muted">
+            Same name, dates, and rules — products are matched by SKU on each branch; a branch
+            missing a product just skips it for that branch. Goes in as a new pending promo,
+            needs approval like any other.
+          </p>
+          {addBranchError && (
+            <div className="mb-3 rounded-md border border-brand-danger bg-brand-card px-3 py-2 text-xs text-brand-danger">
+              {addBranchError}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5 rounded border border-brand-softline bg-brand-card p-2.5">
+            {branches
+              .filter((b) => b.id !== branchId && b.is_active !== false)
+              .map((b) => (
+                <label key={b.id} className="flex cursor-pointer items-center gap-1.5 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={addBranchIds.includes(b.id)}
+                    onChange={(e) => {
+                      setAddBranchIds((prev) =>
+                        e.target.checked ? [...prev, b.id] : prev.filter((id) => id !== b.id),
+                      )
+                    }}
+                  />
+                  {b.name}
+                </label>
+              ))}
+            {branches.filter((b) => b.id !== branchId && b.is_active !== false).length === 0 && (
+              <span className="text-[11px] text-brand-subtle">No other active branches.</span>
+            )}
+          </div>
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={addBranchBusy} onClick={closeAddBranch}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton compact type="button" disabled={addBranchBusy} onClick={() => void onSubmitAddBranch()}>
+              {addBranchBusy ? 'Adding…' : 'Add to selected branches'}
             </PrimaryButton>
           </ModalActions>
         </Modal>
@@ -1736,7 +1938,6 @@ export default function ManagerPromos() {
                       onKeyDown={(event) => {
                         if (event.key === 'Enter' || event.key === ' ') openTxnDetail(r)
                       }}
-                      title="View transaction detail"
                     >
                       <div className="min-w-0">
                         <strong className="block truncate text-brand-ink">
@@ -1786,9 +1987,7 @@ export default function ManagerPromos() {
                         key={`${row.label}-${row.badge}-${row.sets}-${row.qty}`}
                         className="grid grid-cols-[1.2fr_0.8fr_0.7fr_0.9fr_0.9fr] gap-2 border-t border-brand-softline px-3 py-2 text-xs"
                       >
-                        <strong className="truncate text-brand-ink" title={row.label}>
-                          {row.label}
-                        </strong>
+                        <strong className="truncate text-brand-ink">{row.label}</strong>
                         <span className="truncate text-[10px] text-brand-subtle">{row.badge || '—'}</span>
                         <span className="text-right tabular-nums">
                           {row.sets > 0

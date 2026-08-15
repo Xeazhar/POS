@@ -19,6 +19,106 @@ computation, OR numbering).
 
 ## Unreleased
 
+## 0.21.0 — 2026-08-15
+
+### Changed: Atomic checkout — one RPC, not four round trips
+
+`complete_sale(...)` (`migrate_complete_sale_rpc.sql`) does till check → OR allocation →
+`transactions` insert → `transaction_items` inserts → stock movements → audit insert, all
+inside one Postgres transaction, closing a gap where a failure mid-flow could leave a
+money-only orphan sale that idempotent retry would then skip forever. `completeSale()`
+falls back to the old multi-step flow if the RPC is missing.
+
+### Changed: OR numbers are never client-generated
+
+`posStore.addTransaction` always sets `orNumber: null`; the receipt prints immediately
+using the local sale id as a PENDING reference. The real OR is assigned only inside
+`complete_sale`'s row-locked counter, so two devices (or two offline tills) can never
+mint the same number. Reprint/Transactions show the real OR once synced.
+
+### Changed: Receipt Price and Amt columns always print
+
+Dropped the qty-1 special case that blanked the Price column; `receiptToHtml()` now
+always shows both via a shared `priceCell()` helper, striking through the regular price
+only when that line is itself discounted.
+
+### Changed: Revenue is net-of-refunds everywhere, one definition
+
+Manager Overview's headline Revenue previously used raw `total_amount` while
+BranchDashboard's did not, overstating network revenue by whatever had been refunded.
+`migrate_fix_manager_overview_revenue_net.sql` makes the RPC, JS fallback, and
+`fetchPeriodComparison` all compute Revenue = Gross − Discounts − Refunds, matching the
+chart and the per-branch figure.
+
+### Changed: Shifts auto-start at ₱0, no count prompt
+
+Starting a shift no longer stops for a change-fund count except right after a manager
+reopens a closed day (`needsFreshCount`). Real cash goes in later via POS → Open Drawer →
+Opening float. `migrate_fix_overview_cash_impact_carry.sql` fixes Day End/Overview to only
+exclude a carried shift's starting cash when it still matches the counted carry amount.
+
+### Added: Product Archive / Deactivate
+
+`Products.jsx` gets a Status (Active/Archived) control and an "Archived (N)" toggle to
+find and reactivate. Deactivating (`is_active = false`) removes a product from POS,
+dashboards, and low-stock without needing a delete (which is blocked once a product has
+ever sold).
+
+### Added: Inventory import revert requests
+
+A supervisor can flag a committed import batch for revert (`request_import_revert`,
+`migrate_import_revert_request.sql`) within 5 minutes of import; it surfaces on the
+manager's notification bell, who can revert (`revert_import_batch`, unchanged, still
+manager-only) or dismiss the flag.
+
+### Added: Promo multi-branch create + add-to-branch later
+
+`PromoEditorModal`'s create flow can fan a new promo out to multiple active branches at
+once (SKU-matched per branch, skipping branches missing the product); an existing live
+promo can be copied to more branches later from the Managing panel
+(`copyPromoEventToBranches`). Duplicate-rule guard is now scoped per rule type (a product
+can sit in an `item_pct` and a `pair_pct` rule at once); inactive branches are filtered
+out of every promo branch picker; rules are now visible read-only on the Managing panel;
+errors route through `formatSupportError` (`PROMO01`–`08`); required fields highlight on
+failed submit instead of silently doing nothing.
+
+### Added: Manager Overview interactive revenue chart
+
+Clicking a point on the network-wide revenue chart cross-filters Top products/Top
+categories/Payment methods/Audit to that bucket, using breakdowns computed in the same
+query pass as the chart (no extra round trip).
+
+### Added: Dark mode / Appearance setting
+
+Per-device theme toggle (`src/stores/themeStore.js`, `Settings → Appearance`), flash-of-
+wrong-theme guard in `index.html`. Sidebar/topbar/POS cart chrome stay fixed-dark by
+design; canvas/card/ink surfaces re-theme. `bg-brand-card` replaces raw `bg-white` across
+~90 call sites that were staying stark white in dark mode.
+
+### Removed: Tooltips app-wide
+
+The shared hover-tooltip CSS/`title` fallback is gone from buttons, badges, and table
+cells; the information they carried is now shown inline instead.
+
+### Security: Anon EXECUTE revoked on core sale RPCs
+
+`allocate_or_number`, `reserve_or_number`, `void_sale_secure`, `refund_sale_items`, and
+`record_stock_movement` were callable by the unauthenticated anon key (Postgres grants
+`EXECUTE` to `PUBLIC` by default; granting to `authenticated` doesn't revoke that).
+`migrate_revoke_anon_sale_rpc_grants.sql` revokes `public, anon` explicitly and fixes a
+NULL-unsafe `<>` branch check in `record_stock_movement` (now `IS DISTINCT FROM`) that let
+a staff-less anon caller's check silently pass.
+
+### Added: Load-test tooling
+
+`npm run loadtest` (k6) + `npm run setup:load-test` (`scripts/setup-load-test-users.mjs`,
+provisions 28 branch accounts) against a dedicated load-test Supabase project only, gated
+behind a `SUPABASE_TEST_CONFIRM` literal in `.env.test`.
+
+### Changed: Login perf
+
+Skip redundant password rehash on login (`migrate_login_conditional_rehash.sql`).
+
 ## 0.20.0 — 2026-08-14
 
 ### Added: Go-live checklist doc

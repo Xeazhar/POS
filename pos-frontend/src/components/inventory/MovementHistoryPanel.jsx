@@ -287,8 +287,8 @@ function MovementHistoryPanel({ branchId, products = [], compact = false }) {
               type="button"
               className={`rounded-full border px-3 py-1 text-[11px] font-bold ${
                 preset === p.id
-                  ? 'border-brand-ink bg-brand-ink text-white'
-                  : 'border-brand-line bg-white text-brand-n700 hover:bg-brand-n50'
+                  ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                  : 'border-brand-line bg-brand-card text-brand-n700 hover:bg-brand-n50'
               }`}
               onClick={() => applyPreset(p.id)}
             >
@@ -380,11 +380,8 @@ function MovementHistoryPanel({ branchId, products = [], compact = false }) {
                 </span>
                 {/* A price change moves money, not stock — showing "0" in a quantity column
                     would read as a no-op adjustment. It is also the one long value in a
-                    narrow column, hence truncate + title. */}
-                <span
-                  className={`truncate text-right ${moneyClass} text-brand-slate`}
-                  title={isPrice ? `${money(row.oldPrice)} → ${money(row.newPrice)}` : undefined}
-                >
+                    narrow column, hence truncate. */}
+                <span className={`truncate text-right ${moneyClass} text-brand-slate`}>
                   {isPrice
                     ? `${money(row.oldPrice)} → ${money(row.newPrice)}`
                     : row.quantityChange > 0
@@ -412,10 +409,7 @@ function MovementHistoryPanel({ branchId, products = [], compact = false }) {
                     cannot act on, so it never reaches this column. A void's restock detail
                     already spells out "Void restock OR-00000071" server-side, so showing
                     the same OR again as reference would just repeat it. */}
-                <span
-                  className="min-w-0 truncate text-brand-slate max-[900px]:hidden"
-                  title={[row.staffName || 'System', row.detail, noteReference(row)].filter(Boolean).join(' · ')}
-                >
+                <span className="min-w-0 truncate text-brand-slate max-[900px]:hidden">
                   {row.staffName || 'System'}
                   {row.detail ? ` · ${row.detail}` : ''}
                   {noteReference(row) ? ` · ${noteReference(row)}` : ''}

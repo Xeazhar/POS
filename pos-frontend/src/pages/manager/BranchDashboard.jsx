@@ -19,6 +19,7 @@ import {
   Pager,
   PrimaryButton,
   SecondaryButton,
+  DeltaBadge,
   SectionHeading,
   TableCard,
   ToggleSwitch,
@@ -39,6 +40,7 @@ import {
   fetchBranchFiscalHeader,
   fetchBranchTelemetry,
   fetchBranches,
+  fetchPeriodComparison,
   fetchPettyCashTimeline,
   fetchRefundRequests,
   fetchRefundSummary,
@@ -74,7 +76,12 @@ import { withTimeout } from '../../utils/withTimeout'
 import { previousDayRestockReport } from '../../utils/dayEndReport'
 import { formatSupportError } from '../../utils/errors'
 import { businessDate, formatOpenHourLabel, money, qty, rowBusinessDate } from '../../utils/format'
-import { buildRevenueChartPoints, inRevenueChartPeriod, revenueChartPeriodDays } from '../../utils/revenueChartPoints'
+import {
+  buildRevenueChartBreakdowns,
+  buildRevenueChartPoints,
+  inRevenueChartPeriod,
+  revenueChartPeriodDays,
+} from '../../utils/revenueChartPoints'
 import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { discountSourceLabel, isPromoDiscountType } from '../../utils/promo'
 import { isUuid } from '../../utils/transactionDetail'
@@ -192,8 +199,10 @@ function ManagerBranchDashboard() {
   const [staffShifts, setStaffShifts] = useState([])
   const [loading, setLoading] = useState(true)
   const [cashImpact, setCashImpact] = useState(null)
+  const [revenueComparison, setRevenueComparison] = useState(null)
   const [auditEvents, setAuditEvents] = useState([])
   const [chartPeriod, setChartPeriod] = useState('Week')
+  const [selectedPointIndex, setSelectedPointIndex] = useState(null)
 
   useEffect(() => {
     let active = true
@@ -237,6 +246,7 @@ function ManagerBranchDashboard() {
           setTelemetry({ devices: [] })
           setStaffShifts([])
           setCashImpact(null)
+          setRevenueComparison(null)
           setAuditEvents([])
           setPendingCashMoves([])
           setPendingTillActions([])
@@ -262,6 +272,7 @@ function ManagerBranchDashboard() {
           refundRequests,
           cashMoves,
           tillActs,
+          revenueComparisonRow,
         ] = await Promise.all([
           fetchPettyCashTimeline(branchId, {
             startDate: todayForFetch,
@@ -271,6 +282,7 @@ function ManagerBranchDashboard() {
             branchId,
             start: todayForFetch,
             end: todayForFetch,
+            dayOpenHour: openHourForFetch,
           }).catch(() => []),
           fetchBranchTelemetry([branchId]),
           fetchStaffShifts({
@@ -283,6 +295,7 @@ function ManagerBranchDashboard() {
           fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
           fetchPendingCashMovements({ branchId, manager: true }).catch(() => []),
           fetchPendingTillActionRequests({ branchId, manager: true }).catch(() => []),
+          fetchPeriodComparison('day', branchId).catch(() => null),
         ])
         if (active) {
           setData({
@@ -294,6 +307,7 @@ function ManagerBranchDashboard() {
           setTelemetry({ devices: tel.devices[branchId] || [] })
           setStaffShifts(shiftRows || [])
           setCashImpact(cashImpactRow)
+          setRevenueComparison(revenueComparisonRow)
           setAuditEvents(auditRows || [])
           setPendingCashMoves(cashMoves || [])
           setPendingTillActions(tillActs || [])
@@ -327,23 +341,24 @@ function ManagerBranchDashboard() {
     if (!hasSupabase) return
     const openHourForFetch = Number(branch?.day_open_hour ?? data?.dayOpenHour ?? 7)
     const todayForFetch = businessDate(new Date(), openHourForFetch)
-    const activity = await bootstrapBranchActivity(branchId).catch(() => null)
-    const pettyTimeline = await fetchPettyCashTimeline(branchId, {
-      startDate: todayForFetch,
-      endDate: todayForFetch,
-    }).catch(() => [])
-    const dayCashMovements = await fetchCashMovements({
-      branchId,
-      start: todayForFetch,
-      end: todayForFetch,
-    }).catch(() => [])
-    const [cashImpactRow, auditRows, refundRequests, cashMoves, tillActs] = await Promise.all([
-      fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
-      fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
-      fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
-      fetchPendingCashMovements({ branchId, manager: true }).catch(() => []),
-      fetchPendingTillActionRequests({ branchId, manager: true }).catch(() => []),
-    ])
+    // All eight calls key off branchId/todayForFetch/openHourForFetch only — none depend
+    // on another's result, so they run as one batch instead of four sequential round trips.
+    const [activity, pettyTimeline, dayCashMovements, cashImpactRow, auditRows, refundRequests, cashMoves, tillActs] =
+      await Promise.all([
+        bootstrapBranchActivity(branchId).catch(() => null),
+        fetchPettyCashTimeline(branchId, { startDate: todayForFetch, endDate: todayForFetch }).catch(() => []),
+        fetchCashMovements({
+          branchId,
+          start: todayForFetch,
+          end: todayForFetch,
+          dayOpenHour: openHourForFetch,
+        }).catch(() => []),
+        fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
+        fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
+        fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
+        fetchPendingCashMovements({ branchId, manager: true }).catch(() => []),
+        fetchPendingTillActionRequests({ branchId, manager: true }).catch(() => []),
+      ])
     setData((prev) => ({
       ...prev,
       ...(activity
@@ -365,27 +380,28 @@ function ManagerBranchDashboard() {
 
   const reload = async () => {
     if (!hasSupabase) return
-    const branches = await fetchBranches()
+    // fetchBranches doesn't depend on bootstrapBranchData (or vice versa) — batch them.
+    const [branches, payload] = await Promise.all([fetchBranches(), bootstrapBranchData(branchId)])
     setBranch(branches.find((row) => row.id === branchId) || null)
-    const payload = await bootstrapBranchData(branchId)
     const openHourForFetch = Number(payload.dayOpenHour ?? 7)
     const todayForFetch = businessDate(new Date(), openHourForFetch)
-    const pettyTimeline = await fetchPettyCashTimeline(branchId, {
-      startDate: todayForFetch,
-      endDate: todayForFetch,
-    }).catch(() => [])
-    const dayCashMovements = await fetchCashMovements({
-      branchId,
-      start: todayForFetch,
-      end: todayForFetch,
-    }).catch(() => [])
-    const [cashImpactRow, auditRows, refundRequests, cashMoves, tillActs] = await Promise.all([
-      fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
-      fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
-      fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
-      fetchPendingCashMovements({ branchId, manager: true }).catch(() => []),
-      fetchPendingTillActionRequests({ branchId, manager: true }).catch(() => []),
-    ])
+    // The remaining seven all key off branchId/todayForFetch/openHourForFetch only —
+    // one batch instead of three sequential round trips.
+    const [pettyTimeline, dayCashMovements, cashImpactRow, auditRows, refundRequests, cashMoves, tillActs] =
+      await Promise.all([
+        fetchPettyCashTimeline(branchId, { startDate: todayForFetch, endDate: todayForFetch }).catch(() => []),
+        fetchCashMovements({
+          branchId,
+          start: todayForFetch,
+          end: todayForFetch,
+          dayOpenHour: openHourForFetch,
+        }).catch(() => []),
+        fetchBranchCashImpact(branchId, todayForFetch, openHourForFetch).catch(() => null),
+        fetchSaleEvents({ branchId, start: todayForFetch, end: todayForFetch }).catch(() => []),
+        fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
+        fetchPendingCashMovements({ branchId, manager: true }).catch(() => []),
+        fetchPendingTillActionRequests({ branchId, manager: true }).catch(() => []),
+      ])
     setData({
       ...payload,
       pettyTimeline,
@@ -452,7 +468,40 @@ function ManagerBranchDashboard() {
     () => buildRevenueChartPoints(chartTx, chartPeriod),
     [chartTx, chartPeriod],
   )
+  // Same period window as chartTx, but voided — chartTx is Paid-only (buildRevenueChartPoints
+  // only ever wanted completed sales), so Voided sales per bucket needs its own slice.
+  const chartVoided = useMemo(
+    () =>
+      data.transactions.filter(
+        (item) => item.status === 'Voided' && inRevenueChartPeriod(item.date, chartCutoff),
+      ),
+    [data.transactions, chartCutoff],
+  )
+  const chartBreakdowns = useMemo(
+    () => buildRevenueChartBreakdowns(chartTx, chartVoided, chartPeriod),
+    [chartTx, chartVoided, chartPeriod],
+  )
+  // Clicking a chart point swaps Sales performance from "today" to that bucket's own
+  // figures — Revenue today (KPI row above), Payment & cash impact, and the Audit widget
+  // beside the chart stay today-only on purpose: they are today-labeled snapshots (a
+  // drawer count, a headline that says "today"), not period totals, so re-reading them as
+  // a historical bucket would be misleading rather than useful — same reasoning as Overview.
+  const selectedPoint = selectedPointIndex != null ? chartPoints[selectedPointIndex] : null
+  const selectedBreakdown = selectedPoint ? chartBreakdowns[selectedPoint.label] : null
   const revenue = todayTx.reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
+  // Badge always compares the LIVE `revenue` above against yesterday's fixed total — never
+  // `revenueComparison.current`, which is a snapshot from page load and goes stale the
+  // moment a void/refund changes today's transactions without a refetch.
+  const revenueDelta = revenueComparison ? (
+    <span className="mt-1 flex items-center gap-1 text-[10px] text-brand-subtle">
+      <DeltaBadge
+        current={revenue}
+        previous={revenueComparison.previous?.revenue}
+        hasPrevious={revenueComparison.hasPrevious}
+      />
+      vs. yesterday
+    </span>
+  ) : null
   /**
    * Money handed back today, across ALL of today's receipts — not just the ones still
    * marked Paid.
@@ -529,29 +578,39 @@ function ManagerBranchDashboard() {
   // the same day can never quietly disagree.
   const todayVoided = todayAll.filter((item) => item.status === 'Voided')
   // Lead item (first) is the number that matters most — StatTiles renders it larger.
-  // Net sales, not Gross: it's what the business actually kept, so it leads.
-  const salesPerformanceItems = [
-    { label: 'Net sales', value: money(revenue) },
-    {
-      label: 'Gross sales',
-      value: money(todayTx.reduce((sum, t) => sum + Number(t.total || 0) + Number(t.discountAmount || 0), 0)),
-    },
-    {
-      label: 'Discounts',
-      value: money(todayTx.reduce((sum, t) => sum + Number(t.discountAmount || 0), 0)),
-      tone: 'danger',
-    },
-    {
-      label: 'Refunds',
-      value: money(todayTx.reduce((sum, t) => sum + Number(t.refundedAmount || 0), 0)),
-      tone: 'danger',
-    },
-    {
-      label: 'Voided sales',
-      value: money(todayVoided.reduce((sum, t) => sum + Number(t.total || 0), 0)),
-      tone: 'danger',
-    },
-  ]
+  // Revenue = Gross sales − Discounts − Refunds, the canonical figure used everywhere
+  // (headline KPI, Revenue over time chart, comparisons) — it leads because it's what
+  // the business actually kept, not the pre-discount/pre-refund Gross figure below it.
+  const salesPerformanceItems = selectedBreakdown
+    ? [
+        { label: 'Revenue', value: money(selectedBreakdown.netSales) },
+        { label: 'Gross sales', value: money(selectedBreakdown.grossSales) },
+        { label: 'Discounts', value: money(selectedBreakdown.discounts), tone: 'danger' },
+        { label: 'Refunds', value: money(selectedBreakdown.refunds), tone: 'danger' },
+        { label: 'Voided sales', value: money(selectedBreakdown.voidedSales), tone: 'danger' },
+      ]
+    : [
+        { label: 'Revenue', value: money(revenue) },
+        {
+          label: 'Gross sales',
+          value: money(todayTx.reduce((sum, t) => sum + Number(t.total || 0) + Number(t.discountAmount || 0), 0)),
+        },
+        {
+          label: 'Discounts',
+          value: money(todayTx.reduce((sum, t) => sum + Number(t.discountAmount || 0), 0)),
+          tone: 'danger',
+        },
+        {
+          label: 'Refunds',
+          value: money(todayTx.reduce((sum, t) => sum + Number(t.refundedAmount || 0), 0)),
+          tone: 'danger',
+        },
+        {
+          label: 'Voided sales',
+          value: money(todayVoided.reduce((sum, t) => sum + Number(t.total || 0), 0)),
+          tone: 'danger',
+        },
+      ]
   // Expected cash leads — it's the one figure a manager actually needs to act on
   // (does the drawer match). The rest is how it was arrived at. This branch page has no
   // separate "Payment methods" ranking card, so Card/E-wallet sales live here — informational
@@ -854,10 +913,13 @@ function ManagerBranchDashboard() {
                 type="button"
                 className={`rounded-[5px] border px-3 py-2 text-xs font-bold max-[700px]:px-1.5 max-[700px]:py-1.5 max-[700px]:text-[10px] ${
                   chartPeriod === item
-                    ? 'border-brand-dark bg-brand-dark text-white'
-                    : 'border-brand-border bg-white text-brand-n700'
+                    ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                    : 'border-brand-border bg-brand-card text-brand-n700'
                 }`}
-                onClick={() => setChartPeriod(item)}
+                onClick={() => {
+                  setChartPeriod(item)
+                  setSelectedPointIndex(null)
+                }}
               >
                 {item}
               </button>
@@ -878,7 +940,7 @@ function ManagerBranchDashboard() {
       <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-3.5 max-[700px]:grid-cols-1">
         {(isRestaurant
           ? [
-              ['Sales today', money(revenue), ''],
+              ['Sales today', money(revenue), '', revenueDelta],
               // Refunds get their own card rather than a footnote under Sales: money going
               // back out is its own number, and a hint under another figure is not
               // something anyone scans for.
@@ -890,7 +952,7 @@ function ManagerBranchDashboard() {
               ['Off today', menuOff.length, ''],
             ]
           : [
-              ['Revenue today', money(revenue), ''],
+              ['Revenue today', money(revenue), '', revenueDelta],
               ['Refunded today', money(refundedToday), refundCountToday
                 ? `${refundCountToday} receipt${refundCountToday === 1 ? '' : 's'}`
                 : ''],
@@ -898,24 +960,46 @@ function ManagerBranchDashboard() {
               ['Low stock', low.length, ''],
               ['Reseko loss', money(shrink), ''],
             ]
-        ).map(([label, value, hint]) => (
+        ).map(([label, value, hint, delta]) => (
           <div
             key={label}
-            className="rounded-[10px] bg-brand-dark p-4 text-white max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:p-3.5"
+            className="rounded-[10px] border border-brand-line bg-brand-card p-4 max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:p-3.5"
           >
-            <span className="block text-[10px] tracking-wide text-white/60 uppercase">{label}</span>
-            <strong className={`mt-2 block text-xl max-[700px]:mt-0 max-[700px]:text-lg ${moneyClass}`}>{value}</strong>
-            {hint ? <span className="mt-1 block text-[10px] text-brand-warn-ondark">{hint}</span> : null}
+            <span className="block text-[10px] font-semibold tracking-wide text-brand-subtle uppercase">{label}</span>
+            <strong className={`mt-2 block text-xl text-brand-ink max-[700px]:mt-0 max-[700px]:text-lg ${moneyClass}`}>{value}</strong>
+            {hint ? <span className="mt-1 block text-[10px] text-brand-warn">{hint}</span> : null}
+            {delta}
           </div>
         ))}
       </div>
 
+      {selectedPoint && (
+        <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-brand-gold/40 bg-brand-gold/10 px-3.5 py-2 text-xs">
+          <span className="text-brand-ink">
+            Showing <strong>{selectedPoint.full || selectedPoint.short}</strong> — Sales performance
+            is filtered to this point. Revenue today and Payment & cash impact always show today.
+          </span>
+          <SecondaryButton compact type="button" onClick={() => setSelectedPointIndex(null)}>
+            Clear selection
+          </SecondaryButton>
+        </div>
+      )}
       <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
         <div className="min-h-0 min-w-0 w-full">
-          <RevenueChart points={chartPoints} period={chartPeriod} fill />
+          <RevenueChart
+            points={chartPoints}
+            period={chartPeriod}
+            fill
+            selectedIndex={selectedPointIndex}
+            onSelectIndex={setSelectedPointIndex}
+          />
         </div>
         <div className="flex min-w-0 flex-col gap-2.5">
-          <StatTiles title="Sales performance" subtitle={`${todayKey}`} items={salesPerformanceItems} />
+          <StatTiles
+            title="Sales performance"
+            subtitle={selectedPoint ? selectedPoint.full || selectedPoint.short : todayKey}
+            items={salesPerformanceItems}
+          />
           <StatTiles title="Payment & cash impact" subtitle={`${todayKey} · this branch's drawer`} items={cashImpactItems} />
           <AuditSummary events={auditEvents} linkHref="/manager/reports" subtitle={chartPeriod} />
         </div>
@@ -928,10 +1012,9 @@ function ManagerBranchDashboard() {
             meta={
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 <select
-                  className="h-7 rounded border border-brand-line bg-white px-1.5 text-[10px] font-medium text-brand-ink"
+                  className="h-7 rounded border border-brand-line bg-brand-card px-1.5 text-[10px] font-medium text-brand-ink"
                   value={receiptDateFilter}
                   onChange={(e) => setReceiptDateFilter(e.target.value)}
-                  title="Filter by date"
                 >
                   <option value="all">All dates</option>
                   <option value="today">Today</option>
@@ -940,16 +1023,15 @@ function ManagerBranchDashboard() {
                 {receiptDateFilter === 'date' && (
                   <input
                     type="date"
-                    className="h-7 rounded border border-brand-line bg-white px-1.5 text-[10px] font-medium text-brand-ink"
+                    className="h-7 rounded border border-brand-line bg-brand-card px-1.5 text-[10px] font-medium text-brand-ink"
                     value={receiptDateValue}
                     onChange={(e) => setReceiptDateValue(e.target.value)}
                   />
                 )}
                 <select
-                  className="h-7 rounded border border-brand-line bg-white px-1.5 text-[10px] font-medium text-brand-ink"
+                  className="h-7 rounded border border-brand-line bg-brand-card px-1.5 text-[10px] font-medium text-brand-ink"
                   value={receiptPromoFilter}
                   onChange={(e) => setReceiptPromoFilter(e.target.value)}
-                  title="Filter by discount"
                 >
                   <option value="all">All discounts</option>
                   {receiptPromoNames.map((name) => (
@@ -990,7 +1072,7 @@ function ManagerBranchDashboard() {
                   turned the list into a wall. Full detail is still in the row's modal. */}
               <span className="flex min-w-0 items-center gap-1.5 self-center">
                 <strong className="truncate text-brand-ink">
-                  {item.orNumber || item.id.slice(0, 8)}
+                  {item.orNumber || `Pending · ${item.id.slice(0, 8)}`}
                 </strong>
                 {Number(item.discountAmount || 0) > 0 && (
                   <span
@@ -999,7 +1081,6 @@ function ManagerBranchDashboard() {
                         ? 'bg-brand-danger-bg text-brand-danger'
                         : 'bg-brand-warn-bg text-brand-warn'
                     }`}
-                    title={discountSourceLabel(item.discountType) || 'Discount'}
                   >
                     {isPromoDiscountType(item.discountType) ? 'PROMO' : 'DISC'}
                   </span>
@@ -1007,7 +1088,6 @@ function ManagerBranchDashboard() {
                 {Number(item.vatExemptSales || 0) > 0 && (
                   <span
                     className="shrink-0 rounded-[3px] bg-brand-success-bg px-1 py-px text-[9px] font-bold text-brand-success-text"
-                    title="VAT-exempt (SC/PWD)"
                   >
                     EX
                   </span>
@@ -1138,7 +1218,7 @@ function ManagerBranchDashboard() {
                 {money(entry.variance)}
               </span>
               <span className="capitalize max-[900px]:hidden">{entry.status || 'closed'}</span>
-              <span className="truncate text-brand-slate max-[900px]:hidden" title={entry.note || ''}>
+              <span className="truncate text-brand-slate max-[900px]:hidden">
                 {entry.note || '—'}
               </span>
               <span className="text-right">
@@ -1172,9 +1252,7 @@ function ManagerBranchDashboard() {
                     Reopen
                   </button>
                 ) : entry.status === 'closed' ? (
-                  <span className="text-[11px] text-brand-subtle" title="Closed days stay locked once a new business day starts">
-                    Locked
-                  </span>
+                  <span className="text-[11px] text-brand-subtle">Locked</span>
                 ) : (
                   <span className="text-brand-subtle">—</span>
                 )}
@@ -1242,7 +1320,7 @@ function ManagerBranchDashboard() {
           {plateMix.byCategory.map((row) => (
             <div key={row.category} className="grid grid-cols-[1.4fr_1fr] gap-2 border-t border-brand-softline px-4 py-2.5 text-xs">
               <strong className="text-brand-ink">{row.category}</strong>
-              <span className="text-right tabular-nums text-brand-gold">{money(row.value)}</span>
+              <span className="text-right tabular-nums text-brand-ink">{money(row.value)}</span>
             </div>
           ))}
           {plateMix.byCombo.length > 0 && (
@@ -1252,7 +1330,7 @@ function ManagerBranchDashboard() {
                 {plateMix.byCombo.map((row) => (
                   <span
                     key={row.label}
-                    className="rounded border border-brand-border bg-white px-2 py-1 text-[11px] text-brand-ink"
+                    className="rounded border border-brand-border bg-brand-card px-2 py-1 text-[11px] text-brand-ink"
                   >
                     {row.label}: <strong>{row.count}</strong>
                   </span>
@@ -1296,9 +1374,7 @@ function ManagerBranchDashboard() {
               <span className="truncate text-brand-slate max-[900px]:hidden">
                 {row.drawerLabel || row.drawerId}
               </span>
-              <span className="truncate text-brand-slate" title={row.reason || ''}>
-                {row.reason || '—'}
-              </span>
+              <span className="truncate text-brand-slate">{row.reason || '—'}</span>
               <span className="truncate text-brand-slate max-[900px]:hidden">
                 {row.requestedByName || '—'}
               </span>
@@ -1364,9 +1440,7 @@ function ManagerBranchDashboard() {
               key={row.id}
               className="grid grid-cols-[1.4fr_1fr_1fr] items-center gap-2 border-t border-brand-softline px-4 py-2.5 text-xs"
             >
-              <span className="truncate text-brand-ink" title={row.detail || ''}>
-                {row.detail || 'Remove item'}
-              </span>
+              <span className="truncate text-brand-ink">{row.detail || 'Remove item'}</span>
               <span className="truncate text-brand-slate">{row.requestedByName || '—'}</span>
               <span className="flex flex-wrap gap-1.5">
                 <SecondaryButton
@@ -1444,9 +1518,7 @@ function ManagerBranchDashboard() {
               <span className="capitalize text-brand-slate max-[900px]:hidden">
                 {row.mode === 'full' ? 'Full' : 'Items'}
               </span>
-              <span className="truncate text-brand-slate" title={row.reason || ''}>
-                {row.reason || '—'}
-              </span>
+              <span className="truncate text-brand-slate">{row.reason || '—'}</span>
               <span className="truncate text-brand-slate max-[900px]:hidden">{row.requestedByName || '—'}</span>
               <span className="flex flex-wrap gap-1.5 max-[900px]:col-span-full">
                 <SecondaryButton
@@ -1558,7 +1630,7 @@ function ManagerBranchDashboard() {
             </span>
           </button>
         )}
-        <div className="grid grid-cols-3 gap-2 border-b border-brand-line bg-white px-4 py-3 text-xs max-[700px]:grid-cols-1">
+        <div className="grid grid-cols-3 gap-2 border-b border-brand-line bg-brand-card px-4 py-3 text-xs max-[700px]:grid-cols-1">
           <div>
             <span className="block text-[10px] font-bold uppercase tracking-[1px] text-brand-label">Change fund</span>
             <strong className="text-brand-ink">{money(cashStats.changeFund)}</strong>
@@ -1615,7 +1687,7 @@ function ManagerBranchDashboard() {
                 </strong>
                 <span className="text-right tabular-nums">{money(row.amount)}</span>
                 <span className="truncate max-[900px]:hidden">{row.requestedByName || '—'}</span>
-                <span className="truncate text-brand-slate max-[900px]:hidden" title={row.reason || ''}>
+                <span className="truncate text-brand-slate max-[900px]:hidden">
                   {row.reason || '—'}
                   {row.reviewNotes ? ` · Review: ${row.reviewNotes}` : ''}
                 </span>
@@ -1707,7 +1779,7 @@ function ManagerBranchDashboard() {
               </strong>
               <span className="text-right tabular-nums">{money(row.amount)}</span>
               <span className="truncate max-[900px]:hidden">{row.staffName}</span>
-              <span className="truncate text-brand-slate max-[900px]:hidden" title={row.reason || ''}>
+              <span className="truncate text-brand-slate max-[900px]:hidden">
                 {row.reason || '—'}
                 {row.receiptRef ? ` · ${row.receiptRef}` : ''}
               </span>
@@ -2131,7 +2203,7 @@ function ManagerBranchDashboard() {
               <label className="grid gap-1.5 text-xs font-bold text-brand-n700">
                 Day opens at
                 <select
-                  className="h-10 rounded-md border border-brand-line bg-white px-3 text-sm font-medium text-brand-ink"
+                  className="h-10 rounded-md border border-brand-line bg-brand-card px-3 text-sm font-medium text-brand-ink"
                   value={form.day_open_hour ?? 7}
                   onChange={(e) => setForm({ ...form, day_open_hour: Number(e.target.value) })}
                 >
@@ -2253,7 +2325,7 @@ function ManagerBranchDashboard() {
       {selectedProduct && !isRestaurant && (
         <div className="fixed inset-0 z-[5] bg-brand-scrim" onClick={() => setSelectedProduct(null)}>
           <aside
-            className="absolute top-0 right-0 h-full w-[min(520px,92vw)] overflow-auto bg-white p-5 shadow-[-8px_0_24px_#20242622]"
+            className="absolute top-0 right-0 h-full w-[min(520px,92vw)] overflow-auto bg-brand-card p-5 shadow-[-8px_0_24px_#20242622]"
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -2285,7 +2357,7 @@ function ManagerBranchDashboard() {
               </div>
               <div className="rounded-md bg-brand-n100 px-3 py-2.5">
                 <span className="block text-[10px] text-brand-subtle">Price</span>
-                <strong className="text-sm text-brand-gold">{money(selectedProduct.price)}</strong>
+                <strong className="text-sm text-brand-ink">{money(selectedProduct.price)}</strong>
               </div>
               <div className="rounded-md bg-brand-n100 px-3 py-2.5">
                 <span className="block text-[10px] text-brand-subtle">Status</span>
@@ -2322,7 +2394,7 @@ function ManagerBranchDashboard() {
                     <div
                       key={movement.id}
                       className={`grid grid-cols-[1.2fr_0.9fr_1.4fr_1fr] gap-1.5 border-t border-brand-sheet-line p-2 text-[11px] ${
-                        index % 2 === 0 ? 'bg-white' : 'bg-brand-sheet-alt'
+                        index % 2 === 0 ? 'bg-brand-card' : 'bg-brand-sheet-alt'
                       }`}
                     >
                       <span className={isPrice ? 'font-bold text-brand-ink' : ''}>{movement.type}</span>

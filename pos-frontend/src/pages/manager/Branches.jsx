@@ -52,7 +52,7 @@ function BranchCardBody({ branch, summary, summariesLoading }) {
       </div>
       <div className="mb-4 grid grid-cols-3 gap-2 text-center">
         <div>
-          <strong className={`block text-brand-gold ${moneyClass}`}>
+          <strong className={`block text-brand-ink ${moneyClass}`}>
             {summariesLoading && summary.revenue == null ? '…' : money(summary.revenue || 0)}
           </strong>
           <small className="text-[10px] text-brand-subtle">Today</small>
@@ -298,7 +298,7 @@ function ManagerBranches() {
                 {!isPlaceholder && (
                   <div className="flex justify-end gap-2" onPointerDown={(e) => e.stopPropagation()}>
                     <Link
-                      className="inline-flex h-10 items-center rounded-[5px] bg-brand-gold px-4 text-xs font-bold text-brand-dark no-underline"
+                      className="inline-flex h-10 items-center rounded-[5px] bg-brand-gold px-4 text-xs font-bold text-brand-on-gold no-underline"
                       to={`/manager/branches/${branch.id}`}
                     >
                       Open dashboard
@@ -317,7 +317,7 @@ function ManagerBranches() {
       {ghost?.branch && (
         <div
           aria-hidden="true"
-          className="pointer-events-none fixed z-[80] max-h-none rounded-[10px] border border-brand-line bg-white p-5 shadow-[0_16px_40px_rgba(0,0,0,0.28)] ring-2 ring-brand-gold"
+          className="pointer-events-none fixed z-[80] max-h-none rounded-[10px] border border-brand-line bg-brand-card p-5 shadow-[0_16px_40px_rgba(0,0,0,0.28)] ring-2 ring-brand-gold"
           style={{
             left: ghost.x,
             top: ghost.y,

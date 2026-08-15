@@ -58,11 +58,15 @@ function Legal() {
   const year = new Date().getFullYear()
 
   return (
-    <div className="min-h-screen bg-brand-canvas">
-      <header className="border-b border-brand-line bg-brand-dark text-white">
+    // `body` has a blanket overflow:hidden (see index.css) — every other page scrolls via
+    // its own inner region (Shell.jsx's <section overflow-auto>); this route sits outside
+    // Shell entirely, so without its own h-screen + overflow-y-auto here the page content
+    // just gets clipped once it's taller than the viewport, with no way to scroll it.
+    <div className="h-screen overflow-y-auto bg-brand-canvas">
+      <header className="border-b border-brand-line bg-brand-dark text-brand-ondark">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 px-5 py-4">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-brand-gold text-[18px] font-bold text-brand-dark">
+            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-brand-gold text-[18px] font-bold text-brand-on-gold">
               C
             </div>
             <div className="min-w-0">
@@ -74,7 +78,7 @@ function Legal() {
           </div>
           <Link
             to={backTo}
-            className="shrink-0 text-[11px] text-white/70 no-underline hover:text-white hover:underline"
+            className="shrink-0 text-[11px] text-brand-ondark/70 no-underline hover:text-brand-ondark hover:underline"
           >
             {backLabel}
           </Link>
@@ -83,7 +87,7 @@ function Legal() {
 
       <nav
         aria-label="Legal documents"
-        className="border-b border-brand-line bg-white"
+        className="border-b border-brand-line bg-brand-card"
       >
         <div className="mx-auto flex max-w-3xl gap-1 px-5">
           {Object.values(LEGAL_DOCS).map((item) => {
@@ -106,7 +110,7 @@ function Legal() {
       </nav>
 
       <main className="mx-auto max-w-3xl px-5 py-8">
-        <article className="rounded-[10px] border border-brand-line bg-white px-6 py-8 max-[700px]:px-4">
+        <article className="rounded-[10px] border border-brand-line bg-brand-card px-6 py-8 max-[700px]:px-4">
           <p className="m-0 mb-2 text-[10px] font-semibold tracking-[1.4px] text-brand-eyebrow uppercase">
             {doc.eyebrow}
           </p>

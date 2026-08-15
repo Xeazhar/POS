@@ -19,8 +19,8 @@ const rowClass = (active, reorderMode, isPlaceholder) =>
     isPlaceholder
       ? 'text-transparent'
       : active
-        ? 'bg-brand-gold text-brand-dark'
-        : 'text-brand-n500 hover:bg-brand-dark-hover hover:text-brand-n400'
+        ? 'bg-brand-gold text-brand-on-gold'
+        : 'text-brand-ondark-dim hover:bg-brand-dark-hover hover:text-brand-ondark'
   }`
 
 function NavIconLabel({ Icon, label, iconOnly }) {
@@ -158,10 +158,9 @@ export default function SidebarNav({
       <button
         type="button"
         onClick={() => (reorderMode ? exitRearrange() : enterRearrange())}
-        title={reorderMode ? 'Done rearranging' : 'Rearrange menu order'}
         aria-label={reorderMode ? 'Done rearranging' : 'Rearrange menu order'}
         aria-pressed={reorderMode}
-        className={`grid w-full place-items-center rounded-lg px-1 py-1.5 text-brand-n600 hover:bg-brand-dark-hover hover:text-brand-n400 max-[700px]:flex max-[700px]:items-center max-[700px]:gap-2 max-[700px]:px-3 compact:flex compact:items-center compact:gap-2 compact:px-3 ${
+        className={`grid w-full place-items-center rounded-lg px-1 py-1.5 text-brand-ondark-dim hover:bg-brand-dark-hover hover:text-brand-ondark max-[700px]:flex max-[700px]:items-center max-[700px]:gap-2 max-[700px]:px-3 compact:flex compact:items-center compact:gap-2 compact:px-3 ${
           reorderMode ? 'bg-brand-gold/15 text-brand-gold' : ''
         }`}
       >
@@ -179,9 +178,8 @@ export default function SidebarNav({
             onReset()
             exitRearrange()
           }}
-          title="Reset menu to default order"
           aria-label="Reset menu to default order"
-          className="mt-1 grid w-full place-items-center rounded-lg px-1 py-1.5 text-brand-n600 hover:bg-brand-dark-hover hover:text-brand-n400 max-[700px]:flex max-[700px]:items-center max-[700px]:gap-2 max-[700px]:px-3 compact:flex compact:items-center compact:gap-2 compact:px-3"
+          className="mt-1 grid w-full place-items-center rounded-lg px-1 py-1.5 text-brand-ondark-dim hover:bg-brand-dark-hover hover:text-brand-ondark max-[700px]:flex max-[700px]:items-center max-[700px]:gap-2 max-[700px]:px-3 compact:flex compact:items-center compact:gap-2 compact:px-3"
         >
           <FiRotateCcw size={12} />
           {!iconOnly && (
@@ -223,7 +221,6 @@ export default function SidebarNav({
                 tabIndex={0}
                 aria-grabbed={dragIndex === index}
                 aria-label={`Move ${label}`}
-                title={iconOnly ? label : undefined}
                 className={rowClass(active, true, isPlaceholder)}
                 onPointerDown={(event) => onPointerDown(event, index)}
                 onPointerMove={onPointerMove}
@@ -242,8 +239,6 @@ export default function SidebarNav({
               to={path}
               end={path === '/' || path === '/settings'}
               onClick={() => onNavigate?.()}
-              title={iconOnly ? label : undefined}
-              data-tooltip={iconOnly ? label : undefined}
               className={({ isActive }) =>
                 rowClass(
                   path === '/settings' ? isSettingsNavActive(location.pathname) : isActive,
@@ -264,7 +259,7 @@ export default function SidebarNav({
         <div
           aria-hidden="true"
           className={`pointer-events-none fixed z-[80] grid justify-items-center gap-1.5 rounded-lg px-1 py-3 text-[10px] leading-tight shadow-[0_12px_28px_rgba(0,0,0,0.45)] ring-2 ring-brand-gold max-[700px]:flex max-[700px]:items-center max-[700px]:gap-3 max-[700px]:px-3 max-[700px]:py-3 max-[700px]:text-xs compact:flex compact:items-center compact:gap-3 compact:px-3 compact:py-3 compact:text-xs ${
-            ghost.active ? 'bg-brand-gold text-brand-dark' : 'bg-brand-panel text-brand-n400'
+            ghost.active ? 'bg-brand-gold text-brand-on-gold' : 'bg-brand-panel text-brand-ondark-dim'
           }`}
           style={{
             left: ghost.x,

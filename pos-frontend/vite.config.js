@@ -70,7 +70,7 @@ export default defineConfig({
         short_name: 'CalePOS',
         description: 'Offline-first multi-branch point of sale',
         theme_color: '#202426',
-        background_color: '#f4f5f2',
+        background_color: '#f7f7f5',
         display: 'standalone',
         orientation: 'any',
         start_url: '/',

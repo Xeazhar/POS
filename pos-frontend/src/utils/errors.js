@@ -80,8 +80,8 @@ const C = SEVERITY.config
 const W = SEVERITY.warning
 
 /**
- * The catalog. Prefix by area: AUTH / TILL / SALE / INV / CAT / DEV / SYNC / DATA /
- * PRINT / SEC / GEN.
+ * The catalog. Prefix by area: AUTH / TILL / SALE / INV / CAT / PROMO / DEV / SYNC /
+ * DATA / PRINT / SEC / GEN.
  */
 export const ERROR_CATALOG = {
   // ── AUTH — signing in and staying signed in ──────────────────────────────
@@ -366,6 +366,72 @@ export const ERROR_CATALOG = {
     fix: 'Retry from Manager → Data. If branches stay out of step, run migrate_sync_discount_eligible.sql.',
   },
 
+  // ── PROMO — promo event/rule create, approve, reject, stop ───────────────
+  PROMO01: {
+    message: 'Could not create the promo.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'The promo_events insert (or a per-branch copy of it, for multi-branch create) was rejected.',
+    fix: 'Check the branch, dates, and rule details, then retry.',
+  },
+  PROMO02: {
+    message: 'Could not save the promo rule.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'The promo_rules / promo_rule_products write was rejected — often a duplicate product on the same rule type.',
+    fix: 'Adjust the rule and retry.',
+  },
+  PROMO03: {
+    message: 'Could not save promo changes.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'The promo_events update was rejected — the promo may no longer be pending.',
+    fix: 'Reload Promo History and retry from a pending revision.',
+  },
+  PROMO04: {
+    message: 'Could not approve the promo.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'approve_promo_event was rejected — commonly a promo with zero rules, or it is no longer pending.',
+    fix: 'Add at least one rule if none exist, then retry.',
+  },
+  PROMO05: {
+    message: 'Could not reject the promo.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'reject_promo_event was rejected — commonly a missing reason or the promo is no longer pending.',
+    fix: 'Enter a reason and retry.',
+  },
+  PROMO06: {
+    message: 'Could not process the promo stop request.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'request_stop_promo / approve_stop_promo / reject_stop_promo was rejected.',
+    fix: 'Retry, or reload Promo History if the promo status already changed.',
+  },
+  PROMO07: {
+    message: 'Could not load promo data.',
+    severity: D,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'A promo, rule, or product read failed or timed out.',
+    fix: 'Check the connection and retry.',
+  },
+  PROMO08: {
+    message: 'Could not delete the promo.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'The promo_events delete was rejected — commonly a promo that is no longer pending/rejected.',
+    fix: 'Reload Promo History and retry.',
+  },
+
   // ── DEV — printers, drawers, terminals ───────────────────────────────────
   DEV01: {
     message: 'Device settings DB column missing — run migrate_device_settings.sql in Supabase.',
@@ -434,6 +500,15 @@ export const ERROR_CATALOG = {
       'A queue item hit MAX_SYNC_ATTEMPTS and was blocked so it cannot stall everything behind it. These are completed sales that never reached Supabase.',
     fix: 'Use "Retry now" on the banner. DO NOT clear browser data or reinstall — that destroys the only copy. Call support.',
   },
+  SYNC10: {
+    message: 'Could not resync this device.',
+    severity: D,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause:
+      'Settings → Sync Status → Hard resync refused, or the reconciling pull failed — usually because something is still queued, or the server is unreachable.',
+    fix: 'Clear the queue first (let it sync, or use Retry on the banner), confirm you are online, then try Hard resync again.',
+  },
 
   // ── DATA — import / export / bulk edits ──────────────────────────────────
   DATA01: {
@@ -495,6 +570,14 @@ export const ERROR_CATALOG = {
     cause:
       'The rows were rejected during validation, so no products were written. The whole file is checked before any row is saved.',
     fix: 'Fix the row named in the message and import the whole file again.',
+  },
+  IMP03: {
+    message: 'Could not undo that import.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause: 'The revert RPC failed — the import may already be reverted, or the batch was not found.',
+    fix: 'Refresh and check the batch status. Only a manager can revert an import.',
   },
 
   // ── PETTY — cash drawer / petty cash ─────────────────────────────────────
@@ -859,6 +942,12 @@ export function formatSupportError(err, fallbackCode = 'GEN01') {
   // Role-ceiling refusals arrive as raw Postgres exceptions carrying their own code.
   const sec = raw.match(/\b(SEC0[1-4])\b/)
   if (sec) return `${errorMessage(sec[1])} · Code ${sec[1]}`
+  // Browser-level fetch failure (offline, DNS, CORS, connection reset) never reached the
+  // server — the raw "TypeError: Failed to fetch" is meaningless to staff, so swap in plain
+  // guidance but keep the caller's fallback code so the failing action is still identifiable.
+  if (/Failed to fetch|NetworkError|Load failed|network.*request.*failed|ERR_NETWORK|offline/i.test(raw)) {
+    return `Could not reach the server — check your connection and try again. · Code ${fallback}`
+  }
   if (typeof err === 'string') {
     const code = errorCodeOf({ message: err }) || fallback
     return `${err} · Code ${code}`

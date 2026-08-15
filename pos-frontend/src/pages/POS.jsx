@@ -362,14 +362,14 @@ function POS() {
               {canOpenDayEnd ? (
                 <Link
                   to="/day-end"
-                  className="inline-flex items-center justify-center rounded-[5px] border-0 bg-brand-gold px-4 py-2.5 text-xs font-bold text-brand-dark no-underline"
+                  className="inline-flex items-center justify-center rounded-[5px] border-0 bg-brand-gold px-4 py-2.5 text-xs font-bold text-brand-on-gold no-underline"
                 >
                   Open day end
                 </Link>
               ) : (
                 <button
                   type="button"
-                  className="inline-flex items-center justify-center rounded-[5px] border-0 bg-brand-gold px-4 py-2.5 text-xs font-bold text-brand-dark"
+                  className="inline-flex items-center justify-center rounded-[5px] border-0 bg-brand-gold px-4 py-2.5 text-xs font-bold text-brand-on-gold"
                   onClick={() => setRequestManagerNotice(true)}
                 >
                   Open day end
@@ -404,7 +404,7 @@ function POS() {
           ) : (
             <button
               type="button"
-              className="rounded-[5px] border border-brand-border bg-white px-3 py-2 text-xs font-bold text-brand-n700 max-[700px]:w-full max-[700px]:px-2.5 max-[700px]:text-[11px]"
+              className="rounded-[5px] border border-brand-border bg-brand-card px-3 py-2 text-xs font-bold text-brand-n700 max-[700px]:w-full max-[700px]:px-2.5 max-[700px]:text-[11px]"
               onClick={() => setManageMenu(true)}
             >
               Edit potahe
@@ -445,7 +445,7 @@ function POS() {
       >
         {!barcodeTableMode && (
           <div
-            className={`flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[10px] border border-brand-line bg-white p-[18px] max-[700px]:p-3.5 ${
+            className={`flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[10px] border border-brand-line bg-brand-card p-[18px] max-[700px]:p-3.5 ${
               isRestaurant && manageMenu
                 ? 'max-h-none'
                 : barcodeTableMode
@@ -487,11 +487,10 @@ function POS() {
                   type="button"
                   className={`shrink-0 rounded-[5px] border px-3 py-2 text-xs font-bold ${
                     inquiryMode
-                      ? 'border-brand-dark bg-brand-dark text-white'
-                      : 'border-brand-border bg-white text-brand-n700'
+                      ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                      : 'border-brand-border bg-brand-card text-brand-n700'
                   }`}
                   onClick={() => setInquiryMode((v) => !v)}
-                  title="Look up item details without adding to cart"
                 >
                   Inquiry
                 </button>
@@ -506,8 +505,8 @@ function POS() {
                     disabled={tillClosed}
                     className={`shrink-0 rounded-[5px] border px-[11px] py-2 text-xs whitespace-nowrap transition-[background-color,border-color,transform,filter] duration-100 disabled:cursor-not-allowed ${
                       category === item
-                        ? 'border-brand-dark bg-brand-dark text-white'
-                        : 'border-brand-border bg-white text-brand-n700 hover:border-brand-n500 hover:bg-brand-n100 active:bg-brand-n200'
+                        ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                        : 'border-brand-border bg-brand-card text-brand-n700 hover:border-brand-n500 hover:bg-brand-n100 active:bg-brand-n200'
                     }`}
                     onClick={() => setCategory(item)}
                   >
@@ -608,11 +607,10 @@ function POS() {
                     <button
                       type="button"
                       disabled={tillClosed}
-                      title={set.sublabel}
                       className="tap-target flex h-[104px] w-full flex-col items-start gap-0.5 overflow-hidden rounded-[6px] border border-brand-gold/55 bg-brand-gold/10 p-2.5 text-left transition-[border-color,box-shadow,transform,filter] duration-150 hover:border-brand-gold hover:bg-brand-gold/15 hover:shadow-[0_2px_8px_#00000012] active:scale-[0.98] disabled:cursor-not-allowed max-[800px]:h-[124px] max-[800px]:p-3 compact:h-[124px] compact:p-3"
                       onClick={() => addPromoQuickSet(set)}
                     >
-                      <span className="rounded bg-brand-gold px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-dark uppercase">
+                      <span className="rounded bg-brand-gold px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-on-gold uppercase">
                         {set.badge}
                       </span>
                       <strong className="line-clamp-2 min-h-0 flex-1 text-[13px] leading-snug text-brand-ink max-[800px]:text-sm">
@@ -681,10 +679,7 @@ function POS() {
                             {offToday ? 'Not available' : 'Serving'}
                           </span>
                         ) : badge ? (
-                          <span
-                            className="truncate rounded bg-brand-danger px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-white uppercase"
-                            title={promoDisplayName(tilePromo) || undefined}
-                          >
+                          <span className="truncate rounded bg-brand-danger px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-white uppercase">
                             {badge}
                           </span>
                         ) : isRestaurant ? (
@@ -733,7 +728,6 @@ function POS() {
                     {!(isRestaurant && manageMenu) && !tillClosed && canChangePrice && (
                       <button
                         type="button"
-                        title="Change price"
                         className="absolute top-1.5 right-1.5 rounded border border-brand-border bg-white/95 px-1.5 py-0.5 text-[10px] font-bold text-brand-ink"
                         onClick={(e) => {
                           e.stopPropagation()
@@ -783,7 +777,7 @@ function POS() {
                 {canOpenDrawer && (
                   <button
                     type="button"
-                    className="rounded-[5px] border border-brand-border bg-white px-3 py-2 text-xs font-bold text-brand-ink"
+                    className="rounded-[5px] border border-brand-border bg-brand-card px-3 py-2 text-xs font-bold text-brand-ink"
                     disabled={cartOverlayOpen}
                     onClick={() => setOpenDrawerOpen(true)}
                   >
@@ -796,18 +790,17 @@ function POS() {
                       type="button"
                       className={`rounded-[5px] border px-3 py-2 text-xs font-bold ${
                         inquiryMode
-                          ? 'border-brand-dark bg-brand-dark text-white'
-                          : 'border-brand-border bg-white text-brand-ink'
+                          ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                          : 'border-brand-border bg-brand-card text-brand-ink'
                       }`}
                       disabled={tillClosed || cartOverlayOpen}
                       onClick={() => setInquiryMode((v) => !v)}
-                      title="Look up item details without adding to cart"
                     >
                       Inquiry
                     </button>
                     <button
                       type="button"
-                      className="rounded-[5px] border border-brand-border bg-white px-3 py-2 text-xs font-bold text-brand-ink"
+                      className="rounded-[5px] border border-brand-border bg-brand-card px-3 py-2 text-xs font-bold text-brand-ink"
                       disabled={tillClosed || cartOverlayOpen}
                       onClick={() => setSearchPopupOpen(true)}
                     >
@@ -840,8 +833,8 @@ function POS() {
               type="button"
               className={`shrink-0 rounded-[5px] border px-2.5 py-1.5 text-[11px] font-bold ${
                 inquiryMode
-                  ? 'border-brand-dark bg-brand-dark text-white'
-                  : 'border-brand-border bg-white text-brand-ink'
+                  ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                  : 'border-brand-border bg-brand-card text-brand-ink'
               }`}
               onClick={() => setInquiryMode((v) => !v)}
             >
@@ -909,7 +902,7 @@ function POS() {
                             {badge}
                             {promoDisplayName(promoInfo) ? ` · ${promoDisplayName(promoInfo)}` : ''}
                             {partner && (
-                              <span className="font-normal text-brand-subtle" title={partner.title}>
+                              <span className="font-normal text-brand-subtle">
                                 {' '}
                                 ({partner.text})
                               </span>
@@ -1025,7 +1018,7 @@ function POS() {
                     {badge}
                     {promoDisplayName(promoInfo) ? ` · ${promoDisplayName(promoInfo)}` : ''}
                     {partner && (
-                      <span className="font-normal text-brand-subtle" title={partner.title}>
+                      <span className="font-normal text-brand-subtle">
                         {' '}
                         ({partner.text})
                       </span>

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { FiMinus, FiPlus, FiTrash2, FiX } from 'react-icons/fi'
 import { useNavigate } from 'react-router-dom'
 import { isDeviceEnabled, receiptPrinter } from '../../devices'
-import { fetchBranchFiscalHeader, logApprovalEvent } from '../../lib/api'
+import { fetchBranchFiscalHeader, loadTransactionByClientId, logApprovalEvent } from '../../lib/api'
+import { isBackendReachable, isOnline } from '../../offline'
 import { useIsTouchUi } from '../../hooks/useIsTouchUi'
 import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '../../stores/posStore'
 import { formatSupportError } from '../../utils/errors'
@@ -27,6 +28,27 @@ function joinPromoNames(names = []) {
   if (!names.length) return 'Promo'
   if (names.length <= 2) return names.join(' + ')
   return `${names.slice(0, 2).join(' + ')} +${names.length - 2} more`
+}
+
+/**
+ * Briefly waits for the server to assign this sale's real sequential invoice number
+ * (`allocate_or_number`, row-locked per branch — never computed on-device, see
+ * buildReceipt's doc comment) so the printed receipt shows it instead of a PENDING
+ * placeholder. A live counter cannot make a paying customer wait indefinitely for a
+ * network round trip, so this gives up after a few seconds — offline, or if it just
+ * doesn't land in time, the receipt falls back to PENDING exactly as before, still
+ * reconcilable later via Transactions → Print receipt once the real OR does land.
+ */
+async function waitForRealOrNumber(branchId, clientId, { timeoutMs = 4000, intervalMs = 350 } = {}) {
+  if (!branchId || !clientId) return null
+  if (!isOnline() || !(await isBackendReachable())) return null
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    const row = await loadTransactionByClientId(branchId, clientId).catch(() => null)
+    if (row?.or_number) return row.or_number
+  }
+  return null
 }
 
 /**
@@ -430,8 +452,14 @@ function Cart({
         discountIdNote:
           discountType === 'pwd' || discountType === 'senior' ? String(discountIdNote).trim() : null,
       })
+      // Give the server a brief window to assign the real invoice number before showing
+      // "Sale complete" / printing — see waitForRealOrNumber's doc comment. This is why the
+      // Processing-payment overlay stays up a beat longer on an online sale; offline it
+      // returns immediately and nothing here changes.
+      const realOrNumber = await waitForRealOrNumber(user?.branchId, saved?.id)
       const change = Math.max(0, cash - payTotal)
-      const orLabel = saved?.orNumber || 'PENDING'
+      const orLabel =
+        realOrNumber || saved?.orNumber || `PENDING-${String(saved?.id || '').slice(0, 8)}`
       const saleOrderType = isRestaurant ? orderType : undefined
 
       clear()
@@ -460,7 +488,7 @@ function Cart({
         user,
         transaction: {
           ...saved,
-          orNumber: saved?.orNumber || null,
+          orNumber: realOrNumber || saved?.orNumber || null,
           tendered: cash,
           change,
           total: payTotal,
@@ -640,7 +668,6 @@ function Cart({
             type="button"
             className="inline-flex items-center gap-1 border-0 bg-transparent p-1 text-[11px] font-bold text-brand-cart-muted transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90 active:text-brand-ink"
             onClick={() => requestRemoveGroup(group)}
-            title={canRemoveDirect ? 'Remove promo set' : 'Remove promo set (supervisor PIN)'}
           >
             <FiTrash2 size={14} />
             Remove set
@@ -754,7 +781,6 @@ function Cart({
             type="button"
             className="inline-flex items-center gap-1 border-0 bg-transparent p-1 text-[11px] font-bold text-brand-cart-muted transition-[transform,color] duration-100 hover:text-brand-ink active:scale-90 active:text-brand-ink"
             onClick={() => requestRemove(index)}
-            title={canRemoveDirect ? 'Remove' : 'Remove (supervisor PIN)'}
           >
             <FiTrash2 size={14} />
             Remove
@@ -899,20 +925,20 @@ function Cart({
               one base. Per line it walks the mandated order: regular → promo base → VAT
               stripped → single 20% → net, so the cashier can explain any price on the spot. */}
           {discountedItemBreakdown.length > 0 && (
-            <div className="mb-3 bg-transparent px-0 py-1 text-xs">
+            <div className="mb-3 bg-transparent px-0 py-1.5 text-sm">
               <div className="flex items-center justify-between text-brand-muted">
                 <span>Original total</span>
-                <strong className={`text-brand-ink ${moneyClass}`}>{money(rawSubtotal)}</strong>
+                <strong className={`text-base text-brand-ink ${moneyClass}`}>{money(rawSubtotal)}</strong>
               </div>
               {pricing.isPwdSenior && (
-                <div className="flex items-center justify-between text-brand-muted">
+                <div className="mt-1 flex items-center justify-between text-brand-muted">
                   <span>Eligible items</span>
-                  <strong className={`text-brand-ink ${moneyClass}`}>{money(pricing.eligibleTotal)}</strong>
+                  <strong className={`text-base text-brand-ink ${moneyClass}`}>{money(pricing.eligibleTotal)}</strong>
                 </div>
               )}
               <div className="mt-1 flex items-center justify-between text-brand-muted">
                 <span>Total discount{pricing.discountType ? ` (${pricing.discountType})` : ''}</span>
-                <strong className={`text-brand-danger ${moneyClass}`}>−{money(pricing.discountAmount)}</strong>
+                <strong className={`text-base text-brand-danger ${moneyClass}`}>−{money(pricing.discountAmount)}</strong>
               </div>
 
               <div className="mt-2 space-y-2 border-t border-brand-n150 pt-2">
@@ -1004,8 +1030,8 @@ function Cart({
                 type="button"
                 className={`flex-1 rounded-[5px] border px-2 py-2.5 text-xs font-bold max-[700px]:py-2 ${
                   paymentMethod === m.id
-                    ? 'border-brand-dark bg-brand-dark text-white'
-                    : 'border-brand-border bg-white text-brand-ink'
+                    ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                    : 'border-brand-border bg-brand-card text-brand-ink'
                 }`}
                 onClick={() => {
                   setPaymentMethod(m.id)
@@ -1022,7 +1048,7 @@ function Cart({
             <label className="mb-3 block text-xs text-brand-muted">
               Reference
               <input
-                className="mt-1 w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+                className="mt-1 w-full rounded border border-brand-line bg-brand-card p-2.5 text-brand-ink outline-none"
                 value={paymentReference}
                 onChange={(e) => setPaymentReference(e.target.value)}
                 placeholder="Ref no."
@@ -1042,8 +1068,8 @@ function Cart({
                 type="button"
                 className={`flex-1 rounded-[5px] border px-2 py-2 text-[11px] font-bold ${
                   discountType === d.id
-                    ? 'border-brand-dark bg-brand-dark text-white'
-                    : 'border-brand-border bg-white text-brand-ink'
+                    ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                    : 'border-brand-border bg-brand-card text-brand-ink'
                 } ${d.id && !pricing.hasEligibleItems ? 'cursor-not-allowed opacity-45' : ''}`}
                 disabled={Boolean(d.id) && !pricing.hasEligibleItems}
                 onClick={() => setDiscountType(d.id)}
@@ -1079,7 +1105,7 @@ function Cart({
             <label className="mb-3 block text-xs text-brand-muted">
               ID note
               <input
-                className="mt-1 w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+                className="mt-1 w-full rounded border border-brand-line bg-brand-card p-2.5 text-brand-ink outline-none"
                 value={discountIdNote}
                 onChange={(e) => setDiscountIdNote(e.target.value)}
                 placeholder="ID number"
@@ -1105,7 +1131,7 @@ function Cart({
                 />
               ) : (
                 <>
-                  <label className="mb-2 flex items-center rounded border border-brand-line bg-white px-2.5">
+                  <label className="mb-2 flex items-center rounded border border-brand-line bg-brand-card px-2.5">
                     <span className="shrink-0 font-mono text-brand-subtle">{PESO}</span>
                     <input
                       className="w-full bg-transparent py-2.5 text-right font-mono text-brand-ink outline-none"
@@ -1122,7 +1148,7 @@ function Cart({
                       <button
                         key={item.label}
                         type="button"
-                        className="rounded-[5px] border border-brand-border bg-white px-1 py-2 text-[11px] font-bold text-brand-ink hover:border-brand-dark"
+                        className="rounded-[5px] border border-brand-border bg-brand-card px-1 py-2 text-[11px] font-bold text-brand-ink hover:border-brand-dark"
                         onClick={() => applyQuickCash(item)}
                       >
                         {item.label}
@@ -1278,7 +1304,7 @@ function Cart({
           }}
         />
       )}
-      <section className="flex h-full min-h-0 min-w-0 flex-col rounded-[10px] border border-brand-line bg-white text-brand-ink max-[800px]:min-h-[520px] max-[800px]:h-auto">
+      <section className="flex h-full min-h-0 min-w-0 flex-col rounded-[10px] border border-brand-line bg-brand-card text-brand-ink max-[800px]:min-h-[520px] max-[800px]:h-auto">
         <div className="flex shrink-0 items-start justify-between gap-3 border-b border-brand-cart-line px-5 pt-5 pb-4 max-[700px]:px-3.5">
           <div>
             <Eyebrow className="text-brand-n500">CURRENT SALE</Eyebrow>
@@ -1355,7 +1381,7 @@ function Cart({
             {/* Cart lines slot (scrollable) */}
             <div className="min-h-0 overflow-auto px-5 py-2 max-[1050px]:min-h-[320px] max-[800px]:min-h-[340px] max-[700px]:px-3.5">
               {items.length ? (
-                <div className="overflow-hidden rounded-[6px] border border-brand-n150 bg-white">
+                <div className="overflow-hidden rounded-[6px] border border-brand-n150 bg-brand-card">
                   <div className="border-b border-brand-n150 bg-brand-n50 px-3 py-1.5 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
                     Items ({items.length})
                   </div>
@@ -1371,7 +1397,7 @@ function Cart({
             </div>
             {/* Sale summary rail (sticky via checkout modal) */}
             <aside className="flex flex-col gap-3 bg-brand-n50 px-5 py-4 max-[700px]:px-3.5">
-              <div className="bg-white px-3 py-3">
+              <div className="bg-brand-card px-3 py-3">
                 <span className="block text-[10px] font-bold tracking-wide text-brand-subtle uppercase">Sale summary</span>
                 <div className="mt-3">{renderSaleSummary()}</div>
               </div>
@@ -1389,7 +1415,7 @@ function Cart({
           <>
             <div className="min-h-0 flex-1 overflow-auto px-5 py-2 max-[1050px]:min-h-[320px] max-[800px]:min-h-[340px] max-[700px]:px-3.5">
               {items.length ? (
-                <div className="overflow-hidden rounded-[6px] border border-brand-n150 bg-white">
+                <div className="overflow-hidden rounded-[6px] border border-brand-n150 bg-brand-card">
                   <div className="border-b border-brand-n150 bg-brand-n50 px-3 py-1.5 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
                     Items ({items.length})
                   </div>
@@ -1404,7 +1430,7 @@ function Cart({
               )}
             </div>
 
-            <footer className="shrink-0 border-t border-brand-cart-line bg-white px-5 py-4 max-[700px]:px-3.5">
+            <footer className="shrink-0 border-t border-brand-cart-line bg-brand-card px-5 py-4 max-[700px]:px-3.5">
               {renderSaleSummary()}
               <PrimaryButton
                 className="mt-3 w-full justify-between"

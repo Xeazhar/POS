@@ -132,13 +132,18 @@ function LoginIntroGate() {
  */
 function AppRoutes() {
   const user = useAuthStore((state) => state.user)
-  const booting = useAuthStore((state) => state.booting)
   const restoreSession = useAuthStore((state) => state.restoreSession)
   const logout = useAuthStore((state) => state.logout)
   const hydrate = useInventoryStore((state) => state.hydrate)
   const loadBranch = useProductStore((state) => state.loadBranch)
   const { pathname } = useLocation()
   const isLegal = pathname === '/legal' || pathname.startsWith('/legal/')
+  // Distinct from the auth store's `booting` flag, which `login()` also flips true/false
+  // on every submit (including a failed one) so the Login screen can show a "Signing
+  // in…" busy state. Gating the full-page skeleton on that same flag meant a wrong
+  // password briefly blew away the whole Login form for a skeleton before the error
+  // could show. This only tracks the one-time startup session check.
+  const [initialBootDone, setInitialBootDone] = useState(false)
 
   useCompactChrome()
   useBranchHeartbeat(user)
@@ -164,14 +169,18 @@ function AppRoutes() {
         void logout()
       }
       useAuthStore.setState({ booting: false })
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time boot flag
+      setInitialBootDone(true)
       return
     }
-    restoreSession().then(async (sessionUser) => {
-      if (sessionUser?.branchId) {
-        const data = await loadBranch(sessionUser.branchId)
-        if (data) hydrate(data)
-      }
-    })
+    restoreSession()
+      .then(async (sessionUser) => {
+        if (sessionUser?.branchId) {
+          const data = await loadBranch(sessionUser.branchId)
+          if (data) hydrate(data)
+        }
+      })
+      .finally(() => setInitialBootDone(true))
   }, [restoreSession, loadBranch, hydrate, logout])
 
   return (
@@ -185,7 +194,7 @@ function AppRoutes() {
             <Route path="/legal" element={<Navigate to="/legal/terms" replace />} />
             <Route path="/legal/*" element={<Navigate to="/legal/terms" replace />} />
           </Routes>
-        ) : booting ? (
+        ) : !initialBootDone ? (
           <div className="min-h-screen bg-brand-canvas px-[22px] py-6">
             <PageSkeleton variant="dashboard" />
           </div>

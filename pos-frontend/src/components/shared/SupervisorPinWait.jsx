@@ -95,7 +95,7 @@ export function ManagerWaitPanel({
   const ss = String(secondsLeft).padStart(2, '0')
 
   return (
-    <div className="rounded-lg border border-brand-softline bg-white px-4 py-4 text-center">
+    <div className="rounded-lg border border-brand-softline bg-brand-card px-4 py-4 text-center">
       <p className="m-0 text-[11px] font-bold tracking-wide text-brand-subtle uppercase">
         Waiting for manager
       </p>
