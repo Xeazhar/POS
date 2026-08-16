@@ -10,7 +10,7 @@ import { useCompactChrome } from './hooks/useCompactChrome'
 import { hasSupabase } from './lib/api'
 import { startConnectivityWatcher } from './offline'
 import { installSessionLifecycle, consumeBrowserClosedFlag } from './offline/sessionLifecycle'
-import { useAuthStore, useInventoryStore, useProductStore } from './stores/posStore'
+import { useAuthStore, useInventoryStore, useProductStore, bindSessionRevokedWatcher } from './stores/posStore'
 import { bindSyncStore } from './stores/syncStore'
 import { canAccessModule } from './utils/roles'
 import { staffHomePath } from './constants/nav'
@@ -156,6 +156,7 @@ function AppRoutes() {
 
   useEffect(() => {
     bindSyncStore()
+    bindSessionRevokedWatcher()
     startConnectivityWatcher()
   }, [])
 
