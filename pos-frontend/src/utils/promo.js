@@ -1,4 +1,5 @@
 import { lineTotal } from './ulam'
+import { newUuidClientId } from '../offline/queueTypes'
 
 /** Helpers for active promo display on POS tiles and cart lines. */
 
@@ -278,7 +279,6 @@ export function allocatePromoSets(items = [], promoRules = [], { skipIndices = n
 
   const allocator = createLineAllocator(items)
   const sets = []
-  let setCounter = 0
 
   for (const rule of promoRules) {
     const ruleType = normalizeRuleType(rule.ruleType || rule.rule_type)
@@ -302,7 +302,7 @@ export function allocatePromoSets(items = [], promoRules = [], { skipIndices = n
         }
         const entries = [...takenA, ...takenB]
         sets.push({
-          id: `auto-${rule.id || ruleType}-${setCounter += 1}`,
+          id: newUuidClientId(),
           ruleType,
           name: promoSetDisplayName(rule, ruleType),
           entries,
@@ -322,7 +322,7 @@ export function allocatePromoSets(items = [], promoRules = [], { skipIndices = n
         }
         if (!round.length) break
         sets.push({
-          id: `auto-${rule.id || ruleType}-${setCounter += 1}`,
+          id: newUuidClientId(),
           ruleType,
           name: promoSetDisplayName(rule, ruleType),
           entries: round,
@@ -339,7 +339,7 @@ export function allocatePromoSets(items = [], promoRules = [], { skipIndices = n
         const taken = allocator.takeUnits(productId, p?.sku, group, { skipIndices })
         if (!taken.length) break
         sets.push({
-          id: `auto-${rule.id || ruleType}-${setCounter += 1}`,
+          id: newUuidClientId(),
           ruleType,
           name: promoSetDisplayName(rule, ruleType),
           entries: taken,
