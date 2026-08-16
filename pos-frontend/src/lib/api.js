@@ -686,32 +686,27 @@ export async function signOut() {
   await supabase.auth.signOut()
 }
 
-export async function claimStaffSession(staffId, sessionId) {
-  const { error } = await supabase.rpc('claim_staff_session', {
-    p_staff_id: staffId,
-    p_session_id: sessionId,
-  })
+export async function claimStaffSession() {
+  const { data, error } = await supabase.rpc('claim_staff_session')
+  if (error) throw error
+  return data
+}
+
+export async function heartbeatStaffSession() {
+  const { error } = await supabase.rpc('heartbeat_staff_session')
   if (error) throw error
   return true
 }
 
-export async function heartbeatStaffSession(staffId, sessionId) {
-  const { error } = await supabase.rpc('heartbeat_staff_session', {
-    p_staff_id: staffId,
-    p_session_id: sessionId,
-  })
-  if (error) throw error
-  return true
-}
-
-export async function releaseStaffSession(staffId, sessionId) {
-  if (!staffId || !sessionId) return true
-  const { error } = await supabase.rpc('release_staff_session', {
-    p_staff_id: staffId,
-    p_session_id: sessionId,
-  })
+export async function releaseStaffSession() {
+  const { error } = await supabase.rpc('release_staff_session')
   if (error) console.warn('release_staff_session:', error.message)
   return true
+}
+
+/** True when an error is this device's session having been evicted by a login elsewhere. */
+export function isSessionRevokedError(error) {
+  return /SESSION_REVOKED/i.test(String(error?.message || error || ''))
 }
 
 const MANAGER_UNLOCK_SESSION_KEY = 'cale-manager-unlock-v1'
