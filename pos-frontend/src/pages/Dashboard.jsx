@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import AnnouncementsCard from '../components/dashboard/AnnouncementsCard'
 import AuditSummary from '../components/dashboard/AuditSummary'
 import RevenueChart from '../components/dashboard/RevenueChart'
 import SalesMixBar from '../components/dashboard/SalesMixBar'
@@ -469,6 +470,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
           alert
           fromDate={restockEntry.date}
           inventoryHref="/inventory"
+          thirdPanel={<AnnouncementsCard />}
         />
       )}
 

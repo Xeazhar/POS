@@ -32,9 +32,19 @@ export function startConnectivityWatcher() {
     }
   })
 
+  // Counter terminals stay open for days with the tab backgrounded — no reason to keep
+  // pinging the backend every 30s while nobody's looking. Resync immediately on refocus
+  // instead so nothing goes stale longer than the time the tab was actually hidden.
+  const isHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden'
+  document.addEventListener?.('visibilitychange', () => {
+    if (!isHidden() && currentBranchId && isDeviceOnline()) {
+      drainQueueInBackground(currentBranchId).catch(() => {})
+    }
+  })
+
   // Periodic retry — respects per-item backoff inside listPending
   window.setInterval(() => {
-    if (currentBranchId && isDeviceOnline()) {
+    if (currentBranchId && isDeviceOnline() && !isHidden()) {
       drainQueueInBackground(currentBranchId).catch(() => {})
     }
   }, 30_000)

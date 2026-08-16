@@ -468,8 +468,10 @@ function Transactions() {
   }
 
   // A manager acting remotely (not at this terminal) flips refund_requests.status —
-  // picked up here via realtime, with a 5s poll as a fallback in case the channel
-  // never connects (e.g. migrate_refund_requests.sql's publication grant not applied yet).
+  // picked up here via realtime, with a poll as a fallback in case the channel never
+  // connects (e.g. migrate_refund_requests.sql's publication grant not applied yet). 20s,
+  // not 5s — this is a backstop for a channel that never came up at all, not the primary
+  // path, and a tight poll just burns requests on a flaky connection while a modal sits open.
   useEffect(() => {
     if (!remoteRequest?.id || remoteRequest.status !== 'pending') return undefined
     const requestId = remoteRequest.id
@@ -500,7 +502,7 @@ function Transactions() {
     })
     const poll = window.setInterval(() => {
       fetchRefundRequestById(requestId).then(applyUpdate).catch(() => {})
-    }, 5000)
+    }, 20000)
     return () => {
       unsubscribe()
       window.clearInterval(poll)

@@ -253,6 +253,27 @@ function ManagerBranchDashboard() {
           setLoading(false)
           return
         }
+        // Paint the last-known local snapshot immediately instead of leaving the page on a
+        // full skeleton for the whole network round trip below — same reasoning as the
+        // offline branch above, just followed by a live refresh instead of stopping there.
+        try {
+          const [cachedBranches, local] = await Promise.all([
+            readBranchesCache(),
+            readBranchSnapshot(branchId),
+          ])
+          if (!active) return
+          const branchRow =
+            (cachedBranches || []).find((row) => row.id === branchId) ||
+            (user?.branchId === branchId
+              ? { id: branchId, name: user.branchName, day_open_hour: user.dayOpenHour ?? 7, is_active: true }
+              : { id: branchId, name: local.branchName || 'Branch', day_open_hour: local.dayOpenHour ?? 7, is_active: true })
+          setBranch(branchRow)
+          setData({ ...local, pettyTimeline: [], cashMovements: [], refundRequests: [] })
+          setLoading(false)
+        } catch {
+          /* no local snapshot yet (first-ever load on this device) — network fetch below still runs */
+        }
+
         const [branches, payload] = await Promise.all([
           withTimeout(fetchBranches(), 15000, 'Branches'),
           withTimeout(bootstrapBranchData(branchId), 20000, 'Branch data'),

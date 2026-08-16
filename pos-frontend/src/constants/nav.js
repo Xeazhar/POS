@@ -1,4 +1,4 @@
-import { FiBarChart2, FiClipboard, FiCpu, FiDatabase, FiGrid, FiMoon, FiPackage, FiSettings, FiUsers, FiMapPin, FiFileText, FiCoffee, FiTag } from 'react-icons/fi'
+import { FiBarChart2, FiBell, FiClipboard, FiCpu, FiDatabase, FiGrid, FiMoon, FiPackage, FiSettings, FiUsers, FiMapPin, FiFileText, FiCoffee, FiTag } from 'react-icons/fi'
 import { canAccessModule, isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 import { isRestaurantBranchType } from '../utils/features'
 
@@ -31,12 +31,14 @@ export function staffLinksFor(user) {
         ]
       : [...staffLinks]
 
-  // Cashiers land on POS first
+  // Cashiers get their own operational dashboard (own-shift figures only, module
+  // `cashier_dashboard`) instead of the branch-wide Dashboard at '/' (module `dashboard`,
+  // never granted to cashiers by default — see DEFAULTS above).
   if (user?.role === 'cashier') {
-    const posIdx = base.findIndex(([path]) => path === '/pos')
-    if (posIdx > 0) {
-      const [pos] = base.splice(posIdx, 1)
-      base.unshift(pos)
+    const dashIdx = base.findIndex(([path, , , moduleId]) => path === '/' && moduleId === 'dashboard')
+    if (dashIdx >= 0) {
+      const [, label, icon] = base[dashIdx]
+      base[dashIdx] = ['/cashier-dashboard', label, icon, 'cashier_dashboard']
     }
   }
 
@@ -78,6 +80,9 @@ export const managerLinks = [
   ['/manager/data', 'Data', FiDatabase, 'manager_data'],
   ['/manager/promos', 'Promos', FiTag, 'manager_promos'],
   ['/manager/reports', 'Reports', FiFileText, 'manager_reports'],
+  // Nav label is short ("Notices") to fit the fixed-width sidebar rail alongside Promos/
+  // Reports/Devices — the page itself still says "Announcements".
+  ['/manager/announcements', 'Notices', FiBell, 'manager_announcements'],
   ['/settings/devices', 'Devices', FiCpu, 'devices'],
 ]
 
@@ -118,9 +123,13 @@ export function isSettingsNavActive(pathname) {
  *  menu order must not send a cashier to Reports because they dragged it to the top. */
 export function staffHomePath(user) {
   if (!user) return '/'
-  // Cashiers open POS when they have access
-  if (user.role === 'cashier' && canAccessModule(user, 'pos')) {
-    return isRestaurantBranchType(user.branchType) ? '/pos?menu=1' : '/pos'
+  if (user.role === 'cashier') {
+    // Their own operational dashboard is the intended landing screen — falls back to POS
+    // only if that module was explicitly removed from this cashier's permissions.
+    if (canAccessModule(user, 'cashier_dashboard')) return '/cashier-dashboard'
+    if (canAccessModule(user, 'pos')) {
+      return isRestaurantBranchType(user.branchType) ? '/pos?menu=1' : '/pos'
+    }
   }
   const first = navLinksFor(user)[0]?.[0]
   return first || '/'

@@ -4,36 +4,7 @@ import ShiftCashOut from '../shared/ShiftCashOut'
 import { PrimaryButton, TableCard, moneyClass } from '../ui'
 import { useInventoryStore } from '../../stores/posStore'
 import { cashPositionNotice, useShiftStore } from '../../stores/shiftStore'
-import { money } from '../../utils/format'
-
-/**
- * Formats a shift timestamp as a localized abbreviated date and time.
- * @param {string|number|Date} iso - The timestamp to format.
- * @return {string} The localized date and time, or `—` for a missing or invalid timestamp.
- */
-function formatShiftWhen(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return '—'
-  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
-
-/**
- * Formats the elapsed time between shift start and end times.
- * @param {string|Date|number} clockIn - The shift start timestamp.
- * @param {string|Date|number|null} [clockOut=null] - The shift end timestamp, or the current time when omitted.
- * @param {number} [nowMs=Date.now()] - The timestamp used as the current time when the shift is active.
- * @return {string} The elapsed duration in minutes or hours and minutes, or `—` for missing, invalid, or reversed timestamps.
- */
-function formatShiftDuration(clockIn, clockOut = null, nowMs = Date.now()) {
-  if (!clockIn) return '—'
-  const start = new Date(clockIn).getTime()
-  const end = clockOut ? new Date(clockOut).getTime() : nowMs
-  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return '—'
-  const mins = Math.round((end - start) / 60000)
-  const h = Math.floor(mins / 60)
-  return h <= 0 ? `${mins}m` : `${h}h ${String(mins % 60).padStart(2, '0')}m`
-}
+import { formatShiftDuration, formatShiftWhen, money } from '../../utils/format'
 
 /**
  * Display the current user's shift timing, cash position, drawer activity, and shift-ending controls.

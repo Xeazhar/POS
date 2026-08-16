@@ -166,9 +166,19 @@ export const useAuthStore = create(persist((set, get) => ({
 
       // Safety: never auto-login from IndexedDB/local cache.
       // Only continue if this browser tab still has an Auth session (sessionStorage).
+      //
+      // `isOnline()` is just navigator.onLine — true on dead wifi/captive portals. Check
+      // actual reachability before attempting the network round trip, and bound the round
+      // trip itself, so a stalled connection resumes the session from local cache (same
+      // fallback already used when fully offline) instead of hanging the whole app on the
+      // startup skeleton.
       let user = null
-      if (isOnline()) {
-        user = await api.fetchSessionStaff()
+      if (isOnline() && (await isBackendReachable())) {
+        try {
+          user = await withTimeout(api.fetchSessionStaff(), 8000, 'Session check')
+        } catch {
+          if (await api.hasAuthSession()) user = await loadLocalSession()
+        }
       } else if (await api.hasAuthSession()) {
         user = await loadLocalSession()
       }

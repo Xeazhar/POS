@@ -18,6 +18,7 @@ import db from '../offline/db'
 import { drawerIdentity } from '../utils/drawer'
 import { appError } from '../utils/errors'
 import { businessDate } from '../utils/format'
+import { withTimeout } from '../utils/withTimeout'
 import { useSyncStore } from './syncStore'
 
 /**
@@ -82,7 +83,11 @@ export const useShiftStore = create((set, get) => ({
       // Online: let the server correct the local picture. It is the only place that knows
       // a supervisor force-closed the shift, or that another terminal took the drawer.
       if (api.hasSupabase && isOnline()) {
-        const remote = await api.fetchOpenShift(user.id, { drawerId }).catch(() => undefined)
+        // Bounded: a slow/flaky connection must fail the same way a network error already
+        // does (skip the server refinement, trust local) instead of holding the "Checking
+        // shift…" overlay hostage to a stalled request.
+        const remote = await withTimeout(api.fetchOpenShift(user.id, { drawerId }), 6000, 'Shift check')
+          .catch(() => undefined)
         if (remote !== undefined) {
           if (remote?.id) {
             // fetchOpenShift filters on the SERVER's clock_out, so a close made on this

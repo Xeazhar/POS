@@ -10,6 +10,7 @@ import { clearUnlockSecret, loadUnlockSecret, saveUnlockSecret } from '../offlin
 import { createVerifier, isVerifierExpired, verifyAgainst } from '../utils/unlockVerifier'
 import { clampIdleLockMinutes, IDLE_LOCK_MINUTES_DEFAULT } from '../utils/sessionPolicy'
 import { APP_VERSION } from '../utils/version'
+import { withTimeout } from '../utils/withTimeout'
 
 export const hasSupabase = Boolean(supabase)
 export { allowDemoMode }
@@ -557,17 +558,25 @@ export async function verifySupervisorPin(branchId, loginCode, pin) {
     for (const force of [false, true]) {
       if (!(await canSyncWithBackend(force))) continue
       try {
-        const { data, error } = await supabase.rpc('verify_supervisor_pin', {
-          p_branch_id: branchId,
-          p_login_code: code,
-          p_pin: pinVal,
-        })
+        const { data, error } = await withTimeout(
+          supabase.rpc('verify_supervisor_pin', {
+            p_branch_id: branchId,
+            p_login_code: code,
+            p_pin: pinVal,
+          }),
+          6000,
+          'Supervisor PIN check',
+        )
         if (error) throw error
         onlineResult = parseSupervisorPinRpcResult(data)
         if (onlineResult?.staffId) break
       } catch (err) {
+        // Bounded, and never fatal: a stalled/erroring online check must fall through to
+        // the offline PBKDF2 verifier below (same offline-capable design as the lock
+        // screen — an approval can't be stuck forever behind a flaky connection or an ISP
+        // outage). Only a definitive "wrong PIN" from the server is worth remembering as
+        // `onlineError` to prefer over a generic offline failure below.
         onlineError = err
-        if (!isSupervisorPinAuthFailure(err)) throw err
       }
     }
   }
@@ -2904,6 +2913,86 @@ export async function fetchRefundSummary(transactionId) {
 export async function fetchRefundedQuantities(transactionId) {
   const summary = await fetchRefundSummary(transactionId)
   return summary.qtyByItem
+}
+
+function mapAnnouncement(row) {
+  return {
+    id: row.id,
+    branchId: row.branch_id,
+    branchName: row.branches?.name || null,
+    authorId: row.author_id,
+    authorName: row.staff?.full_name || null,
+    kind: row.kind || 'general',
+    title: row.title,
+    body: row.body,
+    isActive: row.is_active !== false,
+    expiresAt: row.expires_at || null,
+    createdAt: row.created_at,
+  }
+}
+
+/**
+ * Visible announcements — RLS does the real filtering: a manager sees every row (their own
+ * management list needs inactive/expired ones too); everyone else only sees active,
+ * unexpired, branch-matching-or-network-wide rows. Same call site for both CashierDashboard
+ * and ManagerAnnouncements.
+ */
+export async function fetchAnnouncements({ limit = 30 } = {}) {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('announcements')
+    .select('id, branch_id, author_id, kind, title, body, is_active, expires_at, created_at, staff:author_id(full_name), branches(name)')
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return (data || []).map(mapAnnouncement)
+}
+
+export async function createAnnouncement({ branchId = null, authorId, kind = 'general', title, body, expiresAt = null }) {
+  const { data, error } = await supabase
+    .from('announcements')
+    .insert({
+      branch_id: branchId,
+      author_id: authorId,
+      kind,
+      title: String(title || '').trim(),
+      body: String(body || '').trim(),
+      expires_at: expiresAt,
+    })
+    .select('id, branch_id, author_id, kind, title, body, is_active, expires_at, created_at, staff:author_id(full_name), branches(name)')
+    .single()
+  if (error) throw error
+  return mapAnnouncement(data)
+}
+
+/** Toggle active or edit an existing announcement — manager-only per RLS. */
+export async function updateAnnouncement(id, { isActive, title, body, kind, expiresAt } = {}) {
+  const patch = {}
+  if (isActive !== undefined) patch.is_active = isActive
+  if (title !== undefined) patch.title = String(title || '').trim()
+  if (body !== undefined) patch.body = String(body || '').trim()
+  if (kind !== undefined) patch.kind = kind
+  if (expiresAt !== undefined) patch.expires_at = expiresAt
+  const { data, error } = await supabase
+    .from('announcements')
+    .update(patch)
+    .eq('id', id)
+    .select('id, branch_id, author_id, kind, title, body, is_active, expires_at, created_at, staff:author_id(full_name), branches(name)')
+    .single()
+  if (error) throw error
+  return mapAnnouncement(data)
+}
+
+/**
+ * Bumps the signed-in staff's "seen" watermark and returns what it was BEFORE this call —
+ * callers compare each announcement's createdAt against that previous value to flag "posted
+ * since your last visit" for this load, before the watermark moves for next time.
+ */
+export async function markAnnouncementsSeen() {
+  if (!supabase) return null
+  const { data, error } = await supabase.rpc('mark_announcements_seen')
+  if (error) throw error
+  return data || null
 }
 
 export async function submitDayEnd({ branchId, staffId, entry }) {
@@ -6307,33 +6396,45 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
     }
   }
 
-  let txnQuery = supabase
-    .from('transactions')
-    .select(
-      'id, or_number, status, total_amount, refunded_amount, amount_tendered, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, order_type, void_reason',
-    )
-    .gte('created_at', `${start}T00:00:00`)
-    .lte('created_at', `${end}T23:59:59`)
-    .order('created_at', { ascending: true })
-  if (branchId) txnQuery = txnQuery.eq('branch_id', branchId)
-  if (staffId) txnQuery = txnQuery.eq('staff_id', staffId)
+  // A busy branch/date range can exceed PostgREST's 1000-row page cap, which returns a
+  // truncated set with NO error — same silent-truncation bug fetchAllRows already exists
+  // to close for products (see its doc comment above). A report is exactly the kind of
+  // query that must never silently drop rows.
+  const buildTxnQuery = (from, to) => {
+    let q = supabase
+      .from('transactions')
+      .select(
+        'id, or_number, status, total_amount, refunded_amount, amount_tendered, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, order_type, void_reason',
+      )
+      .gte('created_at', `${start}T00:00:00`)
+      .lte('created_at', `${end}T23:59:59`)
+      .order('created_at', { ascending: true })
+      .range(from, to)
+    if (branchId) q = q.eq('branch_id', branchId)
+    if (staffId) q = q.eq('staff_id', staffId)
+    return q
+  }
 
-  let { data: transactions, error: txnError } = await txnQuery
+  let { data: transactions, error: txnError } = await fetchAllRows(buildTxnQuery)
   if (
     txnError &&
     /refunded_amount|payment_method|discount_amount|vat_amount|vat_exempt_sales|schema cache|column/i.test(
       String(txnError.message || ''),
     )
   ) {
-    let fb = supabase
-      .from('transactions')
-      .select('id, or_number, status, total_amount, created_at, staff_id, branch_id, void_reason')
-      .gte('created_at', `${start}T00:00:00`)
-      .lte('created_at', `${end}T23:59:59`)
-      .order('created_at', { ascending: true })
-    if (branchId) fb = fb.eq('branch_id', branchId)
-    if (staffId) fb = fb.eq('staff_id', staffId)
-    ;({ data: transactions, error: txnError } = await fb)
+    const buildFallbackTxnQuery = (from, to) => {
+      let q = supabase
+        .from('transactions')
+        .select('id, or_number, status, total_amount, created_at, staff_id, branch_id, void_reason')
+        .gte('created_at', `${start}T00:00:00`)
+        .lte('created_at', `${end}T23:59:59`)
+        .order('created_at', { ascending: true })
+        .range(from, to)
+      if (branchId) q = q.eq('branch_id', branchId)
+      if (staffId) q = q.eq('staff_id', staffId)
+      return q
+    }
+    ;({ data: transactions, error: txnError } = await fetchAllRows(buildFallbackTxnQuery))
   }
   if (txnError) throw txnError
 
@@ -6388,29 +6489,44 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
     dayEnd = data
   }
 
-  // Lifetime completed sales before report start (OLD GRAND TOTAL)
+  // Lifetime completed sales before report start (OLD GRAND TOTAL). A server-side SUM —
+  // the old client-side version pulled every completed transaction in the branch's entire
+  // history to add two columns, which only gets slower/heavier as the branch ages. Falls
+  // back to that row-pulling query only if the RPC isn't deployed yet
+  // (migrate_terminal_report_old_grand_total_rpc.sql).
   let oldGrandTotal = 0
-  let grandQuery = supabase
-    .from('transactions')
-    .select('total_amount, refunded_amount')
-    .eq('status', 'completed')
-    .lt('created_at', `${start}T00:00:00`)
-  if (branchId) grandQuery = grandQuery.eq('branch_id', branchId)
-  const { data: prior, error: priorErr } = await grandQuery
-  if (!priorErr && prior) {
-    oldGrandTotal = prior.reduce(
-      (s, r) => s + Number(r.total_amount || 0) - Number(r.refunded_amount || 0),
-      0,
-    )
-  } else if (priorErr) {
-    let q2 = supabase
+  try {
+    const { data, error } = await supabase.rpc('sum_completed_sales_before', {
+      p_branch_id: branchId || null,
+      p_before: `${start}T00:00:00`,
+    })
+    if (error) throw error
+    oldGrandTotal = Number(data || 0)
+  } catch {
+    // Falls back on ANY rpc failure, not just a missing function — this figure has always
+    // degraded gracefully rather than failing the whole report, and that's worth keeping.
+    let grandQuery = supabase
       .from('transactions')
-      .select('total_amount')
+      .select('total_amount, refunded_amount')
       .eq('status', 'completed')
       .lt('created_at', `${start}T00:00:00`)
-    if (branchId) q2 = q2.eq('branch_id', branchId)
-    const { data: prior2 } = await q2
-    oldGrandTotal = (prior2 || []).reduce((s, r) => s + Number(r.total_amount || 0), 0)
+    if (branchId) grandQuery = grandQuery.eq('branch_id', branchId)
+    const { data: prior, error: priorErr } = await grandQuery
+    if (!priorErr && prior) {
+      oldGrandTotal = prior.reduce(
+        (s, r) => s + Number(r.total_amount || 0) - Number(r.refunded_amount || 0),
+        0,
+      )
+    } else if (priorErr) {
+      let q2 = supabase
+        .from('transactions')
+        .select('total_amount')
+        .eq('status', 'completed')
+        .lt('created_at', `${start}T00:00:00`)
+      if (branchId) q2 = q2.eq('branch_id', branchId)
+      const { data: prior2 } = await q2
+      oldGrandTotal = (prior2 || []).reduce((s, r) => s + Number(r.total_amount || 0), 0)
+    }
   }
 
   const cashiers = Object.entries(staffNames).map(([id, name]) => ({ id, name }))
@@ -6429,14 +6545,20 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
 
 /** Fiscal backup pack for a date range (JSON download from UI). */
 export async function fetchFiscalBackup({ start, end, branchId }) {
-  let txnQuery = supabase
-    .from('transactions')
-    .select('*, transaction_items(*, products(id, product_no, name, sku))')
-    .gte('created_at', `${start}T00:00:00`)
-    .lte('created_at', `${end}T23:59:59`)
-    .order('created_at', { ascending: true })
-  if (branchId) txnQuery = txnQuery.eq('branch_id', branchId)
-  const { data: transactions, error: txnError } = await txnQuery
+  // A fiscal backup must never silently drop rows past PostgREST's 1000-row page cap —
+  // see fetchAllRows's doc comment.
+  const buildFiscalTxnQuery = (from, to) => {
+    let q = supabase
+      .from('transactions')
+      .select('*, transaction_items(*, products(id, product_no, name, sku))')
+      .gte('created_at', `${start}T00:00:00`)
+      .lte('created_at', `${end}T23:59:59`)
+      .order('created_at', { ascending: true })
+      .range(from, to)
+    if (branchId) q = q.eq('branch_id', branchId)
+    return q
+  }
+  const { data: transactions, error: txnError } = await fetchAllRows(buildFiscalTxnQuery)
   if (txnError) throw txnError
 
   const staffNames = await staffNameById((transactions || []).map((row) => row.staff_id))
@@ -7921,22 +8043,27 @@ export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, r
     await reconcileResolvedPendingApprovals({ branchId, staffId: reconcileStaffId, manager })
   }
 
-  const items = []
   const bizToday = today(dayOpenHour)
 
-  // Day-end awaiting approve/close
-  let dayQ = supabase
-    .from('day_ends')
-    .select('id, business_date, status, submitted_at, branch_id, branches(name)')
-    .eq('status', 'submitted')
-    .order('submitted_at', { ascending: false })
-    .limit(30)
-  if (!manager && branchId) dayQ = dayQ.eq('branch_id', branchId)
-  const { data: dayRows, error: dayErr } = await dayQ
-  if (!dayErr) {
-    for (const row of dayRows || []) {
+  // These 8 queries are independent of each other (each reads its own table and pushes
+  // into its own local array) — the only shared state was the `items.push` target, so
+  // running them one after another was 8 avoidable round trips on every notification-bell
+  // load. `items.sort` below doesn't care what order the arrays arrive in.
+
+  const fetchDayEndsSubmitted = async () => {
+    // Day-end awaiting approve/close
+    let dayQ = supabase
+      .from('day_ends')
+      .select('id, business_date, status, submitted_at, branch_id, branches(name)')
+      .eq('status', 'submitted')
+      .order('submitted_at', { ascending: false })
+      .limit(30)
+    if (!manager && branchId) dayQ = dayQ.eq('branch_id', branchId)
+    const { data: dayRows, error: dayErr } = await dayQ
+    if (dayErr) return []
+    return (dayRows || []).map((row) => {
       const branchName = row.branches?.name || 'Branch'
-      items.push({
+      return {
         id: `day-${row.id}`,
         kind: 'day_end_submitted',
         title: 'Day end awaiting approval',
@@ -7944,43 +8071,47 @@ export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, r
         href: manager ? `/manager/branches/${row.branch_id}` : '/day-end',
         createdAt: row.submitted_at || null,
         priority: 1,
-      })
-    }
+      }
+    })
   }
 
-  // Day-end requested by a cashier — no cash figures yet, just a flag that someone needs to
-  // count the drawer. A supervisor only sees a request that was NOT specifically flagged
-  // for a manager; a manager sees every request (the universal fallback). Always routes to
-  // /day-end (not the branch dashboard) — that's the screen with the actual counting form.
-  //
-  // Do NOT require closed_at IS NULL here: legacy schema defaulted closed_at to now() on
-  // insert, which hid every live request from the bell (migrate_day_end_request_notify_fix.sql).
-  let requestQ = supabase
-    .from('day_ends')
-    .select(
-      'id, business_date, status, requested_at, request_manager, branch_id, submitted_at, closed_at, approved_at, branches(name)',
-    )
-    .eq('status', 'requested')
-    .is('submitted_at', null)
-    .is('approved_at', null)
-    .order('requested_at', { ascending: false })
-    .limit(30)
-  if (!manager) {
-    requestQ = requestQ.eq('request_manager', false)
-    if (branchId) requestQ = requestQ.eq('branch_id', branchId)
-  }
-  const { data: requestRows, error: requestErr } = await requestQ
-  if (requestErr) {
-    if (typeof console !== 'undefined' && import.meta.env?.DEV) {
-      console.warn('[approvals] day_end requested query failed', requestErr.message || requestErr)
+  const fetchDayEndsRequested = async () => {
+    // Day-end requested by a cashier — no cash figures yet, just a flag that someone needs
+    // to count the drawer. A supervisor only sees a request that was NOT specifically
+    // flagged for a manager; a manager sees every request (the universal fallback). Always
+    // routes to /day-end (not the branch dashboard) — that's the screen with the actual
+    // counting form.
+    //
+    // Do NOT require closed_at IS NULL here: legacy schema defaulted closed_at to now() on
+    // insert, which hid every live request from the bell (migrate_day_end_request_notify_fix.sql).
+    let requestQ = supabase
+      .from('day_ends')
+      .select(
+        'id, business_date, status, requested_at, request_manager, branch_id, submitted_at, closed_at, approved_at, branches(name)',
+      )
+      .eq('status', 'requested')
+      .is('submitted_at', null)
+      .is('approved_at', null)
+      .order('requested_at', { ascending: false })
+      .limit(30)
+    if (!manager) {
+      requestQ = requestQ.eq('request_manager', false)
+      if (branchId) requestQ = requestQ.eq('branch_id', branchId)
     }
-  } else {
+    const { data: requestRows, error: requestErr } = await requestQ
+    if (requestErr) {
+      if (typeof console !== 'undefined' && import.meta.env?.DEV) {
+        console.warn('[approvals] day_end requested query failed', requestErr.message || requestErr)
+      }
+      return []
+    }
+    const localItems = []
     for (const row of requestRows || []) {
       // Orphaned cashier flag — day already rolled or drawer counted elsewhere.
       const bizDate = String(row.business_date || '').slice(0, 10)
       if (bizDate && bizDate < bizToday) continue
       const branchName = row.branches?.name || 'Branch'
-      items.push({
+      localItems.push({
         id: `day-req-${row.id}`,
         kind: 'day_end_requested',
         title: row.request_manager ? 'Day end requested (manager)' : 'Day end requested',
@@ -7992,13 +8123,15 @@ export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, r
         dismissable: true,
       })
     }
+    return localItems
   }
 
-  // A closed day, reopen requested — manager-only, since reopen_day_end() itself is
-  // manager-only (a supervisor being stuck by their own closing is not something they can
-  // self-service; they need the same escalation a cashier does).
-  if (manager) {
-    let reopenQ = supabase
+  const fetchDayEndsReopen = async () => {
+    // A closed day, reopen requested — manager-only, since reopen_day_end() itself is
+    // manager-only (a supervisor being stuck by their own closing is not something they can
+    // self-service; they need the same escalation a cashier does).
+    if (!manager) return []
+    const reopenQ = supabase
       .from('day_ends')
       .select('id, business_date, status, reopen_requested_at, reopen_request_reason, branch_id, branches(name)')
       .eq('status', 'closed')
@@ -8006,57 +8139,59 @@ export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, r
       .order('reopen_requested_at', { ascending: false })
       .limit(30)
     const { data: reopenRows, error: reopenErr } = await reopenQ
-    if (!reopenErr) {
-      for (const row of reopenRows || []) {
-        const branchName = row.branches?.name || 'Branch'
-        items.push({
-          id: `day-reopen-${row.id}`,
-          kind: 'day_end_reopen_requested',
-          title: 'Day reopen requested',
-          detail: `${branchName} · ${row.business_date || 'today'}${row.reopen_request_reason ? ` · ${row.reopen_request_reason}` : ''}`,
-          href: `/manager/branches/${row.branch_id}`,
-          createdAt: row.reopen_requested_at || null,
-          priority: 1,
-        })
-      }
-    }
-  }
-
-  // Cash movements awaiting remote manager approval (POS Open Drawer notify path).
-  // Managers see all; supervisors see branch (can still deny/PIN-approve on till).
-  try {
-    const moveRows = await fetchPendingCashMovements({
-      branchId: manager ? null : branchId,
-      manager,
-    })
-    for (const row of moveRows) {
-      const typeLabel = row.type === 'pickup' ? 'Cash pickup' : 'Petty cash'
-      items.push({
-        id: `cash-move-${row.id}`,
-        kind: 'cash_movement_pending',
-        title: `${typeLabel} awaiting approval`,
-        detail: `₱${Number(row.amount || 0).toFixed(2)} · ${row.drawerLabel || row.drawerId} · ${row.requestedByName || 'Cashier'} · ${row.reason || ''}`,
-        href: manager ? `/manager/branches/${row.branchId}` : '/day-end',
-        createdAt: row.requestedAt || null,
+    if (reopenErr) return []
+    return (reopenRows || []).map((row) => {
+      const branchName = row.branches?.name || 'Branch'
+      return {
+        id: `day-reopen-${row.id}`,
+        kind: 'day_end_reopen_requested',
+        title: 'Day reopen requested',
+        detail: `${branchName} · ${row.business_date || 'today'}${row.reopen_request_reason ? ` · ${row.reopen_request_reason}` : ''}`,
+        href: `/manager/branches/${row.branch_id}`,
+        createdAt: row.reopen_requested_at || null,
         priority: 1,
-        movementId: row.id,
-        movement: row,
-        actionable: manager || supervisor,
-        dismissable: true,
-      })
-    }
-  } catch {
-    /* table may be missing until migrate_cash_movements.sql */
+      }
+    })
   }
 
-  // Cart remove / till gates awaiting manager
-  try {
-    const tillRows = await fetchPendingTillActionRequests({
-      branchId: manager ? null : branchId,
-      manager,
-    })
-    for (const row of tillRows) {
-      items.push({
+  const fetchCashMoveItems = async () => {
+    // Cash movements awaiting remote manager approval (POS Open Drawer notify path).
+    // Managers see all; supervisors see branch (can still deny/PIN-approve on till).
+    try {
+      const moveRows = await fetchPendingCashMovements({
+        branchId: manager ? null : branchId,
+        manager,
+      })
+      return moveRows.map((row) => {
+        const typeLabel = row.type === 'pickup' ? 'Cash pickup' : 'Petty cash'
+        return {
+          id: `cash-move-${row.id}`,
+          kind: 'cash_movement_pending',
+          title: `${typeLabel} awaiting approval`,
+          detail: `₱${Number(row.amount || 0).toFixed(2)} · ${row.drawerLabel || row.drawerId} · ${row.requestedByName || 'Cashier'} · ${row.reason || ''}`,
+          href: manager ? `/manager/branches/${row.branchId}` : '/day-end',
+          createdAt: row.requestedAt || null,
+          priority: 1,
+          movementId: row.id,
+          movement: row,
+          actionable: manager || supervisor,
+          dismissable: true,
+        }
+      })
+    } catch {
+      /* table may be missing until migrate_cash_movements.sql */
+      return []
+    }
+  }
+
+  const fetchTillActionItems = async () => {
+    // Cart remove / till gates awaiting manager
+    try {
+      const tillRows = await fetchPendingTillActionRequests({
+        branchId: manager ? null : branchId,
+        manager,
+      })
+      return tillRows.map((row) => ({
         id: `till-act-${row.id}`,
         kind: 'till_action_pending',
         title: 'Cart remove awaiting approval',
@@ -8067,88 +8202,101 @@ export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, r
         tillActionId: row.id,
         actionable: manager || role === 'supervisor',
         dismissable: true,
-      })
+      }))
+    } catch {
+      /* migrate_till_action_requests.sql */
+      return []
     }
-  } catch {
-    /* migrate_till_action_requests.sql */
   }
 
-  // Promo dual-control — managers only
-  if (manager) {
+  const fetchPromoItems = async () => {
+    // Promo dual-control — managers only
+    if (!manager) return []
     const { data: promoRows, error: promoErr } = await supabase
       .from('promo_events')
       .select('id, name, status, created_at, updated_at, branch_id, branches(name)')
       .in('status', ['pending', 'stop_pending'])
       .order('created_at', { ascending: false })
       .limit(40)
-    if (!promoErr) {
-      for (const row of promoRows || []) {
-        const branchName = row.branches?.name || 'Branch'
-        const stop = row.status === 'stop_pending'
-        items.push({
-          id: `promo-${row.id}-${row.status}`,
-          kind: stop ? 'promo_stop_pending' : 'promo_pending',
-          title: stop ? 'Promo stop requested' : 'Promo awaiting approval',
-          detail: `${row.name || 'Promo'} · ${branchName}`,
-          href: '/manager/promos',
-          createdAt: row.updated_at || row.created_at || null,
-          priority: stop ? 3 : 4,
-        })
+    if (promoErr) return []
+    return (promoRows || []).map((row) => {
+      const branchName = row.branches?.name || 'Branch'
+      const stop = row.status === 'stop_pending'
+      return {
+        id: `promo-${row.id}-${row.status}`,
+        kind: stop ? 'promo_stop_pending' : 'promo_pending',
+        title: stop ? 'Promo stop requested' : 'Promo awaiting approval',
+        detail: `${row.name || 'Promo'} · ${branchName}`,
+        href: '/manager/promos',
+        createdAt: row.updated_at || row.created_at || null,
+        priority: stop ? 3 : 4,
       }
-    }
+    })
   }
 
-  // Refund requests with no supervisor on site — managers only (is_manager()
-  // is what the approve/reject RPCs actually check; a present supervisor
-  // never needs this path, they approve in person instead).
-  if (manager) {
+  const fetchRefundItems = async () => {
+    // Refund requests with no supervisor on site — managers only (is_manager()
+    // is what the approve/reject RPCs actually check; a present supervisor
+    // never needs this path, they approve in person instead).
+    if (!manager) return []
     const { data: refundRows, error: refundErr } = await supabase
       .from('refund_requests')
       .select('id, mode, reason, requested_at, branch_id, branches(name), transactions(or_number)')
       .eq('status', 'pending')
       .order('requested_at', { ascending: false })
       .limit(40)
-    if (!refundErr) {
-      for (const row of refundRows || []) {
-        const branchName = row.branches?.name || 'Branch'
-        items.push({
-          id: `refund-${row.id}`,
-          kind: 'refund_pending',
-          title: 'Refund awaiting approval',
-          detail: `${branchName} · ${row.transactions?.or_number || 'sale'} · ${row.mode === 'full' ? 'Full refund' : 'Item refund'} · ${row.reason || ''}`,
-          href: `/manager/branches/${row.branch_id}`,
-          createdAt: row.requested_at || null,
-          priority: 1,
-        })
+    if (refundErr) return []
+    return (refundRows || []).map((row) => {
+      const branchName = row.branches?.name || 'Branch'
+      return {
+        id: `refund-${row.id}`,
+        kind: 'refund_pending',
+        title: 'Refund awaiting approval',
+        detail: `${branchName} · ${row.transactions?.or_number || 'sale'} · ${row.mode === 'full' ? 'Full refund' : 'Item refund'} · ${row.reason || ''}`,
+        href: `/manager/branches/${row.branch_id}`,
+        createdAt: row.requested_at || null,
+        priority: 1,
       }
-    }
+    })
   }
 
-  // A supervisor flagged a committed import for a manager to look at (revert_import_batch
-  // itself stays manager-only) — see requestImportRevert / migrate_import_revert_request.sql.
-  if (manager) {
+  const fetchRevertItems = async () => {
+    // A supervisor flagged a committed import for a manager to look at (revert_import_batch
+    // itself stays manager-only) — see requestImportRevert / migrate_import_revert_request.sql.
+    if (!manager) return []
     const { data: revertRows, error: revertErr } = await supabase
       .from('import_batches')
       .select('id, filename, branch_id, revert_requested_at, branches(name), requester:staff!revert_requested_by(full_name)')
       .eq('status', 'revert_requested')
       .order('revert_requested_at', { ascending: false })
       .limit(40)
-    if (!revertErr) {
-      for (const row of revertRows || []) {
-        const branchName = row.branches?.name || 'Branch'
-        items.push({
-          id: `import-revert-${row.id}`,
-          kind: 'import_revert_pending',
-          batchId: row.id,
-          title: 'Import revert requested',
-          detail: `${branchName} · ${row.filename || 'import'} · requested by ${row.requester?.full_name || 'supervisor'}`,
-          href: `/inventory?branch=${row.branch_id}`,
-          createdAt: row.revert_requested_at || null,
-          priority: 2,
-        })
+    if (revertErr) return []
+    return (revertRows || []).map((row) => {
+      const branchName = row.branches?.name || 'Branch'
+      return {
+        id: `import-revert-${row.id}`,
+        kind: 'import_revert_pending',
+        batchId: row.id,
+        title: 'Import revert requested',
+        detail: `${branchName} · ${row.filename || 'import'} · requested by ${row.requester?.full_name || 'supervisor'}`,
+        href: `/inventory?branch=${row.branch_id}`,
+        createdAt: row.revert_requested_at || null,
+        priority: 2,
       }
-    }
+    })
   }
+
+  const results = await Promise.all([
+    fetchDayEndsSubmitted(),
+    fetchDayEndsRequested(),
+    fetchDayEndsReopen(),
+    fetchCashMoveItems(),
+    fetchTillActionItems(),
+    fetchPromoItems(),
+    fetchRefundItems(),
+    fetchRevertItems(),
+  ])
+  const items = results.flat()
 
   items.sort((a, b) => {
     if (a.priority !== b.priority) return a.priority - b.priority

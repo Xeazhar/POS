@@ -46,6 +46,7 @@ export function DayEndReportPanels({
   alert = false,
   fromDate = null,
   inventoryHref = '/inventory',
+  thirdPanel = null,
 }) {
   const [soldPage, setSoldPage] = useState(0)
   const [restockPage, setRestockPage] = useState(0)
@@ -176,7 +177,8 @@ export function DayEndReportPanels({
     </>
   )
 
-  const columnsClass = showRestock ? 'grid-cols-2' : 'grid-cols-1'
+  const panelCount = 1 + (showRestock ? 1 : 0) + (thirdPanel ? 1 : 0)
+  const columnsClass = panelCount === 3 ? 'grid-cols-3' : panelCount === 2 ? 'grid-cols-2' : 'grid-cols-1'
   const narrowBreakpoint = compact ? 'max-[900px]:grid-cols-1' : 'max-[1100px]:grid-cols-1'
 
   return (
@@ -245,6 +247,8 @@ export function DayEndReportPanels({
           )}
         </TableCard>
       )}
+
+      {thirdPanel}
     </div>
   )
 }

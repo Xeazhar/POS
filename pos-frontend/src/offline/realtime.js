@@ -102,10 +102,108 @@ export function subscribeTable({ table, filter, onChange, onStatus }) {
   }
 }
 
+const DEFAULT_BROADCAST_EVENTS = ['INVENTORY_CHANGED', 'CATALOG_CHANGED', 'OPERATIONS_CHANGED']
+
+/**
+ * Multiple components independently caring about the same topic (e.g. Shell's operations
+ * live-refresh, the notification bell, DayEnd, BranchDashboard — all watch
+ * `pos:branch:<id>:operations`) used to each open their own Supabase Realtime channel for
+ * it, quadrupling reconnect/backoff state and socket overhead on every authenticated page
+ * for no benefit — they're all listening for the same event. One physical channel per
+ * topic, fanned out to every caller's own `onEvent`/`onStatus`, ref-counted so the channel
+ * closes once the last listener unmounts.
+ */
+const broadcastEntries = new Map() // topic -> entry
+
+function teardownBroadcastEntry(topic, entry) {
+  if (entry.retryTimer) {
+    clearTimeout(entry.retryTimer)
+    entry.retryTimer = null
+  }
+  if (entry.channel) {
+    supabase.removeChannel(entry.channel)
+    entry.channel = null
+  }
+  if (broadcastEntries.get(topic) === entry) broadcastEntries.delete(topic)
+}
+
+function scheduleBroadcastRetry(topic, entry) {
+  if (entry.disposed || entry.retryTimer) return
+  const delay = RETRY_DELAYS[Math.min(entry.attempt, RETRY_DELAYS.length - 1)]
+  entry.attempt += 1
+  log(`bc:${topic}: reconnecting in ${delay}ms (attempt ${entry.attempt})`)
+  entry.retryTimer = setTimeout(() => {
+    entry.retryTimer = null
+    if (entry.channel) {
+      supabase.removeChannel(entry.channel)
+      entry.channel = null
+    }
+    void connectBroadcastEntry(topic, entry)
+  }, delay)
+}
+
+async function connectBroadcastEntry(topic, entry) {
+  if (entry.disposed) return
+  await ensureRealtimeAuth()
+  if (entry.disposed) return
+
+  const eventsArr = [...entry.subscribedEvents]
+  let builder = supabase.channel(topic, { config: { private: true } })
+  for (const event of eventsArr) {
+    builder = builder.on('broadcast', { event }, (message) => {
+      // Never trust payload as authoritative inventory/finance state.
+      const payload = message?.payload ?? message
+      for (const listener of entry.listeners) {
+        if (listener.eventList.includes(event)) listener.onEvent(payload)
+      }
+    })
+  }
+  entry.channel = builder.subscribe((status) => {
+    if (entry.disposed) return
+    log(`bc:${topic}: ${status}`)
+    entry.lastStatus = status
+    for (const listener of entry.listeners) listener.onStatus?.(status)
+    if (status === 'SUBSCRIBED') {
+      entry.attempt = 0
+      return
+    }
+    if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+      scheduleBroadcastRetry(topic, entry)
+    }
+  })
+}
+
+/** Rebuild the shared channel only when the union of listener event lists actually changed. */
+function resyncBroadcastEntry(topic, entry) {
+  const needed = new Set()
+  for (const listener of entry.listeners) {
+    for (const event of listener.eventList) needed.add(event)
+  }
+  const current = entry.subscribedEvents
+  const unchanged =
+    current && current.size === needed.size && [...needed].every((e) => current.has(e))
+  if (unchanged && entry.channel) return
+
+  if (entry.retryTimer) {
+    clearTimeout(entry.retryTimer)
+    entry.retryTimer = null
+  }
+  if (entry.channel) {
+    supabase.removeChannel(entry.channel)
+    entry.channel = null
+  }
+  entry.subscribedEvents = needed
+  entry.attempt = 0
+  void connectBroadcastEntry(topic, entry)
+}
+
 /**
  * Private Broadcast subscription. Topic must match server-side realtime.send
  * topics (e.g. pos:branch:<uuid>:inventory). Authorization is enforced by
  * RLS on realtime.messages — a forged topic name yields CHANNEL_ERROR / no events.
+ *
+ * Transparently shares one physical channel per topic across every caller (see above) —
+ * callers don't need to know or care that another component is watching the same topic.
  *
  * @param {object} options
  * @param {string} options.topic
@@ -116,73 +214,37 @@ export function subscribeTable({ table, filter, onChange, onStatus }) {
 export function subscribeBroadcast({ topic, events, onEvent, onStatus }) {
   if (!isConfigured || !supabase || !topic || !onEvent) return () => {}
 
-  const eventList =
-    Array.isArray(events) && events.length > 0
-      ? events
-      : ['INVENTORY_CHANGED', 'CATALOG_CHANGED', 'OPERATIONS_CHANGED']
+  const eventList = Array.isArray(events) && events.length > 0 ? events : DEFAULT_BROADCAST_EVENTS
 
-  const label = `bc:${topic}`
-  let channel = null
-  let retryTimer = null
-  let attempt = 0
-  let disposed = false
-
-  const teardown = () => {
-    if (retryTimer) {
-      clearTimeout(retryTimer)
-      retryTimer = null
+  let entry = broadcastEntries.get(topic)
+  if (!entry) {
+    entry = {
+      channel: null,
+      listeners: new Set(),
+      retryTimer: null,
+      attempt: 0,
+      disposed: false,
+      lastStatus: null,
+      subscribedEvents: null,
     }
-    if (channel) {
-      supabase.removeChannel(channel)
-      channel = null
-    }
+    broadcastEntries.set(topic, entry)
   }
 
-  const scheduleRetry = () => {
-    if (disposed || retryTimer) return
-    const delay = RETRY_DELAYS[Math.min(attempt, RETRY_DELAYS.length - 1)]
-    attempt += 1
-    log(`${label}: reconnecting in ${delay}ms (attempt ${attempt})`)
-    retryTimer = setTimeout(() => {
-      retryTimer = null
-      teardown()
-      void connect()
-    }, delay)
-  }
-
-  const connect = async () => {
-    if (disposed) return
-    await ensureRealtimeAuth()
-    if (disposed) return
-
-    let builder = supabase.channel(topic, {
-      config: { private: true },
-    })
-    for (const event of eventList) {
-      builder = builder.on('broadcast', { event }, (message) => {
-        // Never trust payload as authoritative inventory/finance state.
-        onEvent(message?.payload ?? message)
-      })
-    }
-    channel = builder.subscribe((status) => {
-      if (disposed) return
-      log(`${label}: ${status}`)
-      onStatus?.(status)
-      if (status === 'SUBSCRIBED') {
-        attempt = 0
-        return
-      }
-      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-        scheduleRetry()
-      }
-    })
-  }
-
-  void connect()
+  const listener = { eventList, onEvent, onStatus }
+  entry.listeners.add(listener)
+  resyncBroadcastEntry(topic, entry)
+  // Late joiner on an already-live channel — let it react immediately instead of waiting
+  // for the next event or reconnect.
+  if (entry.lastStatus === 'SUBSCRIBED' && entry.channel) listener.onStatus?.('SUBSCRIBED')
 
   return () => {
-    disposed = true
-    teardown()
+    entry.listeners.delete(listener)
+    if (entry.listeners.size === 0) {
+      entry.disposed = true
+      teardownBroadcastEntry(topic, entry)
+    } else {
+      resyncBroadcastEntry(topic, entry)
+    }
   }
 }
 

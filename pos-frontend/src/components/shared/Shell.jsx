@@ -8,8 +8,9 @@ import { useBranchOperationsLive } from '../../hooks/useBranchOperationsLive'
 import { useAuthStore, useCartStore } from '../../stores/posStore'
 import { useShiftStore } from '../../stores/shiftStore'
 import { useSyncStore } from '../../stores/syncStore'
-import { formatSupportError, formatSyncError } from '../../utils/errors'
+import { formatSupportError } from '../../utils/errors'
 import { isManagerRole, usesPinLogin } from '../../utils/roles'
+import { syncCopy, syncToneDot, syncToneText } from '../../utils/syncStatus'
 import { APP_VERSION_LABEL, IS_PRERELEASE } from '../../utils/version'
 import { hardReload } from '../../utils/hardReload'
 import { SHOW_ENV_BADGE, environmentCaption } from '../../utils/environment'
@@ -22,72 +23,6 @@ import { applyIdleLockMinutes, getIdleLockMs, subscribeIdleLock } from '../../ut
 import { applyNavOrder, clearNavOrder, loadNavOrder, saveNavOrder } from '../../utils/navOrder'
 const HEARTBEAT_MS = 2.5 * 60 * 1000
 const SIDEBAR_COLLAPSED_KEY = 'cale-sidebar-collapsed'
-
-function syncCopy({ online, backendReachable, pending, status, lastError }) {
-  const syncing = status === 'syncing' || status === 'pushing'
-  if (!online) {
-    return {
-      label: pending ? `Offline · ${pending}` : 'Offline',
-      detail: pending ? `${pending} saved locally` : 'No network',
-      tone: 'off',
-      isError: false,
-    }
-  }
-  if (online && backendReachable === false && pending) {
-    return {
-      label: `${pending} queued`,
-      detail: 'Server unreachable — will retry',
-      tone: 'warn',
-      isError: false,
-    }
-  }
-  if (syncing) {
-    return {
-      label: 'Syncing…',
-      detail: pending ? `${pending} queued` : 'Updating',
-      tone: 'sync',
-      isError: false,
-    }
-  }
-  if (status === 'error' || lastError) {
-    const formatted = formatSyncError(lastError)
-    return {
-      label: formatted.title,
-      detail: formatted.body,
-      hint: formatted.hint || '',
-      tone: 'warn',
-      isError: true,
-    }
-  }
-  if (pending) {
-    return {
-      label: `${pending} queued`,
-      detail: 'Waiting to sync',
-      tone: 'warn',
-      isError: false,
-    }
-  }
-  return {
-    label: 'Synced',
-    detail: 'Up to date',
-    tone: 'ok',
-    isError: false,
-  }
-}
-
-const toneDot = {
-  ok: 'bg-brand-sync-ok',
-  sync: 'bg-brand-sync-busy animate-pulse',
-  warn: 'bg-brand-sync-warn',
-  off: 'bg-brand-sync-off',
-}
-
-const toneText = {
-  ok: 'text-brand-sync-ok',
-  sync: 'text-brand-sync-busy-ink',
-  warn: 'text-brand-sync-warn-ink',
-  off: 'text-brand-sync-off-ink',
-}
 
 /**
  * Render the application shell with navigation, session controls, synchronization status, and route content.
@@ -439,10 +374,10 @@ function Shell({ children }) {
               sync.isError ? 'bg-brand-sync-warn-bg ring-1 ring-brand-sync-warn/40' : 'bg-brand-panel'
             }`}
           >
-            <span className={`mx-auto mb-1 block h-1.5 w-1.5 rounded-full ${toneDot[sync.tone]}`} />
+            <span className={`mx-auto mb-1 block h-1.5 w-1.5 rounded-full ${syncToneDot[sync.tone]}`} />
             {!collapsed && (
               <>
-                <strong className={`block text-[9px] font-bold leading-tight ${toneText[sync.tone]}`}>
+                <strong className={`block text-[9px] font-bold leading-tight ${syncToneText[sync.tone]}`}>
                   {sync.label}
                 </strong>
                 <span

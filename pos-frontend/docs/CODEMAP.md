@@ -101,7 +101,9 @@ When changing behavior, the usual path is:
 
 | Path | Main file | Notes |
 |------|------|------|
-| `/` | `src/pages/Dashboard.jsx` or `src/pages/manager/Overview.jsx` | home depends on role |
+| `/` | `src/pages/Dashboard.jsx` or `src/pages/manager/Overview.jsx` | home depends on role; cashiers never land here (see `staffHomePath`) |
+| `/cashier-dashboard` | `src/pages/CashierDashboard.jsx` | cashier-only operational dashboard (module `cashier_dashboard`, default-on, first sidebar tab and `staffHomePath` landing screen for cashiers) — sales total, transaction count, avg sale, sync status, current-shift timing, payment mix, and an Announcements feed, all scoped to the cashier's own open shift. No branch-wide revenue, no transaction list — that stays behind `/` (module `dashboard`) and `/transactions`. Nav swap happens in `staffLinksFor` (`constants/nav.js`) |
+| `/manager/announcements` | `src/pages/manager/Announcements.jsx` | manager-only (module `manager_announcements`) composer + management list for staff announcements — see "Announcements" below |
 | `/pos` | `src/pages/POS.jsx` | cashiering, barcode mode, inquiry, promos |
 | `/transactions` | `src/pages/Transactions.jsx` | list + detail modal + refund flow |
 | `/inventory` | `src/pages/Products.jsx` | staff inventory/menu operations — tabs: stock + **Movement history** (`src/components/inventory/MovementHistoryPanel.jsx`) |
@@ -253,10 +255,10 @@ If behavior seems “server-ish”, check `api.js` before editing the UI.
 - `src/offline/syncQueue.js` → durable FIFO outbox; `MAX_SYNC_ATTEMPTS` quarantine; exponential `nextRetryAt` backoff (2s→60s)
 - `src/offline/syncEngine.js` → push queue then pull; idempotent replay via `client_id` / server RPC guards. `syncBranch()` only runs the reconciling `pullFromRemote()` once the outbox is fully drained, so a device with anything queued keeps its last-known local view — `hardResync()` is the escape hatch: forces `pullFromRemote()` directly, refusing outright if anything is queued/blocked. Exposed as Settings → Sync Status → "Hard resync", for when the server changed by a path this app's own sync never observed (e.g. a direct SQL reset during testing).
 - `src/offline/reachability.js` → `canSyncWithBackend()` — Supabase ping, not just `navigator.onLine`
-- `src/offline/connectivity.js` → `online` event + 30s poll triggers `syncBranch`
+- `src/offline/connectivity.js` → `online` event + 30s poll (skipped while the tab is hidden, resynced immediately on refocus) triggers `syncBranch`
 - `src/offline/session.js` → saved session + relogin lock
 
-**Startup:** `loadBranch` paints IndexedDB immediately (`loading: false`), then background sync when backend reachable.
+**Startup:** `loadBranch` paints IndexedDB immediately (`loading: false`), then background sync when backend reachable. `App.jsx`'s boot effect (`restoreSession().then(...)`) does **not** await that background sync tail before flipping `initialBootDone` and mounting `Shell` — only `restoreSession()` itself is awaited, and that call is bounded (`withTimeout`, falls back to `loadLocalSession()` when the backend is unreachable or the check stalls), so a slow/flaky connection resumes the last-known UI instead of sitting on the boot skeleton for the full catalog+sync timeout chain. `useShiftStore.resolve()`'s own server refinement call is bounded the same way for the same reason (Shell's "Checking shift…" gate).
 
 **Sale path (mandatory order):** validate → `upsertLocalSale` (Dexie) → `enqueue(COMPLETE_SALE)` → UI complete → push when reachable.
 
@@ -395,7 +397,10 @@ checking out at once (or two offline devices seeded from the same last-synced co
 could each compute and print the same "next" number. `posStore.js`'s `addTransaction`
 sets `orNumber: null` unconditionally and checkout never awaits sync — the receipt prints
 immediately with the sale's local `id` as a PENDING reference (`buildReceipt`, `receipt.js`)
-instead. The real OR is assigned only when this sale's `COMPLETE_SALE` queue item reaches
+instead. `Cart.jsx`'s `waitForRealOrNumber` polls for the real number too, but strictly
+fire-and-forget after the success banner/receipt already rendered — it only patches the
+on-screen banner if the number lands while the overlay is still up, never blocks the
+"Sale complete" screen or the print itself. The real OR is assigned only when this sale's `COMPLETE_SALE` queue item reaches
 the server, inside `complete_sale(...)` (`migrate_complete_sale_rpc.sql`) — `select … for
 update` row-locks the branch's `or_next` counter (via `allocate_or_number`/
 `reserve_or_number`, called as plain function calls from inside `complete_sale`), so
@@ -1626,6 +1631,41 @@ a tooltip — and were left alone.
 
 ---
 
+## Announcements
+
+Manager-authored staff notices, not sales/inventory data — kept simple on purpose (no
+offline cache, no per-item read-receipt table, no realtime push).
+
+```
+Manager: ManagerAnnouncements.jsx (/manager/announcements, sidebar label "Notices",
+         module manager_announcements)
+  → api.createAnnouncement / api.updateAnnouncement → announcements table (plain insert/
+    update, RLS-gated by is_manager() — no RPC needed, no branch silo for managers)
+
+Staff:   AnnouncementsCard (components/dashboard/AnnouncementsCard.jsx) — one shared,
+         compact card (collapses to a single row when empty; caps at `limit`, default 3),
+         used on both CashierDashboard.jsx (module cashier_dashboard) and Dashboard.jsx
+         (supervisor branch dashboard) as the third column of the Sold/Need-to-restock
+         row via DayEndReportPanels' `thirdPanel` prop. Online-only fetch, re-runs on
+         reconnect — see useSyncStore().online
+  → api.fetchAnnouncements()   -- RLS: managers see every row; everyone else sees only
+                                   is_active, unexpired, and branch_id IS NULL (network-
+                                   wide) OR = current_staff_branch()
+  → api.markAnnouncementsSeen()  -- RPC, bumps staff.announcements_seen_at to now() and
+                                     returns the PREVIOUS value in the same round trip
+  → an item is "unread" this load if its created_at is after that previous value
+```
+
+`kind` is a fixed enum (`promo|price|reminder|maintenance|general`) mapped to a display
+emoji by `ANNOUNCEMENT_EMOJI` (`utils/announcements.js`) — shared by both screens so the
+category list and its emoji can't drift between composer and feed. No hard delete; a
+manager deactivates (`is_active`) instead, same "expire, don't delete" pattern as promos.
+Migrations: `supabase/migrate_announcements.sql`, then
+`supabase/migrate_announcements_backfill_permissions.sql` (grants the two new modules to
+staff rows created before this feature existed — see the module-defaults gotcha below).
+
+---
+
 ## Offline & sync (movement)
 
 ```
@@ -1710,6 +1750,18 @@ reaches other open tabs via the 15s poll fallback, not immediately). Also enable
 
 **Reconnect:** socket rebuild + `SUBSCRIBED` refetch + existing `syncBranch` / queue drain.
 Broadcast does **not** replay gaps — poll/focus/sync repair local state.
+
+**One physical channel per topic, shared across every caller.** `subscribeBroadcast`
+(`realtime.js`) multiplexes internally by topic string — `Shell.jsx` (via
+`useBranchOperationsLive`), `RequestNotifications.jsx`, `DayEnd.jsx`, and
+`BranchDashboard.jsx` all watch `pos:branch:<id>:operations`, and used to each open their
+own Supabase Realtime channel + reconnect/backoff state for it (four sockets on one page
+for the same event). Now a topic's first subscriber opens the channel and every later
+subscriber (any component, any hook) just registers a listener on the same channel object,
+ref-counted so it tears down once the last listener unmounts; each listener still gets its
+own `onEvent`/`onStatus` callback and runs its own fetch, so per-consumer refetch logic
+(which data each one reloads, its own poll fallback) is unchanged. Callers don't opt into
+this — it's transparent at the `subscribeBroadcast`/`useLiveData` call site.
 
 | Piece | File |
 |-------|------|
@@ -1834,6 +1886,7 @@ receipts stay legible on paper regardless of the on-screen theme.
 | Atomic checkout RPC (till + OR + transaction + items + stock + audit in one transaction) | `migrate_complete_sale_rpc.sql` |
 | Login perf: skip redundant password rehash | `migrate_login_conditional_rehash.sql` |
 | **Anon/public EXECUTE revoked on core sale RPCs (critical)** | `migrate_revoke_anon_sale_rpc_grants.sql` |
+| Terminal report "Old Grand Total" server-side aggregate (replaces an unbounded lifetime row pull) | `migrate_terminal_report_old_grand_total_rpc.sql` (`sum_completed_sales_before`) |
 
 Run migrations in the Supabase SQL editor; respect comments about order / dependencies.
 

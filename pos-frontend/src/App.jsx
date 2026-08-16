@@ -18,6 +18,7 @@ import { clearChunkReloadFlag, lazyWithRetry } from './utils/lazyWithRetry'
 
 const Login = lazyWithRetry(() => import('./pages/Login.jsx'))
 const Dashboard = lazyWithRetry(() => import('./pages/Dashboard.jsx'))
+const CashierDashboard = lazyWithRetry(() => import('./pages/CashierDashboard.jsx'))
 const POS = lazyWithRetry(() => import('./pages/POS.jsx'))
 const Transactions = lazyWithRetry(() => import('./pages/Transactions.jsx'))
 const Products = lazyWithRetry(() => import('./pages/Products.jsx'))
@@ -31,6 +32,7 @@ const ManagerStaff = lazyWithRetry(() => import('./pages/manager/Staff.jsx'))
 const ManagerData = lazyWithRetry(() => import('./pages/manager/Data.jsx'))
 const ManagerPromos = lazyWithRetry(() => import('./pages/manager/Promos.jsx'))
 const ManagerReports = lazyWithRetry(() => import('./pages/manager/Reports.jsx'))
+const ManagerAnnouncements = lazyWithRetry(() => import('./pages/manager/Announcements.jsx'))
 const Legal = lazyWithRetry(() => import('./pages/Legal.jsx'))
 
 /**
@@ -174,10 +176,16 @@ function AppRoutes() {
       return
     }
     restoreSession()
-      .then(async (sessionUser) => {
+      .then((sessionUser) => {
         if (sessionUser?.branchId) {
-          const data = await loadBranch(sessionUser.branchId)
-          if (data) hydrate(data)
+          // loadBranch paints the product/inventory stores from IndexedDB synchronously
+          // before it ever touches the network, then keeps syncing in the background.
+          // Don't await the network tail here — that's what used to hold the whole app
+          // behind the boot skeleton for up to ~45s (catalog + branch sync timeouts) on a
+          // slow connection instead of showing the last-known UI immediately.
+          loadBranch(sessionUser.branchId).then((data) => {
+            if (data) hydrate(data)
+          })
         }
       })
       .finally(() => setInitialBootDone(true))
@@ -202,6 +210,14 @@ function AppRoutes() {
           <Shell>
             <Routes>
               <Route path="/" element={<Home />} />
+              <Route
+                path="/cashier-dashboard"
+                element={
+                  <RequireModule moduleId="cashier_dashboard">
+                    <CashierDashboard />
+                  </RequireModule>
+                }
+              />
               <Route
                 path="/pos"
                 element={
@@ -339,6 +355,14 @@ function AppRoutes() {
                 element={
                   <RequireModule moduleId="manager_reports">
                     <ManagerReports />
+                  </RequireModule>
+                }
+              />
+              <Route
+                path="/manager/announcements"
+                element={
+                  <RequireModule moduleId="manager_announcements">
+                    <ManagerAnnouncements />
                   </RequireModule>
                 }
               />

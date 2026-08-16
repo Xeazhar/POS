@@ -169,16 +169,19 @@ function ManagerOverview() {
           setLoading(false)
           return
         }
-        const rows = await withTimeout(fetchBranches(), 15000, 'Branches')
-        if (!active) return
-        setBranches(rows)
+        // Branches and the metrics wave don't depend on each other (the metrics fallback
+        // below is the only thing that needs `rows`, and it awaits the same promise) — run
+        // them concurrently instead of one round trip after another.
+        const branchesPromise = withTimeout(fetchBranches(), 15000, 'Branches')
         const periodStart = new Date()
         periodStart.setHours(0, 0, 0, 0)
         periodStart.setDate(periodStart.getDate() - (meta.days - 1))
-        const [overviewMetrics, charts, periodComparison, events] = await Promise.all([
+        const [rows, overviewMetrics, charts, periodComparison, events] = await Promise.all([
+          branchesPromise,
           fetchManagerOverviewMetrics({ days: meta.days }).catch(async () => {
             // RPC not deployed yet — fall back to per-branch fan-out (pre-overhaul path).
             const { branchSummary, fetchBranchCashImpact } = await import('../../lib/api')
+            const rows = await branchesPromise
             const summaryRows = await mapLimit(rows, 4, async (branch) => {
               const summary = await branchSummary(branch.id, { days: meta.days })
               return [branch.id, summary]
@@ -221,6 +224,7 @@ function ManagerOverview() {
           fetchSaleEvents({ start: dateKey(periodStart), end: dateKey(new Date()) }).catch(() => []),
         ])
         if (!active) return
+        setBranches(rows)
         setComparison(periodComparison)
         setSummaries(overviewMetrics.summaries || {})
         setLinePoints(charts.linePoints)

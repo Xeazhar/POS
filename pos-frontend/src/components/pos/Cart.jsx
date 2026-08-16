@@ -31,13 +31,15 @@ function joinPromoNames(names = []) {
 }
 
 /**
- * Briefly waits for the server to assign this sale's real sequential invoice number
+ * Polls for the server to assign this sale's real sequential invoice number
  * (`allocate_or_number`, row-locked per branch — never computed on-device, see
- * buildReceipt's doc comment) so the printed receipt shows it instead of a PENDING
- * placeholder. A live counter cannot make a paying customer wait indefinitely for a
- * network round trip, so this gives up after a few seconds — offline, or if it just
- * doesn't land in time, the receipt falls back to PENDING exactly as before, still
- * reconcilable later via Transactions → Print receipt once the real OR does land.
+ * buildReceipt's doc comment), so the on-screen "Sale complete" banner can upgrade from a
+ * PENDING placeholder to the real one if it lands quickly. Called fire-and-forget — a
+ * paying customer at the counter must never wait on a network round trip, on a slow
+ * connection least of all, so the receipt prints immediately with whatever it has and
+ * this only ever patches state after the fact. If it doesn't land in time (or the sale
+ * was offline), the receipt keeps PENDING exactly as before, reconcilable later via
+ * Transactions → Print receipt once the real OR syncs down.
  */
 async function waitForRealOrNumber(branchId, clientId, { timeoutMs = 4000, intervalMs = 350 } = {}) {
   if (!branchId || !clientId) return null
@@ -452,14 +454,8 @@ function Cart({
         discountIdNote:
           discountType === 'pwd' || discountType === 'senior' ? String(discountIdNote).trim() : null,
       })
-      // Give the server a brief window to assign the real invoice number before showing
-      // "Sale complete" / printing — see waitForRealOrNumber's doc comment. This is why the
-      // Processing-payment overlay stays up a beat longer on an online sale; offline it
-      // returns immediately and nothing here changes.
-      const realOrNumber = await waitForRealOrNumber(user?.branchId, saved?.id)
       const change = Math.max(0, cash - payTotal)
-      const orLabel =
-        realOrNumber || saved?.orNumber || `PENDING-${String(saved?.id || '').slice(0, 8)}`
+      const orLabel = saved?.orNumber || `PENDING-${String(saved?.id || '').slice(0, 8)}`
       const saleOrderType = isRestaurant ? orderType : undefined
 
       clear()
@@ -477,6 +473,13 @@ function Cart({
         paymentMethod,
       })
 
+      // Fire-and-forget: upgrade the banner from PENDING to the real OR if it lands while
+      // the overlay is still up. Never awaited — see waitForRealOrNumber's doc comment.
+      waitForRealOrNumber(user?.branchId, saved?.id).then((realOrNumber) => {
+        if (!realOrNumber) return
+        setPaidResult((prev) => (prev && prev.orNumber === orLabel ? { ...prev, orNumber: realOrNumber } : prev))
+      })
+
       const branchHeader =
         (await fetchBranchFiscalHeader(user?.branchId)) || {
           name: user?.branchName,
@@ -488,7 +491,7 @@ function Cart({
         user,
         transaction: {
           ...saved,
-          orNumber: realOrNumber || saved?.orNumber || null,
+          orNumber: saved?.orNumber || null,
           tendered: cash,
           change,
           total: payTotal,

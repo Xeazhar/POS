@@ -106,7 +106,12 @@ export function useAppVersion({ safeToReload = true, autoReload = true } = {}) {
     const onVisible = () => {
       if (document.visibilityState === 'visible') void check()
     }
-    const timer = window.setInterval(check, POLL_MS)
+    // While hidden nobody can see the update banner anyway, and `onVisible` below already
+    // re-checks the instant the tab comes back — so skip the tick rather than spending a
+    // request confirming a deploy nobody's there to be told about.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') void check()
+    }, POLL_MS)
     document.addEventListener('visibilitychange', onVisible)
     // `focus` as well as `visibilitychange`: an installed PWA brought back from the app
     // switcher does not always fire a visibility change on every platform, and resuming

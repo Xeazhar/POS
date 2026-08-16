@@ -11,6 +11,7 @@ export const ROLES = {
 
 export const MODULES = [
   { id: 'dashboard', label: 'Dashboard' },
+  { id: 'cashier_dashboard', label: 'Cashier dashboard' },
   { id: 'pos', label: 'POS' },
   { id: 'transactions', label: 'Transactions' },
   { id: 'inventory', label: 'Inventory / Menu' },
@@ -24,6 +25,7 @@ export const MODULES = [
   { id: 'manager_data', label: 'Data' },
   { id: 'manager_promos', label: 'Promos' },
   { id: 'manager_reports', label: 'Reports' },
+  { id: 'manager_announcements', label: 'Announcements' },
 ]
 
 /** Settings is available to every signed-in role. Not listed in MODULES — it is not
@@ -36,7 +38,7 @@ const DEFAULTS = {
   // branch revenue and edit stock as a matter of course — access nobody had decided to
   // grant, it was just the default. Anyone who genuinely needs more gets it per-person,
   // and the Staff page now flags that as "Elevated" so the exception stays visible.
-  cashier: ['pos', 'transactions', 'day_end'],
+  cashier: ['pos', 'transactions', 'day_end', 'cashier_dashboard'],
   supervisor: [
     'dashboard',
     'pos',
@@ -55,6 +57,7 @@ const DEFAULTS = {
     'manager_data',
     'manager_promos',
     'manager_reports',
+    'manager_announcements',
     'shifts',
     'devices',
     // A cashier's "request manager" day-end (no supervisor available) needs a manager to
@@ -69,6 +72,7 @@ const DEFAULTS = {
     'manager_data',
     'manager_promos',
     'manager_reports',
+    'manager_announcements',
     'shifts',
     'devices',
     'day_end',
@@ -88,6 +92,7 @@ const DEFAULTS = {
     'manager_data',
     'manager_promos',
     'manager_reports',
+    'manager_announcements',
   ],
 }
 

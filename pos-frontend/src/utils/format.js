@@ -26,6 +26,25 @@ export function greetingFor(user) {
   return first ? `${part}, ${first}` : part
 }
 
+/** Formats a shift timestamp as a localized abbreviated date and time, or `—` if missing/invalid. */
+export function formatShiftWhen(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+/** Elapsed time between shift start and end (or now), as "45m" / "2h 05m", or `—` if missing/invalid/reversed. */
+export function formatShiftDuration(clockIn, clockOut = null, nowMs = Date.now()) {
+  if (!clockIn) return '—'
+  const start = new Date(clockIn).getTime()
+  const end = clockOut ? new Date(clockOut).getTime() : nowMs
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return '—'
+  const mins = Math.round((end - start) / 60000)
+  const h = Math.floor(mins / 60)
+  return h <= 0 ? `${mins}m` : `${h}h ${String(mins % 60).padStart(2, '0')}m`
+}
+
 export const qty = (value, unit) => {
   const amount = Number(value || 0).toFixed(2)
   return unit ? `${amount} ${unit}` : amount

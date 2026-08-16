@@ -224,6 +224,21 @@ migrate_cash_movement_self_approve.sql         -- put last: needs migrate_cash_m
                                                 -- their OWN Open Drawer activity is cleanly
                                                 -- 'approved' with no PIN/flag; cashiers still need
                                                 -- real dual control. Safe to re-run.
+migrate_announcements.sql                      -- announcements table (manager-authored, branch or
+                                                -- network-wide) + staff.announcements_seen_at +
+                                                -- mark_announcements_seen(); read by CashierDashboard.jsx,
+                                                -- authored on ManagerAnnouncements.jsx
+migrate_announcements_backfill_permissions.sql -- needs migrate_announcements.sql above; grants
+                                                -- cashier_dashboard / manager_announcements to
+                                                -- pre-existing staff rows whose permissions array
+                                                -- predates those modules (see file header). Safe
+                                                -- to re-run
+migrate_terminal_report_old_grand_total_rpc.sql -- sum_completed_sales_before(branch, before) —
+                                                -- server-side SUM for the Terminal/X/Z report's
+                                                -- "Old Grand Total", replacing a client-side pull
+                                                -- of every completed sale in the branch's history.
+                                                -- api.js falls back to the old query if this isn't
+                                                -- applied yet, so it's safe to apply independently
 ```
 
 **Dev wipe (optional, non-user data only):** `wipe_non_user_data.sql` truncates sales/inventory/promos/shifts/drawer while **keeping** `staff`, `branches`, `roles`, `company_profile`, and Auth users. Run on DEV before cleanup if you want a clean slate.
@@ -289,6 +304,7 @@ branches
   ├─ cash_movements (petty/pickup during open shift; POS Open Drawer)
   ├─ till_action_requests (cart line remove remote approve)
   ├─ branch_presence, branch_devices
+  ├─ announcements (branch-scoped or NULL = network-wide; manager-authored)
   └─ sale_events, audit_events (BIR / audit)
 
 pin_login_attempts   ← lockout only (no client access; security definer RPCs)
