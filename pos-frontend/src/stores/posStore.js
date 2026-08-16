@@ -10,6 +10,7 @@ import {
   QUEUE_TYPES,
   readBranchSnapshot,
   setSyncBranchId,
+  subscribeSync,
   syncBranch,
   upsertLocalSale,
   patchLocalTransaction,
@@ -111,7 +112,7 @@ export const useAuthStore = create(persist((set, get) => ({
 
       const sessionId = api.getOrCreateDeviceSessionId()
       try {
-        await api.claimStaffSession(user.id, sessionId)
+        await api.claimStaffSession()
       } catch (claimErr) {
         await api.signOut().catch(() => {})
         throw claimErr
@@ -142,10 +143,9 @@ export const useAuthStore = create(persist((set, get) => ({
     try {
       // Tab/browser was closed (or crashed with close mark) — never auto-login.
       //
-      // Deliberately NOT calling api.clearDeviceSessionId() here: this device's id lives
-      // in localStorage precisely so it survives the closed tab, and the next login()
-      // reuses it — claim_staff_session's same-device branch then self-heals instantly
-      // instead of colliding with the still-held server-side claim for up to 15 minutes.
+      // Deliberately NOT calling api.clearDeviceSessionId() here: this device's id is also
+      // used as the till/device fingerprint on sale and void-approval payloads
+      // (Cart.jsx/CartRemoveApprove.jsx) — unrelated to session security, keep it stable.
       if (consumeBrowserClosedFlag()) {
         clearAuthSessionStorage()
         if (isOnline()) await api.signOut().catch(() => {})
@@ -194,16 +194,22 @@ export const useAuthStore = create(persist((set, get) => ({
       if (user?.id && isOnline()) {
         const sessionId = user.deviceSessionId || api.getOrCreateDeviceSessionId()
         try {
-          await api.claimStaffSession(user.id, sessionId)
+          // Verify-only: a plain reload keeps the same JWT session_id, so this succeeds for
+          // a device that's still legitimately holding the claim. It must NOT re-steal the
+          // session — that would let a mere page refresh silently take it back from whoever
+          // holds it now, defeating eviction entirely.
+          await api.heartbeatStaffSession()
           user = { ...user, deviceSessionId: sessionId }
           await saveLocalSession(user)
           set({ user, booting: false, deviceSessionId: sessionId })
-        } catch (claimErr) {
+        } catch (verifyErr) {
           await api.signOut().catch(() => {})
           await clearLocalSession()
-          api.clearDeviceSessionId()
           await api.clearManagerUnlockSecret().catch(() => {})
-          set({ user: null, booting: false, error: claimErr.message, screenLocked: false })
+          const message = api.isSessionRevokedError(verifyErr)
+            ? appError('AUTH11').message
+            : verifyErr.message
+          set({ user: null, booting: false, error: message, screenLocked: false })
           return null
         }
       } else {
@@ -282,7 +288,44 @@ export const useAuthStore = create(persist((set, get) => ({
     // re-login asking the cashier to count the change fund a second time.
     useShiftStore.getState().forget()
   },
+  /** Forced kick: this device's session was evicted by a login elsewhere (heartbeat,
+   *  realtime notice, or a rejected sync push all funnel here). Mirrors logout()'s cleanup
+   *  but does NOT call releaseStaffSession — the session it would try to release already
+   *  belongs to whoever evicted us, and release_staff_session() only clears a session that
+   *  still matches the caller, so it would be a safe no-op anyway; skipped for clarity.
+   *  Does not emit its own audit event — claim_staff_session() already recorded
+   *  'session_replaced' server-side at the moment of eviction, which is the authoritative,
+   *  tamper-resistant trail (this device may be offline or the tab may just be closed).
+   */
+  sessionRevoked: async () => {
+    useCartStore.getState().clear()
+    set({
+      user: null,
+      screenLocked: false,
+      deviceSessionId: null,
+      loginIntroUser: null,
+      error: appError('AUTH11').message,
+      booting: false,
+    })
+    if (api.hasSupabase && isOnline()) await api.signOut().catch(() => {})
+    await clearLocalSession()
+    api.clearDeviceSessionId()
+    await api.clearManagerUnlockSecret().catch(() => {})
+    setSyncBranchId(null)
+    useShiftStore.getState().forget()
+  },
 }), { name: 'cale-pos-auth-v4', partialize: (state) => ({ user: api.hasSupabase ? null : state.user }) }))
+
+let sessionRevokedWatcherBound = false
+/** Wires the offline sync engine's sessionRevoked signal (Task 5, syncEngine.js) to the
+ *  forced-logout action above. Call once from App.jsx, alongside bindSyncStore(). */
+export function bindSessionRevokedWatcher() {
+  if (sessionRevokedWatcherBound) return
+  sessionRevokedWatcherBound = true
+  subscribeSync((state) => {
+    if (state.sessionRevoked) void useAuthStore.getState().sessionRevoked()
+  })
+}
 
 export const useCartStore = create(persist((set, get) => ({
   items: [],
