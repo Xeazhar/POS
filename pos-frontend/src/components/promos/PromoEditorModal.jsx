@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FiPlus } from 'react-icons/fi'
+import { FiPlus, FiRefreshCw } from 'react-icons/fi'
 import {
-  bootstrapBranchData,
+  bootstrapPosCatalog,
+  createPromoAcrossBranches,
   createPromoRule,
   createPromoWithRules,
   deletePromoRule,
   fetchPromoRulesForEvent,
   updatePromoEventDetails,
 } from '../../lib/api'
+import { formatSupportError } from '../../utils/errors'
+import { expandPromoRuleRows } from '../../utils/promo'
 import {
   Eyebrow,
   Field,
@@ -19,7 +22,7 @@ import {
   tableHeadClass,
 } from '../ui'
 
-function ProductMultiSelect({ products, selected, onChange, label, hint }) {
+function ProductMultiSelect({ products, selected, onChange, label, hint, invalid = false }) {
   const [search, setSearch] = useState('')
   const term = search.trim().toLowerCase()
   const visible = term
@@ -82,7 +85,6 @@ function ProductMultiSelect({ products, selected, onChange, label, hint }) {
               key={p.id}
               type="button"
               className="rounded-full border border-brand-line bg-brand-n100 px-2 py-0.5 text-[10px] text-brand-ink"
-              title="Remove from selection"
               onClick={() => toggle(p.id, false)}
             >
               {p.name} ×
@@ -91,12 +93,14 @@ function ProductMultiSelect({ products, selected, onChange, label, hint }) {
         </div>
       )}
       <input
-        className="mb-2 w-full rounded border border-brand-line bg-white p-2 text-xs text-brand-ink outline-none"
+        className="mb-2 w-full rounded border border-brand-line bg-brand-card p-2 text-xs text-brand-ink outline-none"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         placeholder="Search name or SKU…"
       />
-      <div className="max-h-[200px] overflow-auto rounded border border-brand-softline bg-white p-2.5">
+      <div
+        className={`max-h-[200px] overflow-auto rounded border bg-brand-card p-2.5 ${invalid ? 'border-brand-danger' : 'border-brand-softline'}`}
+      >
         {visible.map((p) => (
           <label key={p.id} className="flex cursor-pointer items-center justify-between gap-3 py-1.5 text-xs">
             <span className="min-w-0 truncate">
@@ -113,9 +117,17 @@ function ProductMultiSelect({ products, selected, onChange, label, hint }) {
           <div className="py-3 text-center text-[11px] text-brand-subtle">No products match that search.</div>
         )}
       </div>
+      {invalid && <div className="mt-2 text-[10px] font-semibold text-brand-danger">Required — select at least one product.</div>}
       {hint && <div className="mt-2 text-[11px] text-brand-subtle">{hint}</div>}
     </div>
   )
+}
+
+const RULE_TYPE_LABELS = {
+  item_pct: 'individual item %',
+  pair_pct: 'pair %',
+  bundle_pct: 'bundle %',
+  bogo_pct: 'buy-1-take-1',
 }
 
 function localDateTimeValue(date) {
@@ -165,8 +177,12 @@ export default function PromoEditorModal({
   const [startsAt, setStartsAt] = useState('')
   const [endsAt, setEndsAt] = useState('')
   const [busy, setBusy] = useState(false)
+  const [busyLabel, setBusyLabel] = useState('')
   const [localError, setLocalError] = useState('')
   const [ruleError, setRuleError] = useState('')
+  const [formAttempted, setFormAttempted] = useState(false)
+  const [ruleAttempted, setRuleAttempted] = useState(false)
+  const [extraBranchIds, setExtraBranchIds] = useState([])
 
   const [serverRules, setServerRules] = useState([])
   const [stagedRules, setStagedRules] = useState([])
@@ -197,6 +213,10 @@ export default function PromoEditorModal({
 
     setLocalError('')
     setRuleError('')
+    setBusyLabel('')
+    setFormAttempted(false)
+    setRuleAttempted(false)
+    setExtraBranchIds([])
     setBranchId(initialBranchId || event?.branch_id || '')
     setEventName(event?.name || '')
     setEventDescription(event?.description || '')
@@ -222,7 +242,7 @@ export default function PromoEditorModal({
         if (!cancelled) setServerRules(rules)
       })
       .catch((e) => {
-        if (!cancelled) setLocalError(e?.message || 'Failed to load promo rules.')
+        if (!cancelled) setLocalError(formatSupportError(e, 'PROMO07'))
       })
     return () => {
       cancelled = true
@@ -239,14 +259,18 @@ export default function PromoEditorModal({
     }
     let cancelled = false
     setProductsBusy(true)
-    bootstrapBranchData(effectiveBranchId)
+    // Only data.products is ever read below — bootstrapPosCatalog (products/inventory/
+    // categories/branch only) gets the same result at a fraction of bootstrapBranchData's
+    // payload, which also pulls up to 200 recent transactions + 500 stock movements +
+    // day-ends this modal never uses (see egress audit, 2026-08-15).
+    bootstrapPosCatalog(effectiveBranchId)
       .then((data) => {
         if (!cancelled) setCatalogProducts(data.products || [])
       })
       .catch((e) => {
         if (!cancelled) {
           setCatalogProducts([])
-          setLocalError(e?.message || 'Failed to load branch products.')
+          setLocalError(formatSupportError(e, 'PROMO07'))
         }
       })
       .finally(() => {
@@ -266,6 +290,14 @@ export default function PromoEditorModal({
     return productList
   }, [ruleType, productList])
 
+  // Inactive branches don't run a live catalog to match SKUs against — offering them here
+  // just produces a guaranteed "no matching products" skip. `is_active` may be absent on
+  // demo/legacy branch rows; treat missing as active rather than hiding everything.
+  const otherActiveBranches = useMemo(
+    () => branches.filter((b) => b.id !== effectiveBranchId && b.is_active !== false),
+    [branches, effectiveBranchId],
+  )
+
   const selectedProductsForRule = useMemo(() => {
     if (ruleType === 'item_pct') return itemSelected
     if (ruleType === 'bogo_pct') return [productSingle].filter(Boolean)
@@ -277,16 +309,22 @@ export default function PromoEditorModal({
   const allRules = isEdit ? serverRules : stagedRules
   const ruleCount = allRules.length
 
-  const usedProductIds = useMemo(() => {
-    const ids = new Set()
+  // Scoped per rule type — a product can sit in an item_pct rule AND a pair_pct rule AND a
+  // bundle_pct rule at once (computePromoDiscounts resolves overlaps at checkout by taking
+  // the best line discount, never stacking). Only a second rule of the SAME type for the
+  // same product is ambiguous authoring, so that's the only combination blocked here.
+  const usedProductIdsByType = useMemo(() => {
+    const map = new Map()
     for (const r of allRules) {
+      const set = map.get(r.ruleType) || new Set()
       for (const p of r.products || []) {
-        if (p.productId) ids.add(p.productId)
-        else if (typeof p === 'string') ids.add(p)
+        if (p.productId) set.add(p.productId)
+        else if (typeof p === 'string') set.add(p)
       }
-      for (const pid of r.productIds || []) ids.add(pid)
+      for (const pid of r.productIds || []) set.add(pid)
+      map.set(r.ruleType, set)
     }
-    return ids
+    return map
   }, [allRules])
 
   const resetRuleForm = () => {
@@ -297,12 +335,14 @@ export default function PromoEditorModal({
     setBundleName('')
     setItemSelected([])
     setRuleError('')
+    setRuleAttempted(false)
   }
 
   const formatProductNames = (ids) =>
     ids.map((id) => productList.find((p) => p.id === id)?.name || id).join(', ')
 
   const handleAddRule = async () => {
+    setRuleAttempted(true)
     if (!selectedProductsForRule.length) {
       setRuleError('Select at least one product for this rule.')
       return
@@ -326,16 +366,18 @@ export default function PromoEditorModal({
       }
     }
 
-    const duplicates = selectedProductsForRule.filter((id) => usedProductIds.has(id))
+    const usedForType = usedProductIdsByType.get(ruleType) || new Set()
+    const duplicates = selectedProductsForRule.filter((id) => usedForType.has(id))
     if (duplicates.length) {
       setRuleError(
-        `${formatProductNames(duplicates)} already ${duplicates.length > 1 ? 'have' : 'has'} a rule on this promo — remove the existing rule or pick other products.`,
+        `${formatProductNames(duplicates)} already ${duplicates.length > 1 ? 'have' : 'has'} a ${RULE_TYPE_LABELS[ruleType] || 'matching'} rule on this promo — remove the existing rule or pick other products. A different rule type is fine (e.g. also in a pair or bundle).`,
       )
       return
     }
 
     setRuleError('')
     setBusy(true)
+    setBusyLabel('Adding rule…')
     try {
       const rulePayload = {
         ruleType,
@@ -369,14 +411,16 @@ export default function PromoEditorModal({
       }
       resetRuleForm()
     } catch (e) {
-      setRuleError(e?.message || 'Failed to add promo rule.')
+      setRuleError(formatSupportError(e, 'PROMO02'))
     } finally {
       setBusy(false)
+      setBusyLabel('')
     }
   }
 
   const handleDeleteRule = async (rule) => {
     setBusy(true)
+    setBusyLabel('Removing rule…')
     setLocalError('')
     try {
       if (isEdit) {
@@ -386,13 +430,20 @@ export default function PromoEditorModal({
         setStagedRules((prev) => prev.filter((r) => r.localId !== rule.localId))
       }
     } catch (e) {
-      setLocalError(e?.message || 'Failed to delete promo rule.')
+      setLocalError(formatSupportError(e, 'PROMO02'))
     } finally {
       setBusy(false)
+      setBusyLabel('')
     }
   }
 
   const handleSubmit = async () => {
+    setFormAttempted(true)
+    // Submitting the promo abandons whatever partial rule is still sitting in the "add rule"
+    // staging fields — clear its attempted-validation flag too, or a product picker left
+    // empty from an earlier "Add rule" click stays red here even though that draft was never
+    // going to be included.
+    setRuleAttempted(false)
     const targetBranch = effectiveBranchId
     if (!targetBranch) {
       setLocalError('Select a branch before creating a promo.')
@@ -412,10 +463,13 @@ export default function PromoEditorModal({
       return
     }
 
+    const branchName = (id) => branches.find((b) => b.id === id)?.name || id
+
     setBusy(true)
     setLocalError('')
     try {
       if (isEdit) {
+        setBusyLabel('Saving changes…')
         await updatePromoEventDetails({
           promoEventId: event.id,
           name: eventName.trim(),
@@ -423,7 +477,47 @@ export default function PromoEditorModal({
           startsAt,
           endsAt,
         })
+        onSaved?.()
+      } else if (extraBranchIds.length > 0) {
+        setBusyLabel(`Creating on ${branchName(targetBranch)}…`)
+        const results = await createPromoAcrossBranches({
+          branchIds: [targetBranch, ...extraBranchIds],
+          name: eventName.trim(),
+          description: eventDescription.trim() || null,
+          startsAt,
+          endsAt,
+          staffId,
+          rules: stagedRules.map((r) => ({
+            ruleType: r.ruleType,
+            discountPct: r.discountPct,
+            buyQty: r.buyQty,
+            getQty: r.getQty,
+            bundleName: r.bundleName,
+            skus: (r.products || []).map((p) => p.sku).filter(Boolean),
+          })),
+          onProgress: ({ branchId, index, total }) =>
+            setBusyLabel(`Creating on ${branchName(branchId)} (${index + 1}/${total})…`),
+        })
+        const created = results.filter((r) => r.status === 'created')
+        const skipped = results.filter((r) => r.status === 'skipped')
+        const errored = results.filter((r) => r.status === 'error')
+        if (!created.length) {
+          throw new Error(
+            `Could not create the promo on any selected branch — ${[...skipped, ...errored]
+              .map((r) => `${branchName(r.branchId)}: ${r.reason || r.error}`)
+              .join('; ')}`,
+          )
+        }
+        const parts = [`Created on ${created.length} of ${results.length} branch${results.length === 1 ? '' : 'es'}.`]
+        if (skipped.length) {
+          parts.push(`Skipped (no matching products): ${skipped.map((r) => branchName(r.branchId)).join(', ')}.`)
+        }
+        if (errored.length) {
+          parts.push(`Failed: ${errored.map((r) => `${branchName(r.branchId)} (${r.error})`).join('; ')}.`)
+        }
+        onSaved?.(parts.join(' '))
       } else {
+        setBusyLabel(managerView ? 'Creating promo…' : 'Submitting for approval…')
         await createPromoWithRules({
           branchId: targetBranch,
           name: eventName.trim(),
@@ -440,15 +534,16 @@ export default function PromoEditorModal({
             bundleName: r.bundleName,
           })),
         })
+        onSaved?.()
       }
-      onSaved?.()
       onClose?.()
     } catch (e) {
-      const msg = e?.message || 'Failed to save promo.'
+      const msg = formatSupportError(e, isEdit ? 'PROMO03' : 'PROMO01')
       setLocalError(msg)
       onError?.(msg)
     } finally {
       setBusy(false)
+      setBusyLabel('')
     }
   }
 
@@ -475,16 +570,21 @@ export default function PromoEditorModal({
       </p>
 
       {(localError) && (
-        <div className="mt-3 rounded-md border border-brand-danger bg-white px-3 py-2 text-xs text-brand-danger">
+        <div className="mt-3 rounded-md border border-brand-danger bg-brand-card px-3 py-2 text-xs text-brand-danger">
           {localError}
         </div>
       )}
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         {showBranchPicker && (
-          <SelectField label="Branch" value={branchId} onChange={(e) => setBranchId(e.target.value)}>
+          <SelectField
+            label="Branch"
+            value={branchId}
+            onChange={(e) => setBranchId(e.target.value)}
+            error={formAttempted && !branchId ? 'Required' : ''}
+          >
             <option value="">Select a branch…</option>
-            {branches.map((b) => (
+            {branches.filter((b) => b.is_active !== false).map((b) => (
               <option key={b.id} value={b.id}>
                 {b.name}
               </option>
@@ -496,6 +596,7 @@ export default function PromoEditorModal({
           value={eventName}
           onChange={(e) => setEventName(e.target.value)}
           placeholder="e.g. Valentines"
+          error={formAttempted && !eventName.trim() ? 'Required' : ''}
         />
         <label className="block text-xs sm:col-span-2">
           <div className="mb-1 font-bold text-brand-muted">Description (optional)</div>
@@ -504,7 +605,7 @@ export default function PromoEditorModal({
             value={eventDescription}
             onChange={(e) => setEventDescription(e.target.value)}
             placeholder="What is this promo about?"
-            className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+            className="w-full rounded border border-brand-line bg-brand-card p-2.5 text-brand-ink outline-none"
           />
         </label>
         <label className="block text-xs">
@@ -514,8 +615,9 @@ export default function PromoEditorModal({
             value={startsAt}
             min={isEdit ? undefined : localDateTimeValue(new Date())}
             onChange={(e) => setStartsAt(e.target.value)}
-            className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+            className={`w-full rounded border bg-brand-card p-2.5 text-brand-ink outline-none ${formAttempted && !startsAt ? 'border-brand-danger' : 'border-brand-line'}`}
           />
+          {formAttempted && !startsAt && <span className="mt-1 block text-[10px] font-semibold text-brand-danger">Required</span>}
         </label>
         <label className="block text-xs">
           <div className="mb-1 font-bold text-brand-muted">Ends at</div>
@@ -523,9 +625,40 @@ export default function PromoEditorModal({
             type="datetime-local"
             value={endsAt}
             onChange={(e) => setEndsAt(e.target.value)}
-            className="w-full rounded border border-brand-line bg-white p-2.5 text-brand-ink outline-none"
+            className={`w-full rounded border bg-brand-card p-2.5 text-brand-ink outline-none ${formAttempted && !endsAt ? 'border-brand-danger' : 'border-brand-line'}`}
           />
+          {formAttempted && !endsAt && <span className="mt-1 block text-[10px] font-semibold text-brand-danger">Required</span>}
         </label>
+        {showBranchPicker && effectiveBranchId && otherActiveBranches.length > 0 && (
+          <div className="sm:col-span-2">
+            <div className="mb-1 text-xs font-bold text-brand-n700">
+              Also create on
+              {extraBranchIds.length > 0 && (
+                <span className="ml-1 text-brand-subtle">· {extraBranchIds.length} more branch{extraBranchIds.length > 1 ? 'es' : ''}</span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5 rounded border border-brand-softline bg-brand-card p-2.5">
+              {otherActiveBranches.map((b) => (
+                  <label key={b.id} className="flex cursor-pointer items-center gap-1.5 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={extraBranchIds.includes(b.id)}
+                      onChange={(e) => {
+                        setExtraBranchIds((prev) =>
+                          e.target.checked ? [...prev, b.id] : prev.filter((id) => id !== b.id),
+                        )
+                      }}
+                    />
+                    {b.name}
+                  </label>
+                ))}
+            </div>
+            <div className="mt-1 text-[11px] text-brand-subtle">
+              Same name, dates, and rules — products are matched by SKU on each branch; a branch
+              missing a product just skips it for that branch.
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="mt-5">
@@ -544,27 +677,32 @@ export default function PromoEditorModal({
                 </tr>
               </thead>
               <tbody>
-                {allRules.map((r) => (
-                  <tr key={r.id || r.localId} className="border-t border-brand-softline">
+                {expandPromoRuleRows(allRules).map((r) => (
+                  <tr key={r.key} className="border-t border-brand-softline">
                     <td className="px-3 py-2 font-bold text-brand-ink">
                       {r.ruleType}
                       {r.bundleName && <span className="block font-normal text-brand-subtle">{r.bundleName}</span>}
                     </td>
                     <td className="px-3 py-2">{r.discountPct}% off</td>
                     <td className="px-3 py-2">
-                      {(r.products || [])
-                        .map((p) => `${p.productName || p.productId}${p.sku ? ` (${p.sku})` : ''}`)
-                        .join(', ')}
+                      {(r.products || []).map((p, idx) => (
+                        <span key={p.productId || idx} className="block">
+                          {p.productName || p.productId}
+                          {p.sku ? ` (${p.sku})` : ''}
+                        </span>
+                      ))}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <button
-                        type="button"
-                        className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
-                        disabled={busy}
-                        onClick={() => void handleDeleteRule(r)}
-                      >
-                        Delete
-                      </button>
+                      {r.isFirstOfGroup && (
+                        <button
+                          type="button"
+                          className="border-0 bg-transparent text-xs font-bold text-brand-ink underline"
+                          disabled={busy}
+                          onClick={() => void handleDeleteRule(r)}
+                        >
+                          Delete
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -594,6 +732,7 @@ export default function PromoEditorModal({
             onChange={(e) => {
               setRuleType(e.target.value)
               setRuleError('')
+              setRuleAttempted(false)
             }}
           >
             <option value="item_pct">Individual item % off</option>
@@ -616,7 +755,8 @@ export default function PromoEditorModal({
                 setItemSelected(ids)
                 setRuleError('')
               }}
-              hint="Every ticked product gets this % off. Each product can only appear in one rule."
+              hint="Every ticked product gets this % off. A product can also sit in a pair/bundle/BOGO rule — they just won't stack at checkout."
+              invalid={ruleAttempted && itemSelected.length === 0}
             />
           )}
           {ruleType === 'bogo_pct' && (
@@ -627,6 +767,7 @@ export default function PromoEditorModal({
                 setProductSingle(e.target.value || null)
                 setRuleError('')
               }}
+              error={ruleAttempted && !productSingle ? 'Required' : ''}
             >
               <option value="">Select product…</option>
               {eligibleProducts.map((p) => (
@@ -638,7 +779,12 @@ export default function PromoEditorModal({
           )}
           {ruleType === 'pair_pct' && (
             <>
-              <SelectField label="Product A" value={productA || ''} onChange={(e) => { setProductA(e.target.value || null); setRuleError('') }}>
+              <SelectField
+                label="Product A"
+                value={productA || ''}
+                onChange={(e) => { setProductA(e.target.value || null); setRuleError('') }}
+                error={ruleAttempted && !productA ? 'Required' : ''}
+              >
                 <option value="">Select…</option>
                 {eligibleProducts.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -646,7 +792,12 @@ export default function PromoEditorModal({
                   </option>
                 ))}
               </SelectField>
-              <SelectField label="Product B" value={productB || ''} onChange={(e) => { setProductB(e.target.value || null); setRuleError('') }}>
+              <SelectField
+                label="Product B"
+                value={productB || ''}
+                onChange={(e) => { setProductB(e.target.value || null); setRuleError('') }}
+                error={ruleAttempted && !productB ? 'Required' : ''}
+              >
                 <option value="">Select…</option>
                 {eligibleProducts.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -663,6 +814,7 @@ export default function PromoEditorModal({
                 value={bundleName}
                 onChange={(e) => setBundleName(e.target.value)}
                 placeholder="e.g. Meryenda Bundle"
+                error={ruleAttempted && !bundleName.trim() ? 'Required' : ''}
               />
               <ProductMultiSelect
                 label="Bundle products"
@@ -673,6 +825,7 @@ export default function PromoEditorModal({
                   setRuleError('')
                 }}
                 hint={bundleSelected.length < 2 ? 'Select at least 2 products for a bundle.' : null}
+                invalid={ruleAttempted && bundleSelected.length < 2}
               />
             </>
           )}
@@ -691,12 +844,7 @@ export default function PromoEditorModal({
           <SecondaryButton
             compact
             type="button"
-            disabled={
-              busy ||
-              !selectedProductsForRule.length ||
-              (ruleType === 'bundle_pct' && (!bundleName.trim() || bundleSelected.length < 2)) ||
-              (ruleType === 'pair_pct' && selectedProductsForRule.length < 2)
-            }
+            disabled={busy}
             onClick={() => void handleAddRule()}
           >
             <FiPlus className="mr-1" />
@@ -706,13 +854,19 @@ export default function PromoEditorModal({
       </div>
 
       <ModalActions>
+        {busy && (
+          <div className="mr-auto flex items-center gap-1.5 text-xs font-semibold text-brand-subtle">
+            <FiRefreshCw className="animate-spin" size={13} />
+            {busyLabel || 'Working…'}
+          </div>
+        )}
         <SecondaryButton compact type="button" disabled={busy} onClick={() => onClose?.()}>
           Cancel
         </SecondaryButton>
         <PrimaryButton
           compact
           type="button"
-          disabled={busy || !eventName.trim() || !startsAt || !endsAt || ruleCount < 1 || (!isEdit && !effectiveBranchId)}
+          disabled={busy || ruleCount < 1}
           onClick={() => void handleSubmit()}
         >
           {busy ? 'Saving…' : isEdit ? 'Save changes' : managerView ? 'Create promo' : 'Submit for approval'}

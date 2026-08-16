@@ -21,7 +21,6 @@ import {
   readBranchSnapshot,
   saveBranchFiscalHeader,
 } from './repository'
-import { seedOrCounter } from './orNumber'
 import { putSupervisorVerifiers } from './supervisorPin'
 import {
   closeLocalShift,
@@ -99,9 +98,6 @@ export async function pullFromRemote(branchId) {
     updatedAt: new Date().toISOString(),
   })
 
-  if (remote.orPrefix != null || remote.orNext != null) {
-    await seedOrCounter(branchId, { orPrefix: remote.orPrefix, orNext: remote.orNext })
-  }
   if (remote.fiscalHeader) {
     await saveBranchFiscalHeader(branchId, remote.fiscalHeader)
   }
@@ -133,6 +129,46 @@ export async function pullFromRemote(branchId) {
     categories: remote.categories || [],
     dayOpenHour: Number(remote.dayOpenHour ?? 7),
   }
+}
+
+/**
+ * Force a full reconciling pull from the server, bypassing `syncBranch()`'s normal
+ * push-first gate — that gate only calls `pullFromRemote` once the outbox is fully
+ * drained, so a device with anything still queued silently keeps showing whatever was
+ * last pulled, no matter how many times "Sync now" or a page reload runs. Needed when the
+ * server changed by a path this app's own sync never sees — e.g. a direct SQL reset done
+ * for testing — and the local IndexedDB cache has no way to know.
+ *
+ * Refuses outright if anything is queued or blocked: that queue is real unsynced work
+ * (open shifts, sales, cash movements not yet on the server), and pulling ahead of it
+ * would make `putTransactions`/`putMovements`/etc. reconcile against a server view that
+ * does not yet include it — see hardReload.js's identical rule for why IndexedDB itself is
+ * never touched directly. Callers should surface the thrown message as-is; it already says
+ * what to do.
+ */
+export async function hardResync(branchId) {
+  if (!branchId) throw new Error('No branch selected.')
+  const [pending, blocked] = await Promise.all([countPending(branchId), countBlocked(branchId)])
+  if (pending > 0 || blocked > 0) {
+    const total = pending + blocked
+    throw new Error(
+      `${total} item${total === 1 ? '' : 's'} still queued on this device — let them sync first, then try again.`,
+    )
+  }
+  if (!(await canSyncWithBackend(true))) {
+    throw new Error('Offline or the server is unreachable — cannot resync right now.')
+  }
+  const result = await pullFromRemote(branchId)
+  // pullFromRemote() only reconciles products/transactions/stock movements/day-ends/open
+  // shifts — cash movements and legacy petty-cash rows are never cached locally at all
+  // (DayEnd.jsx's useDayEndData fetches them live from the server on every mount). They
+  // still go stale on an already-open Day End / Drawer Activity screen the same way
+  // everything else does, so hard resync re-uses the same signal OpenDrawer.jsx already
+  // dispatches on a normal cash movement to make that screen re-fetch.
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('cale-cash-movements-changed'))
+  }
+  return result
 }
 
 /**
@@ -309,14 +345,22 @@ async function pushOne(item) {
       const shiftId = payload.shiftClientId
         ? await requireShiftServerId(payload.shiftClientId)
         : payload.shiftId || null
-      await api.completeSale({
+      const serverTxn = await api.completeSale({
         ...payload,
         shiftId,
         clientId: payload.clientId || payload.localTransactionId || null,
       })
-      // Drop local pending txn; next pull will bring server row
+      // Drop the local optimistic row and write the authoritative server row in its place
+      // immediately — api.completeSale() already returns it fully mapped (mapTransaction()),
+      // the same shape a full branch pull would produce, so there's no gap where this sale is
+      // briefly missing locally, and no need to wait for a full bootstrap re-pull just to make
+      // one sale reappear. This is what makes COMPLETE_SALE eligible in SELF_HEALING_QUEUE_TYPES
+      // below — every other queue type still triggers the normal full reconcile pull.
       if (payload.localTransactionId) {
         await db.transactions.delete(payload.localTransactionId)
+      }
+      if (serverTxn?.id) {
+        await db.transactions.put({ ...serverTxn, branchId, syncStatus: 'synced' })
       }
       return
     }
@@ -397,13 +441,30 @@ async function pushOne(item) {
 /** Max queue items per push tick — keeps checkout/UI responsive after large offline bursts. */
 export const PUSH_BATCH_SIZE = 8
 
+/**
+ * Queue types whose pushOne() case already writes the authoritative server row straight into
+ * Dexie itself (see QUEUE_TYPES.COMPLETE_SALE above) — pushing one of these does NOT by
+ * itself require a following full pullFromRemote() to reconcile. Deliberately narrow: every
+ * other type (void, refund-adjacent, cash movements, stock/product edits, day-end, ...) keeps
+ * triggering the normal full reconcile pull unchanged, since either their pushOne() case
+ * doesn't have server-mapped data to write directly, or the change affects more than one row
+ * (e.g. stock) in a way a single upsert doesn't capture.
+ */
+const SELF_HEALING_QUEUE_TYPES = new Set([QUEUE_TYPES.COMPLETE_SALE])
+
 let drainingQueue = false
 let pushInFlight = false
 
 /** Push pending queue items FIFO. Stops on first hard failure (keeps order). */
 export async function pushQueue(branchId = null, { maxItems = PUSH_BATCH_SIZE } = {}) {
   if (!api.hasSupabase || !(await canSyncWithBackend())) {
-    return { pushed: 0, remaining: await countPending(branchId), blocked: await countBlocked(branchId), error: null }
+    return {
+      pushed: 0,
+      remaining: await countPending(branchId),
+      blocked: await countBlocked(branchId),
+      error: null,
+      pushedOnlySelfHealing: true,
+    }
   }
   if (pushInFlight) {
     return {
@@ -411,6 +472,7 @@ export async function pushQueue(branchId = null, { maxItems = PUSH_BATCH_SIZE } 
       remaining: await countPending(branchId),
       blocked: await countBlocked(branchId),
       error: null,
+      pushedOnlySelfHealing: true,
     }
   }
 
@@ -420,6 +482,7 @@ export async function pushQueue(branchId = null, { maxItems = PUSH_BATCH_SIZE } 
   const pending = await listPending(branchId)
   let pushed = 0
   let error = null
+  let pushedOnlySelfHealing = true
 
   for (const item of pending) {
     if (maxItems != null && pushed >= maxItems) break
@@ -428,6 +491,7 @@ export async function pushQueue(branchId = null, { maxItems = PUSH_BATCH_SIZE } 
       await pushOne(item)
       await markDone(item.id)
       pushed += 1
+      if (!SELF_HEALING_QUEUE_TYPES.has(item.type)) pushedOnlySelfHealing = false
     } catch (err) {
       error = err.message || String(err)
       const { blocked } = await markFailed(item.id, error)
@@ -448,10 +512,33 @@ export async function pushQueue(branchId = null, { maxItems = PUSH_BATCH_SIZE } 
     remaining,
     blocked: await countBlocked(branchId),
     error,
+    pushedOnlySelfHealing,
   }
   } finally {
     pushInFlight = false
   }
+}
+
+/**
+ * Safety-net cadence for the periodic full branch pull triggered by connectivity.js's 30s
+ * queue-drain watchdog. Realtime Broadcast already delivers immediate, branch-scoped,
+ * targeted refetch signals for the common case (src/offline/realtime.js) — this interval
+ * exists only to catch drift if Realtime silently disconnected without a visible status
+ * change. bootstrapBranchData() pulls up to 200 recent transactions + 500 stock movements +
+ * the branch's full active catalog on every call; doing that every 30s regardless of
+ * whether anything changed multiplied that payload ~960x over an 8-hour shift for every
+ * open terminal, for no benefit once Realtime is healthy (egress audit, 2026-08-15).
+ */
+const FULL_PULL_SAFETY_NET_MS = 5 * 60 * 1000
+
+/** Whether the next drainQueueInBackground() call should pay for a full pullFromRemote(). */
+async function needsFullPull(justPushedCount, pushedOnlySelfHealing) {
+  // Pushed at least one non-self-healing write — reconcile immediately (authoritative OR
+  // numbers, other terminals' concurrent changes, etc.). Never skip this case.
+  if (justPushedCount > 0 && !pushedOnlySelfHealing) return true
+  const meta = await db.meta.get(META_KEYS.lastPullAt)
+  if (!meta?.value) return true // never pulled yet this session
+  return Date.now() - new Date(meta.value).getTime() >= FULL_PULL_SAFETY_NET_MS
 }
 
 /**
@@ -471,8 +558,14 @@ export async function drainQueueInBackground(branchId) {
   })
   try {
     let lastPush = { pushed: 0, remaining: await countPending(branchId), error: null }
+    let totalPushed = 0
+    let allPushedOnlySelfHealing = true
     while ((await canSyncWithBackend()) && lastPush.remaining > 0) {
       lastPush = await pushQueue(branchId, { maxItems: PUSH_BATCH_SIZE })
+      totalPushed += lastPush.pushed
+      // AND across every batch this drain cycle ran — one non-self-healing item anywhere in
+      // the cycle means the whole cycle needs a real reconcile pull, not just its last batch.
+      allPushedOnlySelfHealing = allPushedOnlySelfHealing && lastPush.pushedOnlySelfHealing
       emit({
         status: 'syncing',
         online: true,
@@ -488,7 +581,9 @@ export async function drainQueueInBackground(branchId) {
 
     let data = null
     if ((await canSyncWithBackend()) && !lastPush.error) {
-      data = await pullFromRemote(branchId).catch(() => readBranchSnapshot(branchId))
+      data = (await needsFullPull(totalPushed, allPushedOnlySelfHealing))
+        ? await pullFromRemote(branchId).catch(() => readBranchSnapshot(branchId))
+        : await readBranchSnapshot(branchId)
     }
     emit({
       status: lastPush.error ? 'error' : 'idle',

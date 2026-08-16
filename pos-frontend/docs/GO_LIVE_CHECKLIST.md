@@ -48,7 +48,7 @@ app alone does not complete government accreditation or registration.
   - [ ] `VITE_TURNSTILE_SITEKEY`
   - [ ] **Do not** set `VITE_ALLOW_DEMO`
 - [ ] Deploy build (`npm run build` / Wrangler) and confirm login **environment badge is gone** (env is really production)
-- [ ] Revoke broad `anon` / `PUBLIC` EXECUTE on sensitive RPCs when you harden grants (still open from the earlier audit)
+- [x] Revoke broad `anon` / `PUBLIC` EXECUTE on sensitive RPCs — done on Demo and POS-Stress test (2026-08-15); re-verify with `audit_security.sql` on whichever project becomes Production, since grants don't carry over between projects
 
 ---
 

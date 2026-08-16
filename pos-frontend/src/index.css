@@ -4,7 +4,11 @@
 @custom-variant compact (.compact-chrome &);
 
 /*
-  CalePOS design tokens.
+  CalePOS design tokens — original direction: warm neutral canvas, gold accent, always-dark
+  chrome (sidebar/topbar/table headers never flip with Appearance — only canvas, cards, and
+  ink do). Token NAMES are stable across any future rebrand — only values move, so a
+  palette change stays a single-file edit. See `:root[data-theme="dark"]` below for the
+  light/dark Appearance toggle counterpart of the light-canvas tokens.
 
   THE NEUTRAL SCALE IS THE IMPORTANT PART. Before it existed the app used ~90 distinct
   hand-written hex greys — #7a807c, #797e7b, #808581, #7f8782 and so on — colours nobody
@@ -40,15 +44,20 @@
   --color-brand-n800: #4d534f;
   --color-brand-n900: #202426;
 
-  /* Text on the dark sidebar / table headers — the one neutral that lives on a dark
-     ground, so it is named for that job rather than by scale position. */
+  /* Text on the sidebar/topbar/table-header chrome — named for that job rather than by
+     scale position. Chrome (brand-dark / brand-panel below) is always dark regardless of
+     the Appearance toggle, so this pair is a fixed value too — not overridden in
+     `:root[data-theme="dark"]`. */
   --color-brand-ondark: #c8ceca;
   --color-brand-ondark-dim: #8a908c;
 
-  /* Modal / menu scrim. One value everywhere so overlays never stack unevenly. */
+  /* Modal / menu scrim. One value everywhere so overlays never stack unevenly — deliberately
+     NOT theme-aware: a scrim dims the content behind a modal, it isn't chrome, so it stays a
+     dark wash in both Appearance modes. */
   --color-brand-scrim: #202426aa;
 
-  /* Dark chrome (sidebar, POS keypad). Interactive steps above brand-dark/brand-panel. */
+  /* Chrome hover/active steps (sidebar, POS keypad). Chrome is always dark, so these are
+     "slightly lighter than the chrome surface" — fixed values, not theme-aware. */
   --color-brand-dark-inset: #323837;
   --color-brand-dark-hover: #343938;
   --color-brand-dark-active: #3a403f;
@@ -86,6 +95,13 @@
   --color-brand-info-bg: #eef1f6;
 
   --color-brand-gold: #e9b949;
+  /* Text/icons sitting on a SOLID gold fill (buttons, active nav, avatar badges). Gold is
+     light, so dark text reads correctly on it. Invariant — doesn't flip with the
+     Appearance toggle. */
+  --color-brand-on-gold: #1a1d1c;
+  /* Sidebar / topbar / table-header chrome. Always dark, same as NumPad's keypad and the
+     POS cart panel's `cart-*` tones — none of these flip with the Appearance toggle, which
+     only re-themes the canvas/card/ink surfaces below. */
   --color-brand-dark: #202426;
   --color-brand-panel: #292d2e;
   --color-brand-canvas: #f7f7f5;
@@ -100,7 +116,13 @@
   --color-brand-softline: #ecece8;
   --color-brand-border: #d8dad4;
   --color-brand-input: #d0d3cc;
-  --color-brand-search: #ffffff;
+  --color-brand-search: #fbfbf9;
+  /* Generic card/panel/modal/input surface — almost every bordered card, dialog, and
+     form field in the app was hand-written as raw Tailwind `bg-white` before dark mode
+     existed (harmless when the app was light-only; invisible in dark mode otherwise).
+     Deliberately off-white, not pure #fff (matches n50) — a page built from ~90
+     stark-white cards on a barely-different canvas read as glaring. */
+  --color-brand-card: #fbfbf9;
   --color-brand-search-border: #c4c8c1;
   --color-brand-tab: #ecece8;
   --color-brand-success: #3f6b45;
@@ -127,7 +149,74 @@
   --color-brand-cart-input: #353b3a;
   --color-brand-cart-border: #59605d;
   --color-brand-label: #555b58;
-  --font-sans: "Google Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-sans: "Open Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Open Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Dark-mode counterparts for the light-canvas tokens only. Chrome (sidebar/topbar/table
+   headers), the POS cart panel, NumPad, gold accent, sync chip, and meat badge are all
+   fixed-identity and do not appear here — see `docs/CODEMAP.md` → "Design tokens &
+   theming" for the full rationale. */
+:root[data-theme="dark"] {
+  --color-brand-canvas: #121a17;
+  --color-brand-search: #1a2420;
+  --color-brand-card: #1a2420;
+  --color-brand-ink: #eff3f0;
+  --color-brand-text: #eff3f0;
+
+  --color-brand-n50: #17211c;
+  --color-brand-n100: #1d2822;
+  --color-brand-n150: #22302a;
+  --color-brand-n200: #283730;
+  --color-brand-n300: #354740;
+  --color-brand-n400: #4c5e55;
+  --color-brand-n500: #6e8078;
+  --color-brand-n600: #92a398;
+  --color-brand-n700: #b2c1b7;
+  --color-brand-n800: #d2ded6;
+  --color-brand-n900: #f0f5f1;
+
+  --color-brand-slate: #b6c4bb;
+  --color-brand-label: #b6c4bb;
+  --color-brand-muted: #9caca2;
+  --color-brand-eyebrow: #9caca2;
+  --color-brand-subtle: #9caca2;
+  --color-brand-soft: #8b9990;
+
+  --color-brand-line: #33443c;
+  --color-brand-softline: #293830;
+  --color-brand-tab: #293830;
+  --color-brand-border: #3c4e45;
+  --color-brand-input: #37473f;
+  --color-brand-search-border: #3c4e45;
+
+  --color-brand-sheet: #5c6c62;
+  --color-brand-sheet-line: #3c4c44;
+  --color-brand-sheet-head: #22302a;
+  --color-brand-sheet-alt: #1a2420;
+
+  --color-brand-success: #7fb287;
+  --color-brand-success-bg: #1f2e22;
+  --color-brand-success-text: #a9d1af;
+  --color-brand-success-line: #4b6b52;
+  --color-brand-success-tint: #16211b;
+
+  --color-brand-danger: #d9776b;
+  --color-brand-danger-bg: #3a211c;
+  --color-brand-danger-soft: #d9776b;
+  --color-brand-danger-line: #6b3a31;
+  --color-brand-danger-tint: #241714;
+  --color-brand-danger-tint-alt: #241714;
+  --color-brand-danger-deep: #6a4038;
+
+  --color-brand-warn: #d79a4a;
+  --color-brand-warn-bg: #3b2c17;
+  --color-brand-warn-surface: #2e2313;
+  --color-brand-warn-line: #5c4726;
+
+  --color-brand-info: #b9c8c2;
+  --color-brand-info-bg: #22302a;
 }
 
 :root {
@@ -145,7 +234,11 @@
 }
 
 h1,
-h2,
+h2 {
+  font-weight: var(--font-weight-heading);
+  font-family: var(--font-display);
+}
+
 h3 {
   font-weight: var(--font-weight-heading);
 }
@@ -222,11 +315,11 @@ a[href]:active,
 
   /* Soft row / card flash when tapped */
   .tap-row:active {
-    background-color: #f0f1ec !important;
+    background-color: var(--color-brand-n150) !important;
   }
 
   .tap-row-dark:active {
-    background-color: #3a403f !important;
+    background-color: var(--color-brand-dark-active) !important;
   }
 }
 
@@ -256,6 +349,12 @@ input[type="number"] {
 .chart-dot {
   fill: var(--color-brand-dark);
   stroke: var(--color-brand-gold);
+  stroke-width: 2;
+}
+
+.chart-dot--selected {
+  fill: var(--color-brand-gold);
+  stroke: var(--color-brand-dark);
   stroke-width: 2;
 }
 
@@ -353,51 +452,3 @@ input[type="number"] {
   text-security: disc;
 }
 
-/* Context tooltips — hover/focus on desktop; long-press shows native title on touch. */
-[data-tooltip] {
-  position: relative;
-}
-
-[data-tooltip]:not(:disabled):hover::after,
-[data-tooltip]:not(:disabled):focus-visible::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  z-index: 60;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  max-width: min(240px, 70vw);
-  transform: translateX(-50%);
-  padding: 5px 8px;
-  border-radius: 5px;
-  background: var(--color-brand-dark);
-  color: var(--color-brand-ondark);
-  font-size: 11px;
-  font-weight: var(--font-weight-label);
-  line-height: 1.35;
-  text-align: center;
-  white-space: normal;
-  pointer-events: none;
-  box-shadow: 0 4px 14px rgb(32 36 38 / 28%);
-}
-
-[data-tooltip]:not(:disabled):hover::before,
-[data-tooltip]:not(:disabled):focus-visible::before {
-  content: "";
-  position: absolute;
-  z-index: 60;
-  bottom: calc(100% + 2px);
-  left: 50%;
-  transform: translateX(-50%);
-  border: 4px solid transparent;
-  border-top-color: var(--color-brand-dark);
-  pointer-events: none;
-}
-
-@media (hover: none) and (pointer: coarse) {
-  [data-tooltip]:not(:disabled):hover::after,
-  [data-tooltip]:not(:disabled):hover::before,
-  [data-tooltip]:not(:disabled):focus-visible::after,
-  [data-tooltip]:not(:disabled):focus-visible::before {
-    display: none;
-  }
-}

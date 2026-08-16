@@ -25,41 +25,22 @@ function splitModalActions(children) {
 }
 
 /**
- * Derive tooltip text for a shared button from its explicit label sources or string content.
- * @param {Object} options - Button label and tooltip values.
- * @param {string} [options.tooltip] - Explicit tooltip text.
- * @param {string} [options.title] - Fallback title text.
- * @param {*} [options.children] - Button content used as a fallback when it is a string.
- * @param {string} [options['aria-label']] - Accessible label used as a fallback.
- * @return {string|undefined} The selected tooltip text, or `undefined` when no text is available.
- */
-function buttonTooltip({ tooltip, title, children, 'aria-label': ariaLabel }) {
-  if (tooltip) return tooltip
-  if (title) return title
-  if (ariaLabel) return ariaLabel
-  if (typeof children === 'string') return children
-  return undefined
-}
-
-/**
- * Renders a primary-styled button with optional compact sizing and tooltip text.
+ * Renders a primary-styled button with optional compact sizing.
  * @param {string} [className=''] - Additional CSS classes for the button.
  * @param {boolean} [compact=false] - Whether to use the compact button layout.
- * @param {string} [tooltip] - Explicit tooltip text.
- * @param {string} [title] - Fallback tooltip text.
  * @return {JSX.Element} The styled button element.
  */
+// `tooltip`/`title` are still accepted and stripped out here (not spread onto the native
+// button) so a caller passing either doesn't leak a browser tooltip back in.
+// eslint-disable-next-line no-unused-vars
 export function PrimaryButton({ className = '', compact = false, tooltip, title, children, ...props }) {
-  const tip = buttonTooltip({ tooltip, title, children, 'aria-label': props['aria-label'] })
   return (
     <button
-      className={`inline-flex items-center justify-center gap-2 rounded-[5px] border-0 bg-brand-gold font-semibold text-brand-dark hover:brightness-105 active:brightness-97 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:brightness-100 ${
+      className={`inline-flex items-center justify-center gap-2 rounded-[5px] border-0 bg-brand-gold font-semibold text-brand-on-gold hover:brightness-105 active:brightness-97 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:brightness-100 ${
         compact
           ? 'h-10 w-auto min-w-0 px-3 text-xs whitespace-nowrap max-[700px]:h-9 max-[700px]:px-2.5 max-[700px]:text-[11px]'
           : 'w-full px-4 py-[13px] max-[700px]:px-3 max-[700px]:py-3 max-[700px]:text-sm'
       } ${className}`}
-      title={tip}
-      data-tooltip={tip}
       {...props}
     >
       {children}
@@ -68,15 +49,13 @@ export function PrimaryButton({ className = '', compact = false, tooltip, title,
 }
 
 /**
- * Render a secondary-styled button with optional compact sizing and tooltip text.
+ * Render a secondary-styled button with optional compact sizing.
  * @param {string} [className=''] - Additional CSS classes.
  * @param {boolean} [compact=false] - Whether to use compact button dimensions.
- * @param {string} [tooltip] - Explicit tooltip text.
- * @param {string} [title] - Fallback tooltip text.
  * @param {React.ReactNode} children - Button content.
  */
+// eslint-disable-next-line no-unused-vars
 export function SecondaryButton({ className = '', compact = false, tooltip, title, children, ...props }) {
-  const tip = buttonTooltip({ tooltip, title, children, 'aria-label': props['aria-label'] })
   return (
     <button
       className={`inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-brand-n400 bg-brand-n100 font-semibold text-brand-n800 hover:bg-brand-n200 hover:border-brand-n400 active:bg-brand-n300 disabled:cursor-not-allowed disabled:opacity-35 ${
@@ -84,8 +63,6 @@ export function SecondaryButton({ className = '', compact = false, tooltip, titl
           ? 'h-10 w-auto min-w-0 px-3 text-xs whitespace-nowrap max-[700px]:h-9 max-[700px]:px-2.5 max-[700px]:text-[11px]'
           : 'px-3.5 py-[11px] max-[700px]:px-3 max-[700px]:text-sm'
       } ${className}`}
-      title={tip}
-      data-tooltip={tip}
       {...props}
     >
       {children}
@@ -94,23 +71,14 @@ export function SecondaryButton({ className = '', compact = false, tooltip, titl
 }
 
 /**
- * Render an icon-only button with an accessible label and derived tooltip.
+ * Render an icon-only button with an accessible label.
  * @param {string} label - The accessible label for the button.
- * @param {string} [tooltip] - Optional tooltip text.
- * @param {string} [title] - Optional title text used as a tooltip fallback.
  * @param {string} [className=''] - Additional CSS classes.
  */
+// eslint-disable-next-line no-unused-vars
 export function IconButton({ label, tooltip, title, className = '', children, ...props }) {
-  const tip = buttonTooltip({ tooltip, title, 'aria-label': label, children })
   return (
-    <button
-      type="button"
-      className={className}
-      aria-label={label}
-      title={tip ?? label}
-      data-tooltip={tip ?? label}
-      {...props}
-    >
+    <button type="button" className={className} aria-label={label} {...props}>
       {children}
     </button>
   )
@@ -123,7 +91,7 @@ export function IconButton({ label, tooltip, title, className = '', children, ..
  * @param {boolean} secret - Whether to render the input as a secure-entry field.
  * @returns {JSX.Element} The labeled input element.
  */
-export function Field({ label, className = '', inputClassName = '', noSave = false, secret = false, onFocus, type, ...props }) {
+export function Field({ label, className = '', inputClassName = '', noSave = false, secret = false, onFocus, type, error, ...props }) {
   const handleFocus = (e) => {
     if (noSave) e.target.removeAttribute('readonly')
     onFocus?.(e)
@@ -147,11 +115,17 @@ export function Field({ label, className = '', inputClassName = '', noSave = fal
     <label className={`block text-[11px] font-medium text-brand-n700 ${className}`}>
       {label}
       <input
-        className={`mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px] font-normal outline-none ${secret ? 'secure-secret-input ' : ''}${inputClassName}`}
+        className={`mt-[7px] block w-full rounded-[5px] border ${error ? 'border-brand-danger' : 'border-brand-input'} bg-brand-card p-2.5 text-[13px] font-normal outline-none ${secret ? 'secure-secret-input ' : ''}${inputClassName}`}
         type={inputType}
+        aria-invalid={error ? 'true' : undefined}
         {...antiSaveProps}
         {...props}
       />
+      {error && (
+        <span className="mt-1 block text-[10px] font-semibold text-brand-danger">
+          {typeof error === 'string' ? error : 'Required'}
+        </span>
+      )}
     </label>
   )
 }
@@ -163,16 +137,22 @@ export function Field({ label, className = '', inputClassName = '', noSave = fal
  * @param {React.ReactNode} children - The select options or other contents.
  * @returns {JSX.Element} The labeled select control.
  */
-export function SelectField({ label, className = '', children, ...props }) {
+export function SelectField({ label, className = '', children, error, ...props }) {
   return (
     <label className={`block text-[11px] font-medium text-brand-n700 ${className}`}>
       {label}
       <select
-        className="mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 text-[13px] font-normal outline-none"
+        className={`mt-[7px] block w-full rounded-[5px] border ${error ? 'border-brand-danger' : 'border-brand-input'} bg-brand-card p-2.5 text-[13px] font-normal outline-none`}
+        aria-invalid={error ? 'true' : undefined}
         {...props}
       >
         {children}
       </select>
+      {error && (
+        <span className="mt-1 block text-[10px] font-semibold text-brand-danger">
+          {typeof error === 'string' ? error : 'Required'}
+        </span>
+      )}
     </label>
   )
 }
@@ -207,7 +187,7 @@ export function SectionHeading({ title, subtitle, meta, className = '', tone = '
         : 'text-brand-ink'
   return (
     <div
-      className={`flex items-end justify-between gap-3 border-b border-brand-line bg-white px-4 py-3.5 ${className}`}
+      className={`flex items-end justify-between gap-3 border-b border-brand-line bg-brand-card px-4 py-3.5 ${className}`}
     >
       <div className="min-w-0">
         <h2 className={`m-0 text-lg font-semibold tracking-[-0.02em] ${accent}`}>{title}</h2>
@@ -305,7 +285,7 @@ export function Tabs({ tabs = [], value, onChange, className = '' }) {
             aria-selected={active}
             className={`-mb-px inline-flex items-center gap-2 rounded-t-[6px] border border-b-0 px-4 py-2.5 text-xs font-bold ${
               active
-                ? 'border-brand-line bg-white text-brand-ink'
+                ? 'border-brand-line bg-brand-card text-brand-ink'
                 : 'border-transparent bg-transparent text-brand-muted hover:text-brand-ink'
             }`}
             onClick={() => onChange?.(tab.id)}
@@ -330,7 +310,7 @@ export function Tabs({ tabs = [], value, onChange, className = '' }) {
 export function TableCard({ className = '', children, ...rest }) {
   return (
     <section
-      className={`max-h-[calc(100vh-165px)] overflow-auto rounded-[10px] border border-brand-line bg-white ${className}`}
+      className={`max-h-[calc(100vh-165px)] overflow-auto rounded-[10px] border border-brand-line bg-brand-card ${className}`}
       {...rest}
     >
       {children}
@@ -353,7 +333,7 @@ export const tableRowComfortableClass = `${tableRowClass} px-5 py-[17px]`
 export const tableRowDenseClass = `${tableRowClass} px-4 py-2.5`
 
 /** Tabular figures for money / qty columns. */
-export const moneyClass = 'tabular-nums'
+export const moneyClass = 'tabular-nums font-mono'
 
 /** Thin money display — prefer className={moneyClass} when already formatting with money(). */
 export function Money({ value, className = '', children, ...props }) {
@@ -400,6 +380,7 @@ const STATUS_TONES = {
 }
 
 /** Status pill — tones: success | warn | danger | neutral (brand tokens). */
+// eslint-disable-next-line no-unused-vars
 export function StatusBadge({ tone = 'neutral', compact = false, children, className = '', title }) {
   // `compact` for dense table rows: the default pill's min-width + tall padding makes a
   // short label like "Paid" float in an oversized lozenge and sit taller than the row's
@@ -409,7 +390,6 @@ export function StatusBadge({ tone = 'neutral', compact = false, children, class
     : 'min-w-[62px] rounded-[20px] px-2 py-[5px] text-center text-[10px]'
   return (
     <span
-      title={title}
       className={`inline-block font-bold whitespace-nowrap ${shape} ${
         STATUS_TONES[tone] || STATUS_TONES.neutral
       } ${className}`}
@@ -461,7 +441,6 @@ export function DeltaBadge({ current, previous, hasPrevious = true, className = 
     return (
       <span
         className={`inline-flex items-center rounded-[4px] bg-white/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-n500 ${className}`}
-        title="No comparable earlier period yet"
       >
         New
       </span>
@@ -480,7 +459,6 @@ export function DeltaBadge({ current, previous, hasPrevious = true, className = 
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-[4px] px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${tone} ${className}`}
-      title={`vs. previous period (${prev.toLocaleString()})`}
     >
       <span aria-hidden>{arrow}</span>
       {rounded > 0 ? '+' : ''}
@@ -569,7 +547,7 @@ export function Modal({
       }`}
     >
       <div
-        className={`relative flex max-h-[calc(100dvh-1.5rem)] min-h-0 w-full flex-col overflow-hidden rounded-[10px] bg-white max-[700px]:max-h-[min(100%,calc(100dvh-2rem))] max-[700px]:rounded-b-none max-[700px]:rounded-t-[12px] ${width} ${className}`}
+        className={`relative flex max-h-[calc(100dvh-1.5rem)] min-h-0 w-full flex-col overflow-hidden rounded-[10px] border border-brand-line bg-brand-card max-[700px]:max-h-[min(100%,calc(100dvh-2rem))] max-[700px]:rounded-b-none max-[700px]:rounded-t-[12px] ${width} ${className}`}
       >
         {onClose && (
           <button
@@ -595,7 +573,7 @@ export function Modal({
 export function ModalActions({ children, className = '' }) {
   return (
     <div
-      className={`flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-brand-softline bg-white px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-[700px]:px-4 max-[700px]:[&>button]:min-w-0 max-[700px]:[&>button]:flex-1 ${className}`}
+      className={`flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-brand-softline bg-brand-card px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-[700px]:px-4 max-[700px]:[&>button]:min-w-0 max-[700px]:[&>button]:flex-1 ${className}`}
     >
       {children}
     </div>
@@ -658,6 +636,31 @@ export function ErrorBanner({ error, className = '', onDismiss }) {
   )
 }
 
+/**
+ * Small "settling dial" — a needle that spins while busy and crossfades into a checkmark
+ * once `done`. Stands in for a generic spinner specifically where a real done/not-done
+ * transition exists (see `StatusOverlay`); a continuously-spinning refresh icon with no
+ * such transition (e.g. a plain "syncing…" button) is a different, simpler thing and
+ * should stay a plain spinner rather than use this.
+ */
+function SettlingDial({ done }) {
+  return (
+    <div
+      className={`relative mx-auto mb-4 h-8 w-8 rounded-full border-2 border-brand-n300 ${!done ? 'animate-spin border-t-brand-dark' : ''}`}
+      aria-hidden
+    >
+      <span
+        className={`absolute top-0.5 left-1/2 h-3 w-[2px] -translate-x-1/2 rounded-full bg-brand-dark transition-opacity duration-300 ${done ? 'opacity-0' : 'opacity-100'}`}
+      />
+      {done && (
+        <span className="absolute inset-0 grid place-items-center text-sm font-bold text-brand-success">
+          ✓
+        </span>
+      )}
+    </div>
+  )
+}
+
 /** Minimal centered status / progress overlay */
 export function StatusOverlay({
   title,
@@ -675,18 +678,8 @@ export function StatusOverlay({
 
   return (
     <div className="fixed inset-0 z-[8] grid place-items-center bg-brand-scrim p-4">
-      <div className="w-[min(340px,100%)] rounded-[10px] bg-white px-6 py-7 text-center shadow-sm">
-        {!done && (
-          <div
-            className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-brand-n300 border-t-brand-dark"
-            aria-hidden
-          />
-        )}
-        {done && (
-          <div className="mx-auto mb-4 grid h-8 w-8 place-items-center rounded-full bg-brand-success-bg text-sm font-bold text-brand-success">
-            ✓
-          </div>
-        )}
+      <div className="w-[min(340px,100%)] rounded-[10px] border border-brand-line bg-brand-card px-6 py-7 text-center shadow-sm">
+        <SettlingDial done={done} />
         <h2 className="m-0 text-base text-brand-ink">{title}</h2>
         {message && <p className="mt-2 mb-0 text-xs text-brand-muted">{message}</p>}
         {pct != null && !done && (
@@ -709,8 +702,8 @@ export function StatusOverlay({
             type="button"
             className={
               actions
-                ? 'mt-2 h-10 w-full rounded-[5px] border border-brand-line bg-white text-xs font-bold text-brand-ink'
-                : 'mt-5 h-10 w-full rounded-[5px] border-0 bg-brand-dark text-xs font-bold text-white'
+                ? 'mt-2 h-10 w-full rounded-[5px] border border-brand-line bg-brand-card text-xs font-bold text-brand-ink'
+                : 'mt-5 h-10 w-full rounded-[5px] border-0 bg-brand-gold text-xs font-bold text-brand-on-gold'
             }
             onClick={onClose}
           >
@@ -751,6 +744,7 @@ export function StockBadge({ tone, children }) {
     medium: 'bg-brand-warn-bg text-brand-warn',
     good: 'bg-brand-success-bg text-brand-success-text',
     healthy: 'bg-brand-success-bg text-brand-success-text',
+    inactive: 'bg-brand-n200 text-brand-subtle',
   }
   return (
     <span
@@ -768,7 +762,6 @@ export function StockBadge({ tone, children }) {
  * @param {boolean} [busy=false] - Whether the switch is temporarily unavailable.
  * @param {function(boolean): void} [onChange] - Called with the next checked state.
  * @param {string} [label='Toggle'] - Accessible label for the switch.
- * @param {string} [tooltip] - Tooltip text displayed for the switch.
  * @param {string} [className=''] - Additional CSS classes.
  * @returns {JSX.Element} The switch control.
  */
@@ -778,18 +771,14 @@ export function ToggleSwitch({
   busy = false,
   onChange,
   label = 'Toggle',
-  tooltip,
   className = '',
 }) {
-  const tip = tooltip ?? label
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       aria-label={label}
-      title={tip}
-      data-tooltip={tip}
       disabled={disabled || busy}
       onClick={() => onChange?.(!checked)}
       className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-0 p-0.5 transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-55 ${
@@ -847,7 +836,7 @@ export function SkeletonCards({ count = 4, className = '' }) {
       aria-label="Loading"
     >
       {Array.from({ length: count }, (_, i) => (
-        <div key={i} className="rounded-[10px] border border-brand-line bg-white p-4">
+        <div key={i} className="rounded-[10px] border border-brand-line bg-brand-card p-4">
           <Skeleton className="mb-3 h-2.5 w-16" />
           <Skeleton className="h-6 w-24" />
           <Skeleton className="mt-2 h-2.5 w-20" />
@@ -869,11 +858,11 @@ export function PageSkeleton({ variant = 'table', className = '' }) {
         <>
           <SkeletonCards count={4} className="mb-4" />
           <div className="mb-4 grid grid-cols-2 gap-3.5 max-[900px]:grid-cols-1">
-            <div className="rounded-[10px] border border-brand-line bg-white p-4">
+            <div className="rounded-[10px] border border-brand-line bg-brand-card p-4">
               <Skeleton className="mb-4 h-3 w-28" />
               <Skeleton className="h-40 w-full" />
             </div>
-            <div className="rounded-[10px] border border-brand-line bg-white p-4">
+            <div className="rounded-[10px] border border-brand-line bg-brand-card p-4">
               <Skeleton className="mb-4 h-3 w-28" />
               <Skeleton className="h-40 w-full" />
             </div>

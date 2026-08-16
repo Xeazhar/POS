@@ -5,12 +5,25 @@ import RevenueChart from '../components/dashboard/RevenueChart'
 import SalesMixBar from '../components/dashboard/SalesMixBar'
 import StatTiles from '../components/dashboard/StatTiles'
 import { DayEndReportPanels } from '../components/dayend/DayEndReportPanels'
-import { PageHeader, PageSkeleton, PrimaryButton, SectionHeading, TableCard, moneyClass } from '../components/ui'
+import {
+  PageHeader,
+  PageSkeleton,
+  PrimaryButton,
+  SecondaryButton,
+  SectionHeading,
+  TableCard,
+  moneyClass,
+} from '../components/ui'
 import { fetchBranchCashImpact, fetchSaleEvents, fetchSoldLineItems, hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { previousDayRestockReport } from '../utils/dayEndReport'
 import { businessDate, greetingFor, money, stockTone } from '../utils/format'
 import { canAccessModule } from '../utils/roles'
+import {
+  buildRevenueChartBreakdowns,
+  buildRevenueChartPoints,
+  resolveRevenueChartBucketLabel,
+} from '../utils/revenueChartPoints'
 
 /** Payment mix keeps its own colours — cash / card / e-wallet are genuinely distinct
  * categories, unlike the ranking panels where colour would just be noise. */
@@ -33,79 +46,6 @@ function toDateKey(value) {
   const m = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
-}
-
-function formatShort(dateKey) {
-  const date = new Date(`${dateKey}T00:00:00`)
-  return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
-}
-
-function formatHourShort(hour) {
-  const suffix = hour < 12 ? 'AM' : 'PM'
-  const display = hour % 12 === 0 ? 12 : hour % 12
-  return `${display} ${suffix}`
-}
-
-function txnMoment(item) {
-  if (item.createdAt) {
-    const d = new Date(item.createdAt)
-    if (!Number.isNaN(d.getTime())) return d
-  }
-  if (item.date) {
-    const d = new Date(`${String(item.date).slice(0, 10)}T12:00:00`)
-    if (!Number.isNaN(d.getTime())) return d
-  }
-  return null
-}
-
-function buildChartPoints(transactions, period) {
-  if (period === 'Today') {
-    const now = new Date()
-    const todayKey = toDateKey(now)
-    const endHour = now.getHours()
-    const buckets = new Map()
-    for (let hour = 0; hour <= endHour; hour += 1) buckets.set(hour, 0)
-
-    transactions.forEach((item) => {
-      const when = txnMoment(item)
-      if (!when) {
-        buckets.set(endHour, (buckets.get(endHour) || 0) + Number(item.total || 0))
-        return
-      }
-      if (toDateKey(when) !== todayKey) return
-      const hour = when.getHours()
-      if (!buckets.has(hour)) return
-      buckets.set(hour, buckets.get(hour) + Number(item.total || 0))
-    })
-
-    return [...buckets.entries()].map(([hour, total]) => ({
-      label: `${String(hour).padStart(2, '0')}:00`,
-      short: hour === endHour || hour % 3 === 0 ? formatHourShort(hour) : '',
-      total,
-    }))
-  }
-
-  const buckets = new Map()
-  const today = startOfDay(new Date())
-  const span = period === 'Week' ? 7 : 30
-  for (let offset = span - 1; offset >= 0; offset -= 1) {
-    const day = new Date(today)
-    day.setDate(today.getDate() - offset)
-    buckets.set(toDateKey(day), 0)
-  }
-  transactions.forEach((item) => {
-    const key = item.date || (item.createdAt ? toDateKey(new Date(item.createdAt)) : null)
-    if (!key || !buckets.has(key)) return
-    buckets.set(key, buckets.get(key) + Number(item.total || 0))
-  })
-  let entries = [...buckets.entries()]
-  if (period === 'Month') {
-    entries = entries.filter(([label], index) => {
-      const hasSales = buckets.get(label) > 0
-      return hasSales || index === 0 || index === entries.length - 1 || index % 3 === 0
-    })
-  }
-  return entries.map(([label, total]) => ({ label, short: formatShort(label), total }))
 }
 
 function inPeriod(dateKey, cutoff) {
@@ -147,6 +87,7 @@ function aggregateSoldLines(rows, products) {
   const mix = [...byCategory.entries()]
     .map(([category, value]) => ({ category, value }))
     .sort((a, b) => b.value - a.value)
+    .slice(0, 5)
 
   return { top, mix }
 }
@@ -171,6 +112,10 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const [cashImpact, setCashImpact] = useState(null)
   const [auditEvents, setAuditEvents] = useState([])
   const [productMix, setProductMix] = useState({ top: [], mix: [] })
+  // Raw sold-line rows behind `productMix` — kept alongside the aggregate so a clicked
+  // chart point can re-aggregate just that bucket's rows client-side, no second fetch.
+  const [soldLineRows, setSoldLineRows] = useState([])
+  const [selectedPointIndex, setSelectedPointIndex] = useState(null)
   const loadBranch = useProductStore((state) => state.loadBranch)
   const hydrate = useInventoryStore((state) => state.hydrate)
   const branchIdForFetch = scopedBranchId || user?.branchId
@@ -238,6 +183,21 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   // are shown side by side; here a single KPI saying "Net sales" confused staff.
   const revenue = filtered.reduce((sum, item) => sum + item.total - Number(item.refundedAmount || 0), 0)
 
+  // Clicking a point on Revenue over time cross-filters Revenue/Orders, Sales performance,
+  // Top products/categories, Payment methods and Audit to that single bucket — everything
+  // needed is already loaded client-side (filtered/voidedInPeriod/soldLineRows/auditEvents),
+  // so this is a pure client-side re-bucket, no second fetch. Cash impact and Low-stock stay
+  // whole/current on purpose: cash impact is a "today" drawer snapshot regardless of period
+  // (see the effect above), and Low-stock is live inventory, not a time series.
+  const chartPoints = useMemo(() => buildRevenueChartPoints(filtered, period), [filtered, period])
+  const chartBreakdowns = useMemo(
+    () => buildRevenueChartBreakdowns(filtered, voidedInPeriod, period),
+    [filtered, voidedInPeriod, period],
+  )
+  const selectedPoint = selectedPointIndex != null ? chartPoints[selectedPointIndex] : null
+  const selectedBreakdown = selectedPoint ? chartBreakdowns[selectedPoint.label] : null
+  const filterSubtitleSuffix = selectedPoint ? ` · ${selectedPoint.full || selectedPoint.short}` : ''
+
   // Audit follows the same Today/Week/Month toggle as Sales performance.
   useEffect(() => {
     if (!hasSupabase || !branchIdForFetch) return undefined
@@ -297,6 +257,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
         if (!active) return
         const inWindow = rows.filter((row) => inPeriod(toDateKey(new Date(row.createdAt)), cutoff))
         setProductMix(aggregateSoldLines(inWindow, products))
+        setSoldLineRows(inWindow)
       })
       .catch(() => {
         // Keep last-good state — same graceful degradation as cashImpact/auditEvents above.
@@ -312,6 +273,15 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   const menuOff = products.filter((p) => p.availableToday === false)
 
   const { top, mix } = productMix
+  const effectiveProductMix = useMemo(() => {
+    if (!selectedPoint) return { top, mix }
+    const rowsInBucket = soldLineRows.filter(
+      (row) => resolveRevenueChartBucketLabel({ createdAt: row.createdAt }, period) === selectedPoint.label,
+    )
+    return aggregateSoldLines(rowsInBucket, products)
+  }, [selectedPoint, soldLineRows, period, products, top, mix])
+  const effectiveTop = effectiveProductMix.top
+  const effectiveMix = effectiveProductMix.mix
 
   const paymentMethodLabels = { cash: 'Cash', card: 'Card', ewallet: 'E-wallet' }
   const paymentMethods = useMemo(() => {
@@ -325,6 +295,28 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
     })
     return [...byMethod.values()].sort((a, b) => b.amount - a.amount)
   }, [filtered])
+  const paymentMethodsByBucket = useMemo(() => {
+    const acc = {}
+    filtered.forEach((item) => {
+      const label = resolveRevenueChartBucketLabel(item, period)
+      if (!label) return
+      const bucket = (acc[label] ||= new Map())
+      const method = String(item.paymentMethod || 'cash').toLowerCase()
+      const prev = bucket.get(method) || { method, amount: 0, count: 0 }
+      prev.amount += Number(item.total || 0)
+      prev.count += 1
+      bucket.set(method, prev)
+    })
+    return acc
+  }, [filtered, period])
+  const effectivePaymentMethods = selectedPoint
+    ? [...(paymentMethodsByBucket[selectedPoint.label]?.values() || [])].sort((a, b) => b.amount - a.amount)
+    : paymentMethods
+  const effectiveAuditEvents = selectedPoint
+    ? auditEvents.filter(
+        (e) => resolveRevenueChartBucketLabel({ createdAt: e.created_at }, period) === selectedPoint.label,
+      )
+    : auditEvents
 
   const greeting = greetingFor(user)
   const todayKey = businessDate(new Date(), dayOpenHour)
@@ -333,27 +325,34 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   // Same reductions terminalReports.js uses for the X/Z reading — reused rather than
   // re-derived so this row and a printed reading for the same range can never disagree.
   // Lead item (first) is the number that matters most — StatTiles renders it larger.
-  const salesPerformanceItems = [
-    {
-      label: 'Gross sales',
-      value: money(filtered.reduce((sum, t) => sum + Number(t.total || 0) + Number(t.discountAmount || 0), 0)),
-    },
-    {
-      label: 'Discounts',
-      value: money(filtered.reduce((sum, t) => sum + Number(t.discountAmount || 0), 0)),
-      tone: 'danger',
-    },
-    {
-      label: 'Refunds',
-      value: money(filtered.reduce((sum, t) => sum + Number(t.refundedAmount || 0), 0)),
-      tone: 'danger',
-    },
-    {
-      label: 'Voided sales',
-      value: money(voidedInPeriod.reduce((sum, t) => sum + Number(t.total || 0), 0)),
-      tone: 'danger',
-    },
-  ]
+  const salesPerformanceItems = selectedBreakdown
+    ? [
+        { label: 'Gross sales', value: money(selectedBreakdown.grossSales) },
+        { label: 'Discounts', value: money(selectedBreakdown.discounts), tone: 'danger' },
+        { label: 'Refunds', value: money(selectedBreakdown.refunds), tone: 'danger' },
+        { label: 'Voided sales', value: money(selectedBreakdown.voidedSales), tone: 'danger' },
+      ]
+    : [
+        {
+          label: 'Gross sales',
+          value: money(filtered.reduce((sum, t) => sum + Number(t.total || 0) + Number(t.discountAmount || 0), 0)),
+        },
+        {
+          label: 'Discounts',
+          value: money(filtered.reduce((sum, t) => sum + Number(t.discountAmount || 0), 0)),
+          tone: 'danger',
+        },
+        {
+          label: 'Refunds',
+          value: money(filtered.reduce((sum, t) => sum + Number(t.refundedAmount || 0), 0)),
+          tone: 'danger',
+        },
+        {
+          label: 'Voided sales',
+          value: money(voidedInPeriod.reduce((sum, t) => sum + Number(t.total || 0), 0)),
+          tone: 'danger',
+        },
+      ]
   // Expected cash leads — the one figure that's actually actionable ("does the drawer
   // match"); the rest is how it was arrived at. Card/E-wallet sales are informational only
   // (never affect Expected cash) — shown so this card doubles as "how today was paid for"
@@ -391,10 +390,13 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
               type="button"
               className={`rounded-[5px] border px-3 py-2 text-xs font-bold max-[700px]:flex-1 max-[700px]:px-1.5 max-[700px]:py-1.5 max-[700px]:text-[10px] ${
                 period === item
-                  ? 'border-brand-dark bg-brand-dark text-white'
-                  : 'border-brand-border bg-white text-brand-n700'
+                  ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                  : 'border-brand-border bg-brand-card text-brand-n700'
               }`}
-              onClick={() => setPeriod(item)}
+              onClick={() => {
+                setPeriod(item)
+                setSelectedPointIndex(null)
+              }}
             >
               {item}
             </button>
@@ -402,25 +404,58 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
         </div>
       </PageHeader>
 
+      {selectedPoint && (
+        <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-brand-gold/40 bg-brand-gold/10 px-3.5 py-2 text-xs">
+          <span className="text-brand-ink">
+            Showing <strong>{selectedPoint.full || selectedPoint.short}</strong> — Revenue, Orders,
+            Sales performance, Top products/categories, Payment methods and Audit are all
+            filtered to this point. Payment & cash impact and Low-stock always show today.
+          </span>
+          <SecondaryButton compact type="button" onClick={() => setSelectedPointIndex(null)}>
+            Clear selection
+          </SecondaryButton>
+        </div>
+      )}
+
       <div className="mb-4 grid grid-cols-3 gap-3.5 max-[700px]:grid-cols-1">
         {(isRestaurant
           ? [
-              [`Revenue · ${period}`, money(revenue), `${filtered.length} paid orders`],
-              [`Orders · ${period}`, filtered.length, 'Completed sales'],
+              [
+                selectedPoint ? `Revenue${filterSubtitleSuffix}` : `Revenue · ${period}`,
+                money(selectedPoint ? selectedPoint.total : revenue),
+                selectedPoint
+                  ? `${selectedPoint.orders || 0} paid orders`
+                  : `${filtered.length} paid orders`,
+              ],
+              [
+                selectedPoint ? `Orders${filterSubtitleSuffix}` : `Orders · ${period}`,
+                selectedPoint ? selectedPoint.orders || 0 : filtered.length,
+                'Completed sales',
+              ],
               ['Serving today', menuOn.length, `${menuOff.length} marked off`],
             ]
           : [
-              [`Revenue · ${period}`, money(revenue), `${filtered.length} paid transactions`],
-              [`Orders · ${period}`, filtered.length, 'Completed sales'],
+              [
+                selectedPoint ? `Revenue${filterSubtitleSuffix}` : `Revenue · ${period}`,
+                money(selectedPoint ? selectedPoint.total : revenue),
+                selectedPoint
+                  ? `${selectedPoint.orders || 0} paid transactions`
+                  : `${filtered.length} paid transactions`,
+              ],
+              [
+                selectedPoint ? `Orders${filterSubtitleSuffix}` : `Orders · ${period}`,
+                selectedPoint ? selectedPoint.orders || 0 : filtered.length,
+                'Completed sales',
+              ],
               ['Low-stock items', low.length, 'This branch'],
             ]
         ).map(([label, value, note]) => (
-          <div key={label} className="rounded-[10px] bg-brand-dark p-4 text-white">
-            <span className="block text-[11px] text-brand-n500">{label}</span>
+          <div key={label} className="rounded-[10px] border border-brand-line bg-brand-card p-4">
+            <span className="block text-[11px] font-semibold tracking-wide text-brand-subtle uppercase">{label}</span>
             <div className="mt-2 flex flex-wrap items-baseline gap-2">
-              <strong className={`block text-[26px] text-brand-gold ${moneyClass}`}>{value}</strong>
+              <strong className={`block text-[26px] text-brand-ink ${moneyClass}`}>{value}</strong>
             </div>
-            {note && <span className="mt-1 block text-[10px] text-brand-n500">{note}</span>}
+            {note && <span className="mt-1 block text-[10px] text-brand-subtle">{note}</span>}
           </div>
         ))}
       </div>
@@ -455,15 +490,25 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
 
       <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
         <div className="min-h-0 min-w-0 w-full">
-          <RevenueChart points={buildChartPoints(filtered, period)} period={period} fill />
+          <RevenueChart
+            points={chartPoints}
+            period={period}
+            fill
+            selectedIndex={selectedPointIndex}
+            onSelectIndex={setSelectedPointIndex}
+          />
         </div>
         <div className="flex min-w-0 flex-col gap-2.5">
-          <StatTiles title="Sales performance" subtitle={period} items={salesPerformanceItems} />
           <StatTiles title="Payment & cash impact" subtitle={`${todayKey} · today`} items={cashImpactItems} />
+          <StatTiles
+            title="Sales performance"
+            subtitle={`${period}${filterSubtitleSuffix}`}
+            items={salesPerformanceItems}
+          />
           <AuditSummary
-            events={auditEvents}
+            events={effectiveAuditEvents}
             linkHref={canOpenReports ? '/manager/reports' : null}
-            subtitle={period}
+            subtitle={`${period}${filterSubtitleSuffix}`}
           />
         </div>
       </div>
@@ -483,7 +528,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
               <span className="rounded bg-brand-success-bg px-2 py-1 font-bold text-brand-success-text">
                 Serving {menuOn.length}
               </span>
-              <span className="rounded border border-brand-line bg-white px-2 py-1 font-bold text-brand-muted">
+              <span className="rounded border border-brand-line bg-brand-card px-2 py-1 font-bold text-brand-muted">
                 Off {menuOff.length}
               </span>
             </div>
@@ -521,18 +566,22 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
           same visual weight, so none of these reads as more important than another. */}
       <div className="mb-4 grid grid-cols-3 items-start gap-3.5 max-[900px]:grid-cols-1">
         <SalesMixBar
-          mix={top.map((product) => ({ category: product.name, value: product.revenue }))}
+          mix={effectiveTop.map((product) => ({ category: product.name, value: product.revenue }))}
           title={isRestaurant ? 'Top dishes' : 'Top products'}
-          subtitle={`By sales · ${period}`}
+          subtitle={`By sales · ${period}${filterSubtitleSuffix}`}
         />
-        <SalesMixBar mix={mix} title="Top categories" subtitle={`By sales · ${period}`} />
         <SalesMixBar
-          mix={paymentMethods.map((row) => ({
+          mix={effectiveMix}
+          title="Top categories"
+          subtitle={`By sales · ${period}${filterSubtitleSuffix}`}
+        />
+        <SalesMixBar
+          mix={effectivePaymentMethods.map((row) => ({
             category: paymentMethodLabels[row.method] || row.method,
             value: row.amount,
           }))}
           title="Payment methods"
-          subtitle={`By tender · ${period}`}
+          subtitle={`By tender · ${period}${filterSubtitleSuffix}`}
           showShare
           barClassFor={(item) => PAYMENT_BAR_CLASS[item.category] || 'bg-brand-gold'}
           emptyMessage="No sales in this period yet."

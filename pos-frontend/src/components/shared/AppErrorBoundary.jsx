@@ -34,7 +34,7 @@ export default class AppErrorBoundary extends Component {
     const chunk = isChunkLoadError(error)
     return (
       <div className="grid min-h-screen place-items-center bg-brand-canvas px-6 py-10">
-        <div className="w-full max-w-md rounded-lg border border-brand-softline bg-white p-6 shadow-sm">
+        <div className="w-full max-w-md rounded-lg border border-brand-softline bg-brand-card p-6 shadow-sm">
           <p className="m-0 text-[10px] font-bold tracking-[1px] text-brand-subtle uppercase">
             CalePOS
           </p>

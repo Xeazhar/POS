@@ -459,7 +459,34 @@ function SupervisorDayEnd() {
   // this page's own day-wide total did — a real source of "cashier and supervisor numbers
   // don't match" independent of shift count.
   const drawerHolderShift = drawerShifts.find((row) => row.open)
-  const shiftFloatTotal = drawerShifts.reduce((sum, row) => sum + Number(row.startingCash || 0), 0)
+  // A shift that carried its starting cash forward from another shift OPENED THE SAME
+  // BUSINESS DAY is not new money — it is the same drawer contents someone recounted, and
+  // those sales are already inside `cashSales` above (day-wide, not shift-scoped). Summing
+  // its startingCash again here double-counted the whole prior shift's takings as a fresh
+  // float — most visibly after a manager reopen, where the cashier re-confirms the same
+  // cash on hand and that figure becomes the reopened shift's startingCash. A carry from a
+  // shift that closed on an EARLIER business date is real: that cash never went through
+  // today's cashSales, so it still belongs in today's float (fetchStaffShifts above is
+  // already scoped to just this date, so those predecessors are simply absent from the set
+  // below and nothing here excludes them).
+  //
+  // The exclusion only holds while startingCash still EQUALS the carried figure — that is
+  // the signal that nothing but a recount happened. `carriedAmount` freezes what was carried
+  // at shift-open; startingCash can still diverge from it afterward (the cashier adjusts the
+  // pre-filled count before starting, or later declares a fresh 'opening_float' cash_movement
+  // once the shift opened at ₱0 — see migrate_cash_movement_cash_in.sql, only legal when
+  // starting_cash is still 0). Either path means this shift's float is no longer "the same
+  // drawer contents recounted" but a genuinely different declared amount, so it belongs in
+  // the day's float same as any non-carried shift — excluding it unconditionally silently
+  // dropped that declared cash from Float/Expected drawer everywhere this total is used.
+  const drawerShiftIds = new Set(drawerShifts.map((row) => row.id).filter(Boolean))
+  const isDuplicateCarry = (row) =>
+    row.carriedFromShiftId &&
+    drawerShiftIds.has(row.carriedFromShiftId) &&
+    Math.abs(Number(row.startingCash || 0) - Number(row.carriedAmount || 0)) <= 0.004
+  const shiftFloatTotal = drawerShifts
+    .filter((row) => !isDuplicateCarry(row))
+    .reduce((sum, row) => sum + Number(row.startingCash || 0), 0)
   const legacyFloatTotal = changeFundRows.reduce((sum, row) => sum + Number(row.amount || 0), 0)
   const changeFundTotal = shiftFloatTotal + legacyFloatTotal
   const pickupTotal = pickupRows.reduce((sum, row) => sum + Number(row.amount || 0), 0)
@@ -558,6 +585,12 @@ function SupervisorDayEnd() {
   )
   const report = isLocked && existing?.dayReport ? existing.dayReport : liveReport
 
+  // Petty cash handed over now comes from two sources — the legacy paid-out request flow
+  // and Open Drawer's cash_movements — same merge `expectedCash` above already does. The
+  // persisted record and the Close Day confirmation must agree with that same total, or
+  // the filed dayReport under-reports whatever moved through Open Drawer.
+  const pettyCashHandedOver = Number((paidOutTotal + movePaidOutTotal).toFixed(2))
+
   const buildEntry = () => {
     const dayReport = buildDayEndReport({
       date,
@@ -574,9 +607,11 @@ function SupervisorDayEnd() {
       cashOnHand: Number(countingActive ? cashOnHandDraft : cashOnHand || 0),
       variance,
       expectedCash,
-      note: [note, paidOutTotal ? `Petty cash ${paidOutTotal}` : ''].filter(Boolean).join(' · '),
+      note: [note, pettyCashHandedOver ? `Petty cash ${pettyCashHandedOver}` : '']
+        .filter(Boolean)
+        .join(' · '),
       cashier: user?.name || 'Staff',
-      dayReport: { ...dayReport, pettyCashTotal: paidOutTotal, expectedCash },
+      dayReport: { ...dayReport, pettyCashTotal: pettyCashHandedOver, expectedCash },
     }
   }
 
@@ -652,15 +687,18 @@ function SupervisorDayEnd() {
     }
   }
 
-  // Same order as cashier: end own floor shift → receive cashier handoffs → close day.
+  // Confirm received handoff → end own shift (floor, or a drawer if this supervisor chose
+  // "Working the register" — ShiftGate.jsx) → close day. Handoff can be confirmed
+  // while the supervisor's own shift is still open (they're still working the floor when
+  // cashiers hand over their drawers); ending their own shift and closing the day come after.
   const ownShiftOpen = trackOwnShift && Boolean(ownShift)
   const unreviewedMoves = countUnreviewedSelfRecorded(movements)
-  const closeDayBlockedReason = ownShiftOpen
-    ? 'End your own shift first — Close day unlocks after you clock out.'
-    : openDrawerShifts.length
-      ? `Close ${openDrawerShifts.length} open cashier shift${openDrawerShifts.length === 1 ? '' : 's'} first (Accountability above).`
-      : pendingHandoffs.length
-        ? `Confirm received handoff for ${pendingHandoffs.length} cashier shift${pendingHandoffs.length === 1 ? '' : 's'} first.`
+  const closeDayBlockedReason = openDrawerShifts.length
+    ? `Close ${openDrawerShifts.length} open cashier shift${openDrawerShifts.length === 1 ? '' : 's'} first (Accountability above).`
+    : pendingHandoffs.length
+      ? `Confirm received handoff for ${pendingHandoffs.length} cashier shift${pendingHandoffs.length === 1 ? '' : 's'} first.`
+      : ownShiftOpen
+        ? 'End your own shift first — Close day unlocks after you clock out.'
         : unreviewedMoves
           ? unapprovedMovementBannerText(unreviewedMoves)
           : ''
@@ -827,10 +865,26 @@ function SupervisorDayEnd() {
             ))}
           </div>
         )}
-        <p className="mb-0 text-xs text-brand-muted">
-          Float {money(changeFundTotal)} · Pickups {money(pickupTotal + movePickupTotal)} ·
-          Handed-out {money(paidOutTotal + movePaidOutTotal)}
-        </p>
+        <div className="grid grid-cols-3 gap-3.5 max-[560px]:grid-cols-1">
+          <div>
+            <span className="block text-[11px] text-brand-subtle">Float</span>
+            <strong className={`mt-1 block text-[22px] ${moneyClass} text-brand-ink`}>
+              {money(changeFundTotal)}
+            </strong>
+          </div>
+          <div>
+            <span className="block text-[11px] text-brand-subtle">Pickups</span>
+            <strong className={`mt-1 block text-[22px] ${moneyClass} text-brand-ink`}>
+              {money(pickupTotal + movePickupTotal)}
+            </strong>
+          </div>
+          <div>
+            <span className="block text-[11px] text-brand-subtle">Handed-out</span>
+            <strong className={`mt-1 block text-[22px] ${moneyClass} text-brand-ink`}>
+              {money(paidOutTotal + movePaidOutTotal)}
+            </strong>
+          </div>
+        </div>
       </TableCard>
 
       <DrawerActivity
@@ -864,16 +918,14 @@ function SupervisorDayEnd() {
           <PrimaryButton
             compact
             type="button"
-            disabled={receivingHandoff || ownShiftOpen || openDrawerShifts.length > 0}
+            disabled={receivingHandoff || openDrawerShifts.length > 0}
             onClick={() => void receiveAllHandoffs()}
           >
             {receivingHandoff ? 'Confirming…' : `Confirm received handoff (${pendingHandoffs.length})`}
           </PrimaryButton>
-          {(ownShiftOpen || openDrawerShifts.length > 0) && (
+          {openDrawerShifts.length > 0 && (
             <p className="mt-2 mb-0 text-[11px] text-brand-subtle">
-              {ownShiftOpen
-                ? 'End your own shift first.'
-                : 'Close open cashier shifts first (Accountability above).'}
+              Close open cashier shifts first (Accountability above).
             </p>
           )}
         </TableCard>
@@ -887,7 +939,7 @@ function SupervisorDayEnd() {
         <div className="grid grid-cols-3 gap-3.5 max-[900px]:grid-cols-1">
           <div>
             <span className="block text-[11px] text-brand-subtle">All sales (POS)</span>
-            <strong className={`my-2 block text-[22px] ${moneyClass} text-brand-gold`}>{money(recorded)}</strong>
+            <strong className={`my-2 block text-[22px] ${moneyClass} text-brand-ink`}>{money(recorded)}</strong>
             <small className="block text-[11px] text-brand-subtle">
               Cash {money(cashSales)} · Card {money(cardSales)} · E-wallet {money(ewalletSales)}
             </small>
@@ -930,10 +982,10 @@ function SupervisorDayEnd() {
               already reflected in Cash sales above, not deducted again)
             </span>
           )}
-          <span className="text-brand-subtle">− Paid out (handed over)</span>
-          <strong className={`text-right ${moneyClass}`}>−{money(paidOutTotal)}</strong>
+          <span className="text-brand-subtle">− Petty cash (handed over)</span>
+          <strong className={`text-right ${moneyClass}`}>−{money(paidOutTotal + movePaidOutTotal)}</strong>
           <span className="text-brand-subtle">− Pickups to safe</span>
-          <strong className={`text-right ${moneyClass}`}>−{money(pickupTotal)}</strong>
+          <strong className={`text-right ${moneyClass}`}>−{money(pickupTotal + movePickupTotal)}</strong>
           <span className="border-t border-brand-softline pt-1.5 font-bold">
             = Expected in drawer
           </span>
@@ -1056,7 +1108,7 @@ function SupervisorDayEnd() {
             <span>Recorded</span>
             <strong className={`text-right ${moneyClass}`}>{money(recorded)}</strong>
             <span>Petty cash handed over</span>
-            <strong className={`text-right ${moneyClass}`}>{money(paidOutTotal)}</strong>
+            <strong className={`text-right ${moneyClass}`}>{money(pettyCashHandedOver)}</strong>
             <span>Expected drawer</span>
             <strong className={`text-right ${moneyClass}`}>{money(expectedCash)}</strong>
             <span>Cash on hand</span>

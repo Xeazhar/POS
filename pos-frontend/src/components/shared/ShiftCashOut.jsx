@@ -77,7 +77,7 @@ function ShiftCashOut({ user, shift, onCancel, onDone }) {
           )}
           {Number(position?.cashPaidOut || 0) > 0 && (
             <>
-              <span>Paid out</span>
+              <span>Petty cash</span>
               <strong className={`text-right ${moneyClass}`}>−{money(position?.cashPaidOut)}</strong>
             </>
           )}

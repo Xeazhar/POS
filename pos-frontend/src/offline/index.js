@@ -14,8 +14,17 @@ export {
   subscribeMany,
   subscribeTable,
 } from './realtime'
-export { syncBranch, pullFromRemote, pushQueue, drainQueueInBackground, getSyncStatus, subscribeSync, isOnline, isBackendReachable } from './syncEngine'
-export { allocateLocalOrNumber, seedOrCounter, formatOrNumber } from './orNumber'
+export {
+  syncBranch,
+  pullFromRemote,
+  hardResync,
+  pushQueue,
+  drainQueueInBackground,
+  getSyncStatus,
+  subscribeSync,
+  isOnline,
+  isBackendReachable,
+} from './syncEngine'
 export { putSupervisorVerifiers, verifySupervisorPinOffline } from './supervisorPin'
 export { canSyncWithBackend, checkBackendReachable, isDeviceOnline, invalidateReachabilityCache } from './reachability'
 export { startConnectivityWatcher, setSyncBranchId } from './connectivity'

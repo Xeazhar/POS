@@ -1,7 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { FiUpload } from 'react-icons/fi'
 import {
   ErrorBanner,
+  Eyebrow,
+  Modal,
+  ModalActions,
   PrimaryButton,
   SecondaryButton,
   StatusOverlay,
@@ -9,11 +12,16 @@ import {
 } from '../ui'
 import {
   commitInventoryImport,
+  dismissImportRevertRequest,
   fetchCatalogProducts,
+  fetchImportBatches,
   findRecentImportByHash,
   hasSupabase,
+  requestImportRevert,
+  revertInventoryImport,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
+import { isManagerRole } from '../../utils/roles'
 import {
   buildImportPreview,
   normalizeSheetRows,
@@ -25,6 +33,8 @@ import { formatSupportError } from '../../utils/errors'
 import ImportPreviewLines from '../shared/ImportPreviewLines'
 
 import { readSpreadsheetBuffer, loadXlsx } from '../../lib/xlsxLoader'
+
+const REVERT_REQUEST_WINDOW_MS = 5 * 60 * 1000
 
 /**
  * Import inventory restock data from a CSV or spreadsheet file for the current branch.
@@ -39,16 +49,87 @@ export default function InventoryImportPanel({ products, onDone }) {
   const user = useAuthStore((s) => s.user)
   const [preview, setPreview] = useState(null)
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
   const [busy, setBusy] = useState(false)
   const [duplicate, setDuplicate] = useState(null)
   const [acknowledgeDuplicate, setAcknowledgeDuplicate] = useState(false)
   const [importProgress, setImportProgress] = useState(null)
+  const [recentBatches, setRecentBatches] = useState([])
+  const [confirmRevert, setConfirmRevert] = useState(null)
+  const [revertBusy, setRevertBusy] = useState(false)
+  const [requestBusyId, setRequestBusyId] = useState(null)
+  const [dismissBusyId, setDismissBusyId] = useState(null)
+  const canRevert = isManagerRole(user?.role)
+
+  const loadRecentBatches = async () => {
+    if (!hasSupabase || !user?.branchId) return
+    try {
+      const rows = await fetchImportBatches(user.branchId)
+      setRecentBatches((rows || []).slice(0, 5))
+    } catch {
+      /* best-effort — recent-imports list is a convenience, not load-bearing */
+    }
+  }
+
+  useEffect(() => {
+    void loadRecentBatches()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.branchId])
+
+  const revertBatch = async () => {
+    if (!confirmRevert) return
+    setRevertBusy(true)
+    setError('')
+    setSuccess('')
+    try {
+      await revertInventoryImport(confirmRevert.id, user.id)
+      setConfirmRevert(null)
+      await loadRecentBatches()
+      onDone?.()
+    } catch (err) {
+      setError(formatSupportError(err, 'IMP03'))
+    } finally {
+      setRevertBusy(false)
+    }
+  }
+
+  // No confirm modal here — a request only flags the batch for a manager's attention,
+  // it does not touch products or stock. The actual revert (revertBatch above) is the
+  // one that mutates anything, and already confirms.
+  const requestRevert = async (batch) => {
+    setRequestBusyId(batch.id)
+    setError('')
+    setSuccess('')
+    try {
+      await requestImportRevert(batch.id, user.id)
+      await loadRecentBatches()
+    } catch (err) {
+      setError(formatSupportError(err, 'IMP03'))
+    } finally {
+      setRequestBusyId(null)
+    }
+  }
+
+  const dismissRevert = async (batch) => {
+    setDismissBusyId(batch.id)
+    setError('')
+    setSuccess('')
+    try {
+      await dismissImportRevertRequest(batch.id, user.id)
+      await loadRecentBatches()
+    } catch (err) {
+      setError(formatSupportError(err, 'IMP03'))
+    } finally {
+      setDismissBusyId(null)
+    }
+  }
 
   const onFile = async (event) => {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file || !user?.branchId) return
     setError('')
+    setSuccess('')
     setDuplicate(null)
     setAcknowledgeDuplicate(false)
     setPreview(null)
@@ -144,9 +225,10 @@ export default function InventoryImportPanel({ products, onDone }) {
     }
     setBusy(true)
     setError('')
+    setSuccess('')
     setImportProgress({ done: 0, total: preview.lines?.length || 0 })
     try {
-      await commitInventoryImport({
+      const batch = await commitInventoryImport({
         branchId: user.branchId,
         staffId: user.id,
         filename: preview.filename,
@@ -157,7 +239,14 @@ export default function InventoryImportPanel({ products, onDone }) {
       setPreview(null)
       setDuplicate(null)
       setAcknowledgeDuplicate(false)
+      // The preview panel (and its Confirm button) disappears on success with nothing
+      // else on screen saying so — easy to read as "the click didn't register" and
+      // re-import the same file. This is the only signal that it actually worked.
+      setSuccess(
+        `Imported "${batch.filename}" — ${batch.created_count} new, ${batch.updated_count} restocked.`,
+      )
       onDone?.()
+      void loadRecentBatches()
     } catch (err) {
       setError(formatSupportError(err, 'IMP02'))
     } finally {
@@ -187,7 +276,7 @@ export default function InventoryImportPanel({ products, onDone }) {
             </p>
           </div>
           <label
-            className={`inline-flex h-8 cursor-pointer items-center gap-1 rounded-[5px] border border-brand-border bg-white px-2.5 text-[11px] font-bold text-brand-n800 ${
+            className={`inline-flex h-8 cursor-pointer items-center gap-1 rounded-[5px] border border-brand-border bg-brand-card px-2.5 text-[11px] font-bold text-brand-n800 ${
               busy ? 'pointer-events-none opacity-35' : ''
             }`}
           >
@@ -202,6 +291,11 @@ export default function InventoryImportPanel({ products, onDone }) {
           </label>
         </div>
         {error && <ErrorBanner className="mt-3 mb-0" error={error} onDismiss={() => setError('')} />}
+        {success && (
+          <p className="mt-3 mb-0 rounded-md bg-brand-success-bg px-3 py-2 text-xs text-brand-success">
+            {success}
+          </p>
+        )}
       </TableCard>
 
       <TableCard className="mb-4 max-h-none p-5">
@@ -236,6 +330,64 @@ White Sugar 1kg,GRO-SUG-1,4801000000011,Groceries,pc,65,24,true,5
 Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3`}
         </pre>
       </TableCard>
+
+      {recentBatches.length > 0 && (
+        <TableCard className="mb-4 max-h-none p-5">
+          <h2 className="m-0 text-base">Recent imports</h2>
+          <p className="mt-1 text-xs text-brand-muted">
+            Undo removes the products this import created and reverses the stock it added
+            (including restocks to existing products) — an existing product&apos;s own details
+            are not changed.
+          </p>
+          <div className="mt-3 divide-y divide-brand-softline">
+            {recentBatches.map((batch) => (
+              <div key={batch.id} className="flex items-center justify-between gap-3 py-2.5 text-xs">
+                <div className="min-w-0">
+                  <strong className="block truncate text-brand-ink">{batch.filename || 'Import'}</strong>
+                  <span className="text-[11px] text-brand-subtle">
+                    {new Date(batch.created_at).toLocaleString()} · {batch.created_count} new ·{' '}
+                    {batch.updated_count} restocked
+                    {batch.status === 'reverted' ? ' · Reverted' : ''}
+                    {batch.status === 'revert_requested'
+                      ? ` · Revert requested${canRevert ? ` by ${batch.requester?.full_name || 'supervisor'}` : ' — awaiting manager'}`
+                      : ''}
+                  </span>
+                </div>
+                {canRevert && batch.status !== 'reverted' && (
+                  <div className="flex shrink-0 items-center gap-2">
+                    {batch.status === 'revert_requested' && (
+                      <SecondaryButton
+                        compact
+                        type="button"
+                        disabled={dismissBusyId === batch.id}
+                        onClick={() => dismissRevert(batch)}
+                      >
+                        {dismissBusyId === batch.id ? 'Dismissing…' : 'Dismiss'}
+                      </SecondaryButton>
+                    )}
+                    <SecondaryButton compact type="button" onClick={() => setConfirmRevert(batch)}>
+                      Undo
+                    </SecondaryButton>
+                  </div>
+                )}
+                {!canRevert &&
+                  batch.status === 'committed' &&
+                  Date.now() - new Date(batch.created_at).getTime() <= REVERT_REQUEST_WINDOW_MS && (
+                    <SecondaryButton
+                      compact
+                      type="button"
+                      className="shrink-0"
+                      disabled={requestBusyId === batch.id}
+                      onClick={() => requestRevert(batch)}
+                    >
+                      {requestBusyId === batch.id ? 'Requesting…' : 'Request revert'}
+                    </SecondaryButton>
+                  )}
+              </div>
+            ))}
+          </div>
+        </TableCard>
+      )}
 
       {preview && (
         <TableCard className="mb-4 max-h-none p-5">
@@ -309,6 +461,26 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3`}
             </PrimaryButton>
           </div>
         </TableCard>
+      )}
+
+      {confirmRevert && (
+        <Modal wide layer onClose={() => !revertBusy && setConfirmRevert(null)}>
+          <Eyebrow>UNDO IMPORT</Eyebrow>
+          <h2 className="mb-3 text-[22px]">Undo &ldquo;{confirmRevert.filename}&rdquo;?</h2>
+          <p className="mb-3 text-sm text-brand-muted">
+            Deactivates the {confirmRevert.created_count} product(s) this import created and
+            reverses the stock it added, including restocks to existing products. Existing
+            products stay active — only the stock and any newly-created rows are undone.
+          </p>
+          <ModalActions>
+            <SecondaryButton compact type="button" disabled={revertBusy} onClick={() => setConfirmRevert(null)}>
+              Back
+            </SecondaryButton>
+            <PrimaryButton compact type="button" disabled={revertBusy} onClick={revertBatch}>
+              {revertBusy ? 'Undoing…' : 'Undo import'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
       )}
     </>
   )

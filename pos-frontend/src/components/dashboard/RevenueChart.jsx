@@ -12,6 +12,8 @@ export const REVENUE_CHART_PLOT_HEIGHT = 420
  * @param {string} period - Selected reporting period displayed in the chart header.
  * @param {number} [chartHeight=REVENUE_CHART_PLOT_HEIGHT] - Plot height in pixels.
  * @param {boolean} [fill=false] - Whether the chart fills the available card height.
+ * @param {number|null} [selectedIndex=null] - Index of the point currently pinned selected (click, not hover).
+ * @param {function(number|null): void} [onSelectIndex] - Called with the clicked point's index, or `null` to clear the selection (clicking the already-selected point toggles it off).
  * @returns {JSX.Element} The revenue chart card.
  */
 function RevenueChart({
@@ -19,6 +21,8 @@ function RevenueChart({
   period,
   height: chartHeight = REVENUE_CHART_PLOT_HEIGHT,
   fill = false,
+  selectedIndex = null,
+  onSelectIndex,
 }) {
   const [hoverIndex, setHoverIndex] = useState(null)
   const containerRef = useRef(null)
@@ -57,7 +61,7 @@ function RevenueChart({
     y: chartPointY(item.total, yMax, top, plotHeight),
   }))
 
-  const active = hoverIndex != null ? coords[hoverIndex] : null
+  const active = hoverIndex != null ? coords[hoverIndex] : selectedIndex != null ? coords[selectedIndex] : null
   const tooltipWidth = 148
   const tooltipFlips = active ? active.x + tooltipWidth + 12 > width : false
 
@@ -119,13 +123,15 @@ function RevenueChart({
 
         {coords.map(({ item, x, y }, index) => (
           <g key={item.label}>
-            <circle cx={x} cy={y} r={hoverIndex === index ? 6.5 : 4.5} className="chart-dot">
-              <title>
-                {`${item.full || item.label}: ${money(item.total)}${
-                  item.orders != null ? ` · ${item.orders} orders` : ''
-                }`}
-              </title>
-            </circle>
+            {/* No native <title> here — it raced the custom hover box below (native
+                tooltip has its own browser delay/position engine), so both would show
+                at once, fighting each other for the same point. */}
+            <circle
+              cx={x}
+              cy={y}
+              r={hoverIndex === index ? 6.5 : selectedIndex === index ? 6 : 4.5}
+              className={selectedIndex === index ? 'chart-dot chart-dot--selected' : 'chart-dot'}
+            />
             <text x={x} y={height - 8} textAnchor="middle" fontSize="9">
               {item.short}
             </text>
@@ -142,8 +148,10 @@ function RevenueChart({
               width={step}
               height={plotHeight}
               fill="transparent"
+              style={{ cursor: onSelectIndex ? 'pointer' : 'default' }}
               onPointerEnter={() => setHoverIndex(index)}
               onPointerDown={() => setHoverIndex(index)}
+              onClick={() => onSelectIndex?.(selectedIndex === index ? null : index)}
             />
           )
         })}
@@ -197,7 +205,7 @@ function RevenueChart({
     <TableCard
       className={`w-full max-h-none overflow-hidden p-0 ${fill ? 'flex h-full min-h-0 flex-col' : ''}`}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 border-b border-brand-line bg-white px-3.5 py-2.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 border-b border-brand-line bg-brand-card px-3.5 py-2.5">
         <h3 className="m-0 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
           Revenue over time
         </h3>

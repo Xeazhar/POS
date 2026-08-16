@@ -3,7 +3,7 @@ import { PageHeader } from '../components/ui'
 import { useAuthStore } from '../stores/posStore'
 import { BusinessInformationPanel, ReceiptsInvoicesPanel, TaxVatPanel } from './settings/GeneralPanels'
 import { SecurityActivityPanel, SessionLockPanel } from './settings/SecurityPanels'
-import { AboutPanel, MyAccountPanel, SyncStatusPanel } from './settings/SharedPanels'
+import { AboutPanel, AppearancePanel, MyAccountPanel, SyncStatusPanel } from './settings/SharedPanels'
 import { isAllowedSettingsPath, settingsHomePath, settingsSectionsFor } from './settings/sections'
 
 const PANELS = {
@@ -13,6 +13,7 @@ const PANELS = {
   '/settings/general/receipts': ReceiptsInvoicesPanel,
   '/settings/security/session': SessionLockPanel,
   '/settings/security/activity': SecurityActivityPanel,
+  '/settings/appearance': AppearancePanel,
   '/settings/sync': SyncStatusPanel,
   '/settings/about': AboutPanel,
 }
@@ -39,7 +40,7 @@ function Settings() {
     <div>
       <PageHeader eyebrow="SETTINGS" title={current?.label || 'Settings'} />
       <div className="grid grid-cols-[200px_minmax(0,1fr)] gap-4 max-[800px]:grid-cols-1">
-        <nav aria-label="Settings sections" className="min-w-0 rounded-[10px] border border-brand-line bg-white py-1">
+        <nav aria-label="Settings sections" className="min-w-0 rounded-[10px] border border-brand-line bg-brand-card py-1">
           {sections.map((group, index) => (
             <div
               key={group.group}
@@ -56,7 +57,7 @@ function Settings() {
                       className={({ isActive }) =>
                         `block cursor-pointer rounded-md px-2.5 py-2 text-[13px] no-underline ${
                           isActive
-                            ? 'bg-brand-gold font-bold text-brand-dark'
+                            ? 'bg-brand-gold font-bold text-brand-on-gold'
                             : 'font-medium text-brand-ink hover:bg-brand-n50'
                         }`
                       }

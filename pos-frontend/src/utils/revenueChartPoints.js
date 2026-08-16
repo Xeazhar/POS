@@ -34,8 +34,15 @@ function txnMoment(item) {
   return null
 }
 
-/** Build RevenueChart points — shared by supervisor Dashboard and manager branch view. */
+/**
+ * Build RevenueChart points — shared by supervisor Dashboard and manager branch view.
+ * Bucket total is Revenue (Gross − Discounts − Refunds), same convention as the headline
+ * Revenue KPI: `item.total` is already net of discount, so refundedAmount is subtracted
+ * here too, not just the gross sale total — otherwise the chart and the KPI card disagree
+ * over the same period.
+ */
 export function buildRevenueChartPoints(transactions, period) {
+  const net = (item) => Number(item.total || 0) - Number(item.refundedAmount || 0)
   if (period === 'Today') {
     const now = new Date()
     const todayKey = toDateKey(now)
@@ -50,14 +57,14 @@ export function buildRevenueChartPoints(transactions, period) {
     transactions.forEach((item) => {
       const when = txnMoment(item)
       if (!when) {
-        buckets.set(endHour, (buckets.get(endHour) || 0) + Number(item.total || 0))
+        buckets.set(endHour, (buckets.get(endHour) || 0) + net(item))
         orderBuckets.set(endHour, (orderBuckets.get(endHour) || 0) + 1)
         return
       }
       if (toDateKey(when) !== todayKey) return
       const hour = when.getHours()
       if (!buckets.has(hour)) return
-      buckets.set(hour, buckets.get(hour) + Number(item.total || 0))
+      buckets.set(hour, buckets.get(hour) + net(item))
       orderBuckets.set(hour, (orderBuckets.get(hour) || 0) + 1)
     })
 
@@ -89,7 +96,7 @@ export function buildRevenueChartPoints(transactions, period) {
   transactions.forEach((item) => {
     const key = item.date || (item.createdAt ? toDateKey(new Date(item.createdAt)) : null)
     if (!key || !buckets.has(key)) return
-    buckets.set(key, buckets.get(key) + Number(item.total || 0))
+    buckets.set(key, buckets.get(key) + net(item))
     orderBuckets.set(key, (orderBuckets.get(key) || 0) + 1)
   })
   let entries = [...buckets.entries()]
@@ -111,6 +118,74 @@ export function buildRevenueChartPoints(transactions, period) {
     total,
     orders: orderBuckets.get(label) || 0,
   }))
+}
+
+/** Same bucket a transaction (or any `{ createdAt }`/`{ date }` shaped row — a sold line,
+ *  an audit event) falls into on the chart built by `buildRevenueChartPoints` above — the
+ *  two must stay in lockstep or a clicked point's `label` would not match a key in
+ *  `buildRevenueChartBreakdowns`'s output, or a caller's own bucketed lookup. Exported so
+ *  Dashboard.jsx can bucket Payment methods / Top products / Audit the same way without
+ *  duplicating this logic. */
+export function resolveRevenueChartBucketLabel(item, period) {
+  if (period === 'Today') {
+    const now = new Date()
+    const when = txnMoment(item)
+    if (!when || toDateKey(when) !== toDateKey(now)) {
+      // Mirrors buildRevenueChartPoints: a transaction with no resolvable moment (or one
+      // that already rolled past midnight) is folded into the current hour rather than
+      // dropped, so the two never disagree on a total for the same period.
+      return when ? null : `${String(now.getHours()).padStart(2, '0')}:00`
+    }
+    return `${String(when.getHours()).padStart(2, '0')}:00`
+  }
+  const key = item.date || (item.createdAt ? toDateKey(new Date(item.createdAt)) : null)
+  return key || null
+}
+
+/**
+ * Per-bucket Sales performance breakdown for the same points `buildRevenueChartPoints`
+ * returns — keyed by each point's own `label`, so clicking a chart point can show that
+ * bucket's Revenue/Gross/Discounts/Refunds/Voided instead of the branch's today-only
+ * figures. `paidTransactions` and `voidedTransactions` are separate lists (mirroring
+ * BranchDashboard/Dashboard's own today-only split) since a void drops out of the
+ * Paid-only list `buildRevenueChartPoints` is fed.
+ */
+export function buildRevenueChartBreakdowns(paidTransactions, voidedTransactions, period) {
+  const acc = {}
+  const bump = (label, patch) => {
+    if (!label) return
+    const row = (acc[label] ||= {
+      netSales: 0,
+      grossSales: 0,
+      discounts: 0,
+      refunds: 0,
+      voidedSales: 0,
+      orders: 0,
+    })
+    row.netSales += patch.netSales || 0
+    row.grossSales += patch.grossSales || 0
+    row.discounts += patch.discounts || 0
+    row.refunds += patch.refunds || 0
+    row.voidedSales += patch.voidedSales || 0
+    row.orders += patch.orders || 0
+  }
+  paidTransactions.forEach((item) => {
+    const label = resolveRevenueChartBucketLabel(item, period)
+    const total = Number(item.total || 0)
+    const discountAmount = Number(item.discountAmount || 0)
+    const refundedAmount = Number(item.refundedAmount || 0)
+    bump(label, {
+      netSales: total - refundedAmount,
+      grossSales: total + discountAmount,
+      discounts: discountAmount,
+      refunds: refundedAmount,
+      orders: 1,
+    })
+  })
+  voidedTransactions.forEach((item) => {
+    bump(resolveRevenueChartBucketLabel(item, period), { voidedSales: Number(item.total || 0) })
+  })
+  return acc
 }
 
 export function revenueChartPeriodDays(period) {

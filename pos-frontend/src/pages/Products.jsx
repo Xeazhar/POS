@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { FiEdit2, FiSearch, FiX } from 'react-icons/fi'
+import { useSearchParams } from 'react-router-dom'
+import { FiEdit2, FiEyeOff, FiSearch, FiX } from 'react-icons/fi'
 import {
   Eyebrow,
   Field,
@@ -21,7 +22,15 @@ import {
   tableRowClass,
 } from '../components/ui'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
-import { hasSupabase, logAuditEvent, bootstrapBranchInventory, fetchBranchProducts, fetchBranches } from '../lib/api'
+import {
+  hasSupabase,
+  logAuditEvent,
+  bootstrapBranchInventory,
+  fetchBranchProducts,
+  fetchBranches,
+  fetchInactiveBranchProducts,
+  setProductActive,
+} from '../lib/api'
 import { isOnline, readBranchSnapshot } from '../offline'
 import { withTimeout } from '../utils/withTimeout'
 import { isDayFullyClosed, money, qty, today, formatDate, stockTone } from '../utils/format'
@@ -76,6 +85,13 @@ function Products() {
   const [confirmSave, setConfirmSave] = useState(false)
   const [confirmAdjust, setConfirmAdjust] = useState(null)
   const [adjustReason, setAdjustReason] = useState('')
+  // "Archived" = is_active=false — hidden everywhere (POS, dashboards, low-stock)
+  // since every product fetch already filters is_active=true. Held separately from
+  // `products`/`ownProducts` (which stay active-only, same reasoning as the cross-branch
+  // `remote` state above) so this view never leaks an inactive row into what POS sells.
+  const [showInactive, setShowInactive] = useState(false)
+  const [inactiveProducts, setInactiveProducts] = useState([])
+  const [inactiveLoading, setInactiveLoading] = useState(false)
   const [pageLoading, setPageLoading] = useState(Boolean(hasSupabase && user?.branchId))
   // 'stock' = the count as it is now; 'movements' = how it got there.
   const [tab, setTab] = useState('stock')
@@ -85,7 +101,11 @@ function Products() {
   // Pasig would put the wrong prices on the till.
   const canPickBranch = isManagerRole(user?.role)
   const [branches, setBranches] = useState([])
-  const [viewBranchId, setViewBranchId] = useState(user?.branchId || '')
+  const [searchParams] = useSearchParams()
+  // `?branch=` lets the manager notification bell (an import-revert request, say) land
+  // directly on the branch that needs attention instead of whichever one a manager
+  // happens to have open.
+  const [viewBranchId, setViewBranchId] = useState(() => searchParams.get('branch') || user?.branchId || '')
   const [remote, setRemote] = useState(null) // { products, movements } for a non-own branch
   const [remoteLoading, setRemoteLoading] = useState(false)
   const viewingOwnBranch = !viewBranchId || viewBranchId === user?.branchId
@@ -128,6 +148,13 @@ function Products() {
     reloadProducts().finally(() => setPageLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.branchId])
+
+  useEffect(() => {
+    if (!canPickBranch) return
+    const branchParam = searchParams.get('branch')
+    if (branchParam && branchParam !== viewBranchId) setViewBranchId(branchParam)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, canPickBranch])
 
   useEffect(() => {
     if (!canPickBranch || !hasSupabase) return undefined
@@ -178,9 +205,30 @@ function Products() {
     }
   }, [viewBranchId, viewingOwnBranch])
 
+  const branchIdForInactive = viewBranchId || user?.branchId
+
+  const loadInactiveProducts = async () => {
+    if (!hasSupabase || !branchIdForInactive) return
+    setInactiveLoading(true)
+    try {
+      const rows = await fetchInactiveBranchProducts(branchIdForInactive)
+      setInactiveProducts(rows || [])
+    } catch (err) {
+      setError(err.message || 'Could not load not-selling items')
+    } finally {
+      setInactiveLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!showInactive) return
+    void loadInactiveProducts()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showInactive, branchIdForInactive])
+
   useEffect(() => {
     setPage(0)
-  }, [query, categoryFilter, stockFilter])
+  }, [query, categoryFilter, stockFilter, showInactive])
 
   const close = () => {
     setSelected(null)
@@ -361,10 +409,28 @@ function Products() {
     }
   }
 
+  // showInactive doubles as the target state for the Status field: viewing "Archived"
+  // means picking it back means reactivate (isActive=true), viewing the normal list means
+  // picking "Archived" means isActive=false — same boolean either way.
+  const commitDeactivate = async () => {
+    if (!selected) return
+    try {
+      await setProductActive(selected, showInactive)
+      close()
+      if (showInactive) {
+        setInactiveProducts((prev) => prev.filter((p) => p.id !== selected))
+      }
+      await reloadProducts()
+    } catch (err) {
+      setError(err.message || 'Update failed')
+    }
+  }
+
   const unit = form.pricingMode === 'kg' ? 'kg' : 'pc'
   const productMovements = movements.filter((movement) => movement.productId === selected)
   const categories = [...new Set(products.map((p) => p.category).filter(Boolean))].sort()
-  const list = products.filter((product) => {
+  const sourceProducts = showInactive ? inactiveProducts : products
+  const list = sourceProducts.filter((product) => {
     const q = query.toLowerCase()
     if (q) {
       const hit = [product.name, product.sku, product.barcode].some((value) =>
@@ -423,7 +489,7 @@ function Products() {
         <MovementHistoryPanel branchId={viewBranchId || user?.branchId} products={products} />
       ) : (
       <>
-      {canImportStock && (
+      {canImportStock && !showInactive && (
         <InventoryImportPanel products={products} onDone={reloadProducts} />
       )}
 
@@ -435,6 +501,20 @@ function Products() {
           value={query}
           onChange={(event) => setQuery(event.target.value.replace(/[<>]/g, ''))}
         />
+        <SecondaryButton
+          compact
+          type="button"
+          className="!h-10"
+          onClick={() => {
+            close()
+            setShowInactive((v) => !v)
+          }}
+        >
+          <FiEyeOff className="shrink-0" size={13} />
+          {showInactive
+            ? 'Back to active'
+            : `Archived${inactiveProducts.length ? ` (${inactiveProducts.length})` : ''}`}
+        </SecondaryButton>
         {canPickBranch && (
           <SelectField
             label="Branch"
@@ -523,12 +603,12 @@ function Products() {
             </>
           )}
         </div>
-        {pageLoading || productsLoading ? (
+        {(showInactive ? inactiveLoading : pageLoading || productsLoading) ? (
           <SkeletonRows rows={8} cols={isRestaurant ? 4 : 5} />
         ) : (
         pageRows.map((product, index) => {
-          const tone = stockTone(product)
-          const label = tone === 'low' ? 'Low' : tone === 'fair' ? 'Fair' : 'Good'
+          const tone = showInactive ? 'inactive' : stockTone(product)
+          const label = showInactive ? 'Archived' : tone === 'low' ? 'Low' : tone === 'fair' ? 'Fair' : 'Good'
           return (
             <div
               key={product.id}
@@ -596,10 +676,12 @@ function Products() {
           )
         })
         )}
-        {!pageLoading && !productsLoading && list.length === 0 && (
-          <div className="border-t border-brand-softline px-5 py-6 text-xs text-brand-subtle">No products found.</div>
+        {!(showInactive ? inactiveLoading : pageLoading || productsLoading) && list.length === 0 && (
+          <div className="border-t border-brand-softline px-5 py-6 text-xs text-brand-subtle">
+            {showInactive ? 'No not-selling items.' : 'No products found.'}
+          </div>
         )}
-        {!pageLoading && !productsLoading && pageCount > 1 && (
+        {!(showInactive ? inactiveLoading : pageLoading || productsLoading) && pageCount > 1 && (
           <Pager
             page={pageIndex + 1}
             pageCount={pageCount}
@@ -615,7 +697,7 @@ function Products() {
       {selected && !isRestaurant && (
         <div className="fixed inset-0 z-[5] bg-brand-scrim" onClick={close}>
           <aside
-            className="absolute top-0 right-0 h-full w-[min(560px,92vw)] overflow-auto bg-white p-5 shadow-[-8px_0_24px_#20242622]"
+            className="absolute top-0 right-0 h-full w-[min(560px,92vw)] overflow-auto border-l border-brand-line bg-brand-card p-5 shadow-[-8px_0_24px_#20242622]"
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -628,12 +710,27 @@ function Products() {
             <Eyebrow>PRODUCT DETAIL</Eyebrow>
             <div className="mb-2 flex items-center justify-between gap-3">
               <h2 className="m-0 text-lg capitalize">{form.name || 'Product'}</h2>
-              {!editing && canEditProduct && (
+              {!editing && canEditProduct && !showInactive && (
                 <SecondaryButton compact type="button" onClick={() => setEditing(true)}>
                   <FiEdit2 /> Edit
                 </SecondaryButton>
               )}
             </div>
+            {!editing && canEditProduct && (
+              <SelectField
+                label="Status"
+                className="mb-3 max-w-[220px]"
+                value={showInactive ? 'not_selling' : 'selling'}
+                onChange={(e) => {
+                  const next = e.target.value === 'not_selling'
+                  if (next === showInactive) return
+                  void commitDeactivate()
+                }}
+              >
+                <option value="selling">Active</option>
+                <option value="not_selling">Archived</option>
+              </SelectField>
+            )}
             {typeof form.discountEligible === 'boolean' && (
               <p className="m-0 mb-2 text-[11px] text-brand-subtle">
                 Discountable: {form.discountEligible ? 'Yes' : 'No'}

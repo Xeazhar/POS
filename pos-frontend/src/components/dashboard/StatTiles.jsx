@@ -46,7 +46,7 @@ function StatTiles({ title = null, subtitle = null, items = [], embedded = false
   }
 
   return (
-    <div className="mb-2.5 min-w-0 rounded-[10px] border border-brand-line bg-white px-3.5 py-2.5">
+    <div className="mb-2.5 min-w-0 rounded-[10px] border border-brand-line bg-brand-card px-3.5 py-2.5">
       {(title || subtitle) && (
         <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
           {title && <h3 className="m-0 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">{title}</h3>}

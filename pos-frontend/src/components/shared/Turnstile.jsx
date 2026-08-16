@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useThemeStore } from '../../stores/themeStore'
 
 const SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
 
@@ -88,6 +89,7 @@ export default function Turnstile({ siteKey, onVerify, onExpire, onError, onRead
   const callbacksRef = useRef({ onVerify, onExpire, onError, onReady })
   callbacksRef.current = { onVerify, onExpire, onError, onReady }
   const [widgetError, setWidgetError] = useState('')
+  const theme = useThemeStore((s) => s.theme)
 
   useEffect(() => {
     if (!siteKey || !containerRef.current) return undefined
@@ -99,14 +101,12 @@ export default function Turnstile({ siteKey, onVerify, onExpire, onError, onRead
     const mount = (turnstile) => {
       if (cancelled || !el) return
       try {
-        if (widgetIdRef.current != null) {
-          turnstile.remove(widgetIdRef.current)
-          widgetIdRef.current = null
-        }
+        // Nothing to remove here — this effect's own cleanup (below) already ran and
+        // cleared widgetIdRef before a remount (e.g. Appearance toggled) gets this far.
         el.innerHTML = ''
         widgetIdRef.current = turnstile.render(el, {
           sitekey: siteKey,
-          theme: 'light',
+          theme: theme === 'dark' ? 'dark' : 'light',
           callback: (token) => callbacksRef.current.onVerify?.(token),
           'expired-callback': () => {
             callbacksRef.current.onExpire?.()
@@ -145,16 +145,23 @@ export default function Turnstile({ siteKey, onVerify, onExpire, onError, onRead
     return () => {
       cancelled = true
       window.clearTimeout(timer)
+      const hadWidget = widgetIdRef.current != null
       try {
-        if (widgetIdRef.current != null && window.turnstile?.remove) {
+        if (hadWidget && window.turnstile?.remove) {
           window.turnstile.remove(widgetIdRef.current)
         }
       } catch {
         /* ignore */
       }
       widgetIdRef.current = null
+      // Re-mounting (e.g. Appearance toggled) drops any prior verification client-side —
+      // clear the caller's stored token so a widget that visually reset can't still be
+      // treated as verified. Runs here, not in mount(): React tears down this effect's
+      // widget via this cleanup BEFORE the next effect's mount() ever runs, so mount()
+      // never sees a live widgetIdRef to react to.
+      if (hadWidget) callbacksRef.current.onVerify?.('')
     }
-  }, [siteKey])
+  }, [siteKey, theme])
 
   if (!siteKey) return null
 

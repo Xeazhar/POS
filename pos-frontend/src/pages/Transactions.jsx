@@ -36,7 +36,7 @@ import { subscribeTable } from '../offline/realtime'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { useSyncStore } from '../stores/syncStore'
 import { appError, formatSupportError } from '../utils/errors'
-import { isBusinessDayLocked, money, qty, today } from '../utils/format'
+import { isBusinessDayLocked, money, qty, rowBusinessDate, today } from '../utils/format'
 import { buildReceipt } from '../utils/receipt'
 import { isSupervisorOrAbove } from '../utils/roles'
 import { discountSourceLabel, isPromoDiscountType } from '../utils/promo'
@@ -85,7 +85,7 @@ const PAGE_SIZE = 10
 const REFUND_REASONS = ['Wrong item', 'Customer changed mind', 'Damaged', 'Other']
 
 const filterSelectClass =
-  'h-10 rounded-md border border-brand-line bg-white px-3 text-xs font-medium text-brand-ink'
+  'h-10 rounded-md border border-brand-line bg-brand-card px-3 text-xs font-medium text-brand-ink'
 
 function Transactions() {
   const transactions = useInventoryStore((state) => state.transactions)
@@ -111,6 +111,7 @@ function Transactions() {
   const [refundedByItem, setRefundedByItem] = useState({})
   const [refundSummary, setRefundSummary] = useState(null)
   const [pendingApproval, setPendingApproval] = useState(null)
+  const [selectedReason, setSelectedReason] = useState(null) // reason button clicked, while busy
   const [notifyManager, setNotifyManager] = useState(false)
   const [remoteRequest, setRemoteRequest] = useState(null) // refund_requests row while waiting on a remote manager
   const [detail, setDetail] = useState(null)
@@ -119,10 +120,15 @@ function Transactions() {
   const [busy, setBusy] = useState(false)
   const [txLoading, setTxLoading] = useState(true)
   const [offlineRefundOpen, setOfflineRefundOpen] = useState(false)
+  const [refundBusyId, setRefundBusyId] = useState(null) // txn id while startRefund fetches detail
 
   const canApproveDirect = isSupervisorOrAbove(user?.role)
   const cashierDay = today(dayOpenHour)
-  const isTxnLocked = (item) => isBusinessDayLocked(dayEnds, item.date, dayOpenHour)
+  // rowBusinessDate, NOT item.date — item.date is the plain calendar date and dayEnds is
+  // keyed by business date. A sale rung between midnight and the branch's open hour still
+  // carries the CURRENT business day (see rowBusinessDate's doc comment in utils/format.js);
+  // comparing item.date directly checked the wrong day's closing status for every such sale.
+  const isTxnLocked = (item) => isBusinessDayLocked(dayEnds, rowBusinessDate(item, dayOpenHour), dayOpenHour)
 
   const refundDisplayGroups = useMemo(() => {
     const groups = []
@@ -171,8 +177,13 @@ function Transactions() {
   const list = useMemo(() => {
     const q = query.trim().toLowerCase()
     let rows = transactions.filter((item) => {
+      // rowBusinessDate, NOT item.date — see isTxnLocked above. Comparing the plain
+      // calendar date against a business-date value dropped every sale rung between
+      // midnight and the branch's open hour out of "today", which is how real,
+      // server-confirmed sales could show "0 shown" on the default filter.
+      const businessDay = rowBusinessDate(item, dayOpenHour)
       // Cashiers only see current business-day transactions.
-      if (user?.role === 'cashier' && item.date !== cashierDay) return false
+      if (user?.role === 'cashier' && businessDay !== cashierDay) return false
       if (q) {
         const hay = `${item.id} ${item.orNumber || ''} ${item.cashier || ''} ${item.time || ''} ${item.paymentMethod || ''} ${item.paymentReference || ''} ${item.discountType || ''}`.toLowerCase()
         if (!hay.includes(q)) return false
@@ -184,8 +195,8 @@ function Transactions() {
         return false
       }
       if (discountFilter === 'none' && Number(item.discountAmount || 0) > 0) return false
-      if (dateFilter === 'today' && item.date !== today(dayOpenHour)) return false
-      if (dateFilter === 'date' && dateValue && item.date !== dateValue) return false
+      if (dateFilter === 'today' && businessDay !== today(dayOpenHour)) return false
+      if (dateFilter === 'date' && dateValue && businessDay !== dateValue) return false
       return true
     })
 
@@ -284,6 +295,7 @@ function Transactions() {
     setNotifyManager(false)
     setRemoteRequest(null)
     setBusy(false)
+    setSelectedReason(null)
   }
 
   const startRefund = async (item) => {
@@ -298,12 +310,12 @@ function Transactions() {
       setError(formatSupportError(appError('TILL04'), 'TILL04'))
       return
     }
-    setRefunding(item)
     setRefundMode(null)
     setRefundLines([])
     setPendingApproval(null)
     setNotifyManager(false)
     setRemoteRequest(null)
+    setRefundBusyId(item.id)
     try {
       let lines = item.lines || []
       let refunded = {}
@@ -314,8 +326,11 @@ function Transactions() {
         const summary = await fetchRefundSummary(item.id).catch(() => null)
         refunded = summary?.qtyByItem || {}
         setRefundSummary(summary)
-      } else if (!lines.length && item.itemsList?.length) {
-        lines = detailFromLocalTxn(item).lines
+      } else {
+        setRefunding(item)
+        if (!lines.length && item.itemsList?.length) {
+          lines = detailFromLocalTxn(item).lines
+        }
       }
       setRefundedByItem(refunded)
       setRefundLines(
@@ -334,6 +349,8 @@ function Transactions() {
     } catch (err) {
       setError(formatSupportError(err, 'SALE03'))
       closeRefund()
+    } finally {
+      setRefundBusyId(null)
     }
   }
 
@@ -422,6 +439,7 @@ function Transactions() {
 
   const requestRefund = (reason) => {
     if (!refunding || !refundMode) return
+    setSelectedReason(reason)
     if (notifyManager) {
       void requestManagerApproval(reason)
       return
@@ -611,7 +629,7 @@ function Transactions() {
             }}
           >
             <strong className="min-w-0 truncate text-brand-ink">
-              {item.orNumber || item.id.slice(0, 8)}
+              {item.orNumber || `Pending · ${item.id.slice(0, 8)}`}
               {/* Narrow screens drop the Promo and Discount columns, so the discount is
                   summarised back under the OR number there rather than disappearing. */}
               {Number(item.discountAmount || 0) > 0 && (
@@ -631,7 +649,6 @@ function Transactions() {
                   className={`block truncate font-bold ${
                     isPromoDiscountType(item.discountType) ? 'text-brand-danger' : 'text-brand-warn'
                   }`}
-                  title={discountLabelFor(item)}
                 >
                   {discountLabelFor(item)}
                 </span>
@@ -641,7 +658,7 @@ function Transactions() {
             </span>
             <span className={`pr-4 text-right max-[700px]:hidden ${moneyClass}`}>
               {Number(item.discountAmount || 0) > 0 ? (
-                <span className="font-bold text-brand-warn" title={discountLabelFor(item)}>
+                <span className="font-bold text-brand-warn">
                   −{money(item.discountAmount)}
                 </span>
               ) : (
@@ -667,22 +684,13 @@ function Transactions() {
             <button
               type="button"
               className="justify-self-end border-0 bg-transparent text-[11px] text-brand-danger-soft disabled:text-brand-n500 max-[700px]:hidden"
-              disabled={item.status === 'Voided' || isTxnLocked(item) || refundOffline}
-              title={
-                refundOffline
-                  ? 'Refunds need a connection — make a physical list and record when online (SALE07)'
-                  : isTxnLocked(item)
-                    ? 'Business day closed — no refunds until till reopens or next day opens (TILL04)'
-                    : item.status === 'Voided'
-                      ? 'Already voided'
-                      : 'Refund'
-              }
+              disabled={item.status === 'Voided' || isTxnLocked(item) || refundOffline || refundBusyId === item.id}
               onClick={(event) => {
                 event.stopPropagation()
                 startRefund(item)
               }}
             >
-              Refund
+              {refundBusyId === item.id ? 'Loading…' : 'Refund'}
             </button>
           </div>
         ))
@@ -893,7 +901,7 @@ function Transactions() {
                 className="rounded-[5px] border border-brand-border bg-brand-n50 p-[11px] text-left text-brand-n800 disabled:opacity-50"
                 onClick={() => requestRefund(reason)}
               >
-                {reason}
+                {busy && selectedReason === reason ? 'Refunding…' : reason}
               </button>
             ))}
           </div>
@@ -937,7 +945,7 @@ function Transactions() {
                 className="rounded-[5px] border border-brand-border bg-brand-n50 p-[11px] text-left text-brand-n800 disabled:opacity-50"
                 onClick={() => requestRefund(reason)}
               >
-                {reason}
+                {busy && selectedReason === reason ? 'Voiding…' : reason}
               </button>
             ))}
           </div>
@@ -993,6 +1001,7 @@ function Transactions() {
           detail={`Supervisor approval required for ${
             pendingApproval.item.orNumber || String(pendingApproval.item.id).slice(0, 8)
           }.`}
+          pending={busy}
           onCancel={() => setPendingApproval(null)}
           onApproved={({ staffId, name, role }) => {
             const approver = { name: name || null, role: role || null }

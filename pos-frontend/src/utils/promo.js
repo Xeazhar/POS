@@ -782,3 +782,30 @@ export function summarizePromoRuleTypes(ruleTypes = []) {
   if (unique.length === 1) return PROMO_RULE_TYPE_LABELS[unique[0]] || unique[0]
   return 'Mixed'
 }
+
+/**
+ * Rules table rows for display. `item_pct` products are independent of each other (no
+ * pairing/bundling), so each gets its own row — one row per product, same rule/discount
+ * repeated. Pair/bundle/BOGO rules stay a single row: their products are one linked set,
+ * not a list of separate discounts.
+ */
+export function expandPromoRuleRows(rules = []) {
+  const rows = []
+  for (const r of rules || []) {
+    const products = r.products || []
+    if (normalizeRuleType(r.ruleType || r.rule_type) === 'item_pct' && products.length > 1) {
+      products.forEach((p, idx) => {
+        rows.push({
+          ...r,
+          key: `${r.id || r.localId}-${idx}`,
+          products: [p],
+          isFirstOfGroup: idx === 0,
+          groupSize: products.length,
+        })
+      })
+    } else {
+      rows.push({ ...r, key: r.id || r.localId, isFirstOfGroup: true, groupSize: products.length })
+    }
+  }
+  return rows
+}

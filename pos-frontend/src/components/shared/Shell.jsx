@@ -10,9 +10,9 @@ import { useShiftStore } from '../../stores/shiftStore'
 import { useSyncStore } from '../../stores/syncStore'
 import { formatSupportError, formatSyncError } from '../../utils/errors'
 import { isManagerRole, usesPinLogin } from '../../utils/roles'
-import { APP_VERSION_LABEL, IS_PRERELEASE, buildStamp } from '../../utils/version'
+import { APP_VERSION_LABEL, IS_PRERELEASE } from '../../utils/version'
 import { hardReload } from '../../utils/hardReload'
-import { SHOW_ENV_BADGE, environmentCaption, environmentLabel } from '../../utils/environment'
+import { SHOW_ENV_BADGE, environmentCaption } from '../../utils/environment'
 import Clock from './Clock'
 import LockScreen from './LockScreen'
 import RequestNotifications from './RequestNotifications'
@@ -298,23 +298,21 @@ function Shell({ children }) {
       )}
       {!hideAppContent && (
       <>
-      <header className="flex h-[62px] items-center justify-between gap-3 bg-brand-dark px-6 text-white max-[700px]:px-4 compact:px-4">
+      <header className="flex h-[62px] items-center justify-between gap-3 bg-brand-dark px-6 text-brand-ondark max-[700px]:px-4 compact:px-4">
         <div className="flex min-w-0 shrink-0 items-center gap-2">
           <button
             type="button"
-            className="hidden border-0 bg-transparent p-1 text-xl text-white max-[700px]:inline-grid compact:inline-grid"
+            className="hidden border-0 bg-transparent p-1 text-xl text-brand-ondark max-[700px]:inline-grid compact:inline-grid"
             aria-label="Open menu"
-            title="Open navigation menu"
-            data-tooltip="Open navigation menu"
             onClick={() => setMenuOpen(true)}
           >
             <FiMenu />
           </button>
           <div className="flex items-center text-[21px] font-bold tracking-[-0.5px]">
-            <span className="mr-2 inline-grid h-[31px] w-[31px] place-items-center rounded-lg bg-brand-gold text-brand-dark">
+            <span className="mr-2 inline-grid h-[31px] w-[31px] place-items-center rounded-lg bg-brand-gold text-brand-on-gold">
               C
             </span>
-            <span className="max-[700px]:hidden compact:hidden">CalePOS</span>
+            <span className="max-[700px]:hidden compact:hidden font-display">CalePOS</span>
           </div>
         </div>
 
@@ -327,15 +325,9 @@ function Shell({ children }) {
           <Clock className="text-[12px]" />
           {/* Non-production builds say so, always visible — but as one small chip, not a
               vertical stack. Local dev used to point at the live database and the only way
-              to notice was to spot real branch data in a test, so this can't be silent; the
-              plain-language caption is the on-screen text, the raw ENV·ref detail (the
-              actual ground-truth signal — a copied .env can lie about the tier, the ref
-              can't) is one tap/hover away via `title`. */}
+              to notice was to spot real branch data in a test, so this can't be silent. */}
           {SHOW_ENV_BADGE && (
-            <span
-              className="max-w-[30%] shrink-0 truncate rounded-[4px] bg-brand-warn px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-dark uppercase"
-              title={`${environmentLabel()} — not the live store database`}
-            >
+            <span className="max-w-[30%] shrink-0 truncate rounded-[4px] bg-brand-warn px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-dark uppercase">
               {environmentCaption()}
             </span>
           )}
@@ -348,8 +340,6 @@ function Shell({ children }) {
           <button
             type="button"
             className="border-0 bg-transparent text-lg text-inherit transition-[transform,opacity] duration-100 hover:opacity-80 active:scale-90 active:opacity-70"
-            title="Refresh — clears cached app files and loads the newest version"
-            data-tooltip="Refresh — clears cached app files and loads the newest version"
             aria-label="Refresh"
             onClick={() => void hardReload({ online })}
           >
@@ -358,15 +348,13 @@ function Shell({ children }) {
           <button
             type="button"
             className="border-0 bg-transparent text-lg text-inherit transition-[transform,opacity] duration-100 hover:opacity-80 active:scale-90 active:opacity-70"
-            title="Lock screen — requires password to unlock"
-            data-tooltip="Lock screen — requires password to unlock"
             aria-label="Lock screen"
             onClick={() => lockScreen()}
           >
             <FiLock />
           </button>
           <RequestNotifications />
-          <div className="grid h-[35px] w-[35px] place-items-center rounded-full bg-brand-gold font-bold text-brand-dark">
+          <div className="grid h-[35px] w-[35px] place-items-center rounded-full bg-brand-gold font-bold text-brand-on-gold">
             {user?.name?.[0] || 'A'}
           </div>
           <div className="max-[700px]:hidden compact:hidden">
@@ -375,8 +363,6 @@ function Shell({ children }) {
           </div>
           <button
             className="ml-1 border-0 bg-transparent text-lg text-inherit transition-[transform,opacity] duration-100 hover:opacity-80 active:scale-90 active:opacity-70 disabled:opacity-40"
-            title="Sign out — ends your session on this device"
-            data-tooltip="Sign out — ends your session on this device"
             aria-label="Sign out"
             disabled={logoutBusy}
             onClick={requestLogout}
@@ -392,18 +378,14 @@ function Shell({ children }) {
             type="button"
             className="absolute inset-0 border-0 bg-brand-scrim"
             aria-label="Close menu"
-            title="Close menu"
-            data-tooltip="Close menu"
             onClick={() => setMenuOpen(false)}
           />
-          <aside className="absolute top-0 left-0 flex h-full w-[min(280px,85vw)] flex-col bg-brand-panel px-3 py-4 text-white shadow-lg">
+          <aside className="absolute top-0 left-0 flex h-full w-[min(280px,85vw)] flex-col bg-brand-panel px-3 py-4 text-brand-ondark shadow-lg">
             <div className="mb-4 flex items-center justify-between px-2">
               <strong className="text-sm">Menu</strong>
               <button
                 type="button"
-                className="border-0 bg-transparent text-xl text-white"
-                title="Close menu"
-                data-tooltip="Close menu"
+                className="border-0 bg-transparent text-xl text-brand-ondark"
                 aria-label="Close menu"
                 onClick={() => setMenuOpen(false)}
               >
@@ -426,9 +408,8 @@ function Shell({ children }) {
           <button
             type="button"
             onClick={() => setCollapsed((c) => !c)}
-            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            className="mb-3 grid h-7 w-full shrink-0 place-items-center rounded-lg text-brand-n500 hover:bg-brand-dark-hover hover:text-brand-n400"
+            className="mb-3 grid h-7 w-full shrink-0 place-items-center rounded-lg text-brand-ondark-dim hover:bg-brand-dark-hover hover:text-brand-ondark"
           >
             {collapsed ? <FiChevronRight size={14} /> : <FiChevronLeft size={14} />}
           </button>
@@ -454,7 +435,6 @@ function Shell({ children }) {
               too many. */}
 
           <div
-            title={collapsed ? `${sync.label} — ${sync.detail}${sync.hint ? ` · ${sync.hint}` : ''}` : undefined}
             className={`mt-1 shrink-0 rounded-lg px-1.5 py-2.5 text-center ${
               sync.isError ? 'bg-brand-sync-warn-bg ring-1 ring-brand-sync-warn/40' : 'bg-brand-panel'
             }`}
@@ -481,21 +461,15 @@ function Shell({ children }) {
             )}
           </div>
           {/* Always visible so a support call can start with "what version are you on?"
-              instead of a guess. Title carries the build timestamp for the same reason. */}
-          <div
-            className="mt-2 text-center text-[9px] tracking-wide text-brand-n700 select-text"
-            title={buildStamp()}
-          >
+              instead of a guess. */}
+          <div className="mt-2 text-center text-[9px] tracking-wide text-brand-n700 select-text">
             {APP_VERSION_LABEL}
           </div>
           {/* Pre-1.0 = still under test. Kept visible (restyled, not removed) so someone
               never mistakes this for a finished system — disappears on its own at 1.0.0,
               since it keys off the version, not a flag someone must remember to flip. */}
           {IS_PRERELEASE && (
-            <div
-              className="mt-1 text-center text-[8px] leading-tight font-bold tracking-wide text-brand-warn uppercase"
-              title={collapsed ? 'In development — Not for live sales' : undefined}
-            >
+            <div className="mt-1 text-center text-[8px] leading-tight font-bold tracking-wide text-brand-warn uppercase">
               In development
               {!collapsed && (
                 <span className="mt-0.5 block font-normal normal-case tracking-normal">
@@ -530,9 +504,7 @@ function Shell({ children }) {
               </p>
               <button
                 type="button"
-                className="shrink-0 rounded-[5px] border border-brand-danger bg-white px-2.5 py-1.5 text-[11px] font-semibold text-brand-danger"
-                title="Retry sending blocked records to the server"
-                data-tooltip="Retry sending blocked records to the server"
+                className="shrink-0 rounded-[5px] border border-brand-danger bg-brand-card px-2.5 py-1.5 text-[11px] font-semibold text-brand-danger"
                 onClick={async () => {
                   const { retryBlocked } = await import('../../offline/syncQueue')
                   await retryBlocked(user?.branchId || null)
@@ -558,9 +530,7 @@ function Shell({ children }) {
               </p>
               <button
                 type="button"
-                className="shrink-0 rounded-[5px] border border-brand-dark bg-brand-dark px-2.5 py-1.5 text-[11px] font-semibold text-white"
-                title="Load the newest app version"
-                data-tooltip="Load the newest app version"
+                className="shrink-0 rounded-[5px] border border-brand-gold bg-brand-gold px-2.5 py-1.5 text-[11px] font-semibold text-brand-on-gold"
                 onClick={reload}
               >
                 Refresh now
@@ -585,8 +555,6 @@ function Shell({ children }) {
                 type="button"
                 className="shrink-0 border-0 bg-transparent p-1 text-base leading-none text-brand-warn"
                 aria-label="Dismiss sync message"
-                title="Dismiss sync message"
-                data-tooltip="Dismiss sync message"
                 onClick={() => setSyncBannerDismissed(true)}
               >
                 <FiX />

@@ -111,6 +111,19 @@ export function validateImportHeaders(rawRows, { restaurant = false, mode = 'inv
       )}.${stockHint} See the import guide.`,
     }
   }
+
+  // Network catalog is a shared template with no on-hand quantity of its own — a stock
+  // column here used to be silently accepted and discarded (buildCatalogImportPreview
+  // forces it to 0), which let a branch-inventory file through looking like it worked.
+  // Reject it outright instead so the mistake is caught before import, not after.
+  if (mode === 'catalog' && keys.has('stock')) {
+    return {
+      ok: false,
+      message:
+        'This file has a stock column — network catalog import does not accept stock. Remove it, or use branch Inventory import to restock instead.',
+    }
+  }
+
   return { ok: true }
 }
 

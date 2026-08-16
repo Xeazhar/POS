@@ -398,6 +398,7 @@ function ManagerStaff() {
   const [roles, setRoles] = useState(fallbackRoles)
   const [form, setForm] = useState(null)
   const [formError, setFormError] = useState('')
+  const [formBusy, setFormBusy] = useState(false)
   const [error, setError] = useState('')
   const [reveal, setReveal] = useState(null)
   const [pinRevealTarget, setPinRevealTarget] = useState(null) // person whose PIN to reveal once password is confirmed
@@ -839,9 +840,7 @@ function ManagerStaff() {
             <span className="truncate max-[700px]:hidden">{person.branches?.name || '—'}</span>
             <span className="max-[700px]:hidden">
               {person.roles?.label || person.role}
-              <span className="mt-0.5 block text-[10px] text-brand-subtle" title={badge.title}>
-                {badge.sub}
-              </span>
+              <span className="mt-0.5 block text-[10px] text-brand-subtle">{badge.sub}</span>
             </span>
             <strong className="text-right tabular-nums text-brand-ink max-[700px]:hidden">
               {totalHoursLabel(personShifts)}
@@ -910,14 +909,7 @@ function ManagerStaff() {
                   Edit
                 </button>
               ) : (
-                <span
-                  className="text-right text-[10px] leading-tight text-brand-subtle"
-                  title={
-                    isSelf
-                      ? 'Changing your own role or access must be done by someone else.'
-                      : 'This account is at or above your own role.'
-                  }
-                >
+                <span className="text-right text-[10px] leading-tight text-brand-subtle">
                   {isSelf ? 'Your account' : 'Locked'}
                 </span>
               )}
@@ -1155,16 +1147,21 @@ function ManagerStaff() {
       {form && (
         <Modal
           wide
-          onClose={() => {
-            setForm(null)
-            setFormError('')
-            setShowPin(false)
-          }}
+          onClose={
+            formBusy
+              ? undefined
+              : () => {
+                  setForm(null)
+                  setFormError('')
+                  setShowPin(false)
+                }
+          }
           footer={
             <ModalActions>
               <SecondaryButton
                 compact
                 type="button"
+                disabled={formBusy}
                 onClick={() => {
                   setForm(null)
                   setFormError('')
@@ -1177,14 +1174,14 @@ function ManagerStaff() {
                 compact
                 type="submit"
                 form="staff-edit-form"
-                disabled={!form.id && captchaActive && !captchaLoading && !captchaToken}
+                disabled={formBusy || (!form.id && captchaActive && !captchaLoading && !captchaToken)}
                 title={
                   !form.id && captchaActive && !captchaToken
                     ? 'Complete the security check first'
                     : undefined
                 }
               >
-                {form.id ? 'Save' : 'Create login'}
+                {formBusy ? (form.id ? 'Saving…' : 'Creating…') : form.id ? 'Save' : 'Create login'}
               </PrimaryButton>
             </ModalActions>
           }
@@ -1195,7 +1192,9 @@ function ManagerStaff() {
             {...secureFormProps}
             onSubmit={async (event) => {
               event.preventDefault()
+              if (formBusy) return
               setFormError('')
+              setFormBusy(true)
               try {
                 // Re-checked on submit, not only when rendering the picker: the role
                 // field can still be driven by a stale form object, and this is the last
@@ -1307,6 +1306,8 @@ function ManagerStaff() {
                 setCaptchaToken('')
                 setCaptchaKey((k) => k + 1)
                 setFormError(err.message || 'Could not save staff.')
+              } finally {
+                setFormBusy(false)
               }
             }}
           >
@@ -1366,7 +1367,7 @@ function ManagerStaff() {
                     <label className="relative block min-w-0 flex-1 text-[11px] font-bold text-brand-n700">
                       {form.id ? 'New PIN (leave blank to keep)' : 'PIN'}
                       <input
-                        className={`mt-[7px] block w-full rounded-[5px] border border-brand-input bg-white p-2.5 pr-10 text-[13px] font-normal outline-none ${showPin ? '' : 'secure-secret-input'}`}
+                        className={`mt-[7px] block w-full rounded-[5px] border border-brand-input bg-brand-card p-2.5 pr-10 text-[13px] font-normal outline-none ${showPin ? '' : 'secure-secret-input'}`}
                         required={!form.id}
                         value={form.login_pin}
                         onChange={(e) =>
@@ -1491,7 +1492,6 @@ function ManagerStaff() {
                         className={`flex items-center gap-2 text-xs ${
                           beyondRole ? 'font-bold text-brand-warn' : 'text-brand-ink'
                         }`}
-                        title={beyondRole ? 'Beyond this role’s defaults' : undefined}
                       >
                         <input
                           type="checkbox"

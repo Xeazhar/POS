@@ -28,7 +28,7 @@ function WeightModal({ product, close, add }) {
               <button
                 type="button"
                 key={value}
-                className="rounded-[5px] border border-brand-border bg-white px-[11px] py-2 text-xs font-bold text-brand-n700 touch-manipulation transition-[transform,background-color,filter] duration-100 hover:bg-brand-n100 active:scale-[0.97] active:bg-brand-n200"
+                className="rounded-[5px] border border-brand-border bg-brand-card px-[11px] py-2 text-xs font-bold text-brand-n700 touch-manipulation transition-[transform,background-color,filter] duration-100 hover:bg-brand-n100 active:scale-[0.97] active:bg-brand-n200"
                 onClick={() => setWeight(String(value))}
               >
                 {value} kg
@@ -52,7 +52,7 @@ function WeightModal({ product, close, add }) {
               <button
                 type="button"
                 key={value}
-                className="rounded-[5px] border border-brand-border bg-white px-[11px] py-2 text-xs text-brand-n700 transition-[transform,background-color] duration-100 hover:bg-brand-n100 active:scale-[0.97] active:bg-brand-n200"
+                className="rounded-[5px] border border-brand-border bg-brand-card px-[11px] py-2 text-xs text-brand-n700 transition-[transform,background-color] duration-100 hover:bg-brand-n100 active:scale-[0.97] active:bg-brand-n200"
                 onClick={() => setWeight(String(value))}
               >
                 {value} kg

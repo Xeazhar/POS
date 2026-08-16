@@ -1,7 +1,7 @@
 {
   "name": "calepos",
   "private": true,
-  "version": "0.20.0",
+  "version": "0.21.0",
   "type": "module",
   "description": "CalePOS — offline-first multi-branch point of sale by Jazper Bustria",
   "author": "Jazper Bustria",
@@ -13,6 +13,8 @@
     "preview": "vite preview",
     "check:errors": "node scripts/error-codes.mjs check",
     "docs:errors": "node scripts/error-codes.mjs docs",
+    "setup:load-test": "node scripts/setup-load-test-users.mjs",
+    "loadtest": "k6 run loadtest/pos-checkout.js",
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {

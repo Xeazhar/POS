@@ -7,7 +7,7 @@ import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posS
 import { formatSupportError } from '../utils/errors'
 import { sanitizePinInput } from '../utils/pin'
 import { APP_VERSION_LABEL, IS_PRERELEASE } from '../utils/version'
-import { SHOW_ENV_BADGE, environmentCaption, environmentLabel } from '../utils/environment'
+import { SHOW_ENV_BADGE, environmentCaption } from '../utils/environment'
 import { LegalNavLinks } from '../legal/LegalNavLinks'
 
 /**
@@ -73,8 +73,8 @@ function Login() {
 
   return (
     <main className="grid min-h-screen place-items-center bg-brand-dark">
-      <div className="w-[min(420px,calc(100%-32px))] rounded-[10px] bg-white p-11">
-        <div className="mb-7 grid h-[43px] w-[43px] place-items-center rounded-lg bg-brand-gold text-[21px] font-bold text-brand-dark">
+      <div className="w-[min(420px,calc(100%-32px))] rounded-[10px] border border-brand-line bg-brand-card p-11">
+        <div className="mb-7 grid h-[43px] w-[43px] place-items-center rounded-lg bg-brand-gold text-[21px] font-bold text-brand-on-gold">
           C
         </div>
         <Eyebrow>STAFF ACCESS</Eyebrow>
@@ -186,7 +186,7 @@ function Login() {
               )}
 
               {captchaConfigError && hasSupabase && (
-                <div className="mt-[18px] rounded-md border border-brand-danger bg-white px-3 py-2 text-xs text-brand-danger">
+                <div className="mt-[18px] rounded-md border border-brand-danger bg-brand-card px-3 py-2 text-xs text-brand-danger">
                   {captchaConfigError}
                 </div>
               )}
@@ -236,10 +236,7 @@ function Login() {
               {/* Which database this build talks to, before anyone signs in and starts
                   entering data into it. */}
               {SHOW_ENV_BADGE && hasSupabase && (
-                <span
-                  className="max-w-[45%] shrink-0 truncate rounded-[4px] bg-brand-warn-bg px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-warn uppercase"
-                  title={`${environmentLabel()} — not the live store database`}
-                >
+                <span className="max-w-[45%] shrink-0 truncate rounded-[4px] bg-brand-warn-bg px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-warn uppercase">
                   {environmentCaption()}
                 </span>
               )}

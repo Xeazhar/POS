@@ -177,9 +177,7 @@ export default function RequestNotifications() {
     <div className="relative" ref={rootRef}>
       <button
         type="button"
-        className="relative grid h-[35px] w-[35px] place-items-center rounded-full border-0 bg-white/10 text-white transition-[transform,opacity] hover:bg-white/15 active:scale-95"
-        title={label}
-        data-tooltip={count > 0 ? `${label} — ${count} pending` : `${label} — none pending`}
+        className="relative grid h-[35px] w-[35px] place-items-center rounded-full border-0 bg-brand-ondark/10 text-brand-ondark transition-[transform,opacity] hover:bg-brand-ondark/15 active:scale-95"
         aria-label={label}
         aria-expanded={open}
         onClick={() => {
@@ -189,14 +187,14 @@ export default function RequestNotifications() {
       >
         <FiBell className="text-base" />
         {count > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 grid min-w-[16px] place-items-center rounded-full bg-brand-gold px-1 text-[9px] font-bold text-brand-dark">
+          <span className="absolute -top-0.5 -right-0.5 grid min-w-[16px] place-items-center rounded-full bg-brand-gold px-1 text-[9px] font-bold text-brand-on-gold">
             {count > 9 ? '9+' : count}
           </span>
         )}
       </button>
 
       {open && (
-        <div className="absolute top-[42px] right-0 z-40 w-[min(340px,calc(100vw-24px))] overflow-hidden rounded-lg border border-brand-border bg-white text-brand-ink shadow-lg">
+        <div className="absolute top-[42px] right-0 z-40 w-[min(340px,calc(100vw-24px))] overflow-hidden rounded-lg border border-brand-border bg-brand-card text-brand-ink shadow-lg">
           <div className="border-b border-brand-softline px-3 py-2.5">
             <strong className="block text-xs">{label}</strong>
             {loading && !items.length ? (
@@ -218,7 +216,7 @@ export default function RequestNotifications() {
               items.map((item) => (
                 <div
                   key={item.id}
-                  className="border-t border-brand-softline bg-white px-3 py-2.5"
+                  className="border-t border-brand-softline bg-brand-card px-3 py-2.5"
                 >
                   <button
                     type="button"
@@ -246,7 +244,7 @@ export default function RequestNotifications() {
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         type="button"
-                        className="rounded-[4px] border-0 bg-brand-dark px-2.5 py-1 text-[10px] font-bold text-white disabled:opacity-50"
+                        className="rounded-[4px] border-0 bg-brand-gold px-2.5 py-1 text-[10px] font-bold text-brand-on-gold disabled:opacity-50"
                         disabled={Boolean(actionBusy)}
                         onClick={() => void actOnTillAction(item, 'approve')}
                       >
@@ -262,7 +260,7 @@ export default function RequestNotifications() {
                       </button>
                       <button
                         type="button"
-                        className="rounded-[4px] border border-brand-line bg-white px-2.5 py-1 text-[10px] font-bold text-brand-muted disabled:opacity-50"
+                        className="rounded-[4px] border border-brand-line bg-brand-card px-2.5 py-1 text-[10px] font-bold text-brand-muted disabled:opacity-50"
                         disabled={Boolean(actionBusy)}
                         onClick={() => void dismissItem(item)}
                       >
@@ -274,7 +272,7 @@ export default function RequestNotifications() {
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         type="button"
-                        className="rounded-[4px] border-0 bg-brand-dark px-2.5 py-1 text-[10px] font-bold text-white disabled:opacity-50"
+                        className="rounded-[4px] border-0 bg-brand-gold px-2.5 py-1 text-[10px] font-bold text-brand-on-gold disabled:opacity-50"
                         disabled={Boolean(actionBusy)}
                         onClick={() => void actOnMovement(item, 'approve')}
                       >
@@ -291,7 +289,7 @@ export default function RequestNotifications() {
                       {item.dismissable && (
                         <button
                           type="button"
-                          className="rounded-[4px] border border-brand-line bg-white px-2.5 py-1 text-[10px] font-bold text-brand-muted disabled:opacity-50"
+                          className="rounded-[4px] border border-brand-line bg-brand-card px-2.5 py-1 text-[10px] font-bold text-brand-muted disabled:opacity-50"
                           disabled={Boolean(actionBusy)}
                           onClick={() => void dismissItem(item)}
                         >
@@ -306,7 +304,7 @@ export default function RequestNotifications() {
                     <div className="mt-2">
                       <button
                         type="button"
-                        className="rounded-[4px] border border-brand-line bg-white px-2.5 py-1 text-[10px] font-bold text-brand-muted disabled:opacity-50"
+                        className="rounded-[4px] border border-brand-line bg-brand-card px-2.5 py-1 text-[10px] font-bold text-brand-muted disabled:opacity-50"
                         disabled={Boolean(actionBusy)}
                         onClick={() => void dismissItem(item)}
                       >

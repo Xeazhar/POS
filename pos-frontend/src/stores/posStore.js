@@ -2,7 +2,6 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import * as api from '../lib/api'
 import {
-  allocateLocalOrNumber,
   drainQueueInBackground,
   enqueue,
   isOnline,
@@ -10,7 +9,6 @@ import {
   newClientId,
   QUEUE_TYPES,
   readBranchSnapshot,
-  seedOrCounter,
   setSyncBranchId,
   syncBranch,
   upsertLocalSale,
@@ -143,20 +141,24 @@ export const useAuthStore = create(persist((set, get) => ({
     set({ booting: true })
     try {
       // Tab/browser was closed (or crashed with close mark) — never auto-login.
+      //
+      // Deliberately NOT calling api.clearDeviceSessionId() here: this device's id lives
+      // in localStorage precisely so it survives the closed tab, and the next login()
+      // reuses it — claim_staff_session's same-device branch then self-heals instantly
+      // instead of colliding with the still-held server-side claim for up to 15 minutes.
       if (consumeBrowserClosedFlag()) {
         clearAuthSessionStorage()
         if (isOnline()) await api.signOut().catch(() => {})
         await clearLocalSession()
-        api.clearDeviceSessionId()
         await api.clearManagerUnlockSecret().catch(() => {})
         set({ user: null, booting: false, screenLocked: false, deviceSessionId: null })
         return null
       }
 
+      // Same reasoning as above: keep the device id so the next login self-heals.
       if (await needsFreshLogin()) {
         if (isOnline()) await api.signOut().catch(() => {})
         await clearLocalSession()
-        api.clearDeviceSessionId()
         await api.clearManagerUnlockSecret().catch(() => {})
         set({ user: null, booting: false, screenLocked: false })
         return null
@@ -241,6 +243,16 @@ export const useAuthStore = create(persist((set, get) => ({
     const user = get().user
     const sessionId = get().deviceSessionId || user?.deviceSessionId
     useCartStore.getState().clear()
+    // Clear the in-memory user FIRST — App.jsx's route gate reads this reactively, so this
+    // is what actually swaps the screen from whatever page was open (POS, Dashboard, ...)
+    // to Login. The cleanup below is all network round-trips (releaseStaffSession, signOut,
+    // clearLocalSession, clearManagerUnlockSecret); with `set` at the end of those awaits,
+    // the app kept rendering the live authenticated page for however long they took,
+    // fully visible and interactive, and only flipped to Login once they finished — the
+    // "shows the old page briefly before sign-in" flash. Everything below already reads the
+    // `user`/`sessionId` captured above, not `get().user()`, so clearing early changes
+    // nothing about what gets cleaned up.
+    set({ user: null, screenLocked: false, deviceSessionId: null, loginIntroUser: null })
     if (api.hasSupabase && user) {
       api.logAuditEvent({
         branchId: user.branchId,
@@ -259,7 +271,6 @@ export const useAuthStore = create(persist((set, get) => ({
     // survives sign-out — an open shift outlives the session, which is what stops a
     // re-login asking the cashier to count the change fund a second time.
     useShiftStore.getState().forget()
-    set({ user: null, screenLocked: false, deviceSessionId: null, loginIntroUser: null })
   },
 }), { name: 'cale-pos-auth-v4', partialize: (state) => ({ user: api.hasSupabase ? null : state.user }) }))
 
@@ -492,9 +503,6 @@ export const useProductStore = create((set, get) => ({
         if (catalog.dayOpenHour != null) {
           useInventoryStore.setState({ dayOpenHour: Number(catalog.dayOpenHour) })
         }
-      }
-      if (catalog?.orPrefix != null || catalog?.orNext != null) {
-        await seedOrCounter(branchId, { orPrefix: catalog.orPrefix, orNext: catalog.orNext })
       }
       if (catalog?.fiscalHeader) {
         const { saveBranchFiscalHeader } = await import('../offline/repository')
@@ -808,6 +816,13 @@ export const useInventoryStore = create((set, get) => ({
       throw appError('TILL01')
     }
 
+    // Master never goes through ShiftGate (Shell's worksShifts is cashier/supervisor only),
+    // so a master ringing a sale needs its shift created right here, on first use — see
+    // ensureMasterShift's doc comment. No-op for every other role.
+    if (user?.role === 'master' && !useShiftStore.getState().shift) {
+      await useShiftStore.getState().ensureMasterShift(user)
+    }
+
     // Which shift is answerable for this cash. Recorded on the local row too, so an
     // offline cash-out can total the drawer before the sale has a server id.
     const activeShift = useShiftStore.getState().shift
@@ -820,14 +835,15 @@ export const useInventoryStore = create((set, get) => ({
     const bizDate = today(get().dayOpenHour)
     const localId = payload.id || newClientId('txn')
 
-    let orNumber = null
-    if (api.hasSupabase && user?.branchId) {
-      try {
-        orNumber = await allocateLocalOrNumber(user.branchId)
-      } catch {
-        /* branchMeta missing — sale still queues; receipt may show PENDING */
-      }
-    }
+    // The official invoice/OR number is never generated on-device. A client-computed
+    // number is only atomic within this one browser's IndexedDB, not across the other
+    // devices selling at the same branch, so two tills checking out at once (or two
+    // offline devices with the same last-synced counter) could each print the same
+    // number. The receipt prints with `localId` as its reference instead (buildReceipt's
+    // PENDING branch); the server assigns the real OR atomically (`allocate_or_number`,
+    // row-locked per branch) once this sale's COMPLETE_SALE queue item pushes, and the
+    // authoritative row — with its real OR — replaces this local one on the next pull.
+    const orNumber = null
 
     if (!isRestaurant) {
       for (const item of items) {

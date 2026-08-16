@@ -81,9 +81,9 @@ function LockScreen({ onUnlock, onLogout }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[80] flex flex-col items-center justify-center bg-brand-dark px-6 text-white">
+    <div className="fixed inset-0 z-[80] flex flex-col items-center justify-center bg-brand-dark px-6 text-brand-ondark">
       <div className="mb-8 flex flex-col items-center text-center">
-        <span className="mb-4 inline-grid h-14 w-14 place-items-center rounded-2xl bg-brand-gold text-2xl font-bold text-brand-dark">
+        <span className="mb-4 inline-grid h-14 w-14 place-items-center rounded-2xl bg-brand-gold text-2xl font-bold text-brand-on-gold">
           C
         </span>
         <strong className="text-xl tracking-tight">CalePOS</strong>
@@ -102,7 +102,7 @@ function LockScreen({ onUnlock, onLogout }) {
 
       <form
         onSubmit={unlock}
-        className="relative w-full max-w-xs rounded-xl bg-white p-5 text-brand-ink shadow-lg"
+        className="relative w-full max-w-xs rounded-xl border border-brand-line bg-brand-card p-5 text-brand-ink shadow-lg"
         {...secureFormProps}
       >
         <CredentialAutofillTrap />
