@@ -40,7 +40,7 @@ export default function DesktopModeHint() {
       className="border-b border-brand-warn/40 bg-brand-warn/15 px-4 py-2 text-center text-xs text-brand-dark"
     >
       <span>
-        <strong>Desktop site mode</strong> is on — layout may be hard to use. Turn it off in your
+        <strong>Desktop site mode</strong> is on, layout may be hard to use. Turn it off in your
         browser menu (⋮ → uncheck “Desktop site”).
       </span>
       <button

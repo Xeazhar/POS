@@ -249,7 +249,7 @@ function TransactionDetailModal({
                 title={
                   refundBlockReason ||
                   (refundBlocked
-                    ? 'Business day closed — no refunds until till reopens or next day opens (TILL04)'
+                    ? 'Business day closed: no refunds until till reopens or next day opens (TILL04)'
                     : undefined)
                 }
                 onClick={() => onRefund(detail)}

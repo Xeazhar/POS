@@ -41,7 +41,7 @@ import {
   rowBusinessDate,
 } from '../utils/format'
 import { isManagerRole, isSupervisorOrAbove, usesPinLogin } from '../utils/roles'
-import { decimalOnly } from '../utils/validate'
+import { decimalOnly, formatMoneyOnBlur } from '../utils/validate'
 
 const rowKind = (row) =>
   row.kind ||
@@ -294,11 +294,11 @@ function CashierEndShift() {
           <p className="m-0 text-xs text-brand-muted">
             {todayEntry.status === 'closed'
               ? 'Day is closed.'
-              : 'Day end is submitted — waiting on approval.'}
+              : 'Day end is submitted. Waiting on approval.'}
           </p>
         ) : dayRequested ? (
           <p className="m-0 text-xs text-brand-muted">
-            Requested — waiting for {todayEntry.requestManager ? 'a manager' : 'a supervisor'}{' '}
+            Requested. Waiting for {todayEntry.requestManager ? 'a manager' : 'a supervisor'}{' '}
             to count the drawer and close the day.
           </p>
         ) : shift ? (
@@ -307,7 +307,7 @@ function CashierEndShift() {
           // (above), then this card unlocks. Keeps the two actions in the order they
           // actually have to happen in.
           <p className="m-0 text-xs text-brand-subtle">
-            End your shift first (above) — Request day end unlocks once your drawer is closed.
+            End your shift first (above). Request day end unlocks once your drawer is closed.
           </p>
         ) : (
           <>
@@ -320,7 +320,7 @@ function CashierEndShift() {
               </p>
             )}
             <p className="m-0 mb-3 text-xs text-brand-muted">
-              Done selling for the day? Request day end — a supervisor counts the drawer and
+              Done selling for the day? Request day end. A supervisor counts the drawer and
               closes it, or a manager if none is available.
             </p>
             <label className="mb-3 flex items-start gap-2 text-[11px] leading-snug text-brand-muted">
@@ -330,7 +330,7 @@ function CashierEndShift() {
                 checked={requestManagerToggle}
                 onChange={(e) => setRequestManagerToggle(e.target.checked)}
               />
-              <span>No supervisor available — request manager instead.</span>
+              <span>No supervisor available, request manager instead.</span>
             </label>
             {requestError && <p className="mb-2 text-xs text-brand-danger">{requestError}</p>}
             <SecondaryButton compact type="button" disabled={requesting} onClick={handleRequestDayEnd}>
@@ -698,7 +698,7 @@ function SupervisorDayEnd() {
     : pendingHandoffs.length
       ? `Confirm received handoff for ${pendingHandoffs.length} cashier shift${pendingHandoffs.length === 1 ? '' : 's'} first.`
       : ownShiftOpen
-        ? 'End your own shift first — Close day unlocks after you clock out.'
+        ? 'End your own shift first. Close day unlocks after you clock out.'
         : unreviewedMoves
           ? unapprovedMovementBannerText(unreviewedMoves)
           : ''
@@ -747,7 +747,7 @@ function SupervisorDayEnd() {
         >
           {unapprovedMovementBannerText(unreviewedMoves)}
           <span className="mt-1 block text-[11px] font-normal">
-            Tap to Confirm or Flag — only a supervisor/manager who did not request the movement
+            Tap to Confirm or Flag. Only a supervisor/manager who did not request the movement
             can act. Close day stays locked until every unauthorized row is reviewed.
           </span>
         </button>
@@ -775,7 +775,7 @@ function SupervisorDayEnd() {
       {isRequested && (
         <div className="mb-3.5 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-4 py-3 text-xs text-brand-warn">
           <span>
-            A cashier requested day end{existing.requestManager ? ' — a manager was specifically asked for' : ''}.
+            A cashier requested day end{existing.requestManager ? ', a manager was specifically asked for' : ''}.
             Count the drawer below and close when ready. Sales stay open until then.
           </span>
           {/* Only whoever could act on this request can also decline it — a plain
@@ -903,8 +903,8 @@ function SupervisorDayEnd() {
           <h2 className="m-0 mb-1 text-base">Received handoff</h2>
           <p className="m-0 mb-3 text-xs text-brand-muted">
             Cashier(s) ended their shift and handed the drawer over. Confirm receipt before
-            {isSubmitted ? ' approving' : ' counting cash on hand and closing'} the day —
-            clears Pending handoff on Staff → Shifts.
+            {isSubmitted ? ' approving' : ' counting cash on hand and closing'} the day.
+            Clears Pending handoff on Staff → Shifts.
           </p>
           <ul className="m-0 mb-3 list-disc space-y-1 pl-5 text-xs text-brand-muted">
             {pendingHandoffs.map((row) => (
@@ -949,6 +949,7 @@ function SupervisorDayEnd() {
             inputMode="decimal"
             value={cashOnHand}
             onChange={(event) => setCashOnHandDraft(decimalOnly(event.target.value))}
+            onBlur={(event) => setCashOnHandDraft(formatMoneyOnBlur(event.target.value))}
             placeholder="0.00"
             disabled={isLocked || waitingForManager}
           />
@@ -978,7 +979,7 @@ function SupervisorDayEnd() {
           <strong className={`text-right ${moneyClass}`}>{money(cashSales)}</strong>
           {cashDiscounts > 0 && (
             <span className="col-span-2 -mt-1 text-[11px] text-brand-subtle">
-              ({money(cashSalesGross)} before discounts − {money(cashDiscounts)} in discounts —
+              ({money(cashSalesGross)} before discounts − {money(cashDiscounts)} in discounts,
               already reflected in Cash sales above, not deducted again)
             </span>
           )}
@@ -1000,7 +1001,7 @@ function SupervisorDayEnd() {
           </p>
         )}
         <Field
-          label={noteRequired ? 'Notes (required — variance not zero)' : 'Notes'}
+          label={noteRequired ? 'Notes (required: variance not zero)' : 'Notes'}
           value={note}
           onChange={(event) => setNoteDraft(event.target.value.replace(/[<>]/g, ''))}
           placeholder={noteRequired ? 'Explain the variance' : 'Optional note'}
@@ -1064,7 +1065,7 @@ function SupervisorDayEnd() {
             )}
             {waitingForManager ? (
               <p className="text-[13px] text-brand-muted">
-                A cashier requested day end and specifically asked for a manager — waiting for
+                A cashier requested day end and specifically asked for a manager. Waiting for
                 one to count the drawer and close.
               </p>
             ) : (
@@ -1142,7 +1143,7 @@ function SupervisorDayEnd() {
           <Eyebrow>CANCEL CLOSING</Eyebrow>
           <h2 className="mb-2 text-lg">Reopen {date}?</h2>
           <p className="m-0 text-xs text-brand-muted">
-            POS sales unlock again for this business day. The close stays on record — this adds
+            POS sales unlock again for this business day. The close stays on record. This adds
             a reopen entry with your reason, it does not erase what was submitted.
           </p>
           <Field
@@ -1170,7 +1171,7 @@ function SupervisorDayEnd() {
           <Eyebrow>DECLINE REQUEST</Eyebrow>
           <h2 className="mb-2 text-lg">Decline this day-end request?</h2>
           <p className="m-0 text-xs text-brand-muted">
-            The cashier who requested it will see the request form again — nothing is counted
+            The cashier who requested it will see the request form again. Nothing is counted
             or locked, so this is safe if the request was made by mistake.
           </p>
           <Field
@@ -1230,7 +1231,7 @@ function SupervisorDayEnd() {
           <Eyebrow>CLOSE SHIFT</Eyebrow>
           <h2 className="mb-2 text-lg">Close {closingShift.staffName}&apos;s shift?</h2>
           <p className="m-0 text-xs text-brand-muted">
-            Ends it on {closingShift.drawerLabel || closingShift.drawerId} with no count — then
+            Ends it on {closingShift.drawerLabel || closingShift.drawerId} with no count, then
             confirm Received handoff before Close day. They&apos;ll need to sign in again to
             start a new one.
           </p>

@@ -117,7 +117,7 @@ function ProductMultiSelect({ products, selected, onChange, label, hint, invalid
           <div className="py-3 text-center text-[11px] text-brand-subtle">No products match that search.</div>
         )}
       </div>
-      {invalid && <div className="mt-2 text-[10px] font-semibold text-brand-danger">Required — select at least one product.</div>}
+      {invalid && <div className="mt-2 text-[10px] font-semibold text-brand-danger">Required: select at least one product.</div>}
       {hint && <div className="mt-2 text-[11px] text-brand-subtle">{hint}</div>}
     </div>
   )
@@ -370,7 +370,7 @@ export default function PromoEditorModal({
     const duplicates = selectedProductsForRule.filter((id) => usedForType.has(id))
     if (duplicates.length) {
       setRuleError(
-        `${formatProductNames(duplicates)} already ${duplicates.length > 1 ? 'have' : 'has'} a ${RULE_TYPE_LABELS[ruleType] || 'matching'} rule on this promo — remove the existing rule or pick other products. A different rule type is fine (e.g. also in a pair or bundle).`,
+        `${formatProductNames(duplicates)} already ${duplicates.length > 1 ? 'have' : 'has'} a ${RULE_TYPE_LABELS[ruleType] || 'matching'} rule on this promo. Remove the existing rule or pick other products. A different rule type is fine (e.g. also in a pair or bundle).`,
       )
       return
     }
@@ -503,7 +503,7 @@ export default function PromoEditorModal({
         const errored = results.filter((r) => r.status === 'error')
         if (!created.length) {
           throw new Error(
-            `Could not create the promo on any selected branch — ${[...skipped, ...errored]
+            `Could not create the promo on any selected branch: ${[...skipped, ...errored]
               .map((r) => `${branchName(r.branchId)}: ${r.reason || r.error}`)
               .join('; ')}`,
           )
@@ -654,7 +654,7 @@ export default function PromoEditorModal({
                 ))}
             </div>
             <div className="mt-1 text-[11px] text-brand-subtle">
-              Same name, dates, and rules — products are matched by SKU on each branch; a branch
+              Same name, dates, and rules. Products are matched by SKU on each branch; a branch
               missing a product just skips it for that branch.
             </div>
           </div>
@@ -755,7 +755,7 @@ export default function PromoEditorModal({
                 setItemSelected(ids)
                 setRuleError('')
               }}
-              hint="Every ticked product gets this % off. A product can also sit in a pair/bundle/BOGO rule — they just won't stack at checkout."
+              hint="Every ticked product gets this % off. A product can also sit in a pair/bundle/BOGO rule, they just won't stack at checkout."
               invalid={ruleAttempted && itemSelected.length === 0}
             />
           )}

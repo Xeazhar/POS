@@ -62,6 +62,19 @@ import { FiMoreHorizontal } from 'react-icons/fi'
 
 const HISTORY_PAGE_SIZE = 10
 
+/**
+ * An edit ("Request edit") stops the old `promo_events` row and creates a new one pointing
+ * back at it via `supersedes_event_id`, so one logical promo can be several rows in history.
+ * Returns the set of ids that have a newer revision elsewhere in the same list, so the
+ * summary tables can show only the latest row per promo. Stats don't need merging across the
+ * chain: `fetchPromoSalesStatsSummary` matches by branch + promo name + date window, not by
+ * event id, so the surviving row's own fetch already returns the same figures the old row
+ * had for that window (summing both would double-count the same receipts).
+ */
+function supersededPromoIds(events) {
+  return new Set(events.map((e) => e.supersedes_event_id).filter(Boolean))
+}
+
 function SortableTh({ label, sortKey, current, onSort, className = '' }) {
   const active = current.key === sortKey
   const arrow = active ? (current.dir === 'asc' ? ' ↑' : ' ↓') : ''
@@ -170,8 +183,19 @@ export default function ManagerPromos() {
     })
   }, [history, historyFrom, historyTo])
 
+  // Built from the full unfiltered `history`, not `filteredHistory`: an ancestor row can fall
+  // outside the date filter while its revision doesn't, and the superseded check still needs
+  // to see it either way.
+  const historySupersededIds = useMemo(() => supersededPromoIds(history), [history])
+  // The table shows one row per logical promo (its latest revision); branchPerformanceSummary
+  // below still sums over the raw `filteredHistory` so the branch-wide totals aren't affected.
+  const dedupedHistory = useMemo(
+    () => filteredHistory.filter((e) => !historySupersededIds.has(e.id)),
+    [filteredHistory, historySupersededIds],
+  )
+
   const sortedHistory = useMemo(() => {
-    const rows = [...filteredHistory]
+    const rows = [...dedupedHistory]
     const { key, dir } = historySort
     const mul = dir === 'asc' ? 1 : -1
     const discountPct = (e) => {
@@ -197,7 +221,7 @@ export default function ManagerPromos() {
       return 0
     })
     return rows
-  }, [filteredHistory, historySort, historyStats, eventRuleTypes, branchSalesTotal])
+  }, [dedupedHistory, historySort, historyStats, eventRuleTypes, branchSalesTotal])
 
   const historyPageCount = Math.max(1, Math.ceil(sortedHistory.length / HISTORY_PAGE_SIZE))
   const historyPageIndex = Math.min(historyPage, historyPageCount - 1)
@@ -242,8 +266,15 @@ export default function ManagerPromos() {
     })
   }, [networkHistory, networkHistoryFrom, networkHistoryTo])
 
+  // Same dedup treatment as historySupersededIds/dedupedHistory above, across every branch.
+  const networkHistorySupersededIds = useMemo(() => supersededPromoIds(networkHistory), [networkHistory])
+  const dedupedNetworkHistory = useMemo(
+    () => filteredNetworkHistory.filter((e) => !networkHistorySupersededIds.has(e.id)),
+    [filteredNetworkHistory, networkHistorySupersededIds],
+  )
+
   const sortedNetworkHistory = useMemo(() => {
-    const rows = [...filteredNetworkHistory]
+    const rows = [...dedupedNetworkHistory]
     const { key, dir } = networkHistorySort
     const mul = dir === 'asc' ? 1 : -1
     const discountPct = (e) => {
@@ -270,7 +301,7 @@ export default function ManagerPromos() {
       return 0
     })
     return rows
-  }, [filteredNetworkHistory, networkHistorySort, networkHistoryStats, networkEventRuleTypes, networkSalesTotal])
+  }, [dedupedNetworkHistory, networkHistorySort, networkHistoryStats, networkEventRuleTypes, networkSalesTotal])
 
   const networkHistoryPageCount = Math.max(1, Math.ceil(sortedNetworkHistory.length / HISTORY_PAGE_SIZE))
   const networkHistoryPageIndex = Math.min(networkHistoryPage, networkHistoryPageCount - 1)
@@ -631,7 +662,7 @@ export default function ManagerPromos() {
         {showBranch && <div className="text-[10px] font-bold uppercase tracking-wide text-brand-subtle">{r.branchName}</div>}
         <div className="text-xs font-bold text-brand-ink">{r.name}</div>
         {r.supersedes_event_id && (
-          <div className="text-[10px] text-brand-warn">Edit revision — needs reapproval</div>
+          <div className="text-[10px] text-brand-warn">Edit revision, needs reapproval</div>
         )}
         {r.description && <div className="text-[11px] text-brand-subtle">{r.description}</div>}
         <div className="mt-0.5 text-[10px] text-brand-muted">
@@ -812,7 +843,7 @@ export default function ManagerPromos() {
       const errored = results.filter((r) => r.status === 'error')
       if (!created.length) {
         setAddBranchError(
-          `Could not add the promo to any selected branch — ${[...skipped, ...errored]
+          `Could not add the promo to any selected branch: ${[...skipped, ...errored]
             .map((r) => `${branchName(r.branchId)}: ${r.reason || r.error}`)
             .join('; ')}`,
         )
@@ -959,7 +990,16 @@ export default function ManagerPromos() {
               return
             }
             const rect = event.currentTarget.getBoundingClientRect()
-            setActionsAnchor({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+            // Worst case (managerView, stop_pending) is up to 5 rows — roughly 200px tall
+            // with padding. Not enough room below the button flips the menu to open
+            // upward instead of letting a `fixed` portal render partly off-screen with no
+            // way to scroll it into view.
+            const opensUp = window.innerHeight - rect.bottom < 220
+            setActionsAnchor({
+              top: opensUp ? null : rect.bottom + 4,
+              bottom: opensUp ? window.innerHeight - rect.top + 4 : null,
+              right: window.innerWidth - rect.right,
+            })
             setOpenActionsId(e.id)
           }}
         >
@@ -968,7 +1008,7 @@ export default function ManagerPromos() {
         {openActionsId === e.id && actionsAnchor && createPortal(
           <div
             className="fixed z-50 flex min-w-[170px] flex-col rounded-md border border-brand-line bg-brand-card p-1 text-left shadow-lg"
-            style={{ top: actionsAnchor.top, right: actionsAnchor.right }}
+            style={{ top: actionsAnchor.top ?? undefined, bottom: actionsAnchor.bottom ?? undefined, right: actionsAnchor.right }}
           >
             <button
               type="button"
@@ -1223,7 +1263,7 @@ export default function ManagerPromos() {
             )}
             {!networkBusy && networkActive.length === 0 && networkPendingRequests.length > 0 && (
               <div className="px-5 py-4 text-xs text-brand-subtle">
-                No live promos yet — approve a pending promo above to activate it on POS.
+                No live promos yet. Approve a pending promo above to activate it on POS.
               </div>
             )}
           </TableCard>
@@ -1234,7 +1274,7 @@ export default function ManagerPromos() {
                 <Eyebrow>NETWORK</Eyebrow>
                 <h2 className="m-0 text-base">Promo performance</h2>
                 <p className="m-0 mt-1 text-xs text-brand-muted">
-                  Compare promos across branches — open Sales on any row for receipt and item detail.
+                  Compare promos across branches. Open Sales on any row for receipt and item detail.
                 </p>
               </div>
               <PrimaryButton
@@ -1288,7 +1328,7 @@ export default function ManagerPromos() {
               <div>
                 <h2 className="m-0 text-base">Branch comparison</h2>
                 <p className="m-0 mt-1 text-xs text-brand-subtle">
-                  Sort columns to compare performance — Sales opens the same receipt drill-down as branch view.
+                  Sort columns to compare performance. Sales opens the same receipt drill-down as branch view.
                 </p>
               </div>
               <div className="flex items-end gap-2">
@@ -1334,7 +1374,7 @@ export default function ManagerPromos() {
 
             {networkHistoryBusy && (
               <div className="mt-4" role="status" aria-label="Loading">
-                <SkeletonRows rows={4} cols={8} />
+                <SkeletonRows rows={4} cols={9} />
               </div>
             )}
 
@@ -1347,6 +1387,7 @@ export default function ManagerPromos() {
                       <SortableTh label="Promo name" sortKey="name" current={networkHistorySort} onSort={setNetworkHistorySort} />
                       <SortableTh label="Rule type" sortKey="rule_type" current={networkHistorySort} onSort={setNetworkHistorySort} />
                       <SortableTh label="Date range" sortKey="starts_at" current={networkHistorySort} onSort={setNetworkHistorySort} />
+                      <th className="px-3 py-2.5">Created</th>
                       <th className="px-3 py-2.5">Status</th>
                       <SortableTh label="Receipts" sortKey="receipts" current={networkHistorySort} onSort={setNetworkHistorySort} className="text-right" />
                       <SortableTh label="Discount given" sortKey="discount" current={networkHistorySort} onSort={setNetworkHistorySort} className="text-right" />
@@ -1374,6 +1415,7 @@ export default function ManagerPromos() {
                           </td>
                           <td className="px-3 py-3">{summarizePromoRuleTypes(networkEventRuleTypes[e.id])}</td>
                           <td className="px-3 py-3">{fmtPromoSchedule(e.starts_at)} → {fmtPromoSchedule(e.ends_at)}</td>
+                          <td className="px-3 py-3 text-brand-subtle">{fmtPromoSchedule(e.created_at)}</td>
                           <td className="px-3 py-3">
                             <StatusBadge compact tone={badge.tone} title={badge.hint}>
                               {badge.label}
@@ -1432,7 +1474,7 @@ export default function ManagerPromos() {
             : 'New promos need manager approval before going live on POS.'}
           {pendingRequests.length > 0 && (
             <span className="mt-1 block font-bold text-brand-warn">
-              {pendingRequests.length} awaiting approval — not live until approved.
+              {pendingRequests.length} awaiting approval, not live until approved.
             </span>
           )}
         </p>
@@ -1449,7 +1491,7 @@ export default function ManagerPromos() {
         {!activeEvents.length ? (
           <>
             <p className="m-0 mt-3 text-sm text-brand-ink">
-              {pendingRequests.length ? 'No live promo yet — approve one above to activate it.' : 'No live promo right now.'}
+              {pendingRequests.length ? 'No live promo yet. Approve one above to activate it.' : 'No live promo right now.'}
             </p>
             <div className="mt-3 flex justify-end">
               <PrimaryButton
@@ -1592,7 +1634,7 @@ export default function ManagerPromos() {
               <div>
                 <h2 className="m-0 text-base">Promo summary</h2>
                 <p className="m-0 mt-1 text-xs text-brand-subtle">
-                  Sort columns to compare promos — Sales opens receipts and per-item breakdown.
+                  Sort columns to compare promos. Sales opens receipts and per-item breakdown.
                 </p>
               </div>
               {/* Filters by the promo's own start date, so picking a range means "promos that
@@ -1646,6 +1688,7 @@ export default function ManagerPromos() {
                       <SortableTh label="Promo name" sortKey="name" current={historySort} onSort={setHistorySort} />
                       <SortableTh label="Rule type" sortKey="rule_type" current={historySort} onSort={setHistorySort} />
                       <SortableTh label="Date range" sortKey="starts_at" current={historySort} onSort={setHistorySort} />
+                      <th className="px-3 py-2.5">Created</th>
                       <th className="px-3 py-2.5">Status</th>
                       <SortableTh label="Receipts" sortKey="receipts" current={historySort} onSort={setHistorySort} className="text-right" />
                       <SortableTh label="Discount given" sortKey="discount" current={historySort} onSort={setHistorySort} className="text-right" />
@@ -1672,6 +1715,7 @@ export default function ManagerPromos() {
                           </td>
                           <td className="px-3 py-3">{summarizePromoRuleTypes(eventRuleTypes[e.id])}</td>
                           <td className="px-3 py-3">{fmtPromoSchedule(e.starts_at)} → {fmtPromoSchedule(e.ends_at)}</td>
+                          <td className="px-3 py-3 text-brand-subtle">{fmtPromoSchedule(e.created_at)}</td>
                           <td className="px-3 py-3">
                             <StatusBadge compact tone={badge.tone} title={badge.hint}>
                               {badge.label}
@@ -1829,7 +1873,7 @@ export default function ManagerPromos() {
           <Eyebrow>ADD TO BRANCH</Eyebrow>
           <h2 className="m-0 mb-2 text-lg">Add {addBranchTarget.name} to more branches</h2>
           <p className="m-0 mb-3 text-xs text-brand-muted">
-            Same name, dates, and rules — products are matched by SKU on each branch; a branch
+            Same name, dates, and rules. Products are matched by SKU on each branch; a branch
             missing a product just skips it for that branch. Goes in as a new pending promo,
             needs approval like any other.
           </p>

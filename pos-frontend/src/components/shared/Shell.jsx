@@ -14,7 +14,6 @@ import { isManagerRole, usesPinLogin } from '../../utils/roles'
 import { syncCopy, syncToneDot, syncToneText } from '../../utils/syncStatus'
 import { APP_VERSION_LABEL, IS_PRERELEASE } from '../../utils/version'
 import { hardReload } from '../../utils/hardReload'
-import { SHOW_ENV_BADGE, environmentCaption } from '../../utils/environment'
 import Clock from './Clock'
 import LockScreen from './LockScreen'
 import RequestNotifications from './RequestNotifications'
@@ -230,7 +229,7 @@ function Shell({ children }) {
     <div className="min-h-screen bg-brand-canvas">
       {worksShifts && shiftGate === 'checking' && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-brand-canvas">
-          <p className="m-0 text-sm text-brand-muted">Checking shift…</p>
+          <p className="m-0 text-sm text-brand-muted">Loading…</p>
         </div>
       )}
       {worksShifts && shiftGate !== 'ready' && shiftGate !== 'checking' && !shiftEndedOnDayEnd && (
@@ -278,14 +277,6 @@ function Shell({ children }) {
               : user?.branchName || 'Branch'}
           </small>
           <Clock className="text-[12px]" />
-          {/* Non-production builds say so, always visible — but as one small chip, not a
-              vertical stack. Local dev used to point at the live database and the only way
-              to notice was to spot real branch data in a test, so this can't be silent. */}
-          {SHOW_ENV_BADGE && (
-            <span className="max-w-[30%] shrink-0 truncate rounded-[4px] bg-brand-warn px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-dark uppercase">
-              {environmentCaption()}
-            </span>
-          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-2.5 text-[13px]">
@@ -450,7 +441,7 @@ function Shell({ children }) {
             >
               <p className="m-0 min-w-0 text-xs leading-snug text-brand-danger">
                 <strong>
-                  {blockedOps} record{blockedOps === 1 ? '' : 's'} could not sync — needs attention.
+                  {blockedOps} record{blockedOps === 1 ? '' : 's'} could not sync. Needs attention.
                 </strong>{' '}
                 <span>
                   These sales are saved on this device only and are NOT on the server. Do not clear
@@ -480,7 +471,7 @@ function Shell({ children }) {
               <p className="m-0 min-w-0 text-xs leading-snug text-brand-ink">
                 <strong>Update available.</strong>{' '}
                 <span className="text-brand-muted">
-                  A newer version of CalePOS has been released — refresh to get it.
+                  A newer version of CalePOS has been released. Refresh to get it.
                 </span>
               </p>
               <button

@@ -752,9 +752,9 @@ function Transactions() {
           refundBlocked={detail ? isTxnLocked(detail) || refundOffline : false}
           refundBlockReason={
             refundOffline
-              ? 'Refunds need a connection — make a physical list and record when online (SALE07)'
+              ? 'Refunds need a connection. Make a physical list and record when online (SALE07)'
               : detail && isTxnLocked(detail)
-                ? 'Business day closed — no refunds until till reopens or next day opens (TILL04)'
+                ? 'Business day closed: no refunds until till reopens or next day opens (TILL04)'
                 : undefined
           }
         />
@@ -890,7 +890,7 @@ function Transactions() {
                 checked={notifyManager}
                 onChange={(e) => setNotifyManager(e.target.checked)}
               />
-              No supervisor available — notify manager instead
+              No supervisor available, notify manager instead
             </label>
           )}
           {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
@@ -924,7 +924,7 @@ function Transactions() {
           <p className="text-[13px] text-brand-muted">
             {canApproveDirect
               ? 'This voids the whole sale and restocks all items. Choose a reason.'
-              : 'This voids the whole sale. Choose a reason — supervisor PIN required next.'}
+              : 'This voids the whole sale. Choose a reason, supervisor PIN required next.'}
           </p>
           {!canApproveDirect && (
             <label className="mt-3 flex items-start gap-2 text-xs text-brand-muted">
@@ -934,7 +934,7 @@ function Transactions() {
                 checked={notifyManager}
                 onChange={(e) => setNotifyManager(e.target.checked)}
               />
-              No supervisor available — notify manager instead
+              No supervisor available, notify manager instead
             </label>
           )}
           {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
@@ -968,7 +968,7 @@ function Transactions() {
           {remoteRequest.status === 'pending' && (
             <p className="text-[13px] text-brand-muted">
               The manager has been notified and can approve this refund from anywhere. This
-              screen updates automatically once they respond — no need to reload.
+              screen updates automatically once they respond, no need to reload.
             </p>
           )}
           {remoteRequest.status === 'rejected' && (
@@ -1021,7 +1021,7 @@ function Transactions() {
           <Eyebrow>REFUND</Eyebrow>
           <h2 className="mb-2 text-lg">Not available offline</h2>
           <p className="mb-1 text-sm text-brand-muted">
-            Refunds change inventory, cash accountability, and audit records — they need a
+            Refunds change inventory, cash accountability, and audit records. They need a
             connection to the server.
           </p>
           <p className="mb-4 text-xs text-brand-subtle">

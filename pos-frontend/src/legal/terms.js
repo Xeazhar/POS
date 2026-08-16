@@ -53,7 +53,7 @@ export const TERMS_DOCUMENT = {
     {
       title: '5. Merchant responsibilities',
       body: [
-        'The Merchant — not the Provider — is the seller of goods, the taxpayer, and the operator of each branch. You are responsible for:',
+        'The Merchant, not the Provider, is the seller of goods, the taxpayer, and the operator of each branch. You are responsible for:',
       ],
       list: [
         'BIR registration, TIN, official receipts, VAT, SC/PWD discounts, books of accounts, and any other tax or consumer-law duties that apply to your stores.',
@@ -107,7 +107,7 @@ export const TERMS_DOCUMENT = {
     {
       title: '11. Changes, availability, and support',
       body: [
-        'We may update the software, require a reload when a new build is deployed, and change features as the product matures toward 1.0. We do not guarantee uninterrupted access, including during network outages — that is why offline mode exists, and why unsynced tills must be protected.',
+        'We may update the software, require a reload when a new build is deployed, and change features as the product matures toward 1.0. We do not guarantee uninterrupted access, including during network outages. That is why offline mode exists, and why unsynced tills must be protected.',
         'Support is provided at our discretion for authorized deployments. Quote the on-screen support code (for example AUTH01, SYNC09) when you contact us.',
       ],
     },

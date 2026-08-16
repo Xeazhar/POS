@@ -79,8 +79,7 @@ const DEFAULTS = {
   ],
   master: [
     'dashboard',
-    'pos',
-    'transactions',
+    // No POS/Transactions — master doesn't run a till, use Branches → branch dashboard for sales figures.
     // No branch Inventory — masters use Branches → branch dashboard (On hand + Movement history).
     'catalog',
     'day_end',
@@ -152,16 +151,19 @@ export function assignableRoles(actor) {
  * Can `actor` modify this specific account at all?
  *
  * Two separate rules, both load-bearing:
- *  - Nobody edits their own account. Self-edit is the shortest escalation path there is
- *    (tick every module, save, reload) and it also lets someone deactivate their own
- *    supervisor to escape an approval requirement. Changing your own role should require
- *    someone else, always.
+ *  - Nobody below master edits their own account. Self-edit is the shortest escalation
+ *    path there is (tick every module, save, reload) and it also lets someone deactivate
+ *    their own supervisor to escape an approval requirement. Changing your own role should
+ *    require someone else, always. Master is the exception: it's already the top rank, so
+ *    self-edit isn't an escalation path — and master is the only account with no one above
+ *    it to make changes on its behalf. (Staff.jsx still locks the role field when master
+ *    edits itself, so this doesn't open a self-demotion lockout.)
  *  - Nobody edits an account at or above their own rank. Otherwise a manager can demote
  *    the admin who supervises them.
  */
 export function canEditStaff(actor, target) {
   if (!actor || !target) return false
-  if (actor.id && target.id && actor.id === target.id) return false
+  if (actor.id && target.id && actor.id === target.id) return actor.role === 'master'
   if (actor.role === 'master') return true
   // A role that exists in the database but not in ROLE_RANK (someone added a custom row
   // to `roles`) is unrankable, so it cannot be shown to be below the actor. Refuse rather
@@ -227,9 +229,10 @@ export function moduleLabel(moduleId) {
 
 export function canAccessModule(user, moduleId) {
   if (!user) return false
-  // Master sees every module except branch Inventory — stock edits and full movement history
-  // for a branch live under Branches → that branch (On hand / Movement history subtabs).
-  if (user.role === 'master') return moduleId !== 'inventory'
+  // Master sees every module except branch Inventory (stock edits and full movement history
+  // for a branch live under Branches → that branch, On hand / Movement history subtabs) and
+  // POS/Transactions (master doesn't run a till).
+  if (user.role === 'master') return !['inventory', 'pos', 'transactions'].includes(moduleId)
   // Legacy `admin` rows use manager-shaped defaults (no master bypass) until demoted.
   return effectivePermissions(user).includes(moduleId)
 }

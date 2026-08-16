@@ -107,7 +107,7 @@ export default function SidebarNav({
       Icon,
       active:
         path === '/settings'
-          ? isSettingsNavActive(location.pathname)
+          ? isSettingsNavActive(location.pathname, links)
           : location.pathname === path ||
             (path !== '/' && path !== '/settings' && location.pathname.startsWith(`${path}/`)),
     })
@@ -125,7 +125,7 @@ export default function SidebarNav({
       Icon,
       active:
         path === '/settings'
-          ? isSettingsNavActive(location.pathname)
+          ? isSettingsNavActive(location.pathname, links)
           : location.pathname === path ||
             (path !== '/' && path !== '/settings' && location.pathname.startsWith(`${path}/`)),
     })
@@ -207,7 +207,7 @@ export default function SidebarNav({
         {links.map(([path, label, Icon], index) => {
           const active =
             path === '/settings'
-              ? isSettingsNavActive(location.pathname)
+              ? isSettingsNavActive(location.pathname, links)
               : location.pathname === path ||
                 (path !== '/' && path !== '/settings' && location.pathname.startsWith(`${path}/`))
           const isPlaceholder = reorderMode && dragIndex === index
@@ -241,7 +241,7 @@ export default function SidebarNav({
               onClick={() => onNavigate?.()}
               className={({ isActive }) =>
                 rowClass(
-                  path === '/settings' ? isSettingsNavActive(location.pathname) : isActive,
+                  path === '/settings' ? isSettingsNavActive(location.pathname, links) : isActive,
                   false,
                   false,
                 )

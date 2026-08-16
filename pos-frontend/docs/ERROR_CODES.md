@@ -16,9 +16,9 @@ Read the columns in this order:
 
 | Value | What it means at the till |
 | --- | --- |
-| `notRecorded` | The sale was NOT recorded. Do not hand over goods — ring it up again. |
+| `notRecorded` | The sale was NOT recorded. Do not hand over goods, ring it up again. |
 | `savedOffline` | The sale IS saved on this device and will sync. Do not ring it up again. |
-| `atRisk` | Saved on this device but not yet on the server. Keep this device on and call support — do not clear browser data. |
+| `atRisk` | Saved on this device but not yet on the server. Keep this device on and call support. Do not clear browser data. |
 | `unknown` | It is not certain whether this sale went through. Check Transactions for the OR number BEFORE ringing it again, or the customer may be charged twice. |
 
 ### Severity values
@@ -38,14 +38,14 @@ Read the columns in this order:
 
 ## AUTH
 
-### AUTH01 — Sign-in failed — wrong email/password or account inactive.
+### AUTH01 — Sign-in failed: wrong email/password or account inactive.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
 - **Safe to retry:** yes
 - **Likely cause:** Credentials rejected by Supabase Auth, or the staff row is marked inactive.
 - **First action:** Re-type the password. If it still fails, check the account is Active on Manager → Staff.
-- **Raised from:** `src/legal/terms.js:111`, `src/pages/Login.jsx:209`
+- **Raised from:** `src/legal/terms.js:111`, `src/pages/Login.jsx:208`
 
 ### AUTH02 — No staff profile linked to this login.
 
@@ -54,34 +54,34 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The Auth user exists but no row in `staff` has a matching auth_user_id, so the app cannot tell which branch or role they have.
 - **First action:** Manager → Staff: re-save the person to relink, or recreate the login.
-- **Raised from:** `src/stores/posStore.js:104`
+- **Raised from:** `src/stores/posStore.js:105`
 
-### AUTH03 — Offline and no saved session — connect once to sign in.
+### AUTH03 — Offline and no saved session. Connect once to sign in.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
 - **Safe to retry:** yes
 - **Likely cause:** First sign-in on this device with no network. There is nothing cached to verify against.
 - **First action:** Get the device online once. After that, sign-in works offline.
-- **Raised from:** `src/stores/posStore.js:98`
+- **Raised from:** `src/stores/posStore.js:99`
 
-### AUTH04 — Day was closed — sign in again with password to open the till.
+### AUTH04 — Day was closed. Sign in again with password to open the till.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
 - **Safe to retry:** yes
 - **Likely cause:** A Z-Read / day-end closed the trading day. Reopening deliberately requires a full sign-in.
 - **First action:** Sign in with the email + password account, not the PIN.
-- **Raised from:** `src/stores/posStore.js:89`
+- **Raised from:** `src/stores/posStore.js:90`
 
-### AUTH05 — App not configured — missing Supabase environment keys.
+### AUTH05 — App not configured: missing Supabase environment keys.
 
 - **Severity:** `config` — Configuration — retrying will never help, an admin must fix it
 - **Sale impact:** `none`
 - **Safe to retry:** no
 - **Likely cause:** VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY is absent from the build.
 - **First action:** Set both in the deploy environment and rebuild. Never use the service role key here.
-- **Raised from:** `src/pages/Login.jsx:90`, `src/stores/posStore.js:63`
+- **Raised from:** `src/pages/Login.jsx:89`, `src/stores/posStore.js:64`
 
 ### AUTH06 — Complete the captcha, then try signing in again.
 
@@ -90,9 +90,9 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** Turnstile/captcha challenge not solved or expired.
 - **First action:** Solve the challenge. If it never appears, check the captcha domain is allowed in the CSP.
-- **Raised from:** `src/lib/api.js:3668`, `src/pages/Login.jsx:209`
+- **Raised from:** `src/lib/api.js:3668`, `src/pages/Login.jsx:208`
 
-### AUTH07 — Too many failed PIN attempts — wait and try again.
+### AUTH07 — Too many failed PIN attempts. Wait and try again.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
@@ -101,7 +101,7 @@ Read the columns in this order:
 - **First action:** Wait out the lockout, or have a manager reveal/reset the PIN on Manager → Staff.
 - **Raised from:** `src/pages/Transactions.jsx:309`
 
-### AUTH08 — Session expired — sign in again.
+### AUTH08 — Session expired. Sign in again.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
@@ -135,7 +135,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** Single-active-session policy (migrate_single_active_session_enforcement.sql): a newer login for this staff account replaced this device's session. Detected via the periodic heartbeat, a realtime notice, or a rejected offline-queue sync.
 - **First action:** Sign in again to resume on this device. Anything rung offline before the switch is still queued locally and syncs once signed back in.
-- **Raised from:** _not yet used in code_
+- **Raised from:** `src/stores/posStore.js:210`, `src/stores/posStore.js:307`
 
 ## CAT
 
@@ -166,7 +166,7 @@ Read the columns in this order:
 - **First action:** Retry. Remember this edits the shared TEMPLATE — it does not change products a branch already adopted.
 - **Raised from:** _not yet used in code_
 
-### CAT04 — Bulk catalog update failed — some items may not have changed.
+### CAT04 — Bulk catalog update failed. Some items may not have changed.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
@@ -251,7 +251,7 @@ Read the columns in this order:
 
 ## DEV
 
-### DEV01 — Device settings DB column missing — run migrate_device_settings.sql in Supabase.
+### DEV01 — Device settings DB column missing: run migrate_device_settings.sql in Supabase.
 
 - **Severity:** `config` — Configuration — retrying will never help, an admin must fix it
 - **Sale impact:** `none`
@@ -285,7 +285,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The print window was refused or the printer did not respond. The SALE IS STILL RECORDED.
 - **First action:** Reprint from Transactions. Never re-ring the sale to get a receipt.
-- **Raised from:** `src/pages/manager/BranchDashboard.jsx:2332`, `src/pages/Transactions.jsx:745`
+- **Raised from:** `src/pages/manager/BranchDashboard.jsx:2336`, `src/pages/Transactions.jsx:745`
 
 ### DEV05 — Could not reach the device.
 
@@ -318,7 +318,7 @@ Read the columns in this order:
 - **First action:** Re-export as .xlsx or .csv from the original program and try again. Keep files under 20MB.
 - **Raised from:** `src/components/inventory/InventoryImportPanel.jsx:209`
 
-### IMP02 — Import failed — nothing was saved.
+### IMP02 — Import failed. Nothing was saved.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
@@ -446,7 +446,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** reviewed_by must differ from requested_by.
 - **First action:** Ask another supervisor or manager to Confirm or Flag.
-- **Raised from:** `src/components/dayend/DrawerActivity.jsx:158`, `src/pages/manager/BranchDashboard.jsx:1936`, `src/pages/manager/BranchDashboard.jsx:1977`
+- **Raised from:** `src/components/dayend/DrawerActivity.jsx:158`, `src/pages/manager/BranchDashboard.jsx:1940`, `src/pages/manager/BranchDashboard.jsx:1981`
 
 ### MOVE20 — Opening float already set on this shift.
 
@@ -464,7 +464,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** resolve_flagged_cash_movement requires is_manager().
 - **First action:** Have a manager mark the flagged row Resolved.
-- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1894`
+- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1898`
 
 ### MOVE22 — Only flagged movements can be marked Resolved this way.
 
@@ -515,7 +515,7 @@ Read the columns in this order:
 
 ## PRICE
 
-### PRICE01 — Price override failed — the original price still applies.
+### PRICE01 — Price override failed. The original price still applies.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
@@ -526,7 +526,7 @@ Read the columns in this order:
 
 ## PRINT
 
-### PRINT01 — Pop-up blocked — allow pop-ups to print receipts.
+### PRINT01 — Pop-up blocked. Allow pop-ups to print receipts.
 
 - **Severity:** `degraded` — Degraded — carried on in a reduced mode, nothing lost
 - **Sale impact:** `none`
@@ -544,7 +544,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The promo_events insert (or a per-branch copy of it, for multi-branch create) was rejected.
 - **First action:** Check the branch, dates, and rule details, then retry.
-- **Raised from:** `src/components/promos/PromoEditorModal.jsx:541`, `src/pages/manager/Promos.jsx:833`
+- **Raised from:** `src/components/promos/PromoEditorModal.jsx:541`, `src/pages/manager/Promos.jsx:864`
 
 ### PROMO02 — Could not save the promo rule.
 
@@ -562,7 +562,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The promo_events update was rejected — the promo may no longer be pending.
 - **First action:** Reload Promo History and retry from a pending revision.
-- **Raised from:** `src/components/promos/PromoEditorModal.jsx:541`, `src/pages/manager/Promos.jsx:619`
+- **Raised from:** `src/components/promos/PromoEditorModal.jsx:541`, `src/pages/manager/Promos.jsx:650`
 
 ### PROMO04 — Could not approve the promo.
 
@@ -571,7 +571,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** approve_promo_event was rejected — commonly a promo with zero rules, or it is no longer pending.
 - **First action:** Add at least one rule if none exist, then retry.
-- **Raised from:** `src/pages/manager/Promos.jsx:707`
+- **Raised from:** `src/pages/manager/Promos.jsx:738`
 
 ### PROMO05 — Could not reject the promo.
 
@@ -580,7 +580,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** reject_promo_event was rejected — commonly a missing reason or the promo is no longer pending.
 - **First action:** Enter a reason and retry.
-- **Raised from:** `src/pages/manager/Promos.jsx:727`
+- **Raised from:** `src/pages/manager/Promos.jsx:758`
 
 ### PROMO06 — Could not process the promo stop request.
 
@@ -589,7 +589,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** request_stop_promo / approve_stop_promo / reject_stop_promo was rejected.
 - **First action:** Retry, or reload Promo History if the promo status already changed.
-- **Raised from:** `src/pages/manager/Promos.jsx:751`, `src/pages/manager/Promos.jsx:764`, `src/pages/manager/Promos.jsx:777`
+- **Raised from:** `src/pages/manager/Promos.jsx:782`, `src/pages/manager/Promos.jsx:795`, `src/pages/manager/Promos.jsx:808`
 
 ### PROMO07 — Could not load promo data.
 
@@ -598,7 +598,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** A promo, rule, or product read failed or timed out.
 - **First action:** Check the connection and retry.
-- **Raised from:** `src/components/promos/PromoEditorModal.jsx:245`, `src/components/promos/PromoEditorModal.jsx:273`, `src/pages/manager/Promos.jsx:363`, `src/pages/manager/Promos.jsx:374`
+- **Raised from:** `src/components/promos/PromoEditorModal.jsx:245`, `src/components/promos/PromoEditorModal.jsx:273`, `src/pages/manager/Promos.jsx:394`, `src/pages/manager/Promos.jsx:405`
 
 ### PROMO08 — Could not delete the promo.
 
@@ -607,20 +607,20 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The promo_events delete was rejected — commonly a promo that is no longer pending/rejected.
 - **First action:** Reload Promo History and retry.
-- **Raised from:** `src/pages/manager/Promos.jsx:847`
+- **Raised from:** `src/pages/manager/Promos.jsx:878`
 
 ## SALE
 
-### SALE01 — Sale failed — payment was not recorded.
+### SALE01 — Sale failed: payment was not recorded.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
-- **Sale impact:** `notRecorded` — The sale was NOT recorded. Do not hand over goods — ring it up again.
+- **Sale impact:** `notRecorded` — The sale was NOT recorded. Do not hand over goods, ring it up again.
 - **Safe to retry:** yes
 - **Likely cause:** The transaction insert was rejected before any row was written.
 - **First action:** Ring the sale up again. It is safe — nothing was saved.
 - **Raised from:** `src/components/pos/Cart.jsx:555`
 
-### SALE02 — Sale queued offline — will sync when online.
+### SALE02 — Sale queued offline. Will sync when online.
 
 - **Severity:** `degraded` — Degraded — carried on in a reduced mode, nothing lost
 - **Sale impact:** `savedOffline` — The sale IS saved on this device and will sync. Do not ring it up again.
@@ -636,9 +636,9 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The refund write was rejected. It may or may not have partially applied.
 - **First action:** Open the transaction and check whether the refund is already listed BEFORE refunding again.
-- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1567`, `src/pages/Transactions.jsx:350`, `src/pages/Transactions.jsx:368`, `src/pages/Transactions.jsx:399`
+- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1571`, `src/pages/Transactions.jsx:350`, `src/pages/Transactions.jsx:368`, `src/pages/Transactions.jsx:399`
 
-### SALE04 — Void failed — the sale is unchanged.
+### SALE04 — Void failed. The sale is unchanged.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
@@ -647,7 +647,7 @@ Read the columns in this order:
 - **First action:** Get supervisor approval and retry. The original sale is still valid and unmodified.
 - **Raised from:** _not yet used in code_
 
-### SALE05 — This sale was already recorded — not charged again.
+### SALE05 — This sale was already recorded, not charged again.
 
 - **Severity:** `warning` — Warning — informational, the user can proceed
 - **Sale impact:** `savedOffline` — The sale IS saved on this device and will sync. Do not ring it up again.
@@ -663,7 +663,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** Creating, cancelling, or rejecting the remote manager approval request was rejected.
 - **First action:** Nothing has been refunded yet — retry, or fall back to in-person supervisor approval.
-- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1616`, `src/pages/Transactions.jsx:434`, `src/pages/Transactions.jsx:464`
+- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1620`, `src/pages/Transactions.jsx:434`, `src/pages/Transactions.jsx:464`
 
 ### SALE07 — Refunds are not available offline.
 
@@ -683,7 +683,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The role ceiling in migrate_role_assignment_ceiling.sql refused the write. Managers may only create roles strictly below their own.
 - **First action:** Ask an admin or master to create this account. This is working as intended.
-- **Raised from:** `src/pages/manager/Staff.jsx:1220`
+- **Raised from:** `src/pages/manager/Staff.jsx:1222`
 
 ### SEC02 — You cannot modify an account at or above your own role.
 
@@ -692,7 +692,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The role ceiling refused an edit to a peer or senior account.
 - **First action:** Ask someone above that account’s role to make the change.
-- **Raised from:** `src/pages/manager/Staff.jsx:1214`
+- **Raised from:** `src/pages/manager/Staff.jsx:1216`
 
 ### SEC03 — You cannot change your own role, access, branch or active status.
 
@@ -701,7 +701,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Self-service privilege change is blocked outright — it is the shortest escalation path there is.
 - **First action:** Ask someone above you to make the change. This is working as intended.
-- **Raised from:** `src/pages/manager/Staff.jsx:1213`
+- **Raised from:** `src/pages/manager/Staff.jsx:1215`
 
 ### SEC04 — A supervisor must approve this action.
 
@@ -750,7 +750,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** One drawer holds one shift at a time — otherwise a shortage cannot be traced to whoever was actually holding the cash.
 - **First action:** The previous cashier cashes out on this terminal. If they have gone, a supervisor counts the drawer and closes their shift.
-- **Raised from:** `src/lib/api.js:3972`, `src/pages/DayEnd.jsx:1257`, `src/pages/manager/Staff.jsx:1136`
+- **Raised from:** `src/lib/api.js:3972`, `src/pages/DayEnd.jsx:1258`, `src/pages/manager/Staff.jsx:1138`
 
 ### SHIFT03 — Enter the counted cash amount.
 
@@ -759,9 +759,9 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** A change fund or ending count was missing, negative, or an adjustment had no reason written.
 - **First action:** Count the drawer and type the figure. Zero is allowed; blank is not.
-- **Raised from:** `src/lib/api.js:3976`, `src/pages/manager/Staff.jsx:1078`, `src/stores/shiftStore.js:185`
+- **Raised from:** `src/lib/api.js:3976`, `src/pages/manager/Staff.jsx:1079`, `src/stores/shiftStore.js:185`
 
-### SHIFT04 — That shift is closed — record an adjustment instead of editing it.
+### SHIFT04 — That shift is closed. Record an adjustment instead of editing it.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
@@ -826,7 +826,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The queue push or remote pull failed. Local data is intact; the queue preserves order and will resume.
 - **First action:** Check the connection. Sync retries by itself — no action needed unless it persists for hours.
-- **Raised from:** `src/pages/settings/SharedPanels.jsx:75`, `src/stores/posStore.js:1314`
+- **Raised from:** `src/pages/settings/SharedPanels.jsx:75`, `src/stores/posStore.js:1357`
 
 ### SYNC02 — Could not load branch data.
 
@@ -837,14 +837,14 @@ Read the columns in this order:
 - **First action:** Retry. If offline, the app falls back to the last cached copy.
 - **Raised from:** _not yet used in code_
 
-### SYNC09 — Records could not sync after repeated attempts — saved on this device only.
+### SYNC09 — Records could not sync after repeated attempts. Saved on this device only.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
-- **Sale impact:** `atRisk` — Saved on this device but not yet on the server. Keep this device on and call support — do not clear browser data.
+- **Sale impact:** `atRisk` — Saved on this device but not yet on the server. Keep this device on and call support. Do not clear browser data.
 - **Safe to retry:** yes
 - **Likely cause:** A queue item hit MAX_SYNC_ATTEMPTS and was blocked so it cannot stall everything behind it. These are completed sales that never reached Supabase.
 - **First action:** Use "Retry now" on the banner. DO NOT clear browser data or reinstall — that destroys the only copy. Call support.
-- **Raised from:** `src/components/shared/Shell.jsx:437`, `src/legal/terms.js:111`, `src/pages/settings/SharedPanels.jsx:133`
+- **Raised from:** `src/components/shared/Shell.jsx:448`, `src/legal/terms.js:111`, `src/pages/settings/SharedPanels.jsx:133`
 
 ### SYNC10 — Could not resync this device.
 
@@ -857,14 +857,14 @@ Read the columns in this order:
 
 ## TILL
 
-### TILL01 — Till is closed — ask a manager to reopen.
+### TILL01 — Till is closed. Ask a manager to reopen.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`
 - **Safe to retry:** no
 - **Likely cause:** Day-end has been run for this branch and business date. Selling into a closed day would corrupt the Z-Read.
 - **First action:** Manager reopens the till from Day end, or start the next business day.
-- **Raised from:** `src/components/pos/Cart.jsx:399`, `src/components/pos/Cart.jsx:400`, `src/stores/posStore.js:826`
+- **Raised from:** `src/components/pos/Cart.jsx:399`, `src/components/pos/Cart.jsx:400`, `src/stores/posStore.js:869`
 
 ### TILL02 — Could not reopen till.
 
@@ -884,7 +884,7 @@ Read the columns in this order:
 - **First action:** Retry. If it keeps failing, screenshot the counted figures before leaving the page.
 - **Raised from:** `src/components/shared/ShiftGate.jsx:106`
 
-### TILL04 — Refund/void not allowed — this business day is closed. No sales or refunds until a manager reopens the till, or the next business day opens.
+### TILL04 — Refund/void not allowed: this business day is closed. No sales or refunds until a manager reopens the till, or the next business day opens.
 
 - **Severity:** `blocking` — Blocking — the task cannot continue
 - **Sale impact:** `none`

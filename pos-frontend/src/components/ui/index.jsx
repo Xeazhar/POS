@@ -618,7 +618,7 @@ export function ErrorBanner({ error, className = '', onDismiss }) {
           )}
           {code && !alreadyLabeled && (
             <p className="m-0 mt-1 text-[11px] text-brand-danger/90">
-              Support code <strong className="tracking-wide">{code}</strong> — text or call support with this code.
+              Support code <strong className="tracking-wide">{code}</strong>. Text or call support with this code.
             </p>
           )}
         </div>

@@ -112,7 +112,7 @@ When changing behavior, the usual path is:
 | `/settings` | `src/pages/Settings.jsx` | role-split: manager General/Security/Sync/About; cashier/supervisor My Account/Sync/About. About links to `/legal/*` |
 | `/legal/terms` | `src/pages/Legal.jsx` | public Terms and Conditions — no auth, no Shell (shift gate must not block reading) |
 | `/legal/privacy` | `src/pages/Legal.jsx` | public Privacy Policy (RA 10173). Copy lives in `src/legal/` |
-| `/settings/devices` | `src/pages/Devices.jsx` | cashier/supervisor: this till. Manager/master: per-branch presence + hardware. **Not** inside the Settings tree |
+| `/settings/devices` | `src/pages/Devices.jsx` | cashier/supervisor: this till. Manager/master: per-branch presence + hardware. Reached through the Settings tree for supervisor (`pages/settings/sections.js` `STAFF_SETTINGS_SECTIONS`, module-gated); still its own top-level sidebar tab for manager/master (`constants/nav.js` `managerLinks`) |
 | `/shifts` | `src/pages/manager/Staff.jsx` | **merged Staff page** (supervisor+) — tabs: Staff roster + Shifts log |
 | `/manager/branches` | `src/pages/manager/Branches.jsx` | branch list |
 | `/manager/branches/:branchId` | `src/pages/manager/BranchDashboard.jsx` | manager branch operations dashboard |
@@ -222,13 +222,18 @@ Permission behavior:
 - custom `user.permissions` override defaults
 - nav visibility uses the same checks as route access
 - DB still enforces branch access via RLS even if UI allows navigation
-- `canAccessModule` gives `master` unconditional access to every module **except** `inventory`
-  (stock/movement for a branch is under Branches → branch dashboard: On hand + Movement
-  history). No `DEFAULTS`/`permissions` check at all — a lone master account can never lock
-  itself out via Staff, since self-edit is always blocked (`canEditStaff`) and nobody outranks
-  master. The former `admin` role is **retired** (`migrate_retire_admin_role.sql` remaps to
-  `manager`); only master has that top power. `manager` uses `DEFAULTS` / explicit `permissions`
-  (devices not in manager defaults).
+- `canAccessModule` gives `master` unconditional access to every module **except**
+  `inventory`, `pos`, and `transactions` (stock/movement for a branch is under Branches →
+  branch dashboard: On hand + Movement history; master doesn't run a till). No
+  `DEFAULTS`/`permissions` check at all. The former `admin` role is **retired**
+  (`migrate_retire_admin_role.sql` remaps to `manager`); only master has that top power.
+  `manager` uses `DEFAULTS` / explicit `permissions` (devices not in manager defaults).
+- `canEditStaff` blocks self-edit for every role **except** master: master is already the top
+  rank, so self-edit isn't an escalation path, and master is the only account with no one
+  above it to make changes on its behalf. `Staff.jsx` still locks the role `<select>` when
+  master edits its own row (self-demotion would lock the account out with no one to fix it)
+  and patches the live session's `user.name` via `useAuthStore.setState` after saving, so the
+  header/sidebar reflect a name change immediately without a re-login.
 - **Public legal pages** (`/legal/terms`, `/legal/privacy`) are rendered *before* the
   signed-in Shell / signed-out Login split. They skip shift gate and auth. Copy is in
   `src/legal/terms.js` and `src/legal/privacy.js`; keep those in sync with real data
@@ -328,8 +333,9 @@ Prefer one of:
 
 - Defaults: `roles.js` → `DEFAULTS[role]`.
 - Override: `user.permissions` array from Staff page / DB.
-- Check: `canAccessModule(user, moduleId)` (master always true except `inventory`; others use
-  DEFAULTS / `permissions[]`. `admin` role retired — see `migrate_retire_admin_role.sql`).
+- Check: `canAccessModule(user, moduleId)` (master always true except `inventory`, `pos`,
+  `transactions`; others use DEFAULTS / `permissions[]`. `admin` role retired — see
+  `migrate_retire_admin_role.sql`).
 - Nav filters the same way in `staffLinksFor` / `managerLinksFor`.
 - **Settings** is always in the sidebar for signed-in users (`navLinksFor`); it is not a
   `MODULES` id, so Staff cannot strip it. Default order puts it last; staff may drag any
@@ -337,7 +343,12 @@ Prefer one of:
   (`utils/navOrder.js`) and does not change `staffHomePath`. Manager-only sections are gated in
   `pages/Settings.jsx`; `company_profile` writes still require `is_manager()` RLS.
   Devices remains module `devices` at `/settings/devices` (manager/master see network
-  status; cashiers/supervisors see this till). Session auto-lock minutes live on
+  status via their own sidebar tab; supervisor reaches the same route through a
+  module-gated item in `STAFF_SETTINGS_SECTIONS`, `pages/settings/sections.js` — cashiers
+  don't have the module by default so it's absent for them). `isSettingsNavActive(pathname,
+  links)` decides whether the Settings rail icon highlights on `/settings/devices`: only when
+  `links` (this user's nav list) still has a standalone Devices entry, i.e. manager/master.
+  Session auto-lock minutes live on
   `company_profile.idle_lock_minutes` (5 / 10 / 15 only).
 
 ### Logout
@@ -2043,7 +2054,7 @@ in full to the terminal).
 | Cashier | PIN (6 digits) | POS, Transactions, Inventory (view/adjust), Day end, Devices |
 | Supervisor | PIN (6 digits) | Same + Shifts (branch) + **Products `/data`** (add/import) |
 | Manager | Email | Overview, Branches, Staff, Devices (network status), Data, Reports |
-| Master | Email | Manager + staff routes combined (sole top account; `admin` role retired) |
+| Master | Email | Manager + staff routes combined, except POS/Transactions/Inventory (sole top account; `admin` role retired; can edit own account, unlike every other role) |
 
 ---
 

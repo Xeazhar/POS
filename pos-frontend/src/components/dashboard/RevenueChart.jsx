@@ -47,7 +47,10 @@ function RevenueChart({
     return () => observer.disconnect()
   }, [measure])
 
-  const height = chartHeight
+  // On a narrow phone-width card, a tall fixed height (up to REVENUE_CHART_PLOT_HEIGHT) forces
+  // extra scroll before the rest of the dashboard is reachable. Scale it down only below that
+  // width — tablet/desktop callers keep the height they asked for.
+  const height = width > 0 && width < 480 ? Math.min(chartHeight, 260) : chartHeight
   const left = 52
   const bottom = 28
   const top = 16

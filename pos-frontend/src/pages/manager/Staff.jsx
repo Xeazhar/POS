@@ -51,7 +51,7 @@ import {
 import { withTimeout } from '../../utils/withTimeout'
 import { formatSupportError } from '../../utils/errors'
 import { money, today } from '../../utils/format'
-import { decimalOnly } from '../../utils/validate'
+import { decimalOnly, formatMoneyOnBlur } from '../../utils/validate'
 import {
   MODULES,
   assignableRoles,
@@ -1042,6 +1042,7 @@ function ManagerStaff() {
             label="Corrected amount"
             value={adjustValue}
             onChange={(e) => setAdjustValue(decimalOnly(e.target.value))}
+            onBlur={(e) => setAdjustValue(formatMoneyOnBlur(e.target.value))}
             inputMode="decimal"
             required
           />
@@ -1100,6 +1101,7 @@ function ManagerStaff() {
             label="Cash counted in the drawer"
             value={closingCash}
             onChange={(e) => setClosingCash(decimalOnly(e.target.value))}
+            onBlur={(e) => setClosingCash(formatMoneyOnBlur(e.target.value))}
             inputMode="decimal"
             required
             placeholder="0.00"
@@ -1217,7 +1219,7 @@ function ManagerStaff() {
                 // Separately: the role being ASSIGNED must also be below the actor's.
                 if (!canAssignRole(currentUser, form.role)) {
                   throw new Error(
-                    `You cannot assign the ${form.role} role — it is at or above your own (${currentUser?.role || 'unknown'}). · Code SEC01`,
+                    `You cannot assign the ${form.role} role: it is at or above your own (${currentUser?.role || 'unknown'}). · Code SEC01`,
                   )
                 }
                 if (usesPinLogin(form.role) && form.login_code) {
@@ -1253,8 +1255,14 @@ function ManagerStaff() {
                     target: form,
                     before,
                   })
-                  // No self-refresh branch here any more: canEditStaff rejects self-edit
-                  // above, so a manager can never be editing their own row by this point.
+                  // canEditStaff only allows self-edit for master, so this only ever fires
+                  // for master editing their own row — patch the live session's name so the
+                  // header/sidebar reflect it immediately, without waiting for a re-login.
+                  if (currentUser?.id === form.id) {
+                    useAuthStore.setState((state) => ({
+                      user: state.user ? { ...state.user, name: form.full_name } : state.user,
+                    }))
+                  }
                 } else {
                   if (!hasSupabase) throw new Error('Connect Supabase to create staff logins.')
                   let created = null
@@ -1361,7 +1369,7 @@ function ManagerStaff() {
                     inputMode="numeric"
                   />
                   <p className="m-0 -mt-1 text-[10px] text-brand-subtle">
-                    Must be unique — no two staff can share the same code.
+                    Must be unique, no two staff can share the same code.
                   </p>
                   <div className="flex items-end gap-2">
                     <label className="relative block min-w-0 flex-1 text-[11px] font-bold text-brand-n700">
@@ -1427,6 +1435,7 @@ function ManagerStaff() {
                 label="Role"
                 required
                 value={form.role}
+                disabled={currentUser?.role === 'master' && form.id === currentUser.id}
                 onChange={(e) => {
                   const role = e.target.value
                   setForm({
@@ -1451,7 +1460,9 @@ function ManagerStaff() {
                   ))}
               </SelectField>
               <p className="m-0 -mt-1 text-[10px] text-brand-subtle">
-                You can only assign roles below your own ({currentUser?.role || '—'}).
+                {currentUser?.role === 'master' && form.id === currentUser.id
+                  ? 'You cannot change your own role. Ask another master account to do this, or create one first.'
+                  : `You can only assign roles below your own (${currentUser?.role || '—'}).`}
               </p>
               <fieldset className="rounded-md border border-brand-line p-3">
                 <legend className="px-1 text-[10px] font-bold tracking-wide text-brand-label uppercase">
@@ -1464,8 +1475,8 @@ function ManagerStaff() {
                     {formDiff.mode === 'default'
                       ? 'Matches the role defaults.'
                       : formDiff.mode === 'restricted'
-                        ? `Narrower than the role default — ${formDiff.missing.map(moduleLabel).join(', ')} removed.`
-                        : `Above the role default — grants ${formDiff.extra.map(moduleLabel).join(', ')}.`}
+                        ? `Narrower than the role default: ${formDiff.missing.map(moduleLabel).join(', ')} removed.`
+                        : `Above the role default: grants ${formDiff.extra.map(moduleLabel).join(', ')}.`}
                   </span>
                   {formDiff.mode !== 'default' && (
                     <button

@@ -181,7 +181,7 @@ export default function InventoryImportPanel({ products, onDone }) {
           skippedNotInCatalog.push({
             ...line,
             action: 'skip',
-            reason: 'Not in network catalog — add it in Manager Data first, or adopt from Catalog',
+            reason: 'Not in network catalog. Add it in Manager Data first, or adopt from Catalog',
           })
         }
       }
@@ -216,7 +216,7 @@ export default function InventoryImportPanel({ products, onDone }) {
   const commit = async () => {
     if (!preview || !user?.branchId) return
     if (!preview.lines?.length) {
-      setError('Nothing to import — every row was skipped. See reasons below and the import guide.')
+      setError('Nothing to import. Every row was skipped. See reasons below and the import guide.')
       return
     }
     if (duplicate && !acknowledgeDuplicate) {
@@ -243,7 +243,7 @@ export default function InventoryImportPanel({ products, onDone }) {
       // else on screen saying so — easy to read as "the click didn't register" and
       // re-import the same file. This is the only signal that it actually worked.
       setSuccess(
-        `Imported "${batch.filename}" — ${batch.created_count} new, ${batch.updated_count} restocked.`,
+        `Imported "${batch.filename}": ${batch.created_count} new, ${batch.updated_count} restocked.`,
       )
       onDone?.()
       void loadRecentBatches()
@@ -272,7 +272,7 @@ export default function InventoryImportPanel({ products, onDone }) {
             <h2 className="m-0 text-sm">Quick restock import</h2>
             <p className="m-0 mt-1 text-[11px] text-brand-subtle">
               Restock items already on this branch. New SKUs only if they exist in the network
-              catalog — others are listed as skipped with a reason.
+              catalog, others are listed as skipped with a reason.
             </p>
           </div>
           <label
@@ -336,7 +336,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3`}
           <h2 className="m-0 text-base">Recent imports</h2>
           <p className="mt-1 text-xs text-brand-muted">
             Undo removes the products this import created and reverses the stock it added
-            (including restocks to existing products) — an existing product&apos;s own details
+            (including restocks to existing products). An existing product&apos;s own details
             are not changed.
           </p>
           <div className="mt-3 divide-y divide-brand-softline">
@@ -349,7 +349,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3`}
                     {batch.updated_count} restocked
                     {batch.status === 'reverted' ? ' · Reverted' : ''}
                     {batch.status === 'revert_requested'
-                      ? ` · Revert requested${canRevert ? ` by ${batch.requester?.full_name || 'supervisor'}` : ' — awaiting manager'}`
+                      ? ` · Revert requested${canRevert ? ` by ${batch.requester?.full_name || 'supervisor'}` : ', awaiting manager'}`
                       : ''}
                   </span>
                 </div>
@@ -394,7 +394,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3`}
           <h2 className="m-0 text-lg">Import preview</h2>
           <p className="mt-1 text-xs text-brand-muted">
             {preview.filename} · {preview.updateCount} restock · {preview.createCount} new ·{' '}
-            {preview.skippedCount} skipped — review updates below before confirming.
+            {preview.skippedCount} skipped. Review updates below before confirming.
           </p>
           {duplicate && (
             <div className="mt-3 rounded-md border border-brand-warn-line bg-brand-warn-surface px-3 py-3 text-xs text-brand-warn">
@@ -426,7 +426,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3`}
           {(preview.skipped || []).length > 0 && (
             <div className="mt-4">
               <p className="m-0 mb-1 text-[11px] font-bold text-brand-warn">
-                Skipped ({preview.skippedCount}) — not added
+                Skipped ({preview.skippedCount}): not added
               </p>
               <div className="max-h-48 overflow-auto text-xs">
                 {(preview.skipped || []).map((line, i) => (
@@ -470,7 +470,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,12.5,false,3`}
           <p className="mb-3 text-sm text-brand-muted">
             Deactivates the {confirmRevert.created_count} product(s) this import created and
             reverses the stock it added, including restocks to existing products. Existing
-            products stay active — only the stock and any newly-created rows are undone.
+            products stay active. Only the stock and any newly-created rows are undone.
           </p>
           <ModalActions>
             <SecondaryButton compact type="button" disabled={revertBusy} onClick={() => setConfirmRevert(null)}>

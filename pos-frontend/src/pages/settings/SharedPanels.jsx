@@ -23,7 +23,7 @@ function formatWhen(iso) {
 }
 
 function syncStateLabel(status, online, reachable) {
-  if (!online) return 'Offline — working locally'
+  if (!online) return 'Offline: working locally'
   if (!reachable) return 'Device online, server not reachable'
   if (status === 'syncing') return 'Synchronizing…'
   if (status === 'error') return 'Last sync had an error'
@@ -90,7 +90,7 @@ export function SyncStatusPanel() {
       await refresh(user.branchId)
       setResyncMessage({
         tone: 'ok',
-        text: `Resynced — ${result.transactions.length} transaction${result.transactions.length === 1 ? '' : 's'}, ${result.dayEnds.length} day-end${result.dayEnds.length === 1 ? '' : 's'} on this device now match the server.`,
+        text: `Resynced: ${result.transactions.length} transaction${result.transactions.length === 1 ? '' : 's'}, ${result.dayEnds.length} day-end${result.dayEnds.length === 1 ? '' : 's'} on this device now match the server.`,
       })
     } catch (err) {
       setResyncMessage({ tone: 'danger', text: formatSupportError(err, 'SYNC10') })
@@ -182,7 +182,7 @@ export function SyncStatusPanel() {
         </SecondaryButton>
         {(pending > 0 || blocked > 0) && (
           <p className="mt-2 text-[11px] text-brand-subtle">
-            {pending + blocked} item{pending + blocked === 1 ? '' : 's'} still queued — let them
+            {pending + blocked} item{pending + blocked === 1 ? '' : 's'} still queued, let them
             sync first.
           </p>
         )}
@@ -226,7 +226,7 @@ export function AboutPanel() {
         {IS_PRERELEASE && (
           <div className="rounded-md border border-brand-softline bg-brand-n50 px-3 py-2.5">
             <dt className="text-[10px] font-bold tracking-wide text-brand-label uppercase">Status</dt>
-            <dd className="m-0 mt-0.5 font-semibold text-brand-warn">In development — not for live sales</dd>
+            <dd className="m-0 mt-0.5 font-semibold text-brand-warn">In development / not for live sales</dd>
           </div>
         )}
         {SHOW_ENV_BADGE && (
@@ -272,7 +272,7 @@ export function MyAccountPanel() {
     <TableCard className="max-h-none p-5">
       <h2 className="m-0 mb-1 text-base font-bold">Employee Information</h2>
       <p className="m-0 mb-4 text-xs text-brand-muted">
-        Your account on this till. Ask a manager to change your name, role, or PIN — Staff
+        Your account on this till. Ask a manager to change your name, role, or PIN. Staff
         is the only place PINs are reset, and you cannot change your own PIN here.
       </p>
       <dl className="grid max-w-xl gap-3 text-sm">

@@ -31,7 +31,7 @@ import { useSyncStore } from '../../stores/syncStore'
 import { formatSupportError, appError } from '../../utils/errors'
 import { money } from '../../utils/format'
 import { isSupervisorOrAbove } from '../../utils/roles'
-import { decimalOnly } from '../../utils/validate'
+import { decimalOnly, formatMoneyOnBlur } from '../../utils/validate'
 
 /**
  * POS → Open Drawer — petty/pickup out, cash-in / opening float in.
@@ -199,7 +199,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
           clientId,
         })
         useSyncStore.getState().refresh(user.branchId)
-        await finishOk(`${typeLabel} approved · ${money(amount)} — will sync when online`)
+        await finishOk(`${typeLabel} approved · ${money(amount)} · will sync when online`)
         return
       }
 
@@ -279,7 +279,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
           clientId,
         })
         useSyncStore.getState().refresh(user.branchId)
-        await finishOk(`${typeLabel} recorded · ${money(amount)} — will sync when online`)
+        await finishOk(`${typeLabel} recorded · ${money(amount)} · will sync when online`)
         return
       }
 
@@ -418,13 +418,13 @@ export default function OpenDrawer({ open, onClose, onDone }) {
         })
         useSyncStore.getState().refresh(user.branchId)
         await finishOk(
-          `${typeLabel} self-recorded · ${money(amount)} — flagged; will sync when online`,
+          `${typeLabel} self-recorded · ${money(amount)} · flagged, will sync when online`,
         )
         return
       }
-      if (!movementId) throw new Error('No pending request — retry from Get approval.')
+      if (!movementId) throw new Error('No pending request. Retry from Get approval.')
       await selfRecordCashMovement({ id: movementId, staffId: user.id, ack: true })
-      await finishOk(`${typeLabel} self-recorded · ${money(amount)} — flagged for day-end review`)
+      await finishOk(`${typeLabel} self-recorded · ${money(amount)} · flagged for day-end review`)
     } catch (err) {
       setError(formatSupportError(err, 'MOVE01'))
     } finally {
@@ -448,7 +448,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
             <>
               <h2 className="mb-1 text-lg">Cash entering the drawer</h2>
               <p className="mb-3 text-xs text-brand-muted">
-                Shift started with no float — record opening cash here, or add more later.
+                Shift started with no float. Record opening cash here, or add more later.
               </p>
               <div className="mb-4 flex flex-col gap-2">
                 <button
@@ -485,7 +485,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
             <>
               <h2 className="mb-1 text-lg">Cash entering the drawer</h2>
               <p className="mb-3 text-xs text-brand-muted">
-                Add change fund after shift start — supervisor or manager approval required.
+                Add change fund after shift start. Supervisor or manager approval required.
               </p>
               <div className="mb-4 flex flex-col gap-2">
                 <button
@@ -569,6 +569,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
             label="Amount"
             value={amount}
             onChange={(e) => setAmount(decimalOnly(e.target.value))}
+            onBlur={(e) => setAmount(formatMoneyOnBlur(e.target.value))}
             inputMode="decimal"
             autoFocus
             inputClassName="h-12 text-lg"
@@ -580,13 +581,13 @@ export default function OpenDrawer({ open, onClose, onDone }) {
             className="mt-2.5"
             placeholder={
               moveType === 'opening_float'
-                ? 'Optional — defaults to Opening float'
-                : 'Required — what is this for?'
+                ? 'Optional, defaults to Opening float'
+                : 'Required: what is this for?'
             }
           />
           {canSelfApprove && (
             <p className="mt-2 text-[11px] text-brand-subtle">
-              You&apos;re a supervisor — this records straight away, no PIN needed.
+              You&apos;re a supervisor, so this records straight away, no PIN needed.
             </p>
           )}
           {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
@@ -693,7 +694,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
             submitLabel={step === 'waiting' || step === 'self' ? 'Approve with PIN' : 'Approve'}
             hint={
               offlineMode
-                ? 'Offline — verified on this device'
+                ? 'Offline: verified on this device'
                 : step === 'waiting' || step === 'self'
                   ? 'Still works while waiting'
                   : null
@@ -707,7 +708,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
             <div className="mt-3">
               {offlineMode && (
                 <p className="mb-2 text-[11px] text-brand-warn">
-                  Offline — use a supervisor PIN on this device, or self-record (flagged). Both
+                  Offline: use a supervisor PIN on this device, or self-record (flagged). Both
                   sync when connection returns. Notify manager needs a connection.
                 </p>
               )}

@@ -44,7 +44,7 @@ export default class AppErrorBoundary extends Component {
           <p className="m-0 mt-2 text-sm text-brand-muted">
             {chunk
               ? 'This screen loaded an older version of the app. Reload to fetch the latest build.'
-              : 'The page hit an unexpected error. Your queued sales stay on this device — try reloading.'}
+              : 'The page hit an unexpected error. Your queued sales stay on this device, try reloading.'}
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
             <PrimaryButton type="button" onClick={this.handleReload}>

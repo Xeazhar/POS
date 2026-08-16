@@ -7,7 +7,6 @@ import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posS
 import { formatSupportError } from '../utils/errors'
 import { sanitizePinInput } from '../utils/pin'
 import { APP_VERSION_LABEL, IS_PRERELEASE } from '../utils/version'
-import { SHOW_ENV_BADGE, environmentCaption } from '../utils/environment'
 import { LegalNavLinks } from '../legal/LegalNavLinks'
 
 /**
@@ -97,7 +96,7 @@ function Login() {
                 ? mode === 'pin'
                   ? 'Enter your staff code and PIN to continue.'
                   : 'Sign in with your account email.'
-                : 'Demo mode — any code/PIN or email works offline.'}
+                : 'Demo mode: any code/PIN or email works offline.'}
             </p>
             <form
               className="relative mt-[22px]"
@@ -228,18 +227,11 @@ function Login() {
             <div className="mt-[22px] flex items-center justify-between gap-3">
               <small className="text-[10px] text-brand-n600">
                 {!hasSupabase
-                  ? 'Demo mode — no store database connected'
+                  ? 'Demo mode: no store database connected'
                   : isOffline
-                    ? 'No network — PIN sign-in still works on this device'
+                    ? 'No network: PIN sign-in still works on this device'
                     : ''}
               </small>
-              {/* Which database this build talks to, before anyone signs in and starts
-                  entering data into it. */}
-              {SHOW_ENV_BADGE && hasSupabase && (
-                <span className="max-w-[45%] shrink-0 truncate rounded-[4px] bg-brand-warn-bg px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-brand-warn uppercase">
-                  {environmentCaption()}
-                </span>
-              )}
               {mode === 'pin' ? (
                 <button
                   type="button"

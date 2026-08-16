@@ -66,10 +66,10 @@ export const SALE_IMPACT = {
 /** One-line instruction shown to whoever is standing at the terminal. */
 export const SALE_IMPACT_GUIDANCE = {
   none: '',
-  notRecorded: 'The sale was NOT recorded. Do not hand over goods — ring it up again.',
+  notRecorded: 'The sale was NOT recorded. Do not hand over goods, ring it up again.',
   savedOffline: 'The sale IS saved on this device and will sync. Do not ring it up again.',
   atRisk:
-    'Saved on this device but not yet on the server. Keep this device on and call support — do not clear browser data.',
+    'Saved on this device but not yet on the server. Keep this device on and call support. Do not clear browser data.',
   unknown:
     'It is not certain whether this sale went through. Check Transactions for the OR number BEFORE ringing it again, or the customer may be charged twice.',
 }
@@ -86,7 +86,7 @@ const W = SEVERITY.warning
 export const ERROR_CATALOG = {
   // ── AUTH — signing in and staying signed in ──────────────────────────────
   AUTH01: {
-    message: 'Sign-in failed — wrong email/password or account inactive.',
+    message: 'Sign-in failed: wrong email/password or account inactive.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: true,
@@ -103,7 +103,7 @@ export const ERROR_CATALOG = {
     fix: 'Manager → Staff: re-save the person to relink, or recreate the login.',
   },
   AUTH03: {
-    message: 'Offline and no saved session — connect once to sign in.',
+    message: 'Offline and no saved session. Connect once to sign in.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: true,
@@ -111,7 +111,7 @@ export const ERROR_CATALOG = {
     fix: 'Get the device online once. After that, sign-in works offline.',
   },
   AUTH04: {
-    message: 'Day was closed — sign in again with password to open the till.',
+    message: 'Day was closed. Sign in again with password to open the till.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: true,
@@ -119,7 +119,7 @@ export const ERROR_CATALOG = {
     fix: 'Sign in with the email + password account, not the PIN.',
   },
   AUTH05: {
-    message: 'App not configured — missing Supabase environment keys.',
+    message: 'App not configured: missing Supabase environment keys.',
     severity: C,
     saleImpact: SALE_IMPACT.none,
     retry: false,
@@ -135,7 +135,7 @@ export const ERROR_CATALOG = {
     fix: 'Solve the challenge. If it never appears, check the captcha domain is allowed in the CSP.',
   },
   AUTH07: {
-    message: 'Too many failed PIN attempts — wait and try again.',
+    message: 'Too many failed PIN attempts. Wait and try again.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: true,
@@ -144,7 +144,7 @@ export const ERROR_CATALOG = {
     fix: 'Wait out the lockout, or have a manager reveal/reset the PIN on Manager → Staff.',
   },
   AUTH08: {
-    message: 'Session expired — sign in again.',
+    message: 'Session expired. Sign in again.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: true,
@@ -180,7 +180,7 @@ export const ERROR_CATALOG = {
 
   // ── TILL — opening and closing the drawer ────────────────────────────────
   TILL01: {
-    message: 'Till is closed — ask a manager to reopen.',
+    message: 'Till is closed. Ask a manager to reopen.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: false,
@@ -205,7 +205,7 @@ export const ERROR_CATALOG = {
   },
   TILL04: {
     message:
-      'Refund/void not allowed — this business day is closed. No sales or refunds until a manager reopens the till, or the next business day opens.',
+      'Refund/void not allowed: this business day is closed. No sales or refunds until a manager reopens the till, or the next business day opens.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: false,
@@ -216,7 +216,7 @@ export const ERROR_CATALOG = {
 
   // ── SALE — taking money ──────────────────────────────────────────────────
   SALE01: {
-    message: 'Sale failed — payment was not recorded.',
+    message: 'Sale failed: payment was not recorded.',
     severity: B,
     saleImpact: SALE_IMPACT.notRecorded,
     retry: true,
@@ -224,7 +224,7 @@ export const ERROR_CATALOG = {
     fix: 'Ring the sale up again. It is safe — nothing was saved.',
   },
   SALE02: {
-    message: 'Sale queued offline — will sync when online.',
+    message: 'Sale queued offline. Will sync when online.',
     severity: D,
     saleImpact: SALE_IMPACT.savedOffline,
     retry: false,
@@ -240,7 +240,7 @@ export const ERROR_CATALOG = {
     fix: 'Open the transaction and check whether the refund is already listed BEFORE refunding again.',
   },
   SALE04: {
-    message: 'Void failed — the sale is unchanged.',
+    message: 'Void failed. The sale is unchanged.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: true,
@@ -248,7 +248,7 @@ export const ERROR_CATALOG = {
     fix: 'Get supervisor approval and retry. The original sale is still valid and unmodified.',
   },
   SALE05: {
-    message: 'This sale was already recorded — not charged again.',
+    message: 'This sale was already recorded, not charged again.',
     severity: W,
     saleImpact: SALE_IMPACT.savedOffline,
     retry: false,
@@ -350,7 +350,7 @@ export const ERROR_CATALOG = {
     fix: 'Retry. Remember this edits the shared TEMPLATE — it does not change products a branch already adopted.',
   },
   CAT04: {
-    message: 'Bulk catalog update failed — some items may not have changed.',
+    message: 'Bulk catalog update failed. Some items may not have changed.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: true,
@@ -452,7 +452,7 @@ export const ERROR_CATALOG = {
 
   // ── DEV — printers, drawers, terminals ───────────────────────────────────
   DEV01: {
-    message: 'Device settings DB column missing — run migrate_device_settings.sql in Supabase.',
+    message: 'Device settings DB column missing: run migrate_device_settings.sql in Supabase.',
     severity: C,
     saleImpact: SALE_IMPACT.none,
     retry: false,
@@ -510,7 +510,7 @@ export const ERROR_CATALOG = {
     fix: 'Retry. If offline, the app falls back to the last cached copy.',
   },
   SYNC09: {
-    message: 'Records could not sync after repeated attempts — saved on this device only.',
+    message: 'Records could not sync after repeated attempts. Saved on this device only.',
     severity: B,
     saleImpact: SALE_IMPACT.atRisk,
     retry: true,
@@ -581,7 +581,7 @@ export const ERROR_CATALOG = {
     fix: 'Re-export as .xlsx or .csv from the original program and try again. Keep files under 20MB.',
   },
   IMP02: {
-    message: 'Import failed — nothing was saved.',
+    message: 'Import failed. Nothing was saved.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: true,
@@ -765,7 +765,7 @@ export const ERROR_CATALOG = {
 
   // ── PRICE — till-side price override ─────────────────────────────────────
   PRICE01: {
-    message: 'Price override failed — the original price still applies.',
+    message: 'Price override failed. The original price still applies.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: true,
@@ -800,7 +800,7 @@ export const ERROR_CATALOG = {
     fix: 'Count the drawer and type the figure. Zero is allowed; blank is not.',
   },
   SHIFT04: {
-    message: 'That shift is closed — record an adjustment instead of editing it.',
+    message: 'That shift is closed. Record an adjustment instead of editing it.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: false,
@@ -827,7 +827,7 @@ export const ERROR_CATALOG = {
 
   // ── PRINT ────────────────────────────────────────────────────────────────
   PRINT01: {
-    message: 'Pop-up blocked — allow pop-ups to print receipts.',
+    message: 'Pop-up blocked. Allow pop-ups to print receipts.',
     severity: D,
     saleImpact: SALE_IMPACT.none,
     retry: true,
@@ -975,7 +975,7 @@ export function formatSupportError(err, fallbackCode = 'GEN01') {
   // server — the raw "TypeError: Failed to fetch" is meaningless to staff, so swap in plain
   // guidance but keep the caller's fallback code so the failing action is still identifiable.
   if (/Failed to fetch|NetworkError|Load failed|network.*request.*failed|ERR_NETWORK|offline/i.test(raw)) {
-    return `Could not reach the server — check your connection and try again. · Code ${fallback}`
+    return `Could not reach the server. Check your connection and try again. · Code ${fallback}`
   }
   if (typeof err === 'string') {
     const code = errorCodeOf({ message: err }) || fallback

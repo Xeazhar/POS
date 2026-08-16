@@ -12,7 +12,6 @@ export const staffLinks = [
   ['/promos', 'Promos', FiTag, 'manager_promos'],
   // Shifts and Staff are one tab now — the shift log lives inside each person's row.
   ['/shifts', 'Staff', FiUsers, 'shifts'],
-  ['/settings/devices', 'Devices', FiCpu, 'devices'],
 ]
 
 export function staffLinksFor(user) {
@@ -27,7 +26,6 @@ export function staffLinksFor(user) {
           ['/day-end', 'Day end', FiMoon, 'day_end'], // relabelled per role in staffLinksFor
           ['/promos', 'Promos', FiTag, 'manager_promos'],
           ['/shifts', 'Staff', FiUsers, 'shifts'],
-          ['/settings/devices', 'Devices', FiCpu, 'devices'],
         ]
       : [...staffLinks]
 
@@ -63,8 +61,7 @@ export function staffLinksFor(user) {
       (moduleId === 'shifts' ||
         moduleId === 'manager_promos' ||
         moduleId === 'catalog' ||
-        moduleId === 'day_end' ||
-        moduleId === 'devices') &&
+        moduleId === 'day_end') &&
       isManagerRole(user.role)
     )
       return false
@@ -106,16 +103,24 @@ export function navLinksFor(user) {
     return true
   })
   // Default last. Not a MODULES flag — every signed-in role gets Settings; the page
-  // itself hides manager-only sections. Devices stays its own `/settings/devices` tab.
+  // itself hides manager-only sections. Devices stays its own `/settings/devices` tab for
+  // manager/master (managerLinks above); for supervisor it's reached through Settings
+  // instead (see pages/settings/sections.js), so no separate staffLinks entry exists.
   // Staff may drag this (and every other tab) via SidebarNav; custom order is per login
   // on this till (`utils/navOrder.js`) and does not change staffHomePath.
   links.push(['/settings', 'Settings', FiSettings])
   return links
 }
 
-/** Sidebar Settings is active on Settings pages, but never on Devices. */
-export function isSettingsNavActive(pathname) {
-  if (pathname === '/settings/devices' || pathname.startsWith('/settings/devices/')) return false
+/** Sidebar Settings is active on Settings pages, but never on Devices when Devices is
+ *  still its own separate tab (manager/master) — `links` is this user's nav list, so if it
+ *  no longer contains a standalone `/settings/devices` entry (supervisor), Devices counts
+ *  as part of Settings instead. */
+export function isSettingsNavActive(pathname, links = []) {
+  const hasOwnDevicesTab = links.some(([path]) => path === '/settings/devices')
+  if (hasOwnDevicesTab && (pathname === '/settings/devices' || pathname.startsWith('/settings/devices/'))) {
+    return false
+  }
   return pathname === '/settings' || pathname.startsWith('/settings/')
 }
 

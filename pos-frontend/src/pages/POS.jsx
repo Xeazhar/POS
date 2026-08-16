@@ -357,7 +357,7 @@ function POS() {
               {dayFullyClosed
                 ? `No sales until a manager reopens the till, or automatically at ${formatOpenHourLabel(dayOpenHour)} for the next business day.`
                 : daySubmitted
-                  ? 'Waiting for a manager to approve day end. POS stays locked — no sales, scans, or cart changes.'
+                  ? 'Waiting for a manager to approve day end. POS stays locked: no sales, scans, or cart changes.'
                   : 'Sales are locked for this business day.'}
             </p>
             <p className="m-0 mt-3 text-xs text-brand-subtle">
@@ -531,11 +531,11 @@ function POS() {
                 <div className="min-h-[18px]" />
               )
             ) : (
-              <div className="min-h-0 rounded border border-brand-softline">
+              <div className="min-h-0 overflow-x-auto rounded border border-brand-softline">
                 <div className="border-b border-brand-softline bg-brand-n100 px-3 py-2 text-[11px] text-brand-subtle">
                   Scanner results
                 </div>
-                <table className="min-w-full text-left text-xs">
+                <table className="min-w-[520px] text-left text-xs">
                   <thead className="sticky top-0 bg-brand-dark text-[10px] tracking-wide text-brand-ondark uppercase">
                     <tr>
                       <th className="px-3 py-2">SKU</th>
@@ -751,7 +751,7 @@ function POS() {
                 <p className="col-span-full py-10 text-center text-xs text-brand-subtle">
                   {isRestaurant
                     ? manageMenu
-                      ? 'No menu items yet — ask a manager to add potahe.'
+                      ? 'No menu items yet. Ask a manager to add potahe.'
                       : "No potahe marked available today. Tap Edit today's potahe to enable items."
                     : category === 'Promos'
                       ? 'No promo sets or item discounts match this search.'
@@ -882,7 +882,7 @@ function POS() {
           </div>
           {String(search || '').trim() ? (
             <div className="-mx-5 max-h-[50vh] overflow-auto border-t border-brand-softline max-[700px]:-mx-4">
-              <table className="min-w-full text-left text-xs">
+              <table className="min-w-[520px] text-left text-xs">
                 <thead className="sticky top-0 bg-brand-dark text-[10px] tracking-wide text-brand-ondark uppercase">
                   <tr>
                     <th className="px-3 py-2">SKU</th>

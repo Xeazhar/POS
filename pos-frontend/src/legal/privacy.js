@@ -28,7 +28,7 @@ export const PRIVACY_DOCUMENT = {
       body: [
         `Personal Information Controller for the ${P} software platform (staff accounts, access logs, and the hosting of the application): ${LEGAL_PROVIDER_NAME}, operating as ${LEGAL_TRADE_NAME}.`,
         `Email: ${LEGAL_CONTACT_EMAIL}. This address is also the point of contact for privacy requests until a separate Data Protection Officer address is published.`,
-        'Personal Information Controller for store operations — including what is sold, cash in the drawer, and SC/PWD identifiers taken at the counter — is the Merchant whose business name and TIN appear on the official receipt. We act as a Personal Information Processor for that operational data, on the Merchant’s instructions, via the software.',
+        'Personal Information Controller for store operations (including what is sold, cash in the drawer, and SC/PWD identifiers taken at the counter) is the Merchant whose business name and TIN appear on the official receipt. We act as a Personal Information Processor for that operational data, on the Merchant’s instructions, via the software.',
       ],
     },
     {
@@ -78,11 +78,11 @@ export const PRIVACY_DOCUMENT = {
       title: '7. Purposes and lawful bases',
       body: ['We process personal data to:'],
       list: [
-        'Operate the POS (sales, inventory, shifts, day-end, promos, devices) — contract / legitimate interest in running authorized stores.',
-        'Authenticate users, lock idle tills, audit privileged actions, and detect abuse — legitimate interest and, where applicable, legal obligation.',
-        'Apply VAT, sequential OR numbering, SC/PWD discounts, and produce fiscal and management reports — legal obligation of the Merchant; our processing as processor.',
-        'Sync offline tills with the hosted database so records are not lost — contract / legitimate interest.',
-        'Improve reliability of an authorized deployment (error codes, version checks) — legitimate interest. We do not sell personal data.',
+        'Operate the POS (sales, inventory, shifts, day-end, promos, devices): contract / legitimate interest in running authorized stores.',
+        'Authenticate users, lock idle tills, audit privileged actions, and detect abuse: legitimate interest and, where applicable, legal obligation.',
+        'Apply VAT, sequential OR numbering, SC/PWD discounts, and produce fiscal and management reports: legal obligation of the Merchant; our processing as processor.',
+        'Sync offline tills with the hosted database so records are not lost: contract / legitimate interest.',
+        'Improve reliability of an authorized deployment (error codes, version checks): legitimate interest. We do not sell personal data.',
       ],
     },
     {
@@ -97,9 +97,9 @@ export const PRIVACY_DOCUMENT = {
       title: '9. Sharing and processors',
       body: ['We share personal data only as needed to run the Service or as required by law:'],
       list: [
-        'Supabase — database, authentication, and private realtime updates for branch topics.',
-        'Cloudflare — hosting/CDN of the web app, and Turnstile bot protection on sign-in when enabled.',
-        'Google Fonts — the login and app UI load typefaces from Google’s font service, which may receive the till’s IP address.',
+        'Supabase: database, authentication, and private realtime updates for branch topics.',
+        'Cloudflare: hosting/CDN of the web app, and Turnstile bot protection on sign-in when enabled.',
+        'Google Fonts: the login and app UI load typefaces from Google’s font service, which may receive the till’s IP address.',
         'The Merchant’s own managers and supervisors, according to role and branch access.',
         'Government authorities (including BIR or the National Privacy Commission) when legally required, or to establish, exercise, or defend legal claims.',
       ],
@@ -113,7 +113,7 @@ export const PRIVACY_DOCUMENT = {
         'Staff accounts: for as long as the person is authorized, then as needed for audit and security.',
         'Sales, OR numbers, VAT breakdowns, SC/PWD registers, voids, and related fiscal records: for at least the period Philippine tax rules require for books of accounts and supporting papers (commonly ten years from the relevant filing deadline), and longer if a dispute or investigation is open.',
         'Audit and security events: for operational security and incident review; older events may be retained where they support fiscal or access investigations.',
-        'Offline till copies: until overwritten by sync or until the browser profile is cleared. Clearing a till that has not synced can destroy records — do not do that to “delete” data.',
+        'Offline till copies: until overwritten by sync or until the browser profile is cleared. Clearing a till that has not synced can destroy records. Do not do that to “delete” data.',
       ],
     },
     {
@@ -127,7 +127,7 @@ export const PRIVACY_DOCUMENT = {
       title: '12. Your rights',
       body: [
         `Under the Data Privacy Act, data subjects may request access, correction, erasure or blocking, objection to processing, and data portability, and may withdraw consent where processing is based on consent, subject to limitations in the Act and other laws of ${LEGAL_JURISDICTION}.`,
-        'Erasure does not apply where we or the Merchant must keep the data for a legal obligation — in particular immutable sales and official receipts. We will not delete a completed OR because a shopper or cashier later asks us to “remove the sale.”',
+        'Erasure does not apply where we or the Merchant must keep the data for a legal obligation, in particular immutable sales and official receipts. We will not delete a completed OR because a shopper or cashier later asks us to “remove the sale.”',
         'Staff should send account requests to their manager and, if needed, to the contact email below. Customers of a store should contact that store (the Merchant) first; we will refer or assist the Merchant as processor.',
       ],
     },
@@ -137,10 +137,10 @@ export const PRIVACY_DOCUMENT = {
         `${P} is a staff application. It uses strictly necessary storage, not advertising cookies:`,
       ],
       list: [
-        'sessionStorage — authentication session for the current browser; cleared when the browser is closed.',
-        'localStorage — limited operational flags (for example last idle-lock minutes for offline tills, session-lifecycle flags, and this staff member’s sidebar menu order on this till). Not used to persist the auth token.',
-        'IndexedDB — the offline POS database described above.',
-        'Cloudflare Turnstile — a challenge widget on sign-in when captcha is configured; Cloudflare processes that challenge under its own terms.',
+        'sessionStorage: authentication session for the current browser; cleared when the browser is closed.',
+        'localStorage: limited operational flags (for example last idle-lock minutes for offline tills, session-lifecycle flags, and this staff member’s sidebar menu order on this till). Not used to persist the auth token.',
+        'IndexedDB: the offline POS database described above.',
+        'Cloudflare Turnstile: a challenge widget on sign-in when captcha is configured; Cloudflare processes that challenge under its own terms.',
         'A service worker / PWA cache so the till can load after a deploy and during poor network. This caches application files, not a separate advertising profile.',
       ],
     },
@@ -177,7 +177,7 @@ export const PRIVACY_DOCUMENT = {
     {
       title: '19. Contact',
       body: [
-        `${LEGAL_PROVIDER_NAME} (${LEGAL_TRADE_NAME}) — ${P} privacy and legal: ${LEGAL_CONTACT_EMAIL}.`,
+        `${LEGAL_PROVIDER_NAME} (${LEGAL_TRADE_NAME}), ${P} privacy and legal: ${LEGAL_CONTACT_EMAIL}.`,
       ],
     },
   ],

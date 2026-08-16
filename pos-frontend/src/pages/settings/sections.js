@@ -1,6 +1,7 @@
-import { isManagerRole } from '../../utils/roles'
+import { canAccessModule, isManagerRole } from '../../utils/roles'
 
-/** Manager / master Settings tree. Devices is not here — it stays `/settings/devices`. */
+/** Manager / master Settings tree. Devices is not here — manager/master keep it as their
+ *  own separate sidebar tab (see constants/nav.js managerLinks). */
 export const MANAGER_SETTINGS_SECTIONS = [
   {
     group: 'General',
@@ -31,11 +32,16 @@ export const MANAGER_SETTINGS_SECTIONS = [
   },
 ]
 
-/** Cashier / supervisor Settings tree. */
+/** Cashier / supervisor Settings tree. Devices is listed here (moduleId-gated, so only
+ *  supervisors who actually have the module see it) rather than as its own sidebar tab. */
 export const STAFF_SETTINGS_SECTIONS = [
   {
     group: 'My Account',
     items: [{ id: 'account', path: '/settings/account', label: 'Employee Information' }],
+  },
+  {
+    group: 'Devices',
+    items: [{ id: 'devices', path: '/settings/devices', label: 'Devices', moduleId: 'devices' }],
   },
   {
     group: 'Appearance',
@@ -52,7 +58,13 @@ export const STAFF_SETTINGS_SECTIONS = [
 ]
 
 export function settingsSectionsFor(user) {
-  return isManagerRole(user?.role) ? MANAGER_SETTINGS_SECTIONS : STAFF_SETTINGS_SECTIONS
+  const tree = isManagerRole(user?.role) ? MANAGER_SETTINGS_SECTIONS : STAFF_SETTINGS_SECTIONS
+  return tree
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.moduleId || canAccessModule(user, item.moduleId)),
+    }))
+    .filter((group) => group.items.length > 0)
 }
 
 export function settingsHomePath(user) {

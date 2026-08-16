@@ -396,7 +396,7 @@ function Cart({
     if (tillClosed) {
       setError(
         formatSupportError(
-          { message: 'Till is closed — ask a manager to reopen.', code: 'TILL01' },
+          { message: 'Till is closed. Ask a manager to reopen.', code: 'TILL01' },
           'TILL01',
         ),
       )
@@ -1103,7 +1103,7 @@ function Cart({
                     <span className="min-w-0 truncate text-brand-muted">{row.name}</span>
                     <span className="shrink-0 text-brand-subtle">
                       {row.state === 'missing'
-                        ? 'not in this branch’s catalog — re-sync'
+                        ? 'not in this branch’s catalog, re-sync'
                         : 'not marked discountable'}
                     </span>
                   </div>
@@ -1333,7 +1333,7 @@ function Cart({
             className="mx-5 mt-2 flex items-start justify-between gap-2 rounded-[6px] border border-brand-warn/40 bg-brand-gold/10 px-2.5 py-2 max-[700px]:mx-3.5"
           >
             <p className="m-0 text-[11px] leading-snug text-brand-ink">
-              <strong>Promo ended — {expiredPromoNotice}.</strong>{' '}
+              <strong>Promo ended: {expiredPromoNotice}.</strong>{' '}
               <span className="text-brand-muted">
                 Items in this cart are back to regular price. Re-quote the total before taking payment.
               </span>
@@ -1350,7 +1350,7 @@ function Cart({
         )}
         {tillClosed && (
           <p className="px-5 pt-2 text-xs text-brand-danger-ondark max-[700px]:px-3.5">
-            Till closed — sales unavailable until a manager reopens.
+            Till closed. Sales unavailable until a manager reopens.
           </p>
         )}
         {isRestaurant && (
@@ -1381,7 +1381,7 @@ function Cart({
         {combo && (
           <p className="mx-5 mt-2 rounded-[5px] border border-brand-gold/40 bg-brand-gold/10 px-2.5 py-1.5 text-[11px] font-bold text-brand-gold max-[700px]:mx-3.5">
             Combo: {combo.label}
-            <span className="ml-1 font-normal text-brand-n500">(info only — priced per item)</span>
+            <span className="ml-1 font-normal text-brand-n500">(info only, priced per item)</span>
           </p>
         )}
         {/* Barcode scanner mode:

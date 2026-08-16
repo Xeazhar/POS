@@ -213,7 +213,8 @@ export function SecurityActivityPanel() {
         <p className="px-5 py-4 text-xs text-brand-muted">No recent security events.</p>
       ) : (
         <>
-          <table className="w-full text-left text-xs">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left text-xs">
             <thead>
               <tr>
                 <th className={`${tableHeadClass} px-5 py-2`}>When</th>
@@ -235,6 +236,7 @@ export function SecurityActivityPanel() {
               ))}
             </tbody>
           </table>
+          </div>
           <Pager
             page={page}
             pageCount={pageCount}

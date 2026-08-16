@@ -244,7 +244,7 @@ function TillDevices() {
     <div>
       <PageHeader eyebrow="TILL" title="Devices">
         <span className="text-xs text-brand-subtle">
-          This till — managers enable/disable devices under Branches
+          This till. Managers enable/disable devices under Branches
         </span>
       </PageHeader>
       {error && <p className="mb-3 text-xs text-brand-danger">{error}</p>}
@@ -273,7 +273,7 @@ function TillDevices() {
                     {
                       message:
                         err.message ||
-                        'Cash drawer kick not wired yet — open the drawer manually for now.',
+                        'Cash drawer kick not wired yet. Open the drawer manually for now.',
                       code: 'DEV05',
                     },
                     'DEV05',
@@ -356,7 +356,7 @@ function DrawerIdentityCard() {
       <Eyebrow>CASH DRAWER</Eyebrow>
       <h2 className="m-0 mb-1 text-base">This terminal&apos;s drawer</h2>
       <p className="m-0 mb-3 text-xs text-brand-muted">
-        Shifts are counted per drawer. Leave this alone if the branch has one cash box — even
+        Shifts are counted per drawer. Leave this alone if the branch has one cash box, even
         with several devices, they all belong to the same drawer. Change it only for a till
         with its own separate cash box.
       </p>

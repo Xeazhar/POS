@@ -52,7 +52,7 @@ import { money } from '../../utils/format'
 import { formatSupportError } from '../../utils/errors'
 import ImportPreviewLines from '../shared/ImportPreviewLines'
 import { categoryForMenuKind, hasBudgetTier, MENU_KINDS } from '../../utils/ulam'
-import { decimalOnly, digitsOnly, sanitizeText } from '../../utils/validate'
+import { decimalOnly, digitsOnly, formatMoneyOnBlur, sanitizeText } from '../../utils/validate'
 
 import { readSpreadsheetBuffer, loadXlsx } from '../../lib/xlsxLoader'
 
@@ -244,7 +244,7 @@ export default function ManagerNetworkCatalog() {
 
   const commitImport = async () => {
     if (!preview?.lines?.length) {
-      setError('Nothing to import — all rows were skipped or the file is empty.')
+      setError('Nothing to import. All rows were skipped or the file is empty.')
       return
     }
     setBusy(true)
@@ -270,7 +270,7 @@ export default function ManagerNetworkCatalog() {
   /** Download the live catalog as CSV so a manager can edit prices/fields and re-import. */
   const exportCatalog = async () => {
     if (!catalog.length) {
-      setError('Nothing to export — this catalog type is empty.')
+      setError('Nothing to export. This catalog type is empty.')
       return
     }
     setBusy(true)
@@ -653,7 +653,7 @@ export default function ManagerNetworkCatalog() {
           <h2 className="m-0 text-lg">Import preview</h2>
           <p className="mt-1 text-xs text-brand-muted">
             {preview.filename} · {preview.createCount} new · {preview.updateCount} update ·{' '}
-            {preview.skippedCount} skipped — review updates below before confirming.
+            {preview.skippedCount} skipped. Review updates below before confirming.
           </p>
           <ImportPreviewLines
             lines={preview.lines}
@@ -671,7 +671,7 @@ export default function ManagerNetworkCatalog() {
                     key={`s-${i}`}
                     className="border-t border-brand-softline py-1.5 text-brand-subtle first:border-t-0"
                   >
-                    {line.values?.name || line.values?.sku || '—'} — {line.reason}
+                    {line.values?.name || line.values?.sku || '—'}: {line.reason}
                   </div>
                 ))}
               </div>
@@ -728,7 +728,7 @@ export default function ManagerNetworkCatalog() {
                 compact
                 type="button"
                 disabled={busy}
-                title="Push the catalog's Discountable setting down to branch products (price, name, SKU, etc. are not synced — edit those per-branch)"
+                title="Push the catalog's Discountable setting down to branch products (price, name, SKU, etc. are not synced, edit those per-branch)"
                 onClick={() => void resyncDiscountable()}
               >
                 <FiRefreshCw className={`shrink-0 ${busy ? 'animate-spin' : ''}`} size={13} />
@@ -1036,7 +1036,7 @@ export default function ManagerNetworkCatalog() {
             </li>
             <li>
               Matching SKU (or barcode) <strong>updates</strong> the catalog row and cascades
-              identity/price/Discountable to adopted branches — export, edit, re-import for bulk
+              identity/price/Discountable to adopted branches. Export, edit, re-import for bulk
               repricing
             </li>
             <li>Unchanged rows are skipped; new SKUs are created</li>
@@ -1056,15 +1056,15 @@ export default function ManagerNetworkCatalog() {
                 <code>discountEligible</code> (true/false)
               </li>
               <li>
-                Optional: <code>lowStockAt</code> (default threshold only — not on-hand qty)
+                Optional: <code>lowStockAt</code> (default threshold only, not on-hand qty)
               </li>
               <li>
-                Do <strong>not</strong> include <code>stock</code> — quantity on hand belongs on
+                Do <strong>not</strong> include <code>stock</code>: quantity on hand belongs on
                 branch Inventory after adopt
               </li>
               <li>
               Matching SKU (or barcode) <strong>updates</strong> the catalog row and cascades
-              identity/price/Discountable to adopted branches — export, edit, re-import for bulk
+              identity/price/Discountable to adopted branches. Export, edit, re-import for bulk
               repricing
             </li>
             <li>Unchanged rows are skipped; new SKUs are created</li>
@@ -1176,6 +1176,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
               inputMode="decimal"
               value={form.price}
               onChange={(e) => setField('price', e.target.value)}
+              onBlur={(e) => setField('price', formatMoneyOnBlur(e.target.value))}
             />
             {isRestaurant && hasBudgetTier(form.menuKind) && (
               <Field
@@ -1183,6 +1184,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                 inputMode="decimal"
                 value={form.budgetPrice}
                 onChange={(e) => setField('budgetPrice', e.target.value)}
+                onBlur={(e) => setField('budgetPrice', formatMoneyOnBlur(e.target.value))}
                 placeholder="Optional"
               />
             )}
@@ -1330,6 +1332,7 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                             value={draft.price}
                             aria-label={`Price for ${row.name}`}
                             onChange={(e) => setDraft(row.id, 'price', e.target.value)}
+                            onBlur={(e) => setDraft(row.id, 'price', formatMoneyOnBlur(e.target.value))}
                           />
                           {priceChanged && (
                             <span className="mt-0.5 block text-[10px] text-brand-subtle line-through">

@@ -997,7 +997,7 @@ function ManagerBranchDashboard() {
       {selectedPoint && (
         <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-brand-gold/40 bg-brand-gold/10 px-3.5 py-2 text-xs">
           <span className="text-brand-ink">
-            Showing <strong>{selectedPoint.full || selectedPoint.short}</strong> — Sales performance
+            Showing <strong>{selectedPoint.full || selectedPoint.short}</strong>. Sales performance
             is filtered to this point. Revenue today and Payment & cash impact always show today.
           </span>
           <SecondaryButton compact type="button" onClick={() => setSelectedPointIndex(null)}>
@@ -1017,11 +1017,15 @@ function ManagerBranchDashboard() {
         </div>
         <div className="flex min-w-0 flex-col gap-2.5">
           <StatTiles
+            title="Payment & cash impact"
+            subtitle={`${todayKey} · this branch's drawer · not affected by filters`}
+            items={cashImpactItems}
+          />
+          <StatTiles
             title="Sales performance"
             subtitle={selectedPoint ? selectedPoint.full || selectedPoint.short : todayKey}
             items={salesPerformanceItems}
           />
-          <StatTiles title="Payment & cash impact" subtitle={`${todayKey} · this branch's drawer`} items={cashImpactItems} />
           <AuditSummary events={auditEvents} linkHref="/manager/reports" subtitle={chartPeriod} />
         </div>
       </div>
@@ -1165,7 +1169,7 @@ function ManagerBranchDashboard() {
           {submittedToday && (
             <div className="mx-4 my-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-3 py-2.5 text-xs text-brand-warn">
               <span>
-                Business day {todayKey} submitted — awaiting approval. POS sales locked until approved.
+                Business day {todayKey} submitted, awaiting approval. POS sales locked until approved.
               </span>
               {canApprove && (
                 <PrimaryButton
@@ -1182,7 +1186,7 @@ function ManagerBranchDashboard() {
           {closedToday && (
             <div className="mx-4 my-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-3 py-2.5 text-xs text-brand-warn">
               <span>
-                Business day {todayKey} is closed — POS sales locked for this branch.
+                Business day {todayKey} is closed. POS sales locked for this branch.
                 {todayEntry.reopenRequestedAt && (
                   <strong className="ml-1">
                     Reopen requested{todayEntry.reopenRequestReason ? `: ${todayEntry.reopenRequestReason}` : '.'}
@@ -1300,7 +1304,7 @@ function ManagerBranchDashboard() {
         <SectionHeading
           title="Promo sales today"
           meta={promoSalesToday.length ? `${promoSalesToday.length} promo(s)` : 'None yet'}
-          subtitle={`Discounted receipts on ${todayKey} — receipts, discount given, and net sales`}
+          subtitle={`Discounted receipts on ${todayKey}: receipts, discount given, and net sales`}
         />
         <div className="grid grid-cols-[1.4fr_0.7fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
           <span>Promo</span>
@@ -1366,7 +1370,7 @@ function ManagerBranchDashboard() {
         <TableCard className="mb-4 max-h-none overflow-hidden">
           <SectionHeading
             title="Cash movements"
-            subtitle="POS Open Drawer — remote Approve / Deny (stops cashier countdown)"
+            subtitle="POS Open Drawer: remote Approve / Deny (stops cashier countdown)"
             meta={`${pendingCashMoves.length} pending`}
           />
           <div className="grid grid-cols-[0.8fr_0.7fr_0.9fr_1.2fr_1fr_1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[1fr_1fr_1fr]">
@@ -1448,7 +1452,7 @@ function ManagerBranchDashboard() {
         <TableCard className="mb-4 max-h-none overflow-hidden">
           <SectionHeading
             title="Cart remove requests"
-            subtitle="POS line remove — remote Approve / Deny (stops 30s cashier wait)"
+            subtitle="POS line remove: remote Approve / Deny (stops 30s cashier wait)"
             meta={`${pendingTillActions.length} pending`}
           />
           <div className="grid grid-cols-[1.4fr_1fr_1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
@@ -1520,7 +1524,7 @@ function ManagerBranchDashboard() {
         <TableCard className="mb-4 max-h-none overflow-hidden">
           <SectionHeading
             title="Refund requests"
-            subtitle="No supervisor was available on site — approve or reject remotely"
+            subtitle="No supervisor was available on site, approve or reject remotely"
             meta={`${refundRequests.length} pending`}
           />
           <div className="grid grid-cols-[0.9fr_0.7fr_1.4fr_1fr_1.1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[1fr_1fr_1.2fr]">
@@ -2441,7 +2445,7 @@ function ManagerBranchDashboard() {
                 })
               )}
             </div>
-            <p className="mt-4 text-[11px] text-brand-subtle">View only — edit stock or prices from cashier / Data tools.</p>
+            <p className="mt-4 text-[11px] text-brand-subtle">View only. Edit stock or prices from cashier / Data tools.</p>
           </aside>
         </div>
       )}

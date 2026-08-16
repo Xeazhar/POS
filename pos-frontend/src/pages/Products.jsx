@@ -42,6 +42,7 @@ import {
   digitsOnly,
   duplicateField,
   findProductDuplicate,
+  formatMoneyOnBlur,
   sanitizeText,
 } from '../utils/validate'
 
@@ -471,7 +472,7 @@ function Products() {
 
       {canPickBranch && !viewingOwnBranch && (
         <p className="mb-3 rounded-md bg-brand-warn-bg px-3 py-2 text-xs text-brand-warn">
-          Viewing another branch — read only. Prices and stock are changed from that branch&apos;s
+          Viewing another branch: read only. Prices and stock are changed from that branch&apos;s
           own Inventory page.
         </p>
       )}
@@ -895,6 +896,7 @@ function Products() {
                   inputMode="decimal"
                   value={form.price}
                   onChange={(e) => setField('price', e.target.value)}
+                  onBlur={(e) => setField('price', formatMoneyOnBlur(e.target.value))}
                 />
                 {isRestaurant && (form.menuKind === 'meat' || form.menuKind === 'veggie') && (
                   <Field
@@ -902,6 +904,7 @@ function Products() {
                     inputMode="decimal"
                     value={form.budgetPrice}
                     onChange={(e) => setField('budgetPrice', e.target.value)}
+                    onBlur={(e) => setField('budgetPrice', formatMoneyOnBlur(e.target.value))}
                     placeholder="Optional"
                   />
                 )}
@@ -1020,7 +1023,7 @@ function Products() {
           </div>
           {needsAdjustReason && (
             <Field
-              label="Reason (required — closed day)"
+              label="Reason (required: closed day)"
               value={adjustReason}
               onChange={(e) => setAdjustReason(e.target.value.replace(/[<>]/g, ''))}
               placeholder="Why adjust stock after close?"

@@ -281,7 +281,7 @@ export function printReceiptBrowser(receipt) {
   const win = window.open(url, '_blank', 'width=360,height=720')
   if (!win) {
     URL.revokeObjectURL(url)
-    throw new Error('Pop-up blocked — allow pop-ups to print receipts.')
+    throw new Error('Pop-up blocked. Allow pop-ups to print receipts.')
   }
   setTimeout(() => URL.revokeObjectURL(url), 120000)
   const closeSoon = () => {

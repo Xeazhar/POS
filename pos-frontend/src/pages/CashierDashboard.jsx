@@ -120,7 +120,7 @@ function CashierDashboard() {
 
       {!shift && (
         <div className="mb-3.5 rounded-[10px] border border-brand-line bg-brand-card px-4 py-3 text-xs text-brand-subtle">
-          No open shift on this terminal — figures below will fill in once your shift starts.
+          No open shift on this terminal. Figures below will fill in once your shift starts.
         </div>
       )}
 

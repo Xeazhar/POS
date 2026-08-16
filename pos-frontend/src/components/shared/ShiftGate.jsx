@@ -8,7 +8,7 @@ import { useInventoryStore } from '../../stores/posStore'
 import { useShiftStore } from '../../stores/shiftStore'
 import { formatSupportError } from '../../utils/errors'
 import { businessDate, dayEndForBusinessDate, isDayFullyClosed, money } from '../../utils/format'
-import { decimalOnly } from '../../utils/validate'
+import { decimalOnly, formatMoneyOnBlur } from '../../utils/validate'
 
 function defaultShiftPeriod() {
   return new Date().getHours() < 12 ? 'am' : 'pm'
@@ -315,7 +315,7 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
         </p>
         {reopenRequested ? (
           <p className="mt-3 rounded-md bg-brand-n50 px-2.5 py-2 text-[11px] text-brand-muted">
-            Reopen requested — waiting on a manager.
+            Reopen requested. Waiting on a manager.
           </p>
         ) : (
           <>
@@ -389,7 +389,7 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
         <Eyebrow>START SHIFT</Eyebrow>
         <h2 className="mb-1 text-lg">{error ? 'Could not start shift' : 'Starting shift…'}</h2>
         <p className="m-0 text-xs text-brand-muted">
-          {error || 'Setting up your drawer — this only takes a moment.'}
+          {error || 'Setting up your drawer, this only takes a moment.'}
         </p>
         {error && (
           <ModalActions>
@@ -420,7 +420,7 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
             You already have an open shift on{' '}
             <strong className="text-brand-ink">{blocker.drawerLabel || blocker.drawerId}</strong>
             {blocker.clockIn ? `, started ${sinceLabel(blocker.clockIn)}` : ''}. That drawer still
-            holds cash you are answerable for, so this terminal cannot simply take over — go back
+            holds cash you are answerable for, so this terminal cannot simply take over. Go back
             and cash out there, or have a supervisor open a separate shift here.
           </p>
           {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
@@ -486,7 +486,7 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
       </h2>
       <p className="m-0 text-xs text-brand-muted">
         {needsFreshCount
-          ? `This business day was reopened, so the drawer needs a fresh count — count the cash in ${drawerLabel || 'the drawer'} and enter it.`
+          ? `This business day was reopened, so the drawer needs a fresh count. Count the cash in ${drawerLabel || 'the drawer'} and enter it.`
           : holdsDrawer
             ? `Starts with no change fund. Add real cash into ${drawerLabel || 'the drawer'} afterward via POS → Open Drawer → Opening float.`
             : 'Choose your shift window. You are not holding a drawer, so there is no change fund to count.'}
@@ -501,14 +501,14 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
                 id: 'floor',
                 selected: !wantsDrawer,
                 title: 'Floor',
-                detail: 'Supervising only — no drawer, no change fund',
+                detail: 'Supervising only, no drawer, no change fund',
                 onClick: () => setWantsDrawer(false),
               },
               {
                 id: 'register',
                 selected: wantsDrawer,
                 title: 'Working the register',
-                detail: 'Holding a drawer this shift — same as a cashier',
+                detail: 'Holding a drawer this shift, same as a cashier',
                 onClick: () => setWantsDrawer(true),
               },
             ].map((opt) => (
@@ -572,7 +572,7 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
               <strong className="block text-[11px] text-brand-warn">Handover</strong>
               <p className="m-0 mt-1 text-[11px] leading-snug text-brand-warn">
                 {handoff?.staffName ? `${handoff.staffName} ` : 'The previous shift '}
-                cashed out with <strong>{money(carried)}</strong> in this drawer. Count it yourself —
+                cashed out with <strong>{money(carried)}</strong> in this drawer. Count it yourself,
                 from here it is your figure.
               </p>
             </div>
@@ -585,6 +585,7 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
               setAmount(decimalOnly(e.target.value))
               setError('')
             }}
+            onBlur={(e) => setAmount(formatMoneyOnBlur(e.target.value))}
             inputMode="decimal"
             required
             placeholder="0.00"
@@ -606,7 +607,7 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
             <p className="mt-2 text-[11px] text-brand-warn">
               This is {money(Math.abs(amountNumber - Number(carried)))}{' '}
               {amountNumber > Number(carried) ? 'more' : 'less'} than the previous shift left. Your
-              count is what counts — tell a supervisor about the difference.
+              count is what counts. Tell a supervisor about the difference.
             </p>
           )}
         </>

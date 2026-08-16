@@ -78,7 +78,7 @@ function CashConfirm({
       </div>
       <p className="text-[13px] text-brand-muted max-[700px]:text-xs">
         {isRestaurant
-          ? 'The sale will be recorded (menu sale — no stock deduction).'
+          ? 'The sale will be recorded (menu sale, no stock deduction).'
           : 'The sale will be recorded and inventory will be updated.'}
       </p>
       <ModalActions>

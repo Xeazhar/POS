@@ -108,7 +108,7 @@ const REPORTS = [
     id: 'restock-summary',
     group: 'Catalog',
     title: 'Restock Summary',
-    note: 'Per branch, staff, and item — total restocked, and when. Scan for a quantity lower than it should be.',
+    note: 'Per branch, staff, and item: total restocked, and when. Scan for a quantity lower than it should be.',
   },
   { id: 'sales-invoice', group: 'Sales', title: 'Sales Per Invoice' },
   { id: 'pos-sales-detail', group: 'Sales', title: 'POS Sales Detail' },
@@ -124,19 +124,19 @@ const REPORTS = [
     id: 'gross-margin',
     group: 'Sales',
     title: 'Gross Margin (COGS)',
-    note: 'Management report — costs are current, not frozen at sale time.',
+    note: 'Management report: costs are current, not frozen at sale time.',
   },
   {
     id: 'cash-movements',
     group: 'Audit',
     title: 'Cash Movements',
-    note: 'Petty cash and pickups from POS Open Drawer — cross-session history.',
+    note: 'Petty cash and pickups from POS Open Drawer: cross-session history.',
   },
   {
     id: 'cart-removes',
     group: 'Audit',
     title: 'Cart Item Removals',
-    note: 'Every line removed before checkout — approved, self-allowed, denied, or pending. For fraud review.',
+    note: 'Every line removed before checkout: approved, self-allowed, denied, or pending. For fraud review.',
   },
   { id: 'void-log', group: 'Audit', title: 'Void / Refund Log' },
   { id: 'audit-trail', group: 'Audit', title: 'Login & Audit Trail' },
@@ -144,7 +144,7 @@ const REPORTS = [
     id: 'discount-report',
     group: 'Audit',
     title: 'Discount Report (all types)',
-    note: 'Every discount granted — promo and statutory, shown apart.',
+    note: 'Every discount granted: promo and statutory, shown apart.',
   },
   {
     id: 'bir-summary',
@@ -267,7 +267,7 @@ function ManagerReports() {
     setError('')
     setRangeNote('')
     if (mode === 'all' && NO_ALL_RANGE.has(selected)) {
-      setError('X-Read and Z-Read cover a single trading period — pick a date range instead.')
+      setError('X-Read and Z-Read cover a single trading period. Pick a date range instead.')
       return
     }
     setRangeMode(mode)
@@ -293,7 +293,7 @@ function ManagerReports() {
           return
         }
         setFilters((f) => ({ ...f, start: earliest, end: today() }))
-        setRangeNote(`All records — first sale ${earliest} to today.`)
+        setRangeNote(`All records, first sale ${earliest} to today.`)
       } catch (err) {
         setError(formatSupportError(err, 'DATA01'))
       } finally {
@@ -386,7 +386,7 @@ function ManagerReports() {
       report,
       opts: { start: filters.start, end: filters.end },
     })
-    setPreview(text || 'No activity in range.\n(Report still generated — all values at .00)')
+    setPreview(text || 'No activity in range.\n(Report still generated, all values at .00)')
     setRows([])
   }
 
@@ -447,7 +447,7 @@ function ManagerReports() {
      */
     if (selected === 'price-listing') {
       const data = await fetchInventoryReport(branchId)
-      setNote('Current selling prices. No stock or cost figures — safe to print or hand out.')
+      setNote('Current selling prices. No stock or cost figures, safe to print or hand out.')
       setRows(
         ensureRows(
           data
@@ -498,7 +498,7 @@ function ManagerReports() {
           // worth a word, not a silent minus sign in a total.
           status:
             qtyOnHand < 0
-              ? 'NEGATIVE — recount'
+              ? 'NEGATIVE: recount'
               : qtyOnHand <= Number(row.products?.low_stock_threshold || 0)
                 ? 'Low'
                 : 'OK',
@@ -506,7 +506,7 @@ function ManagerReports() {
       })
       setNote(
         negatives > 0
-          ? `${negatives} product(s) show NEGATIVE stock — more was sold than the system had on record. Recount those before trusting the valuation totals.`
+          ? `${negatives} product(s) show NEGATIVE stock. More was sold than the system had on record. Recount those before trusting the valuation totals.`
           : 'Stock valuation at current cost and price.',
       )
       setRows(ensureRows(table, 'No products in catalog for this branch.'))
@@ -580,7 +580,7 @@ function ManagerReports() {
       const unapproved = data.filter((r) => r.outcome === 'removed_unapproved').length
       setNote(
         unapproved > 0
-          ? `${unapproved} removal(s) proceeded without manager approval — review self-allowed rows first.`
+          ? `${unapproved} removal(s) proceeded without manager approval. Review self-allowed rows first.`
           : 'Supervisor PIN, manager remote, or on-site approval is required before a line leaves the cart.',
       )
       setRows(
@@ -673,7 +673,7 @@ function ManagerReports() {
       const missingId = data.filter((r) => r.id_number === '(NOT RECORDED)').length
       setNote(
         missingId > 0
-          ? `${missingId} of ${data.length} sale(s) have no ID number recorded — BIR will disallow the deduction on those. Capture the ID at checkout.`
+          ? `${missingId} of ${data.length} sale(s) have no ID number recorded. BIR will disallow the deduction on those. Capture the ID at checkout.`
           : 'Every discounted sale has an ID number on record.',
       )
       setRows(ensureRows(data, 'No Senior Citizen / PWD discounts in this range.'))
@@ -690,7 +690,7 @@ function ManagerReports() {
       const data = await fetchElectronicJournal({ start: filters.start, end: filters.end, branchId })
       const voided = data.filter((r) => r.status === 'VOIDED').length
       setNote(
-        `${data.length} transaction(s), ${voided} voided. Voids are included on purpose — an EJ with them removed proves nothing.`,
+        `${data.length} transaction(s), ${voided} voided. Voids are included on purpose, an EJ with them removed proves nothing.`,
       )
       setRows(ensureRows(data, 'No transactions in this range.'))
       return
@@ -990,7 +990,7 @@ function ManagerReports() {
   return (
     <div>
       {busy && (
-        <StatusOverlay title="Generating report" message="Building preview — please wait…" />
+        <StatusOverlay title="Generating report" message="Building preview, please wait…" />
       )}
       <PageHeader eyebrow="MANAGER" title="Reports" />
 

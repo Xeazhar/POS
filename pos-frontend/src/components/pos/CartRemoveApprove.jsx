@@ -203,7 +203,7 @@ export default function CartRemoveApprove({ item, cartId = null, onCancel, onAll
         } else if (row.status === 'denied') {
           stopTimers()
           setPhase('denied')
-          setError('Manager denied — item stays in the cart.')
+          setError('Manager denied. Item stays in the cart.')
         }
       } catch {
         /* keep waiting */
@@ -216,7 +216,7 @@ export default function CartRemoveApprove({ item, cartId = null, onCancel, onAll
     setBusy(true)
     try {
       if (!backendReachable) {
-        setError('Offline — use a supervisor PIN on site. Remote manager notify needs a connection.')
+        setError('Offline: use a supervisor PIN on site. Remote manager notify needs a connection.')
         setNotifyConfirm(false)
         return
       }
@@ -290,7 +290,7 @@ export default function CartRemoveApprove({ item, cartId = null, onCancel, onAll
 
       {offlineAuth && (
         <p className="mb-3 rounded-md border border-brand-warn bg-brand-warn-bg px-3 py-2 text-xs text-brand-warn">
-          Offline mode — supervisor PIN is verified on this device. Approval will sync when connection returns.
+          Offline mode: supervisor PIN is verified on this device. Approval will sync when connection returns.
         </p>
       )}
 
@@ -369,7 +369,7 @@ export default function CartRemoveApprove({ item, cartId = null, onCancel, onAll
             submitLabel={phase === 'waiting' || phase === 'self' ? 'Approve with PIN' : 'Approve'}
             hint={
               offlineAuth
-                ? 'Offline — verified on this device'
+                ? 'Offline: verified on this device'
                 : phase === 'waiting' || phase === 'self'
                   ? 'Still works while waiting'
                   : null

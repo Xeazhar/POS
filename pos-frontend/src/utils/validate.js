@@ -14,6 +14,14 @@ export const decimalOnly = (value) => {
   return rest.length ? `${whole}.${rest.join('').slice(0, 2)}` : whole
 }
 
+/** Pads a peso amount to 2 decimals once the field is left (e.g. "200" -> "200.00").
+ *  Leaves typing itself untouched — only call this from onBlur, not onChange. */
+export const formatMoneyOnBlur = (value) => {
+  if (value === '' || value == null) return value
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toFixed(2) : value
+}
+
 export const findProductDuplicate = (products, { name, sku, barcode }, excludeId) => {
   const norm = (value) => sanitizeText(value).toLowerCase()
   const code = String(barcode || '')
