@@ -354,6 +354,48 @@ the cashier ends it from **End shift** (`DayEnd.jsx` cashier view → `ShiftCash
 day-end / Z-reading closes the business day. There is deliberately no second entry point
 to cashing out.
 
+### Single active session per staff account
+
+A staff account can be signed in on only one device at a time; a new login always wins and
+the previous device is evicted. Enforcement is server-side (Postgres), not a client flag —
+full detail and the one-time deployment note (existing sessions look "evicted" once, right
+after this migration ships) live in `supabase/migrate_single_active_session_enforcement.sql`.
+
+**Mechanism.** Every Supabase Auth JWT carries a `session_id` claim — stable across token
+refreshes, unique per sign-in. `claim_staff_session()` (called once, at a fresh sign-in —
+`useAuthStore.login`, `src/stores/posStore.js`) reads `staff.active_session_id` and, if it
+differs from the caller's own `session_id`, unconditionally overwrites it (evicting whoever
+held it) and logs an `audit_events` row (`session_replaced`). The three functions nearly
+every RLS policy and every `SECURITY DEFINER` RPC already goes through —
+`current_staff_id()`, `current_staff_branch()`, `current_staff_role()` — are gated on that
+same claim: once a session is replaced, they return nothing for the old device's still
+cryptographically-valid JWT, so every table policy and RPC denies it automatically, with no
+per-table or per-RPC changes. The `staff` table's own "read own row" policy is deliberately
+left ungated (needed for the very first read during a fresh sign-in), so an evicted device
+can still see its own name/role/branch — it just can't do anything through
+`current_staff_branch()`/`is_manager()`, i.e. no sales, voids, refunds, stock, shifts, or
+promos.
+
+**Detection paths** (all funnel into `useAuthStore.sessionRevoked()` in
+`src/stores/posStore.js`, which forces a local sign-out and shows `AUTH11`, "Your session has
+ended because this account was signed in on another device"):
+- **Heartbeat** — `Shell.jsx` calls `heartbeatStaffSession()` every 2.5 minutes; a
+  `SESSION_REVOKED` response (`api.isSessionRevokedError`, `src/lib/api.js`) triggers eviction.
+- **Broadcast** — the existing private Realtime Broadcast channel
+  (`pos:branch:{branchId}:operations`) carries a `session_revoked` event; `Shell.jsx` never
+  trusts the payload as truth, it only triggers an immediate `heartbeatStaffSession()`
+  re-check against Postgres.
+- **Sync pre-flight** — `pushQueue()` (`src/offline/syncEngine.js`) calls
+  `heartbeatStaffSession()` before touching any queued item; see offline behavior below.
+
+**Offline behavior.** A device that's offline when evicted keeps working locally exactly like
+any offline cashier — there is no way to server-push a kill signal to a device with no
+network path, and that's inherent to offline-first, not a gap. Enforcement happens at the
+reconnect boundary: `pushQueue()`'s pre-flight check fails with `SESSION_REVOKED` before any
+queue item is retried, so nothing is quarantined and no data is lost — queued sales stay
+`pending`, first-in-line. Signing back in on that device re-claims the session (same
+"newest login wins" rule) and the very next sync drains the backlog normally.
+
 ---
 
 ## Cashiering / POS sale (movement)

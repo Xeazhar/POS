@@ -19,6 +19,16 @@ computation, OR numbering).
 
 ## Unreleased
 
+### Added: single active session per staff account
+
+Signing in on a second device now evicts the first everywhere the server can reach it,
+instead of blocking the second login. Enforced in Postgres (RLS + the RPCs nearly every
+policy already goes through), not just the UI — an evicted device cannot complete any
+POS action once detected, via a periodic heartbeat, an instant realtime notice, or (for a
+device that was offline at the moment of eviction) a pre-flight check the next time it
+tries to sync its offline queue. No data loss in the offline case: queued sales stay
+queued until the cashier signs back in. See `supabase/migrate_single_active_session_enforcement.sql`.
+
 ## 0.22.0 — 2026-08-16
 
 ### Changed: "Start shift again?" prompt on re-login after ending own shift
