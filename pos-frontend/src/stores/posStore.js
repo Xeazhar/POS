@@ -111,27 +111,35 @@ export const useAuthStore = create(persist((set, get) => ({
       }
 
       const sessionId = api.getOrCreateDeviceSessionId()
+      let readyUser = user
       try {
         await api.claimStaffSession()
+        // `branches` RLS gates on current_staff_branch(), which only resolves once
+        // claim_staff_session() has stamped this session as this staff's active one — the
+        // `user` above was fetched BEFORE that claim, so its branch-scoped fields
+        // (branchName, dayOpenHour, deviceSettings, vatRate) silently came back as
+        // fallback defaults, not the real branch. Refetch now that the claim has landed
+        // so the nav bar and everything else gets the real branch, not "Branch" forever.
+        readyUser = (await api.fetchSessionStaff().catch(() => null)) || user
       } catch (claimErr) {
         await api.signOut().catch(() => {})
         throw claimErr
       }
 
       useCartStore.getState().clear()
-      set({ user, booting: false, screenLocked: false, deviceSessionId: sessionId, loginIntroUser: user })
+      set({ user: readyUser, booting: false, screenLocked: false, deviceSessionId: sessionId, loginIntroUser: readyUser })
       await clearRequireFreshLogin()
-      await saveLocalSession({ ...user, deviceSessionId: sessionId })
-      setSyncBranchId(user.branchId)
+      await saveLocalSession({ ...readyUser, deviceSessionId: sessionId })
+      setSyncBranchId(readyUser.branchId)
       void ensureRealtimeAuth()
       api.logAuditEvent({
-        branchId: user.branchId,
-        staffId: user.id,
+        branchId: readyUser.branchId,
+        staffId: readyUser.id,
         eventType: 'login',
-        detail: `Signed in as ${user.name}`,
-        meta: { role: user.role, branchType: user.branchType, mode },
+        detail: `Signed in as ${readyUser.name}`,
+        meta: { role: readyUser.role, branchType: readyUser.branchType, mode },
       })
-      return user
+      return readyUser
     } catch (error) {
       set({ error: error?.message || String(error), booting: false, user: null })
       throw error

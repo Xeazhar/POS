@@ -2,8 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FiCheck } from 'react-icons/fi'
 import { Eyebrow, Field, Modal, ModalActions, PrimaryButton, SecondaryButton } from '../ui'
-import SupervisorApprove from './SupervisorApprove'
-import { logApprovalEvent } from '../../lib/api'
 import { useInventoryStore } from '../../stores/posStore'
 import { useShiftStore } from '../../stores/shiftStore'
 import { formatSupportError } from '../../utils/errors'
@@ -30,7 +28,6 @@ function sinceLabel(iso) {
  *                  day is already closed (see `dayClosed` below) or was reopened after a
  *                  close (see `needsFreshCount`), the one case that still asks for a
  *                  counted figure.
- *   moved        — this cashier is open on another till, so their cash is somewhere else.
  *   ended        — this session just cashed out; sign out (Shell exempts /day-end from
  *                  this so Request day end stays reachable first — see Shell's
  *                  `shiftBlocking`).
@@ -39,17 +36,17 @@ function sinceLabel(iso) {
  *                  reopens the closing.
  *
  * There is no "drawer still open under someone else" case: starting a shift auto-closes a
- * stale one on the same drawer server-side (no count required — see endShift), so a new
- * cashier is never blocked waiting on the previous one to formally cash out.
+ * stale one server-side (no count required — see endShift), so a new cashier is never
+ * blocked waiting on the previous one to formally cash out.
  *
- * Resuming is not one of the cases: when a shift is already open for this cashier on this
- * drawer, the store answers `ready` and this component never renders. That is what makes
- * an accidental sign-out cost nothing.
+ * Resuming is not one of the cases: when a shift is already open for this cashier — on any
+ * terminal, cash is treated as moving with the cashier, not the till (see
+ * `src/utils/drawer.js`) — the store answers `ready` and this component never renders.
+ * That is what makes an accidental sign-out cost nothing.
  */
 function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) {
   const navigate = useNavigate()
   const gate = useShiftStore((state) => state.gate)
-  const blocker = useShiftStore((state) => state.blocker)
   const handoff = useShiftStore((state) => state.handoff)
   const restartPrompt = useShiftStore((state) => state.restartPrompt)
   const drawerLabel = useShiftStore((state) => state.drawerLabel)
@@ -117,9 +114,6 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
   const [confirmNoFund, setConfirmNoFund] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  // Supervisor-gated escape hatch: 'override_drawer' (start here while their own shift is
-  // open elsewhere).
-  const [approving, setApproving] = useState(null)
 
   // Pre-fill the handoff amount, but never treat it as counted — `confirmedCount` resets
   // to false so the new cashier has to tick that they physically counted the drawer. A
@@ -212,16 +206,15 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
   const onStartClick = async () => {
     setError('')
     // A supervisor's very first resolve() (Shell mount) ran with holdsDrawer: false, which
-    // skips the "already open on another till" check entirely (see resolve() in
-    // shiftStore.js) — so picking "Working the register" here needs its own check before
-    // committing, the same one `role === 'cashier'` gets for free at sign-in.
+    // skips the handoff/restart-prompt lookup (see resolve() in shiftStore.js) — so picking
+    // "Working the register" here re-resolves for a fresh one before committing.
     let freshHandoff = handoff
     if (canChooseDrawer && wantsDrawer) {
       setBusy(true)
       const result = await resolve(user, { holdsDrawer: true }).catch(() => null)
       setBusy(false)
-      // A conflict (`moved`) or an existing shift (`ready`) takes over via re-render —
-      // nothing left to do here. Only a clean `start` continues to the actual open.
+      // An existing shift (`ready`) takes over via re-render — nothing left to do here.
+      // Only a clean `start` continues to the actual open.
       if (!result || result.gate !== 'start') return
       // doStart() below is the closure captured at THIS render, still holding whatever
       // `handoff` was before the resolve() above ran (component state updates don't
@@ -407,73 +400,6 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
           </ModalActions>
         )}
       </Modal>
-    )
-  }
-
-  if (gate === 'moved' && blocker) {
-    return (
-      <>
-        <Modal>
-          <Eyebrow>DIFFERENT TILL</Eyebrow>
-          <h2 className="mb-1 text-lg">Your shift is open on another till</h2>
-          <p className="m-0 text-xs text-brand-muted">
-            You already have an open shift on{' '}
-            <strong className="text-brand-ink">{blocker.drawerLabel || blocker.drawerId}</strong>
-            {blocker.clockIn ? `, started ${sinceLabel(blocker.clockIn)}` : ''}. That drawer still
-            holds cash you are answerable for, so this terminal cannot simply take over. Go back
-            and cash out there, or have a supervisor open a separate shift here.
-          </p>
-          {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
-          <ModalActions>
-            <SecondaryButton compact type="button" disabled={busy} onClick={onSignOut}>
-              Sign out
-            </SecondaryButton>
-            <SecondaryButton
-              compact
-              type="button"
-              disabled={busy}
-              onClick={() => void resolve(user, { holdsDrawer })}
-            >
-              Check again
-            </SecondaryButton>
-            <PrimaryButton
-              compact
-              type="button"
-              disabled={busy}
-              onClick={() => setApproving('override_drawer')}
-            >
-              Supervisor override
-            </PrimaryButton>
-          </ModalActions>
-        </Modal>
-        {approving === 'override_drawer' && (
-          <SupervisorApprove
-            branchId={user?.branchId}
-            title="Open a second drawer for this cashier"
-            detail="Their other shift stays open and stays their responsibility. Only approve if they really are working two tills."
-            onCancel={() => setApproving(null)}
-            onApproved={async ({ staffId, name, role }) => {
-              setApproving(null)
-              // No row of its own carries this sign-off, so it goes to the audit trail —
-              // otherwise "why does this cashier hold two drawers" has no answer later.
-              void logApprovalEvent({
-                branchId: user?.branchId,
-                requestedBy: user?.id,
-                approvedBy: staffId,
-                approverName: name,
-                approverRole: role,
-                action: 'second_drawer_override',
-                detail: `${user?.name || 'Cashier'} allowed a second open drawer`,
-                meta: { other_drawer: blocker.drawerLabel || blocker.drawerId || null },
-              })
-              // Falls through to the normal start flow for this drawer (auto-starts at 0
-              // unless today was reopened, same as any other start — see needsFreshCount).
-              // The override permits a second shift; it doesn't change this drawer's rules.
-              useShiftStore.setState({ gate: 'start', blocker: null })
-            }}
-          />
-        )}
-      </>
     )
   }
 

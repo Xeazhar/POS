@@ -90,7 +90,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** Turnstile/captcha challenge not solved or expired.
 - **First action:** Solve the challenge. If it never appears, check the captcha domain is allowed in the CSP.
-- **Raised from:** `src/lib/api.js:3668`, `src/pages/Login.jsx:208`
+- **Raised from:** `src/lib/api.js:3688`, `src/pages/Login.jsx:208`
 
 ### AUTH07 — Too many failed PIN attempts. Wait and try again.
 
@@ -126,7 +126,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** A previous "Create staff login" attempt created the Auth login but failed before the staff row saved (e.g. a rejected write), leaving an orphaned login with no matching account — Supabase Auth now refuses to reuse that email/code.
 - **First action:** Pick a different staff code (or email, for a manager/admin account) and save again. Ask an admin to remove the orphaned Auth user for the old code if you need to reuse it.
-- **Raised from:** `src/lib/api.js:3679`
+- **Raised from:** `src/lib/api.js:3699`
 
 ### AUTH11 — Your session has ended because this account was signed in on another device.
 
@@ -211,7 +211,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The file was rejected during validation — nothing was written.
 - **First action:** Correct the row named in the message and re-import the whole file.
-- **Raised from:** `src/pages/manager/Reports.jsx:298`
+- **Raised from:** `src/pages/manager/Reports.jsx:305`
 
 ### DATA02 — Could not add product.
 
@@ -258,7 +258,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The branch_devices/device settings columns do not exist in this database yet.
 - **First action:** Apply migrate_device_settings.sql in the Supabase SQL editor.
-- **Raised from:** `src/lib/api.js:3481`, `src/lib/api.js:3482`, `src/lib/api.js:3495`, `src/lib/api.js:3496`
+- **Raised from:** `src/lib/api.js:3501`, `src/lib/api.js:3502`, `src/lib/api.js:3515`, `src/lib/api.js:3516`
 
 ### DEV02 — Could not save device on/off setting.
 
@@ -267,7 +267,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The device settings write was rejected.
 - **First action:** Retry. Confirm the signed-in user manages this branch.
-- **Raised from:** `src/lib/api.js:3487`, `src/pages/manager/BranchDashboard.jsx:760`
+- **Raised from:** `src/lib/api.js:3507`, `src/pages/manager/BranchDashboard.jsx:760`
 
 ### DEV03 — Receipt printer is disabled for this branch.
 
@@ -276,7 +276,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Deliberate configuration — printing is switched off in Devices.
 - **First action:** Enable the printer in Settings → Devices if a receipt is required.
-- **Raised from:** `src/pages/Transactions.jsx:730`, `src/pages/Transactions.jsx:733`
+- **Raised from:** `src/pages/Transactions.jsx:739`, `src/pages/Transactions.jsx:742`
 
 ### DEV04 — Receipt print failed.
 
@@ -285,7 +285,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** The print window was refused or the printer did not respond. The SALE IS STILL RECORDED.
 - **First action:** Reprint from Transactions. Never re-ring the sale to get a receipt.
-- **Raised from:** `src/pages/manager/BranchDashboard.jsx:2336`, `src/pages/Transactions.jsx:745`
+- **Raised from:** `src/pages/manager/BranchDashboard.jsx:2328`, `src/pages/Transactions.jsx:754`
 
 ### DEV05 — Could not reach the device.
 
@@ -294,7 +294,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** A terminal, drawer or printer did not answer within the timeout.
 - **First action:** Check power and cabling, then retry. Sales continue without it.
-- **Raised from:** `src/pages/Devices.jsx:277`, `src/pages/Devices.jsx:279`
+- **Raised from:** `src/pages/Devices.jsx:275`, `src/pages/Devices.jsx:277`
 
 ## GEN
 
@@ -305,7 +305,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** An unclassified failure. If this is common, the failing path needs its own code.
 - **First action:** Screenshot the whole screen and send it to support with what you were doing.
-- **Raised from:** `src/lib/api.js:3487`
+- **Raised from:** `src/lib/api.js:3507`
 
 ## IMP
 
@@ -446,7 +446,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** reviewed_by must differ from requested_by.
 - **First action:** Ask another supervisor or manager to Confirm or Flag.
-- **Raised from:** `src/components/dayend/DrawerActivity.jsx:158`, `src/pages/manager/BranchDashboard.jsx:1940`, `src/pages/manager/BranchDashboard.jsx:1981`
+- **Raised from:** `src/components/dayend/DrawerActivity.jsx:158`, `src/pages/manager/BranchDashboard.jsx:1932`, `src/pages/manager/BranchDashboard.jsx:1973`
 
 ### MOVE20 — Opening float already set on this shift.
 
@@ -464,7 +464,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** resolve_flagged_cash_movement requires is_manager().
 - **First action:** Have a manager mark the flagged row Resolved.
-- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1898`
+- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1890`
 
 ### MOVE22 — Only flagged movements can be marked Resolved this way.
 
@@ -636,7 +636,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The refund write was rejected. It may or may not have partially applied.
 - **First action:** Open the transaction and check whether the refund is already listed BEFORE refunding again.
-- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1571`, `src/pages/Transactions.jsx:350`, `src/pages/Transactions.jsx:368`, `src/pages/Transactions.jsx:399`
+- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1563`, `src/pages/Transactions.jsx:350`, `src/pages/Transactions.jsx:368`, `src/pages/Transactions.jsx:399`
 
 ### SALE04 — Void failed. The sale is unchanged.
 
@@ -663,7 +663,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** Creating, cancelling, or rejecting the remote manager approval request was rejected.
 - **First action:** Nothing has been refunded yet — retry, or fall back to in-person supervisor approval.
-- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1620`, `src/pages/Transactions.jsx:434`, `src/pages/Transactions.jsx:464`
+- **Raised from:** `src/pages/manager/BranchDashboard.jsx:1612`, `src/pages/Transactions.jsx:434`, `src/pages/Transactions.jsx:464`
 
 ### SALE07 — Refunds are not available offline.
 
@@ -672,7 +672,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Refunds change inventory, cash accountability, and audit records — they need a server connection.
 - **First action:** Make a physical list of items to refund and record them when the system is back online.
-- **Raised from:** `src/pages/Transactions.jsx:755`, `src/pages/Transactions.jsx:1031`, `src/pages/Transactions.jsx:1031`
+- **Raised from:** `src/pages/Transactions.jsx:764`, `src/pages/Transactions.jsx:1040`, `src/pages/Transactions.jsx:1040`
 
 ## SEC
 
@@ -721,7 +721,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** The admin session functions from migrate_admin_session_release.sql are missing.
 - **First action:** Run migrate_admin_session_release.sql in the Supabase SQL editor.
-- **Raised from:** `src/lib/api.js:3581`, `src/lib/api.js:3611`, `src/lib/api.js:3628`, `src/pages/manager/Staff.jsx:457`
+- **Raised from:** `src/lib/api.js:3601`, `src/lib/api.js:3631`, `src/lib/api.js:3648`, `src/pages/manager/Staff.jsx:457`
 
 ### SESS02 — Only a master account can force someone to sign out.
 
@@ -730,7 +730,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Forcing a sign-out can eject a cashier mid-sale, so it is restricted to master accounts.
 - **First action:** Ask a master account to clear the session, or wait 15 minutes for it to expire on its own.
-- **Raised from:** `src/lib/api.js:3608`, `src/lib/api.js:3625`, `src/pages/manager/Staff.jsx:984`, `src/pages/manager/Staff.jsx:1017`
+- **Raised from:** `src/lib/api.js:3628`, `src/lib/api.js:3645`, `src/pages/manager/Staff.jsx:984`, `src/pages/manager/Staff.jsx:1017`
 
 ## SHIFT
 
@@ -750,7 +750,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** One drawer holds one shift at a time — otherwise a shortage cannot be traced to whoever was actually holding the cash.
 - **First action:** The previous cashier cashes out on this terminal. If they have gone, a supervisor counts the drawer and closes their shift.
-- **Raised from:** `src/lib/api.js:3972`, `src/pages/DayEnd.jsx:1258`, `src/pages/manager/Staff.jsx:1138`
+- **Raised from:** `src/lib/api.js:3992`, `src/pages/DayEnd.jsx:1258`, `src/pages/manager/Staff.jsx:1138`
 
 ### SHIFT03 — Enter the counted cash amount.
 
@@ -759,7 +759,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** A change fund or ending count was missing, negative, or an adjustment had no reason written.
 - **First action:** Count the drawer and type the figure. Zero is allowed; blank is not.
-- **Raised from:** `src/lib/api.js:3976`, `src/pages/manager/Staff.jsx:1079`, `src/stores/shiftStore.js:185`
+- **Raised from:** `src/lib/api.js:3996`, `src/pages/manager/Staff.jsx:1079`, `src/stores/shiftStore.js:161`
 
 ### SHIFT04 — That shift is closed. Record an adjustment instead of editing it.
 
@@ -768,7 +768,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Closed shift figures are frozen, like sales records: the original count has to stay readable for BIR and for any dispute about it.
 - **First action:** Manager → Shifts: use Adjust on that shift. The old value, the new value and your reason are all kept.
-- **Raised from:** `src/lib/api.js:3973`
+- **Raised from:** `src/lib/api.js:3993`
 
 ### SHIFT05 — Only a supervisor or manager can change a shift’s cash figures.
 
@@ -777,16 +777,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** adjust_shift_cash() refused the caller — either the role is too low or the shift is at another branch.
 - **First action:** Ask a supervisor at that branch, or a manager.
-- **Raised from:** `src/lib/api.js:3974`, `src/lib/api.js:4201`, `src/pages/DayEnd.jsx:684`
-
-### SHIFT06 — You already have an open shift on another till.
-
-- **Severity:** `blocking` — Blocking — the task cannot continue
-- **Sale impact:** `none`
-- **Safe to retry:** no
-- **Likely cause:** That drawer still holds cash this account is answerable for, so this terminal cannot silently open a second one.
-- **First action:** Go back and cash out on that till, or have a supervisor open a separate shift here.
-- **Raised from:** `src/stores/shiftStore.js:319`
+- **Raised from:** `src/lib/api.js:3994`, `src/lib/api.js:4221`, `src/pages/DayEnd.jsx:684`
 
 ## STAFF
 
@@ -797,7 +788,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Supervisors need branch_staff_roster() so till PINs are not exposed via a wide SELECT.
 - **First action:** Run migrate_branch_staff_roster.sql in the Supabase SQL editor.
-- **Raised from:** `src/lib/api.js:3530`
+- **Raised from:** `src/lib/api.js:3550`
 
 ### STAFF02 — PIN reveal is not installed on this database yet.
 
@@ -806,7 +797,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Managers reveal PINs through reveal_staff_pin(), not a direct staff table read.
 - **First action:** Run migrate_reveal_staff_pin.sql in the Supabase SQL editor.
-- **Raised from:** `src/lib/api.js:3880`
+- **Raised from:** `src/lib/api.js:3900`
 
 ### STAFF03 — You are not allowed to reveal this staff member's PIN.
 
@@ -815,7 +806,7 @@ Read the columns in this order:
 - **Safe to retry:** no
 - **Likely cause:** Only manager, admin, or master accounts may reveal till PINs.
 - **First action:** Ask a manager to reveal the PIN, or reset it from Staff with edit access.
-- **Raised from:** `src/lib/api.js:3885`
+- **Raised from:** `src/lib/api.js:3905`
 
 ## SYNC
 
@@ -882,7 +873,7 @@ Read the columns in this order:
 - **Safe to retry:** yes
 - **Likely cause:** Writing the day_ends row failed. The count is still on screen and has not been lost.
 - **First action:** Retry. If it keeps failing, screenshot the counted figures before leaving the page.
-- **Raised from:** `src/components/shared/ShiftGate.jsx:106`
+- **Raised from:** `src/components/shared/ShiftGate.jsx:103`
 
 ### TILL04 — Refund/void not allowed: this business day is closed. No sales or refunds until a manager reopens the till, or the next business day opens.
 

@@ -29,6 +29,7 @@ import {
   fetchReportSalesDetail,
   fetchSaleEvents,
   fetchScPwdReport,
+  fetchShrinkageReport,
   fetchStockMovementReport,
   fetchTenderSummary,
   fetchTerminalReportSource,
@@ -109,6 +110,12 @@ const REPORTS = [
     group: 'Catalog',
     title: 'Restock Summary',
     note: 'Per branch, staff, and item: total restocked, and when. Scan for a quantity lower than it should be.',
+  },
+  {
+    id: 'shrinkage-report',
+    group: 'Catalog',
+    title: 'Reseko / Shrinkage Loss',
+    note: 'Every waste/shrinkage movement with peso value lost, priced at current selling price (unit cost is usually unset).',
   },
   { id: 'sales-invoice', group: 'Sales', title: 'Sales Per Invoice' },
   { id: 'pos-sales-detail', group: 'Sales', title: 'POS Sales Detail' },
@@ -816,6 +823,16 @@ function ManagerReports() {
           'No restocks in this range.',
         ),
       )
+      return
+    }
+
+    if (selected === 'shrinkage-report') {
+      const data = await fetchShrinkageReport({ start: filters.start, end: filters.end, branchId })
+      const totalLoss = data.reduce((sum, row) => sum + Number(row.loss_amount || 0), 0)
+      setNote(
+        `Total value lost: ${money(totalLoss)}. Valued at each product's CURRENT selling price — a price change restates older rows, same caveat as Gross Margin.`,
+      )
+      setRows(ensureRows(data, 'No shrinkage in this range.'))
       return
     }
 

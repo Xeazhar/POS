@@ -38,16 +38,11 @@ export async function getLocalShift(clientId) {
   return (await db.shifts.get(clientId)) || null
 }
 
-/** The open shift for this exact cashier + drawer, if there is one. */
-export async function getLocalOpenShift({ branchId, staffId, drawerId }) {
-  if (!branchId || !staffId || !drawerId) return null
+/** The open shift for this exact cashier, if there is one — any drawer resumes here. */
+export async function getLocalOpenShift({ branchId, staffId }) {
+  if (!branchId || !staffId) return null
   const rows = await db.shifts.where('status').equals('open').toArray()
-  return (
-    rows.find(
-      (row) =>
-        row.branchId === branchId && row.staffId === staffId && row.drawerId === drawerId,
-    ) || null
-  )
+  return rows.find((row) => row.branchId === branchId && row.staffId === staffId) || null
 }
 
 /**

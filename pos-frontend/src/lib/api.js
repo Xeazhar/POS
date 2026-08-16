@@ -82,6 +82,25 @@ async function fetchAllRows(build) {
   return { data: out, error: null }
 }
 
+/**
+ * Converts a "YYYY-MM-DD" business/calendar date key into the UTC instant boundaries of
+ * that LOCAL day, for filtering a `timestamptz` column.
+ *
+ * `created_at` is timestamptz, and the Supabase DB session runs in UTC — a bare
+ * `${date}T00:00:00` filter is read as UTC midnight, not Manila midnight, shifting the
+ * whole window 8 hours: early-morning local sales/events fall out of "today" and the
+ * window's tail bleeds into the next local day instead. `new Date(...)` parses the
+ * timezone-less string as LOCAL time (the terminal runs in PH time, same assumption
+ * `businessDate()` makes) and `.toISOString()` converts that instant to the correct UTC
+ * value, so the filter means what the caller intended.
+ */
+function localDayBoundsIso(startKey, endKey = startKey) {
+  return {
+    startIso: startKey ? new Date(`${startKey}T00:00:00`).toISOString() : null,
+    endIso: endKey ? new Date(`${endKey}T23:59:59.999`).toISOString() : null,
+  }
+}
+
 async function writeProductRow(mode, payload, { id } = {}) {
   const attempt = async (row) => {
     if (mode === 'insert') {
@@ -333,6 +352,7 @@ export async function fetchStockMovements({
   if (!branchId) return []
   const cols =
     'id, created_at, product_id, staff_id, movement_type, reference, detail, quantity_in, quantity_out, quantity_on_hand_after, old_price, new_price, branch_id, products(name, sku)'
+  const { startIso, endIso } = localDayBoundsIso(start, end)
   const build = (from, to) => {
     let q = supabase
       .from('stock_movements')
@@ -340,8 +360,8 @@ export async function fetchStockMovements({
       .eq('branch_id', branchId)
       .order('created_at', { ascending: false })
       .range(from, to)
-    if (start) q = q.gte('created_at', `${start}T00:00:00`)
-    if (end) q = q.lte('created_at', `${end}T23:59:59.999`)
+    if (startIso) q = q.gte('created_at', startIso)
+    if (endIso) q = q.lte('created_at', endIso)
     if (productId) q = q.eq('product_id', productId)
     if (movementType) q = q.eq('movement_type', movementType)
     return q
@@ -3202,6 +3222,18 @@ export async function fetchBranches({ includeCompany = true } = {}) {
   }))
 }
 
+/** branch_id/business_date/status only, last 2 days — for the Branches grid's "Day not
+ *  ended" tag. RLS (is_manager()) already scopes this to every branch the caller may see. */
+export async function fetchRecentDayEndStatuses() {
+  const since = localDateKey(new Date(Date.now() - 86400000))
+  const { data, error } = await supabase
+    .from('day_ends')
+    .select('branch_id, business_date, status')
+    .gte('business_date', since)
+  if (error) throw error
+  return data || []
+}
+
 const branchHeaderCache = new Map()
 
 /** Branch row → receipt header block (composed TIN when company profile is known). */
@@ -4372,9 +4404,12 @@ export async function fetchOpenShift(staffId, { drawerId = null } = {}) {
  */
 export async function fetchStaffShifts({ branchId = null, start = null, end = null, limit = 300 } = {}) {
   const JOINS = 'staff:staff_id(id, full_name, role), branches:branch_id(id, name)'
+  const { startIso: shiftStartIso, endIso: shiftEndIso } = localDayBoundsIso(start, end)
+  // Millisecond suffix stripped — this value gets embedded inline in a PostgREST `.or()`
+  // filter string below, and the plain seconds-precision form is all a day boundary needs.
   const clockInTerms = [
-    start ? `clock_in.gte.${start}T00:00:00` : null,
-    end ? `clock_in.lte.${end}T23:59:59` : null,
+    shiftStartIso ? `clock_in.gte.${shiftStartIso.replace(/\.\d{3}Z$/, 'Z')}` : null,
+    shiftEndIso ? `clock_in.lte.${shiftEndIso.replace(/\.\d{3}Z$/, 'Z')}` : null,
   ].filter(Boolean)
   const businessDateTerms = [
     start ? `business_date.gte.${start}` : null,
@@ -4395,8 +4430,8 @@ export async function fetchStaffShifts({ branchId = null, start = null, end = nu
         )
       } else {
         // Legacy schema has no business_date to match on.
-        if (start) query = query.gte('clock_in', `${start}T00:00:00`)
-        if (end) query = query.lte('clock_in', `${end}T23:59:59.999`)
+        if (shiftStartIso) query = query.gte('clock_in', shiftStartIso)
+        if (shiftEndIso) query = query.lte('clock_in', shiftEndIso)
       }
     }
     return query
@@ -5678,12 +5713,13 @@ export async function fetchReportSalesDetail({ start, end, branchId, includeVoid
   const TXN_MIN =
     'id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo'
 
+  const { startIso: detailStartIso, endIso: detailEndIso } = localDayBoundsIso(start, end)
   const build = (productCols, txnCols) => (from, to) => {
     let q = supabase
       .from('transaction_items')
       .select(`*, ${productCols}, transactions!inner(${txnCols})`)
-      .gte('transactions.created_at', `${start}T00:00:00`)
-      .lte('transactions.created_at', `${end}T23:59:59`)
+      .gte('transactions.created_at', detailStartIso)
+      .lte('transactions.created_at', detailEndIso)
       .order('id', { ascending: true })
       .range(from, to)
     if (!includeVoided) q = q.eq('transactions.status', 'completed')
@@ -5786,6 +5822,7 @@ export async function logApprovalEvent({
  * that only want a recent slice still pass a limit.
  */
 export async function fetchAuditEvents({ start, end, branchId, limit = 500 } = {}) {
+  const { startIso: auditStartIso, endIso: auditEndIso } = localDayBoundsIso(start, end)
   const build = (from, to) => {
     let query = supabase
       .from('audit_events')
@@ -5793,8 +5830,8 @@ export async function fetchAuditEvents({ start, end, branchId, limit = 500 } = {
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
       .range(from, to)
-    if (start) query = query.gte('created_at', `${start}T00:00:00`)
-    if (end) query = query.lte('created_at', `${end}T23:59:59`)
+    if (auditStartIso) query = query.gte('created_at', auditStartIso)
+    if (auditEndIso) query = query.lte('created_at', auditEndIso)
     if (branchId) query = query.eq('branch_id', branchId)
     return query
   }
@@ -5836,6 +5873,7 @@ export async function fetchSecurityAuditEvents({ limit = 10, offset = 0 } = {}) 
 
 /** Void / refund events. `limit: null` reads everything — see fetchAuditEvents. */
 export async function fetchSaleEvents({ start, end, branchId, eventType, limit = 500 } = {}) {
+  const { startIso: dayStart, endIso: dayEnd } = localDayBoundsIso(start, end)
   const build = (from, to) => {
     let query = supabase
       .from('sale_events')
@@ -5843,8 +5881,8 @@ export async function fetchSaleEvents({ start, end, branchId, eventType, limit =
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
       .range(from, to)
-    if (start) query = query.gte('created_at', `${start}T00:00:00`)
-    if (end) query = query.lte('created_at', `${end}T23:59:59`)
+    if (dayStart) query = query.gte('created_at', dayStart)
+    if (dayEnd) query = query.lte('created_at', dayEnd)
     if (branchId) query = query.eq('branch_id', branchId)
     if (eventType) query = query.eq('event_type', eventType)
     return query
@@ -5898,12 +5936,13 @@ export async function fetchDailyReading({ date, branchId }) {
   // Paged: a busy branch can clear 1000 sales in a day, and PostgREST would truncate to
   // exactly that with no error — producing a day's total that is short by an unknown
   // amount and looks entirely plausible.
+  const { startIso: readingStartIso, endIso: readingEndIso } = localDayBoundsIso(date, date)
   const build = (cols) => (from, to) => {
     let q = supabase
       .from('transactions')
       .select(cols)
-      .gte('created_at', `${date}T00:00:00`)
-      .lte('created_at', `${date}T23:59:59`)
+      .gte('created_at', readingStartIso)
+      .lte('created_at', readingEndIso)
       .order('created_at', { ascending: true })
       .range(from, to)
     if (branchId) q = q.eq('branch_id', branchId)
@@ -5965,12 +6004,7 @@ export async function fetchDailyReading({ date, branchId }) {
 async function fetchFiscalTransactions({ start, end, branchId, includeVoided = true }) {
   const FULL =
     'id, or_number, status, total_amount, amount_tendered, change_given, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, discount_id_note, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, void_reason, refunded_amount'
-  // `created_at` is timestamptz — a bare `2026-08-09T00:00:00` is read in the database
-  // session's zone (UTC on Supabase), not Manila, shifting the whole window 8 hours and
-  // filing early-morning sales under the wrong day (see fetchStaffShifts above for the
-  // same class of bug). Building a local Date and converting to ISO fixes the instant.
-  const dayStart = new Date(`${start}T00:00:00`).toISOString()
-  const dayEnd = new Date(`${end}T23:59:59.999`).toISOString()
+  const { startIso: dayStart, endIso: dayEnd } = localDayBoundsIso(start, end)
   const build = (cols) => (from, to) => {
     let q = supabase
       .from('transactions')
@@ -6293,12 +6327,13 @@ export async function fetchGrossMarginReport({ start, end, branchId }) {
  * wrong" into "the count went wrong here, by this person, on this date".
  */
 export async function fetchStockMovementReport({ start, end, branchId, movementTypes = null }) {
+  const { startIso: reportStartIso, endIso: reportEndIso } = localDayBoundsIso(start, end)
   const build = (from, to) => {
     let q = supabase
       .from('stock_movements')
       .select('*, products(name, sku, categories(name)), staff(full_name), branches(name)')
-      .gte('created_at', `${start}T00:00:00`)
-      .lte('created_at', `${end}T23:59:59`)
+      .gte('created_at', reportStartIso)
+      .lte('created_at', reportEndIso)
       // `id` tiebreaker: a bulk import writes every row with the same now(), so ordering
       // on created_at alone leaves ties unordered and a row on a page boundary can be
       // duplicated or dropped. A ledger that loses a movement is not a ledger.
@@ -6329,6 +6364,81 @@ export async function fetchStockMovementReport({ start, end, branchId, movementT
     detail: row.detail || '',
     staff: row.staff?.full_name || '—',
   }))
+}
+
+/**
+ * Peso value of shrinkage (waste) movements in a date range — quantity_out on each
+ * `shrinkage` movement times the product's CURRENT selling price. `unit_cost` would be the
+ * textbook basis, but it's an optional field most branches never fill in (a product with no
+ * cost recorded would silently value its own waste at ₱0), so `price` — always populated,
+ * since a product can't be sold without one — is used instead (same caveat as
+ * fetchGrossMarginReport re: no per-line price column, so a price change restates older
+ * rows). Omit `branchId` for network-wide (manager RLS: is_manager()).
+ */
+export async function fetchShrinkageValue({ start, end, branchId } = {}) {
+  const { startIso: shrinkStartIso, endIso: shrinkEndIso } = localDayBoundsIso(start, end)
+  const build = (from, to) => {
+    let q = supabase
+      .from('stock_movements')
+      .select('quantity_out, products(price)')
+      .eq('movement_type', 'shrinkage')
+      .gte('created_at', shrinkStartIso)
+      .lte('created_at', shrinkEndIso)
+      .range(from, to)
+    if (branchId) q = q.eq('branch_id', branchId)
+    return q
+  }
+  const { data, error } = await fetchAllRows(build)
+  if (error) throw error
+  return (data || []).reduce(
+    (sum, row) => sum + Number(row.quantity_out || 0) * Number(row.products?.price || 0),
+    0,
+  )
+}
+
+/**
+ * Line-level shrinkage/waste report — every `shrinkage` stock movement in range with the
+ * peso value lost, priced at the product's CURRENT selling price (same basis as
+ * fetchShrinkageValue, and the same caveat: unit_cost is optional and unset on every
+ * product today, price is guaranteed since a product can't be sold without one — a price
+ * change restates older rows). Line-level counterpart to fetchShrinkageValue's
+ * network-wide total, sharing the same query shape so the two can never disagree about
+ * what a period's loss adds up to.
+ */
+export async function fetchShrinkageReport({ start, end, branchId } = {}) {
+  const { startIso: shrinkStartIso, endIso: shrinkEndIso } = localDayBoundsIso(start, end)
+  const build = (from, to) => {
+    let q = supabase
+      .from('stock_movements')
+      .select(
+        'created_at, quantity_out, quantity_on_hand_after, products(name, sku, price, categories(name)), staff(full_name), branches(name)',
+      )
+      .eq('movement_type', 'shrinkage')
+      .gte('created_at', shrinkStartIso)
+      .lte('created_at', shrinkEndIso)
+      .order('created_at', { ascending: false })
+      .range(from, to)
+    if (branchId) q = q.eq('branch_id', branchId)
+    return q
+  }
+  const { data, error } = await fetchAllRows(build)
+  if (error) throw error
+  return (data || []).map((row) => {
+    const qty = Number(row.quantity_out || 0)
+    const price = Number(row.products?.price || 0)
+    return {
+      when: row.created_at,
+      branch: row.branches?.name || '—',
+      product: row.products?.name || '—',
+      sku: row.products?.sku || '',
+      category: row.products?.categories?.name || '—',
+      qty_lost: qty,
+      unit_price: price,
+      loss_amount: Number((qty * price).toFixed(2)),
+      balance_after: Number(row.quantity_on_hand_after || 0),
+      staff: row.staff?.full_name || '—',
+    }
+  })
 }
 
 /**
@@ -6371,6 +6481,7 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
   if (!supabase) throw new Error('Supabase not connected')
   const start = date
   const end = endDate || date
+  const { startIso: reportStartIso, endIso: reportEndIso } = localDayBoundsIso(start, end)
 
   let branch = null
   if (branchId) {
@@ -6401,8 +6512,8 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
       .select(
         'id, or_number, status, total_amount, refunded_amount, amount_tendered, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, order_type, void_reason',
       )
-      .gte('created_at', `${start}T00:00:00`)
-      .lte('created_at', `${end}T23:59:59`)
+      .gte('created_at', reportStartIso)
+      .lte('created_at', reportEndIso)
       .order('created_at', { ascending: true })
       .range(from, to)
     if (branchId) q = q.eq('branch_id', branchId)
@@ -6421,8 +6532,8 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
       let q = supabase
         .from('transactions')
         .select('id, or_number, status, total_amount, created_at, staff_id, branch_id, void_reason')
-        .gte('created_at', `${start}T00:00:00`)
-        .lte('created_at', `${end}T23:59:59`)
+        .gte('created_at', reportStartIso)
+        .lte('created_at', reportEndIso)
         .order('created_at', { ascending: true })
         .range(from, to)
       if (branchId) q = q.eq('branch_id', branchId)
@@ -6493,7 +6604,7 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
   try {
     const { data, error } = await supabase.rpc('sum_completed_sales_before', {
       p_branch_id: branchId || null,
-      p_before: `${start}T00:00:00`,
+      p_before: reportStartIso,
     })
     if (error) throw error
     oldGrandTotal = Number(data || 0)
@@ -6504,7 +6615,7 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
       .from('transactions')
       .select('total_amount, refunded_amount')
       .eq('status', 'completed')
-      .lt('created_at', `${start}T00:00:00`)
+      .lt('created_at', reportStartIso)
     if (branchId) grandQuery = grandQuery.eq('branch_id', branchId)
     const { data: prior, error: priorErr } = await grandQuery
     if (!priorErr && prior) {
@@ -6517,7 +6628,7 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
         .from('transactions')
         .select('total_amount')
         .eq('status', 'completed')
-        .lt('created_at', `${start}T00:00:00`)
+        .lt('created_at', reportStartIso)
       if (branchId) q2 = q2.eq('branch_id', branchId)
       const { data: prior2 } = await q2
       oldGrandTotal = (prior2 || []).reduce((s, r) => s + Number(r.total_amount || 0), 0)
@@ -6542,12 +6653,13 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
 export async function fetchFiscalBackup({ start, end, branchId }) {
   // A fiscal backup must never silently drop rows past PostgREST's 1000-row page cap —
   // see fetchAllRows's doc comment.
+  const { startIso: backupStartIso, endIso: backupEndIso } = localDayBoundsIso(start, end)
   const buildFiscalTxnQuery = (from, to) => {
     let q = supabase
       .from('transactions')
       .select('*, transaction_items(*, products(id, product_no, name, sku))')
-      .gte('created_at', `${start}T00:00:00`)
-      .lte('created_at', `${end}T23:59:59`)
+      .gte('created_at', backupStartIso)
+      .lte('created_at', backupEndIso)
       .order('created_at', { ascending: true })
       .range(from, to)
     if (branchId) q = q.eq('branch_id', branchId)
@@ -7615,14 +7727,15 @@ async function assertPromoRuleMutable(promoRuleId) {
 /** Sum completed branch sales (net of refunds) for a calendar date range (YYYY-MM-DD). */
 export async function fetchBranchSalesTotal({ branchId, from = null, to = null }) {
   if (!branchId) return 0
+  const { startIso: totalStartIso, endIso: totalEndIso } = localDayBoundsIso(from, to)
   const build = (fromIdx, toIdx) => {
     let q = supabase
       .from('transactions')
       .select('total_amount, refunded_amount')
       .eq('branch_id', branchId)
       .eq('status', 'completed')
-    if (from) q = q.gte('created_at', `${from}T00:00:00`)
-    if (to) q = q.lte('created_at', `${to}T23:59:59.999`)
+    if (totalStartIso) q = q.gte('created_at', totalStartIso)
+    if (totalEndIso) q = q.lte('created_at', totalEndIso)
     return q.order('created_at', { ascending: true }).range(fromIdx, toIdx)
   }
   const { data, error } = await fetchAllRows(build)
@@ -7636,14 +7749,15 @@ export async function fetchBranchSalesTotal({ branchId, from = null, to = null }
 
 /** Network-wide sales total across branches (optional branch filter + date range). */
 export async function fetchNetworkSalesTotal({ branchIds = null, from = null, to = null } = {}) {
+  const { startIso: totalStartIso, endIso: totalEndIso } = localDayBoundsIso(from, to)
   const build = (fromIdx, toIdx) => {
     let q = supabase
       .from('transactions')
       .select('total_amount, refunded_amount, branch_id')
       .eq('status', 'completed')
     if (branchIds?.length) q = q.in('branch_id', branchIds)
-    if (from) q = q.gte('created_at', `${from}T00:00:00`)
-    if (to) q = q.lte('created_at', `${to}T23:59:59.999`)
+    if (totalStartIso) q = q.gte('created_at', totalStartIso)
+    if (totalEndIso) q = q.lte('created_at', totalEndIso)
     return q.order('created_at', { ascending: true }).range(fromIdx, toIdx)
   }
   const { data, error } = await fetchAllRows(build)

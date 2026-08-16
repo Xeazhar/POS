@@ -3,8 +3,8 @@ import { money } from '../../utils/format'
 import { chartPointY, computeChartYScale, formatChartAxisPeso } from '../../utils/chartScale'
 import { TableCard } from '../ui'
 
-/** Plot height used on Branch / Overview / supervisor dashboards (wide card, readable labels). */
-export const REVENUE_CHART_PLOT_HEIGHT = 420
+/** Plot height used on Branch / Overview / supervisor dashboards — 2/3 of the original 420px. */
+export const REVENUE_CHART_PLOT_HEIGHT = 280
 
 /**
  * Render a responsive revenue chart with interactive point details.

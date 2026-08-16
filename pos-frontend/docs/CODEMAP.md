@@ -737,14 +737,14 @@ cashier when more than one worked the drawer that day, only to whoever counted a
 Start shift  → auto-starts at startingCash 0, no prompt → useShiftStore.startShift
                → local Dexie `shifts` row (clientId) + enqueue OPEN_SHIFT
                → open_staff_shift() RPC → staff_shifts row (serverId)
-               (a stale open shift left by a previous cashier on this drawer is
-                auto-closed here, no count, so the new shift is never blocked)
+               (a stale open shift left by a previous cashier is auto-closed
+                here, no count, so the new shift is never blocked)
                EXCEPT: right after a manager reopens a closed day — see
                `needsFreshCount` below, the one case that still asks for a count —
-               OR when this cashier ended their OWN last shift on this same drawer
-               (`restartPrompt`, ShiftGate.jsx) — then a "Start your shift again?"
-               Yes/No replaces the silent auto-start. A genuinely first-ever shift
-               on this drawer still starts silently.
+               OR when this cashier ended their OWN last shift (`restartPrompt`,
+               ShiftGate.jsx) — then a "Start your shift again?" Yes/No replaces
+               the silent auto-start. A genuinely first-ever shift still starts
+               silently.
                Add real cash any time via POS → Open Drawer → Opening float
                (only offered while startingCash is still 0).
 
@@ -764,15 +764,16 @@ Day end      → SupervisorDayEnd "Close day" → counts the drawer once for the
                whole day → submitDay() → submit_day_end() → auto-closes for
                supervisor+ (see "Day end & cash" below)
 
-Sign out     → shift stays open. Signing back in on the same drawer resumes it and
-               does NOT ask for the change fund again.
+Sign out     → shift stays open. Signing back in — on ANY terminal — resumes it
+               and does NOT ask for the change fund again.
 ```
 
 **The resume rule.** `useShiftStore.resolve()` asks: is there an open shift for this
-`staff_id` + `drawer_id`? Yes → resume. No → count in. It is answered from IndexedDB first
-so it works with no network — asking the server would make "cannot reach the server" look
-like "no open shift", and the safe-looking default (ask for the float again) is the wrong
-one: it opens a second shift on a drawer that was already counted.
+`staff_id` at this branch? Yes → resume, on whichever terminal they signed in on. No →
+count in. It is answered from IndexedDB first so it works with no network — asking the
+server would make "cannot reach the server" look like "no open shift", and the
+safe-looking default (ask for the float again) is the wrong one: it opens a second shift
+on a drawer that was already counted.
 
 **A pending local close beats a stale remote "still open."** `fetchOpenShift` filters on the
 SERVER's `clock_out`, so a `CLOSE_SHIFT` that has not pushed yet (still in the outbox) makes
@@ -788,13 +789,14 @@ other resumed-after-close cashier. Same root cause as the `resolve()`-after-`end
 below; different call site (a fresh `resolve()`, not a redundant one), so both guards are
 needed.
 
-**Drawer identity** is `src/utils/drawer.js`: a localStorage id that survives sign-out,
-because the drawer does not move when the cashier does. It defaults to the shared `'main'`
-rather than a random per-device id — most shops have one cash box and several devices
-pointed at it, and those must share a drawer identity or two people could count into the
-same till unnoticed. A till with its own cash box gets its own id in Settings → Devices.
-Same cashier on a different drawer is a different pile of cash, so that is gate `moved`
-(supervisor override), never a resume.
+**Drawer identity** is `src/utils/drawer.js`: fixed constants (`'main'` / "Main drawer"),
+the same on every terminal. Cash is treated as moving with the cashier, not tied to a
+physical till, so there is no per-device drawer id to configure and no "different till"
+block — `useShiftStore.resolve()` resumes a cashier's open shift on whichever terminal
+they sign in on (see the resume rule above). There used to be a per-terminal id
+(Settings → Devices) and a `moved` gate that blocked switching terminals until a
+supervisor overrode it; removed because this deployment's cash physically travels with
+the cashier, so the block just got in the way of ordinary till switches.
 
 **A supervisor may hold a drawer too — chosen per shift, not fixed by role, and never on
 click alone.** `Shell.jsx`'s `holdsDrawer = user?.role === 'cashier'` is only the DEFAULT
@@ -804,10 +806,9 @@ screen — pure selection (`setWantsDrawer`), it does not fire the shift; a supe
 with the same "Start shift" button everyone uses (`canChooseDrawer` is excluded from
 `autoStarting` specifically so this never silently auto-fires the moment an option is
 clicked, unlike a real cashier's shift). On that click, if "Working the register" is selected,
-`onStartClick` first re-resolves (`resolve(user, { holdsDrawer: true })`, same call the
-`moved` gate's "Check again" button already makes) so an existing open drawer shift on
-another till is still caught — a supervisor's first `resolve()` ran with `holdsDrawer: false`
-and skipped that check entirely, unlike a cashier who gets it for free at sign-in. Only a
+`onStartClick` first re-resolves (`resolve(user, { holdsDrawer: true })`) for a fresh
+handoff/restart-prompt read — a supervisor's first `resolve()` ran with `holdsDrawer: false`
+and skipped that lookup entirely, unlike a cashier who gets it for free at sign-in. Only a
 clean `start` result continues to `doStart()`, at ₱0 same as a cashier's shift (see
 `needsFreshCount` below for the one case that still asks for a typed count — gated on
 `needsFreshCount` itself, not bare `holdsDrawer`, so an ordinary "working the register" day
@@ -837,20 +838,15 @@ moment it actually does either. `useShiftStore.ensureMasterShift(user)` is the l
 (no-op for every other role, which already has a shift by the time either caller below can
 run): `posStore.addTransaction` awaits it before reading the active shift (first sale), and
 POS.jsx's Open Drawer button awaits it before the modal opens (surfacing any failure via
-`window.alert(formatSupportError(...))` rather than opening the modal regardless). `resolve()`'s
-`moved` gate (master already has an open shift on a different drawer) is not auto-resolved
-here either — `ensureMasterShift` throws `SHIFT06` instead of silently opening a second
-concurrent shift, same reasoning as `ShiftGate`'s `moved` screen below, just without a UI of
-its own since master never renders `ShiftGate`. `POS.jsx`'s `canOpenDrawer` is the one other
-spot that special-cases master — true whenever the till isn't closed, regardless of `shift`
-(master may not have one yet), where every other role still requires `Boolean(shift) &&
-shift.holdsDrawer !== false`.
+`window.alert(formatSupportError(...))` rather than opening the modal regardless). `POS.jsx`'s
+`canOpenDrawer` is the one other spot that special-cases master — true whenever the till isn't
+closed, regardless of `shift` (master may not have one yet), where every other role still
+requires `Boolean(shift) && shift.holdsDrawer !== false`.
 
 | Gate | Meaning | Remedy |
 |------|---------|--------|
 | `ready` | shift open, sell | — |
 | `start` | no shift here | auto-starts at startingCash 0, no prompt — unless today's business day is already closed (see below) or was reopened after a close (`needsFreshCount`, see below), which still asks for a count |
-| `moved` | this cashier is open on another till | cash out there, or supervisor override |
 | `ended` | this session just cashed out | Request day end (still reachable on `/day-end`), then sign out |
 
 There is no `busy` gate: a stale open shift under a previous cashier on the same drawer
@@ -927,7 +923,7 @@ still-open session. `Shell`'s `shiftBlocking` covers every gate except `ready`/`
 **except** `ended` while already on `/day-end` — that carve-out is what lets a cashier who
 just ended their shift still tap **Request day end** on that same screen (`CashierEndShift`
 already renders fine with no active shift) before signing out; navigating anywhere else
-while `ended` locks the app the same way `moved` does. The cash-out modal's `onDone`
+while `ended` locks the app the same way `start` does. The cash-out modal's `onDone`
 (`DayEnd.jsx`) must NOT call `resolve()` afterward — that re-asks the server "is a shift
 open?", gets no, and overwrites `ended` back to `start`, undoing this.
 
@@ -1227,25 +1223,28 @@ refunds, same as `cashSales`, informational — never enter `expectedCash`) alon
 sales under "All sales (POS)", so a supervisor can see the tender split without leaving
 this screen.
 
-**Top products/categories and DayEnd's sold-item breakdown read `transaction_items` via
-`fetchSoldLineItems` (`api.js`), never `stock_movements` or a transaction's `itemsList`.**
-`itemsList` is never populated on a transaction loaded through `bootstrapBranchData` —
-`BOOTSTRAP_TX_COLS` only selects `transaction_items(id)`, a count, not product/qty/price — so
-any code trying to read it for historical data silently gets nothing. `stock_movements` looks
-like a substitute but isn't: its rows are deliberately never deleted when a transaction is
-(see `debug_reset_all_transactions.sql`'s header), so an orphaned `'sale'`-type movement from
-a deleted test sale keeps counting as "sold today" forever, and it carries no historical price
+**Top products/categories (network-wide, on Manager Overview) and DayEnd's sold-item
+breakdown read `transaction_items` via `fetchSoldLineItems` (`api.js`), never
+`stock_movements` or a transaction's `itemsList`.** `itemsList` is never populated on a
+transaction loaded through `bootstrapBranchData` — `BOOTSTRAP_TX_COLS` only selects
+`transaction_items(id)`, a count, not product/qty/price — so any code trying to read it for
+historical data silently gets nothing. `stock_movements` looks like a substitute but isn't:
+its rows are deliberately never deleted when a transaction is (see
+`debug_reset_all_transactions.sql`'s header), so an orphaned `'sale'`-type movement from a
+deleted test sale keeps counting as "sold today" forever, and it carries no historical price
 at all — only today's *live* `products.price` was ever available to multiply by, so a later
 price edit retroactively rewrote history. `fetchSoldLineItems` fixes both: it joins
-`transaction_items` to `transactions` (mirroring the already-correct network-wide
-`fetchNetworkDashboard` query) and returns each line's `line_total` — what was actually
-charged. `Dashboard.jsx` fetches it client-bucketed by calendar day (`inPeriod`);
-`DayEnd.jsx`/`buildDayEndReport` fetch+narrow it by **business** day
+`transaction_items` to `transactions` and returns each line's `line_total` — what was actually
+charged. `fetchNetworkDashboard` (Manager Overview's Top products/Top categories) uses the
+same join network-wide; `DayEnd.jsx`/`buildDayEndReport` fetch+narrow it by **business** day
 (`rowBusinessDate`, same buffer-then-narrow shape as `fetchBranchCashImpact`) before passing
 it to `buildDayEndReport` as `soldItemRows`. Because this is a network fetch, `DayEnd.jsx`
 shows a "reconnect to see today's sales breakdown" notice in place of the report when it's
 offline/unavailable (`soldItemsUnavailable`) — the actual cash count and Submit/Close Day
 action never depended on this data and are unaffected, still offline-queueable as before.
+`Dashboard.jsx` (supervisor home) and `BranchDashboard.jsx` (manager per-branch) do not fetch
+sold-line data at all — neither shows a Top products/categories/payment-methods breakdown or
+a Revenue-over-time chart; that level of drill-down lives on Manager Overview and Reports.
 
 **`transactions.shift_id` was never selected from the server at all.** `BOOTSTRAP_TX_COLS`
 (`api.js`) — the column list behind `bootstrapBranchData()`, i.e. every sync pull — omitted
@@ -1583,10 +1582,11 @@ disagree between screens:
   by however much had been refunded, while BranchDashboard's figure for the same branch/day was
   correct. `grossSales` (pre-discount total) is unaffected and still distinct from `revenue`/
   `netSales`, which are now identical by definition — kept as two keys only because existing
-  callers read both. **One canonical Revenue everywhere:** Revenue = Gross sales − Discounts −
-  Refunds, and every place that shows it — the headline KPI, the Sales performance lead tile
-  (labelled "Revenue", not "Net sales" — a separate "Net sales" figure would just repeat it),
-  the Revenue over time chart, and period-over-period comparisons — reads the same figure.
+  callers read both. **One canonical Net sales everywhere:** Net sales = Gross sales − Discounts −
+  Refunds, and every place that shows it — the headline KPI (labelled "Net sales", matching
+  supervisor `Dashboard.jsx`'s KPI tile), the Revenue over time chart, and period-over-period
+  comparisons — reads the same figure. The Sales performance lead tile does NOT repeat it —
+  see the "Sales performance" bullet below, its lead is Gross sales.
   `fetchNetworkDashboard`'s chart bucket sum now also subtracts `refunded_amount` per row
   (previously summed raw `total_amount`, disagreeing with the KPI card above it on the same
   page); `branchBars`/`paymentMix` are left on gross `total_amount` by choice — a refund isn't
@@ -1602,8 +1602,18 @@ disagree between screens:
   LIVE `revenue` value (derived from `data.transactions`, kept fresh by `reloadOps`) — never
   `comparison.current`, which is a load-time snapshot that would go stale the moment a void or
   refund changes today's total without a matching refetch. Only the Revenue/Sales-today card has
-  this; the other top cards (Orders, Refunded, Low stock, Reseko loss) are either already covered
-  by their own hint or are point-in-time counts a period-over-period % doesn't fit well.
+  this; the other top cards (Orders, Low stock) are point-in-time counts a period-over-period %
+  doesn't fit well. `BranchDashboard.jsx`'s top KPI row no longer carries a "Refunded today" or
+  "Reseko loss" (shrinkage) card — refunds are already visible via Sales performance's Refunds
+  tile and the Audit widget beside it.
+- **Reseko loss (shrinkage value), Manager Overview only.** Top KPI row is Net sales, Orders,
+  Reseko loss — `api.fetchShrinkageValue({ start, end, branchId })` sums every `shrinkage`
+  `stock_movements` row's `quantity_out × products.unit_cost` (same current-cost caveat as
+  `fetchGrossMarginReport` — no per-line cost column) over the selected period, no `branchId`
+  filter (network-wide, `is_manager()` RLS). Whole-period only, like Payment & cash impact — no
+  per-bucket fetch exists, so it does not participate in chart-point cross-filtering. Not
+  currently surfaced on `BranchDashboard.jsx`/`Dashboard.jsx` (belongs on Inventory/Reports too,
+  not built there yet).
 - Login/`loadBranch` paints POS from `bootstrapPosCatalog` first, then completes sync via
   `bootstrapBranchData` (catalog + activity in parallel for IndexedDB).
 - **Bootstrap tiers:** `bootstrapPosCatalog` (products + branch fiscal header only) →
@@ -1621,13 +1631,14 @@ disagree between screens:
   still sweep. Display truth is `promoHasEnded` / `promoEffectiveStatus` (`status` only —
   `promo_events.is_active` was dropped in `migrate_schema_cleanup_v1.sql`).
 
-- **Sales performance** (Revenue, Gross sales, Discounts, Refunds, Voided sales) — the
-  same reduction `utils/terminalReports.js` uses for the X/Z reading: Gross = Σ(total +
-  discount) over Paid, Revenue = Σ(total − refunded) over Paid (the canonical figure, see
-  above), Discounts = Σ discount over Paid, Refunds = Σ refunded over Paid (partial
-  refunds only), Voided = Σ total over Voided. Computed client-side from already-loaded
-  transactions on BranchDashboard/Dashboard; on Overview, via `fetchManagerOverviewMetrics`
-  (or legacy `branchSummary`).
+- **Sales performance** (Gross sales, Discounts, Refunds, Voided sales — same tile shape on
+  all three pages, Gross sales leading since Net sales already leads the KPI row above it) —
+  the same reduction `utils/terminalReports.js` uses for the X/Z reading: Gross = Σ(total +
+  discount) over Paid, Net sales = Σ(total − refunded) over Paid (the canonical figure, see
+  above — shown on the KPI tile, not repeated here), Discounts = Σ discount over Paid,
+  Refunds = Σ refunded over Paid (partial refunds only), Voided = Σ total over Voided.
+  Computed client-side from already-loaded transactions on BranchDashboard/Dashboard; on
+  Overview, via `fetchManagerOverviewMetrics` (or legacy `branchSummary`).
 - **Payment & cash impact** (Cash sales, Card sales, E-wallet sales, Cash in/out, Expected
   cash) — always TODAY's business day regardless of any period toggle (a drawer is
   counted once a day; see "Day end & cash" above). `api.fetchBranchCashImpact(branchId,
@@ -1648,33 +1659,51 @@ disagree between screens:
   `canAccessModule(user, 'manager_reports')` is true, since a default-permission
   supervisor does not have that module.
 
-**Layout, all three pages:** the revenue chart (`RevenueChart` with `fill`) sits on the left in
-an `items-stretch` grid so its height matches the Sales / Payment / Audit stack beside it
-(wide ~1.6fr column kept); Overview, BranchDashboard, and supervisor Dashboard share that layout.
+**Layout differs by page.** `manager/Overview.jsx` stacks three full-width rows: (1) the dark
+KPI tiles — Net sales, Orders, Reseko loss; (2) Payment & cash impact + Sales performance side by
+side as a plain, equal-width 2-column `StatTiles` row (both plain-card style, `variant`
+omitted — same treatment as row 3); (3) `RevenueChart` (`fill`) + `AuditSummary` (`fill`) side
+by side in an `items-stretch` grid so both cards match height — `AuditSummary`'s `fill` prop
+(`h-full flex flex-col`, its empty-state message and row list both `flex-1`) lets the card
+stretch and vertically center "No voids or refunds in this range." when there's too little
+audit data to naturally reach the chart's height, rather than leaving a short card beside a
+tall one. `manager/BranchDashboard.jsx` and supervisor `Dashboard.jsx` have no revenue chart, no
+Top products/Top categories/Payment methods breakdown, and no chart-click cross-filtering —
+Payment & cash impact and Sales performance sit side by side as the same plain 2-column
+`StatTiles` row, with Audit (not `fill`) as its own full-width card. That drill-down level
+(chart, product/category/tender mix) lives on Manager Overview and Reports only.
 `manager/Overview.jsx`'s old "Revenue by branch" panel was removed outright (state, fetch
-fallback and all) rather than just hidden, since it restated the hero KPI once a network
-has only a couple of branches.
+fallback and all) rather than just hidden, since it restated the hero KPI once a network has
+only a couple of branches.
 
 `components/dashboard/StatTiles.jsx` is the shared report-line renderer behind the Sales
 performance and Payment & cash impact rows on all three pages — a real 2-row CSS grid (label row,
 value row) rather than a flexbox of independently-sized boxes, so one item having an extra
 hint line can't drag its neighbors' label/value out of alignment. The first entry in
 `items` is the lead figure (rendered larger) — pass whichever number is most actionable
-first (Revenue, not Gross; Expected cash, not Cash sales).
+first (Revenue, not Gross; Expected cash, not Cash sales). `variant="today"` (still used by
+`BranchDashboard.jsx`'s Payment & cash impact card) switches the card to the dark tile style
+*and* renders a "Today only" badge top-right, with `subtitle` underneath on its own line
+rather than inline with the title. `Dashboard.jsx` and `Overview.jsx` instead pass the new
+`todayBadge` boolean prop on their (white) Payment & cash impact card — same badge, same
+top-right position, but the card keeps the plain white style and inline `subtitle` so it
+still matches Sales performance beside it; `showTodayBadge = variant === 'today' || todayBadge`
+in `StatTiles.jsx` drives the badge independently of which style is active.
 
 **Revenue over time is interactive on Manager Overview (network-wide) — click a point to
 cross-filter.** `fetchNetworkDashboard` buckets Top products/Top categories/Payment
 methods/branch split by the same date bucket it already builds the chart from
 (`pointBreakdowns`, keyed by each point's `bucketKey`) in the same query pass — no second
 round-trip. `RevenueChart` takes `selectedIndex`/`onSelectIndex`; clicking a point (or the
-same point again to clear) sets `Overview.jsx`'s `selectedPointIndex`, which swaps Top
-products/Top categories/Payment methods to that bucket's breakdown and filters the Audit
-list client-side (`eventMatchesBucket`, matching the same bucket convention). The headline
-Sales performance / Payment & cash impact tiles stay whole-period — cash impact isn't
-bucketed server-side, so drilling into those would need a second fetch per click. Not
-implemented on BranchDashboard/Dashboard (single-branch view, one card row, less to gain
-from cross-filtering) — `RevenueChart`'s `selectedIndex`/`onSelectIndex` are optional and
-default to plain hover-only behavior when omitted, so those pages are unaffected.
+same point again to clear) sets `Overview.jsx`'s `selectedPointIndex`, which swaps the Net
+sales/Orders KPI tiles, Sales performance, Top products/Top categories/Payment methods to
+that bucket's own figures/breakdown and filters the Audit list client-side
+(`eventMatchesBucket`, matching the same bucket convention). Payment & cash impact and Reseko
+loss stay whole-period/today regardless of selection — neither has a per-bucket fetch, so
+drilling into either would need a second round-trip per click.
+BranchDashboard/Dashboard don't have a chart to click at all (see "Layout differs by page"
+above) — `RevenueChart`'s `selectedIndex`/`onSelectIndex` remain optional for any future
+single-branch use, but neither page currently renders the component.
 
 **Tooltips removed app-wide.** The shared `[data-tooltip]` CSS hover box + native `title`
 fallback (`index.css`, `PrimaryButton`/`SecondaryButton`/`IconButton`/`ToggleSwitch`/
@@ -1702,9 +1731,11 @@ Manager: ManagerAnnouncements.jsx (/manager/announcements, sidebar label "Notice
 Staff:   AnnouncementsCard (components/dashboard/AnnouncementsCard.jsx) — one shared,
          compact card (collapses to a single row when empty; caps at `limit`, default 3),
          used on both CashierDashboard.jsx (module cashier_dashboard) and Dashboard.jsx
-         (supervisor branch dashboard) as the third column of the Sold/Need-to-restock
-         row via DayEndReportPanels' `thirdPanel` prop. Online-only fetch, re-runs on
-         reconnect — see useSyncStore().online
+         (supervisor branch dashboard), where it sits beside DayEndReportPanels' Need-
+         to-restock card (rendered with `showSold={false}`, always visible even when
+         there's no previous-day report to restock from — DayEndReportPanels' `thirdPanel`
+         prop is only used elsewhere now). Online-only fetch, re-runs on reconnect — see
+         useSyncStore().online
   → api.fetchAnnouncements()   -- RLS: managers see every row; everyone else sees only
                                    is_active, unexpired, and branch_id IS NULL (network-
                                    wide) OR = current_staff_branch()

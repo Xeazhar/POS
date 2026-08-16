@@ -17,7 +17,7 @@ computation, OR numbering).
 
 ---
 
-## Unreleased
+## 0.23.0 — 2026-08-16
 
 ### Added: single active session per staff account
 
@@ -28,6 +28,45 @@ POS action once detected, via a periodic heartbeat, an instant realtime notice, 
 device that was offline at the moment of eviction) a pre-flight check the next time it
 tries to sync its offline queue. No data loss in the offline case: queued sales stay
 queued until the cashier signs back in. See `supabase/migrate_single_active_session_enforcement.sql`.
+
+### Removed: per-terminal cash drawer identity ("Different Till" block)
+
+Cash is carried by the cashier in this deployment, not tied to a fixed physical till, so
+the old "your shift is open on another till" block (`ShiftGate.jsx` gate `moved`) just got
+in the way of ordinary terminal switches. `src/utils/drawer.js` now reports a fixed shared
+identity on every terminal; a cashier's open shift resumes on whichever device they sign
+into. Removed the Settings → Devices "This terminal's drawer" card, the supervisor
+override escape hatch, and error code `SHIFT06` along with it.
+
+### Fixed: refund/discount total in the Transactions list
+
+The bold total on each row was always the pre-refund `total_amount`, with "Refunded ₱X"
+only noted underneath — read as if the refund was still to come off. Now shows the actual
+net-of-refund amount (`netTotal`) as the primary figure, with the original struck through
+above it.
+
+### Fixed: "Need to restock" dashboard card going blank
+
+It was a frozen snapshot from the last CLOSED day-end, only listing an item if it both sold
+*and* was low that same day — so it stayed empty for any branch with no prior close yet, or
+where nothing low happened to sell the day before (this is what was hiding it on Bambang).
+Added `liveRestockReport()` (`utils/dayEndReport.js`) as a fallback computed straight from
+current stock, used by both the supervisor Dashboard and the manager's Branch dashboard, so
+the card is never silently empty.
+
+### Fixed: nav bar showing "Branch" instead of the real branch name
+
+Regression from the single-active-session work above: login read the staff's branch-scoped
+fields (`branches` join, RLS-gated on `current_staff_branch()`) *before*
+`claim_staff_session()` had stamped the new session as active, so that read silently came
+back empty and fell back to the literal placeholder "Branch" — along with `dayOpenHour`,
+`deviceSettings`, and `vatRate` defaulting quietly too. `posStore.login()` now refetches
+session staff right after the claim lands.
+
+### Added: click an announcement to read the full message
+
+Long announcement bodies were truncated to one line with no way to see the rest.
+`AnnouncementsCard.jsx` rows are now clickable and open a modal with the full text.
 
 ## 0.22.0 — 2026-08-16
 

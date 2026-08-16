@@ -17,11 +17,14 @@ import {
   branchSummary,
   fetchBranches,
   fetchManagerOverviewMetrics,
+  fetchRecentDayEndStatuses,
   hasSupabase,
   reorderBranches,
   saveBranch,
 } from '../../lib/api'
-import { money } from '../../utils/format'
+import { businessDate, money } from '../../utils/format'
+
+const DAY_END_CUTOFF_HOUR = 21
 import { RESTAURANT_FEATURES_ENABLED, normalizeBranchType } from '../../utils/features'
 import { readBranchesCache, writeBranchesCache } from '../../offline'
 
@@ -32,7 +35,7 @@ const empty = {
   branch_type: 'retail',
 }
 
-function BranchCardBody({ branch, summary, summariesLoading }) {
+function BranchCardBody({ branch, summary, summariesLoading, dayNotEnded }) {
   return (
     <>
       <div className="mb-3 flex items-start justify-between gap-2">
@@ -46,9 +49,16 @@ function BranchCardBody({ branch, summary, summariesLoading }) {
             </p>
           )}
         </div>
-        <StatusBadge tone={branch.is_active ? 'success' : 'danger'} className="rounded-full">
-          {branch.is_active ? 'Active' : 'Inactive'}
-        </StatusBadge>
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <StatusBadge tone={branch.is_active ? 'success' : 'danger'} className="rounded-full">
+            {branch.is_active ? 'Active' : 'Inactive'}
+          </StatusBadge>
+          {dayNotEnded && (
+            <StatusBadge tone="warn" className="rounded-full">
+              Day not ended
+            </StatusBadge>
+          )}
+        </div>
       </div>
       <div className="mb-4 grid grid-cols-3 gap-2 text-center">
         <div>
@@ -77,6 +87,7 @@ function BranchCardBody({ branch, summary, summariesLoading }) {
 function ManagerBranches() {
   const [branches, setBranches] = useState([])
   const [summaries, setSummaries] = useState({})
+  const [dayEndRows, setDayEndRows] = useState([])
   const [summariesLoading, setSummariesLoading] = useState(false)
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
@@ -134,6 +145,16 @@ function ManagerBranches() {
     setLoading(false)
     await writeBranchesCache(rows).catch(() => {})
     await loadSummaries(rows)
+    fetchRecentDayEndStatuses().then(setDayEndRows).catch(() => {})
+  }
+
+  // Only worth flagging past the usual close time (9 PM) — earlier than that, a branch
+  // simply hasn't closed yet, not falling behind.
+  const dayNotEnded = (branch) => {
+    if (new Date().getHours() < DAY_END_CUTOFF_HOUR) return false
+    const today = businessDate(new Date(), branch.day_open_hour ?? 7)
+    const row = dayEndRows.find((r) => r.branch_id === branch.id && r.business_date === today)
+    return !row || row.status !== 'closed'
   }
 
   useEffect(() => {
@@ -269,11 +290,18 @@ function ManagerBranches() {
       {loading ? (
         <SkeletonCards count={3} />
       ) : (
-        <div
-          ref={gridRef}
-          className="grid grid-cols-3 gap-3.5 max-[1050px]:grid-cols-2 max-[700px]:grid-cols-1"
-        >
-          {branches.map((branch, index) => {
+        <div ref={gridRef}>
+        {[
+          { rows: branches.filter((b) => b.is_active !== false), label: null },
+          { rows: branches.filter((b) => b.is_active === false), label: 'Inactive branches' },
+        ].map(({ rows, label }) =>
+          rows.length === 0 ? null : (
+          <div key={label || 'active'}>
+            {label && <hr className="my-4 border-brand-softline" />}
+            {label && <p className="mb-2.5 text-[11px] font-bold tracking-wide text-brand-subtle uppercase">{label}</p>}
+            <div className="grid grid-cols-3 gap-3.5 max-[1050px]:grid-cols-2 max-[700px]:grid-cols-1">
+          {rows.map((branch) => {
+            const index = branches.indexOf(branch)
             const summary = summaries[branch.id] || { revenue: 0, orders: 0, lowStock: 0 }
             const isPlaceholder = dragIndex === index
             return (
@@ -294,6 +322,7 @@ function ManagerBranches() {
                   branch={branch}
                   summary={summary}
                   summariesLoading={summariesLoading}
+                  dayNotEnded={dayNotEnded(branch)}
                 />
                 {!isPlaceholder && (
                   <div className="flex justify-end gap-2" onPointerDown={(e) => e.stopPropagation()}>
@@ -311,6 +340,10 @@ function ManagerBranches() {
               </TableCard>
             )
           })}
+            </div>
+          </div>
+          ),
+        )}
         </div>
       )}
 

@@ -3,7 +3,7 @@ import { fetchAnnouncements, hasSupabase, markAnnouncementsSeen } from '../../li
 import { useSyncStore } from '../../stores/syncStore'
 import { ANNOUNCEMENT_EMOJI } from '../../utils/announcements'
 import { formatShiftWhen } from '../../utils/format'
-import { TableCard } from '../ui'
+import { Eyebrow, Modal, TableCard } from '../ui'
 
 /**
  * Compact staff-announcements feed — shared by CashierDashboard and the supervisor branch
@@ -17,6 +17,7 @@ export default function AnnouncementsCard({ limit = 3 }) {
   const [items, setItems] = useState([])
   const [seenAt, setSeenAt] = useState(undefined)
   const [error, setError] = useState(false)
+  const [opened, setOpened] = useState(null)
 
   useEffect(() => {
     if (!hasSupabase || !online) return undefined
@@ -55,7 +56,13 @@ export default function AnnouncementsCard({ limit = 3 }) {
           {items.map((row) => (
             <div
               key={row.id}
-              className="flex items-start gap-2 border-t border-brand-softline px-4 py-2 text-xs"
+              role="button"
+              tabIndex={0}
+              className="tap-row flex cursor-pointer items-start gap-2 border-t border-brand-softline px-4 py-2 text-xs"
+              onClick={() => setOpened(row)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') setOpened(row)
+              }}
             >
               <span className="mt-0.5 shrink-0 text-sm leading-none" aria-hidden>
                 {ANNOUNCEMENT_EMOJI[row.kind] || '📌'}
@@ -73,6 +80,17 @@ export default function AnnouncementsCard({ limit = 3 }) {
             </div>
           ))}
         </>
+      )}
+      {opened && (
+        <Modal onClose={() => setOpened(null)}>
+          <Eyebrow>ANNOUNCEMENT</Eyebrow>
+          <h2 className="mb-1 flex items-center gap-2 text-lg">
+            <span aria-hidden>{ANNOUNCEMENT_EMOJI[opened.kind] || '📌'}</span>
+            {opened.title}
+          </h2>
+          <p className="m-0 mb-3 text-[11px] text-brand-subtle">{formatShiftWhen(opened.createdAt)}</p>
+          <p className="m-0 text-sm whitespace-pre-wrap text-brand-ink">{opened.body}</p>
+        </Modal>
       )}
     </TableCard>
   )

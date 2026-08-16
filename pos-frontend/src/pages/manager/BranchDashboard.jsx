@@ -5,7 +5,6 @@ import TransactionDetailModal from '../../components/transactions/TransactionDet
 import DayEndClosingDetail from '../../components/dayend/DayEndClosingDetail'
 import { DayEndReportPanels } from '../../components/dayend/DayEndReportPanels'
 import AuditSummary from '../../components/dashboard/AuditSummary'
-import RevenueChart from '../../components/dashboard/RevenueChart'
 import StatTiles from '../../components/dashboard/StatTiles'
 import MovementHistoryPanel from '../../components/inventory/MovementHistoryPanel'
 import {
@@ -21,6 +20,7 @@ import {
   SecondaryButton,
   DeltaBadge,
   SectionHeading,
+  Skeleton,
   TableCard,
   ToggleSwitch,
   moneyClass,
@@ -42,6 +42,7 @@ import {
   fetchBranches,
   fetchPeriodComparison,
   fetchPettyCashTimeline,
+  branchSummary,
   fetchRefundRequests,
   fetchRefundSummary,
   fetchSaleEvents,
@@ -73,15 +74,9 @@ import {
   writeBranchesCache,
 } from '../../offline'
 import { withTimeout } from '../../utils/withTimeout'
-import { previousDayRestockReport } from '../../utils/dayEndReport'
+import { liveRestockReport, previousDayRestockReport } from '../../utils/dayEndReport'
 import { formatSupportError } from '../../utils/errors'
 import { businessDate, formatOpenHourLabel, money, qty, rowBusinessDate } from '../../utils/format'
-import {
-  buildRevenueChartBreakdowns,
-  buildRevenueChartPoints,
-  inRevenueChartPeriod,
-  revenueChartPeriodDays,
-} from '../../utils/revenueChartPoints'
 import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { discountSourceLabel, isPromoDiscountType } from '../../utils/promo'
 import { isUuid } from '../../utils/transactionDetail'
@@ -90,6 +85,15 @@ import { buildReceipt } from '../../utils/receipt'
 const PAGE_SIZE = 10
 /** How far back the branch Staff table reads the clock-in/out log. */
 const STAFF_LOG_DAYS = 30
+
+/** KPI/Sales performance period filter — same three windows as manager/Overview.jsx minus Year. */
+const PERIOD_TABS = [
+  { id: 'day', label: 'Today' },
+  { id: 'week', label: 'Week' },
+  { id: 'month', label: 'Month' },
+]
+const PERIOD_DAYS = { day: 1, week: 7, month: 30 }
+const COMPARISON_LABEL = { day: 'vs. yesterday', week: 'vs. previous week', month: 'vs. previous month' }
 
 function daysAgoKey(days) {
   const d = new Date()
@@ -201,8 +205,14 @@ function ManagerBranchDashboard() {
   const [cashImpact, setCashImpact] = useState(null)
   const [revenueComparison, setRevenueComparison] = useState(null)
   const [auditEvents, setAuditEvents] = useState([])
-  const [chartPeriod, setChartPeriod] = useState('Week')
-  const [selectedPointIndex, setSelectedPointIndex] = useState(null)
+  const [period, setPeriod] = useState('day')
+  const [periodSummary, setPeriodSummary] = useState(null)
+  const [periodLoading, setPeriodLoading] = useState(false)
+  // Payment & cash impact / Sales performance / Audit are all network-only — nothing for
+  // them ships in the offline local snapshot below. Without this flag they'd render their
+  // "no data" empty state for the split second between the fast local paint and the live
+  // fetch landing, then pop to real numbers — a visible flash on every branch switch.
+  const [opsLoading, setOpsLoading] = useState(true)
 
   useEffect(() => {
     let active = true
@@ -215,6 +225,14 @@ function ManagerBranchDashboard() {
     setDayEndPage(0)
     setSelectedProduct(null)
     setLoading(true)
+    setOpsLoading(true)
+    // Also drop any figures carried over from a previously-viewed branch — otherwise the
+    // fast local-paint phase below would briefly show the OLD branch's cash impact/audit
+    // numbers under the NEW branch's name.
+    setCashImpact(null)
+    setAuditEvents([])
+    setPeriodSummary(null)
+    setRevenueComparison(null)
     Promise.resolve()
       .then(async () => {
         if (!hasSupabase) {
@@ -223,6 +241,7 @@ function ManagerBranchDashboard() {
           setData({ products: [], transactions: [], movements: [], dayEnds: [], dayOpenHour: 7 })
           setTelemetry({ devices: [] })
           setLoading(false)
+          setOpsLoading(false)
           return
         }
         if (!isOnline()) {
@@ -251,6 +270,7 @@ function ManagerBranchDashboard() {
           setPendingCashMoves([])
           setPendingTillActions([])
           setLoading(false)
+          setOpsLoading(false)
           return
         }
         // Paint the last-known local snapshot immediately instead of leaving the page on a
@@ -293,7 +313,6 @@ function ManagerBranchDashboard() {
           refundRequests,
           cashMoves,
           tillActs,
-          revenueComparisonRow,
         ] = await Promise.all([
           fetchPettyCashTimeline(branchId, {
             startDate: todayForFetch,
@@ -316,7 +335,6 @@ function ManagerBranchDashboard() {
           fetchRefundRequests(branchId, { status: 'pending' }).catch(() => []),
           fetchPendingCashMovements({ branchId, manager: true }).catch(() => []),
           fetchPendingTillActionRequests({ branchId, manager: true }).catch(() => []),
-          fetchPeriodComparison('day', branchId).catch(() => null),
         ])
         if (active) {
           setData({
@@ -328,17 +346,18 @@ function ManagerBranchDashboard() {
           setTelemetry({ devices: tel.devices[branchId] || [] })
           setStaffShifts(shiftRows || [])
           setCashImpact(cashImpactRow)
-          setRevenueComparison(revenueComparisonRow)
           setAuditEvents(auditRows || [])
           setPendingCashMoves(cashMoves || [])
           setPendingTillActions(tillActs || [])
           setLoading(false)
+          setOpsLoading(false)
         }
       })
       .catch((err) => {
         if (active) {
           setError(err.message)
           setLoading(false)
+          setOpsLoading(false)
         }
       })
 
@@ -357,6 +376,30 @@ function ManagerBranchDashboard() {
       window.clearInterval(poll)
     }
   }, [branchId])
+
+  // Net sales / Orders / Sales performance for the selected period. 'day' is served
+  // instantly from the already-loaded local `data.transactions` (offline-safe, no extra
+  // round trip) — this effect only fires a network call for 'week'/'month', plus the
+  // vs.-previous-period comparison badge for whichever period is active.
+  useEffect(() => {
+    if (!hasSupabase || !branchId) return undefined
+    let active = true
+    setPeriodLoading(true)
+    Promise.all([
+      period === 'day'
+        ? Promise.resolve(null)
+        : branchSummary(branchId, { days: PERIOD_DAYS[period] || 7 }).catch(() => null),
+      fetchPeriodComparison(period, branchId).catch(() => null),
+    ]).then(([summary, comparisonRow]) => {
+      if (!active) return
+      setPeriodSummary(summary)
+      setRevenueComparison(comparisonRow)
+      setPeriodLoading(false)
+    })
+    return () => {
+      active = false
+    }
+  }, [branchId, period])
 
   const reloadOps = async () => {
     if (!hasSupabase) return
@@ -472,76 +515,35 @@ function ManagerBranchDashboard() {
   // business date; see rowBusinessDate in utils/format.js.
   const inToday = (item) => rowBusinessDate(item, openHour) === todayKey
   const todayTx = data.transactions.filter((item) => item.status === 'Paid' && inToday(item))
-  const chartCutoff = useMemo(() => {
-    const cutoff = new Date()
-    cutoff.setHours(0, 0, 0, 0)
-    cutoff.setDate(cutoff.getDate() - revenueChartPeriodDays(chartPeriod) + 1)
-    return cutoff
-  }, [chartPeriod])
-  const chartTx = useMemo(
-    () =>
-      data.transactions.filter(
-        (item) => item.status === 'Paid' && inRevenueChartPeriod(item.date, chartCutoff),
-      ),
-    [data.transactions, chartCutoff],
-  )
-  const chartPoints = useMemo(
-    () => buildRevenueChartPoints(chartTx, chartPeriod),
-    [chartTx, chartPeriod],
-  )
-  // Same period window as chartTx, but voided — chartTx is Paid-only (buildRevenueChartPoints
-  // only ever wanted completed sales), so Voided sales per bucket needs its own slice.
-  const chartVoided = useMemo(
-    () =>
-      data.transactions.filter(
-        (item) => item.status === 'Voided' && inRevenueChartPeriod(item.date, chartCutoff),
-      ),
-    [data.transactions, chartCutoff],
-  )
-  const chartBreakdowns = useMemo(
-    () => buildRevenueChartBreakdowns(chartTx, chartVoided, chartPeriod),
-    [chartTx, chartVoided, chartPeriod],
-  )
-  // Clicking a chart point swaps Sales performance from "today" to that bucket's own
-  // figures — Revenue today (KPI row above), Payment & cash impact, and the Audit widget
-  // beside the chart stay today-only on purpose: they are today-labeled snapshots (a
-  // drawer count, a headline that says "today"), not period totals, so re-reading them as
-  // a historical bucket would be misleading rather than useful — same reasoning as Overview.
-  const selectedPoint = selectedPointIndex != null ? chartPoints[selectedPointIndex] : null
-  const selectedBreakdown = selectedPoint ? chartBreakdowns[selectedPoint.label] : null
   const revenue = todayTx.reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
-  // Badge always compares the LIVE `revenue` above against yesterday's fixed total — never
-  // `revenueComparison.current`, which is a snapshot from page load and goes stale the
-  // moment a void/refund changes today's transactions without a refetch.
+  const periodLabel = PERIOD_TABS.find((p) => p.id === period)?.label || 'Today'
+  // 'day' is served from the LIVE local `revenue`/`todayTx` above (updates instantly on
+  // any void/refund, works offline) — 'week'/'month' come from the periodSummary fetch,
+  // which only resolves online. Falling back to the local today figure while that fetch is
+  // in flight (periodLoading) keeps the tile from ever showing a blank/zero value.
+  const effectiveRevenue = period === 'day' ? revenue : (periodSummary ? periodSummary.revenue : revenue)
+  const effectiveOrders = period === 'day' ? todayTx.length : (periodSummary ? periodSummary.orders : todayTx.length)
   const revenueDelta = revenueComparison ? (
     <span className="mt-1 flex items-center gap-1 text-[10px] text-brand-subtle">
       <DeltaBadge
-        current={revenue}
+        current={effectiveRevenue}
         previous={revenueComparison.previous?.revenue}
         hasPrevious={revenueComparison.hasPrevious}
       />
-      vs. yesterday
+      {COMPARISON_LABEL[period] || 'vs. previous period'}
     </span>
   ) : null
-  /**
-   * Money handed back today, across ALL of today's receipts — not just the ones still
-   * marked Paid.
-   *
-   * A fully voided sale is the largest kind of refund there is, and it drops out of
-   * `todayTx` (which filters to status === 'Paid'), so summing over that list reported
-   * a smaller refund figure the more completely a sale was refunded. A void also does not
-   * always write `refunded_amount`, so the whole total counts when it is absent.
-   */
+  const ordersDelta = revenueComparison ? (
+    <span className="mt-1 flex items-center gap-1 text-[10px] text-brand-subtle">
+      <DeltaBadge
+        current={effectiveOrders}
+        previous={revenueComparison.previous?.orders}
+        hasPrevious={revenueComparison.hasPrevious}
+      />
+      {COMPARISON_LABEL[period] || 'vs. previous period'}
+    </span>
+  ) : null
   const todayAll = data.transactions.filter(inToday)
-  const refundedRows = todayAll.filter(
-    (item) => item.status === 'Voided' || Number(item.refundedAmount || 0) > 0,
-  )
-  const refundedToday = refundedRows.reduce((sum, item) => {
-    const refunded = Number(item.refundedAmount || 0)
-    if (item.status === 'Voided') return sum + (refunded || Number(item.total || 0))
-    return sum + refunded
-  }, 0)
-  const refundCountToday = refundedRows.length
   const low = data.products.filter((product) => product.stock <= product.lowStockAt)
   const menuOn = data.products.filter((p) => p.availableToday !== false)
   const menuOff = data.products.filter((p) => p.availableToday === false)
@@ -587,51 +589,49 @@ function ManagerBranchDashboard() {
         .sort((a, b) => b.count - a.count),
     }
   }, [todayTx, data.products])
-  const shrink = data.movements
-    .filter((item) => item.type === 'Shrinkage' || item.movementType === 'shrinkage')
-    .reduce(
-      (sum, item) =>
-        sum + Math.abs(item.quantityChange) * (data.products.find((p) => p.id === item.productId)?.price || 0),
-      0,
-    )
   // Same reductions terminalReports.js uses for the X/Z reading (Gross/Net/Discounts/
   // Refunds/Voided) — reused rather than re-derived so this row and a printed reading for
   // the same day can never quietly disagree.
   const todayVoided = todayAll.filter((item) => item.status === 'Voided')
-  // Lead item (first) is the number that matters most — StatTiles renders it larger.
-  // Revenue = Gross sales − Discounts − Refunds, the canonical figure used everywhere
-  // (headline KPI, Revenue over time chart, comparisons) — it leads because it's what
-  // the business actually kept, not the pre-discount/pre-refund Gross figure below it.
-  const salesPerformanceItems = selectedBreakdown
-    ? [
-        { label: 'Revenue', value: money(selectedBreakdown.netSales) },
-        { label: 'Gross sales', value: money(selectedBreakdown.grossSales) },
-        { label: 'Discounts', value: money(selectedBreakdown.discounts), tone: 'danger' },
-        { label: 'Refunds', value: money(selectedBreakdown.refunds), tone: 'danger' },
-        { label: 'Voided sales', value: money(selectedBreakdown.voidedSales), tone: 'danger' },
-      ]
-    : [
-        { label: 'Revenue', value: money(revenue) },
-        {
-          label: 'Gross sales',
-          value: money(todayTx.reduce((sum, t) => sum + Number(t.total || 0) + Number(t.discountAmount || 0), 0)),
-        },
-        {
-          label: 'Discounts',
-          value: money(todayTx.reduce((sum, t) => sum + Number(t.discountAmount || 0), 0)),
-          tone: 'danger',
-        },
-        {
-          label: 'Refunds',
-          value: money(todayTx.reduce((sum, t) => sum + Number(t.refundedAmount || 0), 0)),
-          tone: 'danger',
-        },
-        {
-          label: 'Voided sales',
-          value: money(todayVoided.reduce((sum, t) => sum + Number(t.total || 0), 0)),
-          tone: 'danger',
-        },
-      ]
+  // Net sales already leads the KPI row above (same convention as manager/Overview.jsx),
+  // so it doesn't repeat here — Sales performance is just how that figure was arrived at.
+  // 'day' reads the live local transactions (see effectiveRevenue above); 'week'/'month'
+  // read periodSummary — while that fetch is in flight this renders empty (StatTiles
+  // hides itself on an empty items array) rather than showing today's breakdown mislabeled.
+  const todaySalesPerformanceItems = [
+    {
+      label: 'Gross sales',
+      value: money(todayTx.reduce((sum, t) => sum + Number(t.total || 0) + Number(t.discountAmount || 0), 0)),
+    },
+    {
+      label: 'Discounts',
+      value: money(todayTx.reduce((sum, t) => sum + Number(t.discountAmount || 0), 0)),
+      tone: 'danger',
+    },
+    {
+      label: 'Refunds',
+      value: money(todayTx.reduce((sum, t) => sum + Number(t.refundedAmount || 0), 0)),
+      tone: 'danger',
+    },
+    {
+      label: 'Voided sales',
+      value: money(todayVoided.reduce((sum, t) => sum + Number(t.total || 0), 0)),
+      tone: 'danger',
+    },
+  ]
+  // While a week/month fetch is in flight, periodSummary is still null (or still holds the
+  // PREVIOUS period's figures) — falling through to `[]` there made StatTiles render nothing
+  // and the whole card blink out for that gap. Falling back to today's numbers instead means
+  // the card never disappears, just briefly shows a stale figure under the "Updating…" tag.
+  const salesPerformanceItems =
+    period === 'day' || !periodSummary
+      ? todaySalesPerformanceItems
+      : [
+          { label: 'Gross sales', value: money(periodSummary.grossSales) },
+          { label: 'Discounts', value: money(periodSummary.discounts), tone: 'danger' },
+          { label: 'Refunds', value: money(periodSummary.refunds), tone: 'danger' },
+          { label: 'Voided sales', value: money(periodSummary.voidedSales), tone: 'danger' },
+        ]
   // Expected cash leads — it's the one figure a manager actually needs to act on
   // (does the drawer match). The rest is how it was arrived at. This branch page has no
   // separate "Payment methods" ranking card, so Card/E-wallet sales live here — informational
@@ -910,9 +910,12 @@ function ManagerBranchDashboard() {
   const invPages = Math.max(1, Math.ceil(data.products.length / PAGE_SIZE))
   const pageIndex = Math.min(invPage, invPages - 1)
   const invSlice = data.products.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
-  const restockEntry = !isRestaurant
+  // Prefer yesterday's closed-day snapshot; fall back to a live read of current stock so
+  // the card is never blank for a branch that hasn't closed a day yet (see Dashboard.jsx).
+  const priorRestockEntry = !isRestaurant
     ? previousDayRestockReport(data.dayEnds || [], todayKey)
     : null
+  const liveRestock = !isRestaurant && !priorRestockEntry ? liveRestockReport(data.products) : null
 
   // First load only — see the same note in manager/Overview.jsx. Changing period or
   // re-entering the page kept the data cached but still flashed a full skeleton over it.
@@ -927,25 +930,25 @@ function ManagerBranchDashboard() {
         title={branch?.name || 'Branch'}
       >
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {['Today', 'Week', 'Month'].map((item) => (
-              <button
-                key={item}
-                type="button"
-                className={`rounded-[5px] border px-3 py-2 text-xs font-bold max-[700px]:px-1.5 max-[700px]:py-1.5 max-[700px]:text-[10px] ${
-                  chartPeriod === item
-                    ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
-                    : 'border-brand-border bg-brand-card text-brand-n700'
-                }`}
-                onClick={() => {
-                  setChartPeriod(item)
-                  setSelectedPointIndex(null)
-                }}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
+          {periodLoading && (
+            <span className="mr-1 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">
+              Updating…
+            </span>
+          )}
+          {PERIOD_TABS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`rounded-[5px] border px-3 py-2 text-xs font-bold max-[700px]:px-1.5 max-[700px]:py-1.5 max-[700px]:text-[10px] ${
+                period === item.id
+                  ? 'border-brand-gold bg-brand-gold text-brand-on-gold'
+                  : 'border-brand-border bg-brand-card text-brand-n700'
+              }`}
+              onClick={() => setPeriod(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
           <SecondaryButton compact type="button" onClick={() => { setForm(branch); setEditing(true) }}>
             Branch settings
           </SecondaryButton>
@@ -958,76 +961,70 @@ function ManagerBranchDashboard() {
         <ErrorBanner error={error} onDismiss={() => setError('')} />
       )}
 
-      <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-3.5 max-[700px]:grid-cols-1">
+      <div className="mb-3.5 grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] items-stretch gap-3.5 max-[700px]:grid-cols-1">
         {(isRestaurant
           ? [
-              ['Sales today', money(revenue), '', revenueDelta],
-              // Refunds get their own card rather than a footnote under Sales: money going
-              // back out is its own number, and a hint under another figure is not
-              // something anyone scans for.
-              ['Refunded today', money(refundedToday), refundCountToday
-                ? `${refundCountToday} receipt${refundCountToday === 1 ? '' : 's'}`
-                : ''],
-              ['Orders today', todayTx.length, ''],
+              [`Sales - ${periodLabel}`, money(effectiveRevenue), '', revenueDelta],
+              [`Orders - ${periodLabel}`, effectiveOrders, '', ordersDelta],
               ['Potahe on menu', menuOn.length, ''],
               ['Off today', menuOff.length, ''],
             ]
           : [
-              ['Revenue today', money(revenue), '', revenueDelta],
-              ['Refunded today', money(refundedToday), refundCountToday
-                ? `${refundCountToday} receipt${refundCountToday === 1 ? '' : 's'}`
-                : ''],
-              ['Orders today', todayTx.length, ''],
+              [`Net sales - ${periodLabel}`, money(effectiveRevenue), '', revenueDelta],
+              [`Orders - ${periodLabel}`, effectiveOrders, '', ordersDelta],
               ['Low stock', low.length, ''],
-              ['Reseko loss', money(shrink), ''],
             ]
         ).map(([label, value, hint, delta]) => (
           <div
             key={label}
-            className="rounded-[10px] border border-brand-line bg-brand-card p-4 max-[700px]:flex max-[700px]:items-center max-[700px]:justify-between max-[700px]:p-3.5"
+            className="flex h-full flex-col rounded-[10px] border border-brand-gold/50 bg-brand-dark p-4 max-[700px]:flex-row max-[700px]:items-center max-[700px]:justify-between max-[700px]:p-3.5"
           >
-            <span className="block text-[10px] font-semibold tracking-wide text-brand-subtle uppercase">{label}</span>
-            <strong className={`mt-2 block text-xl text-brand-ink max-[700px]:mt-0 max-[700px]:text-lg ${moneyClass}`}>{value}</strong>
+            <span className="block text-[10px] font-semibold tracking-wide text-brand-ondark-dim uppercase">{label}</span>
+            <strong className={`mt-2 block text-xl text-brand-gold max-[700px]:mt-0 max-[700px]:text-lg ${moneyClass}`}>{value}</strong>
             {hint ? <span className="mt-1 block text-[10px] text-brand-warn">{hint}</span> : null}
             {delta}
           </div>
         ))}
       </div>
 
-      {selectedPoint && (
-        <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-brand-gold/40 bg-brand-gold/10 px-3.5 py-2 text-xs">
-          <span className="text-brand-ink">
-            Showing <strong>{selectedPoint.full || selectedPoint.short}</strong>. Sales performance
-            is filtered to this point. Revenue today and Payment & cash impact always show today.
-          </span>
-          <SecondaryButton compact type="button" onClick={() => setSelectedPointIndex(null)}>
-            Clear selection
-          </SecondaryButton>
+      {opsLoading ? (
+        <div className="mb-3.5 grid grid-cols-2 gap-3.5 max-[900px]:grid-cols-1">
+          {[0, 1].map((i) => (
+            <div key={i} className="min-w-0 rounded-[10px] border border-brand-line bg-brand-card px-3.5 py-2.5">
+              <Skeleton className="mb-3 h-2.5 w-32" />
+              <div className="flex gap-4">
+                <Skeleton className="h-6 w-14" />
+                <Skeleton className="h-6 w-14" />
+                <Skeleton className="h-6 w-14" />
+              </div>
+            </div>
+          ))}
         </div>
-      )}
-      <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
-        <div className="min-h-0 min-w-0 w-full">
-          <RevenueChart
-            points={chartPoints}
-            period={chartPeriod}
-            fill
-            selectedIndex={selectedPointIndex}
-            onSelectIndex={setSelectedPointIndex}
-          />
-        </div>
-        <div className="flex min-w-0 flex-col gap-2.5">
+      ) : (
+        <div className="mb-3.5 grid grid-cols-2 gap-3.5 max-[900px]:grid-cols-1">
           <StatTiles
             title="Payment & cash impact"
-            subtitle={`${todayKey} · this branch's drawer · not affected by filters`}
+            subtitle={`${todayKey} · today`}
             items={cashImpactItems}
+            todayBadge
           />
           <StatTiles
             title="Sales performance"
-            subtitle={selectedPoint ? selectedPoint.full || selectedPoint.short : todayKey}
+            subtitle={periodLabel}
             items={salesPerformanceItems}
           />
-          <AuditSummary events={auditEvents} linkHref="/manager/reports" subtitle={chartPeriod} />
         </div>
+      )}
+
+      <div className="mb-1.5">
+        {opsLoading ? (
+          <div className="rounded-[10px] border border-brand-line bg-brand-card px-3.5 py-2.5">
+            <Skeleton className="mb-2 h-2.5 w-24" />
+            <Skeleton className="h-3 w-full" />
+          </div>
+        ) : (
+          <AuditSummary events={auditEvents} linkHref="/manager/reports" subtitle={`Voids & refunds · ${todayKey}`} />
+        )}
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
@@ -1329,8 +1326,6 @@ function ManagerBranchDashboard() {
           </div>
         )}
       </TableCard>
-
-      <AuditSummary events={auditEvents} linkHref="/manager/reports" subtitle={`Voids & refunds · ${todayKey}`} />
 
       {isRestaurant && plateMix.byCategory.length > 0 && (
         <TableCard className="mb-4 max-h-none overflow-hidden">
@@ -2037,14 +2032,25 @@ function ManagerBranchDashboard() {
         )}
       </TableCard>
 
-      {restockEntry && (
+      {priorRestockEntry && (
         <DayEndReportPanels
-          report={restockEntry.dayReport}
+          report={priorRestockEntry.dayReport}
           title="Sold"
           showRestock
           compact
           alert
-          fromDate={restockEntry.date}
+          fromDate={priorRestockEntry.date}
+          inventoryHref={null}
+        />
+      )}
+      {liveRestock && (
+        <DayEndReportPanels
+          report={liveRestock}
+          showSold={false}
+          showRestock
+          compact
+          alert
+          restockSubtitle="Low on hand right now"
           inventoryHref={null}
         />
       )}

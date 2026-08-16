@@ -19,6 +19,7 @@ import {
   fetchNetworkDashboard,
   fetchPeriodComparison,
   fetchSaleEvents,
+  fetchShrinkageValue,
   hasSupabase,
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
@@ -93,6 +94,7 @@ function ManagerOverview() {
   const [comparison, setComparison] = useState(null)
   const [cashImpactTotals, setCashImpactTotals] = useState(null)
   const [auditEvents, setAuditEvents] = useState([])
+  const [shrinkageValue, setShrinkageValue] = useState(0)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -150,6 +152,7 @@ function ManagerOverview() {
           })
           setCashImpactTotals(null)
           setAuditEvents([])
+          setShrinkageValue(18)
           setLoading(false)
           return
         }
@@ -165,6 +168,7 @@ function ManagerOverview() {
           setComparison(null)
           setCashImpactTotals(null)
           setAuditEvents([])
+          setShrinkageValue(0)
           setError('Offline — connect to refresh network-wide metrics.')
           setLoading(false)
           return
@@ -176,7 +180,7 @@ function ManagerOverview() {
         const periodStart = new Date()
         periodStart.setHours(0, 0, 0, 0)
         periodStart.setDate(periodStart.getDate() - (meta.days - 1))
-        const [rows, overviewMetrics, charts, periodComparison, events] = await Promise.all([
+        const [rows, overviewMetrics, charts, periodComparison, events, shrinkage] = await Promise.all([
           branchesPromise,
           fetchManagerOverviewMetrics({ days: meta.days }).catch(async () => {
             // RPC not deployed yet — fall back to per-branch fan-out (pre-overhaul path).
@@ -222,6 +226,7 @@ function ManagerOverview() {
           fetchNetworkDashboard(period),
           fetchPeriodComparison(period).catch(() => null),
           fetchSaleEvents({ start: dateKey(periodStart), end: dateKey(new Date()) }).catch(() => []),
+          fetchShrinkageValue({ start: dateKey(periodStart), end: dateKey(new Date()) }).catch(() => 0),
         ])
         if (!active) return
         setBranches(rows)
@@ -234,6 +239,7 @@ function ManagerOverview() {
         setTopCategories(charts.topCategories || [])
         setCashImpactTotals(overviewMetrics.cashImpact || null)
         setAuditEvents((events || []).filter((e) => e.event_type === 'void' || e.event_type === 'refund'))
+        setShrinkageValue(shrinkage || 0)
         setLoading(false)
       })
       .catch((err) => {
@@ -276,24 +282,26 @@ function ManagerOverview() {
 
   // Clicking a point on Revenue over time cross-filters every card below to that single
   // bucket — everything needed came back bucketed already (pointBreakdowns, keyed by the
-  // point's own bucketKey), so this is a pure client-side swap, no second fetch. Low-stock
-  // and Payment & cash impact are deliberately exempt: Low-stock is a live inventory count
-  // and cash impact is a "today, network-wide" drawer snapshot, neither means anything
-  // re-read as a historical bucket, so both always show their current/today figure.
+  // point's own bucketKey), so this is a pure client-side swap, no second fetch. Reseko
+  // loss and Payment & cash impact are deliberately exempt: shrinkage has no per-bucket
+  // fetch and cash impact is a "today, network-wide" drawer snapshot, neither means
+  // anything re-read as a historical bucket, so both always show their whole-period/today
+  // figure.
   const selectedPoint = selectedPointIndex != null ? linePoints[selectedPointIndex] : null
   const selectedBreakdown = selectedPoint ? pointBreakdowns[selectedPoint.bucketKey] : null
 
   // Lead item (first) is the number that matters most — StatTiles renders it larger.
+  // Same shape as Dashboard.jsx's supervisor-view salesPerformanceItems (Gross sales,
+  // Discounts, Refunds, Voided sales) — Net sales already leads the KPI row above, so it
+  // does not need to repeat here too.
   const salesPerformanceItems = selectedBreakdown
     ? [
-        { label: 'Revenue', value: money(selectedBreakdown.netSales) },
         { label: 'Gross sales', value: money(selectedBreakdown.grossSales) },
         { label: 'Discounts', value: money(selectedBreakdown.discounts), tone: 'danger' },
         { label: 'Refunds', value: money(selectedBreakdown.refunds), tone: 'danger' },
         { label: 'Voided sales', value: money(selectedBreakdown.voidedSales), tone: 'danger' },
       ]
     : [
-        { label: 'Revenue', value: money(totals.netSales) },
         { label: 'Gross sales', value: money(totals.grossSales) },
         { label: 'Discounts', value: money(totals.discounts), tone: 'danger' },
         { label: 'Refunds', value: money(totals.refunds), tone: 'danger' },
@@ -351,12 +359,12 @@ function ManagerOverview() {
   const revenueValue = comparison ? comparison.current.revenue : totals.revenue
   const ordersValue = comparison ? comparison.current.orders : totals.orders
 
-  // A selected point swaps Revenue/Orders to that single bucket's own figures — the delta
+  // A selected point swaps Net sales/Orders to that single bucket's own figures — the delta
   // badge and comparison note stop applying (they describe the whole period against a
   // whole prior period, not one bucket), so both drop while a point is selected.
   const kpiCards = [
     {
-      label: selectedPoint ? `Revenue${filterSubtitleSuffix}` : `Revenue - ${periodLabel}`,
+      label: selectedPoint ? `Net sales${filterSubtitleSuffix}` : `Net sales - ${periodLabel}`,
       value: money(selectedPoint ? selectedPoint.total : revenueValue),
       delta: selectedPoint ? null : deltaFor('revenue'),
       note: selectedPoint ? null : comparison ? comparisonNote : null,
@@ -367,7 +375,12 @@ function ManagerOverview() {
       delta: selectedPoint ? null : deltaFor('orders'),
       note: selectedPoint ? null : comparison ? comparisonNote : null,
     },
-    { label: 'Low-stock items', value: totals.lowStock, delta: null, note: null },
+    {
+      label: `Reseko loss - ${periodLabel}`,
+      value: money(shrinkageValue),
+      delta: null,
+      note: 'Shrinkage value, network-wide',
+    },
   ]
 
   // Skeleton only when there is genuinely nothing to show. Switching period used to flip
@@ -413,10 +426,10 @@ function ManagerOverview() {
       {selectedPoint && (
         <div className="mb-3.5 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-brand-gold/40 bg-brand-gold/10 px-3.5 py-2 text-xs">
           <span className="text-brand-ink">
-            Showing <strong>{selectedPoint.full || selectedPoint.short}</strong> — Revenue, Orders,
+            Showing <strong>{selectedPoint.full || selectedPoint.short}</strong> — Net sales, Orders,
             Sales performance, Top products, Top categories, Payment methods and Audit are all
-            filtered to this point. Low-stock items and Payment & cash impact always show their
-            current/today figure.
+            filtered to this point. Reseko loss and Payment & cash impact always show their
+            whole-period/today figure.
           </span>
           <SecondaryButton compact type="button" onClick={() => setSelectedPointIndex(null)}>
             Clear selection
@@ -426,20 +439,34 @@ function ManagerOverview() {
       {/* KPI row. `Menu items on today` is restaurant-only and this build is focused on
           retail/meat, so it is not rendered — totals.menuOn and branchSummary's menu
           counting are left intact so re-enabling it is a one-line change, not a rebuild. */}
-      <div className="mb-4 grid grid-cols-3 gap-3.5 max-[700px]:grid-cols-1">
+      <div className="mb-4 grid grid-cols-3 items-stretch gap-3.5 max-[900px]:grid-cols-1">
         {kpiCards.map(({ label, value, delta, note }) => (
-          <div key={label} className="rounded-[10px] border border-brand-line bg-brand-card p-4">
-            <span className="block text-[11px] font-semibold tracking-wide text-brand-subtle uppercase">{label}</span>
+          <div key={label} className="flex h-full flex-col rounded-[10px] border border-brand-gold/50 bg-brand-dark p-4">
+            <span className="block text-[11px] font-semibold tracking-wide text-brand-ondark-dim uppercase">{label}</span>
             <div className="mt-2 flex flex-wrap items-baseline gap-2">
-              <strong className={`block text-[26px] text-brand-ink ${moneyClass}`}>{value}</strong>
+              <strong className={`block text-[26px] text-brand-gold ${moneyClass}`}>{value}</strong>
               {delta}
             </div>
-            {note && <span className="mt-1 block text-[10px] text-brand-subtle">{note}</span>}
+            {note && <span className="mt-1 block text-[10px] text-brand-ondark-dim">{note}</span>}
           </div>
         ))}
       </div>
 
-      <div className="mb-3.5 grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)] items-stretch gap-3.5 max-[1100px]:grid-cols-1">
+      <div className="mb-3.5 grid grid-cols-2 items-stretch gap-3.5 max-[900px]:grid-cols-1">
+        <StatTiles
+          title="Payment & cash impact"
+          subtitle={`${businessDate(new Date())} · today, network-wide`}
+          items={cashImpactItems}
+          todayBadge
+        />
+        <StatTiles
+          title="Sales performance"
+          subtitle={`${periodLabel}${filterSubtitleSuffix}`}
+          items={salesPerformanceItems}
+        />
+      </div>
+
+      <div className="mb-3.5 grid grid-cols-2 items-stretch gap-3.5 max-[1100px]:grid-cols-1">
         <div className="min-h-0 min-w-0 w-full">
           <RevenueChart
             points={linePoints}
@@ -449,24 +476,13 @@ function ManagerOverview() {
             onSelectIndex={setSelectedPointIndex}
           />
         </div>
-        <div className="flex min-w-0 flex-col gap-2.5">
-          <StatTiles
-            title="Payment & cash impact"
-            subtitle={`${businessDate(new Date())} · today, network-wide`}
-            items={cashImpactItems}
-          />
-          <StatTiles
-            title="Sales performance"
-            subtitle={`${periodLabel}${filterSubtitleSuffix}`}
-            items={salesPerformanceItems}
-          />
-          <AuditSummary
-            events={effectiveAuditEvents}
-            showBranch
-            linkHref="/manager/reports"
-            subtitle={`Network-wide · ${periodLabel}${filterSubtitleSuffix}`}
-          />
-        </div>
+        <AuditSummary
+          events={effectiveAuditEvents}
+          showBranch
+          linkHref="/manager/reports"
+          subtitle={`Network-wide · ${periodLabel}${filterSubtitleSuffix}`}
+          fill
+        />
       </div>
 
       {/* Top products, Top categories, Payment methods — one row of supporting detail,

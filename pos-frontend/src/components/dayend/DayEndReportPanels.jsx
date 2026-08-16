@@ -41,10 +41,12 @@ function Pager({ page, pageCount, onPrev, onNext }) {
 export function DayEndReportPanels({
   report,
   title = 'Sold',
+  showSold = true,
   showRestock = true,
   compact = false,
   alert = false,
   fromDate = null,
+  restockSubtitle = null,
   inventoryHref = '/inventory',
   thirdPanel = null,
 }) {
@@ -177,27 +179,30 @@ export function DayEndReportPanels({
     </>
   )
 
-  const panelCount = 1 + (showRestock ? 1 : 0) + (thirdPanel ? 1 : 0)
+  const panelCount = (showSold ? 1 : 0) + (showRestock ? 1 : 0) + (thirdPanel ? 1 : 0)
   const columnsClass = panelCount === 3 ? 'grid-cols-3' : panelCount === 2 ? 'grid-cols-2' : 'grid-cols-1'
   const narrowBreakpoint = compact ? 'max-[900px]:grid-cols-1' : 'max-[1100px]:grid-cols-1'
 
   return (
     <div className={`mb-4 grid gap-4 ${narrowBreakpoint} ${columnsClass}`}>
-      <TableCard className="max-h-none overflow-hidden">
-        <SectionHeading title={title} subtitle={soldSubtitle} meta={`${sold.length} items`} />
-        {soldTable}
-      </TableCard>
+      {showSold && (
+        <TableCard className="max-h-none overflow-hidden">
+          <SectionHeading title={title} subtitle={soldSubtitle} meta={`${sold.length} items`} />
+          {soldTable}
+        </TableCard>
+      )}
 
       {showRestock && (
         <TableCard className="max-h-none overflow-hidden">
           <SectionHeading
             title="Need to restock"
             subtitle={
-              alert
+              restockSubtitle ||
+              (alert
                 ? fromDate
                   ? `From day end ${fromDate}`
                   : 'Carry-over from last close'
-                : "Low on hand after today's sales"
+                : "Low on hand after today's sales")
             }
             meta={restock.length}
             tone={restock.length ? 'warn' : 'default'}

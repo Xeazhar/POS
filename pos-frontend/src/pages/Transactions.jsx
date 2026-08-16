@@ -669,15 +669,24 @@ function Transactions() {
             </span>
             <span className="truncate max-[700px]:hidden">{PAY_LABEL[item.paymentMethod || 'cash'] || 'Cash'}</span>
             <span className={`text-right max-[700px]:hidden ${moneyClass}`}>{Number(item.items).toFixed(0)}</span>
-            {/* Original total and refunded amount are two separate labelled figures.
-                Showing the already-netted number next to "−₱150" read as if the refund
-                was about to come off a second time. */}
+            {/* The bold figure is the final amount — total_amount already has the discount
+                baked in, and netTotal (from mapTransaction) additionally subtracts any
+                refunds. The pre-refund total is kept as a struck-through reference above
+                it so the refund reads as "this is what it's worth now", not a second
+                deduction still to come. */}
             <strong className={`min-w-0 text-right text-brand-ink max-[700px]:hidden ${moneyClass}`}>
-              {money(item.total)}
-              {Number(item.refundedAmount || 0) > 0 && item.status !== 'Voided' && (
-                <span className="mt-0.5 block text-[10px] font-normal text-brand-danger">
-                  Refunded {money(item.refundedAmount)}
-                </span>
+              {Number(item.refundedAmount || 0) > 0 && item.status !== 'Voided' ? (
+                <>
+                  <span className="block text-[10px] font-normal text-brand-n500 line-through">
+                    {money(item.total)}
+                  </span>
+                  {money(item.netTotal)}
+                  <span className="mt-0.5 block text-[10px] font-normal text-brand-danger">
+                    Refunded {money(item.refundedAmount)}
+                  </span>
+                </>
+              ) : (
+                money(item.total)
               )}
             </strong>
             <span className="justify-self-center max-[700px]:hidden">

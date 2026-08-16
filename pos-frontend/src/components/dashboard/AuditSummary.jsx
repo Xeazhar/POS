@@ -20,7 +20,7 @@ const PAGE_SIZE = 5
  * Styled to match `StatTiles` (light bordered card) for the header, but row content is
  * deliberately much smaller — this is a dense supporting list, not a primary table.
  */
-function AuditSummary({ events = [], linkHref = null, subtitle = null, showBranch = false }) {
+function AuditSummary({ events = [], linkHref = null, subtitle = null, showBranch = false, fill = false }) {
   const [page, setPage] = useState(0)
   // A fresh fetch (branch/period change) hands this component a new `events` array —
   // land back on page 1 rather than leaving the reader stranded on a now-stale page.
@@ -58,7 +58,11 @@ function AuditSummary({ events = [], linkHref = null, subtitle = null, showBranc
   const pageRows = sorted.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
 
   return (
-    <div className="mb-2.5 min-w-0 rounded-[10px] border border-brand-line bg-brand-card px-3.5 py-2.5">
+    <div
+      className={`min-w-0 rounded-[10px] border border-brand-line bg-brand-card px-3.5 py-2.5 ${
+        fill ? 'flex h-full flex-col' : 'mb-2.5'
+      }`}
+    >
       <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
         <h3 className="m-0 text-xs font-bold tracking-wide text-brand-subtle uppercase">Audit</h3>
         <div className="flex items-baseline gap-2">
@@ -83,22 +87,37 @@ function AuditSummary({ events = [], linkHref = null, subtitle = null, showBranc
       </div>
 
       {pageRows.length === 0 ? (
-        <p className="m-0 text-[11px] text-brand-subtle">No voids or refunds in this range.</p>
+        <p
+          className={`m-0 text-[11px] text-brand-subtle ${
+            fill ? 'flex flex-1 items-center justify-center text-center' : ''
+          }`}
+        >
+          No voids or refunds in this range.
+        </p>
       ) : (
-        <div className="border-t border-brand-softline">
+        <div className={`border-t border-brand-softline ${fill ? 'flex flex-1 flex-col' : ''}`}>
           {pageRows.map((row) => (
             <div
               key={row.id}
-              className={`grid items-center gap-1.5 border-b border-brand-softline py-1.5 text-[11px] leading-[1.4] max-[560px]:grid-cols-[2.8rem_2.1rem_1fr] ${
+              className={`grid items-center gap-1.5 border-b border-brand-softline py-1.5 text-[11px] leading-[1.4] max-[560px]:grid-cols-[3.4rem_2.1rem_1fr] ${
                 showBranch
-                  ? 'grid-cols-[2.8rem_2.1rem_5rem_1fr_1fr]'
-                  : 'grid-cols-[2.8rem_2.1rem_1fr_1fr]'
+                  ? 'grid-cols-[3.4rem_2.1rem_5rem_1fr_1fr]'
+                  : 'grid-cols-[3.4rem_2.1rem_1fr_1fr]'
               }`}
             >
               <span className="text-brand-slate">
-                {row.created_at
-                  ? new Date(row.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                  : '—'}
+                {row.created_at ? (
+                  <>
+                    <span className="block">
+                      {new Date(row.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                    </span>
+                    <span className="block text-[10px] text-brand-subtle">
+                      {new Date(row.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </>
+                ) : (
+                  '—'
+                )}
               </span>
               <span
                 className={`justify-self-start rounded-[3px] px-1 py-px text-[9px] font-bold uppercase ${

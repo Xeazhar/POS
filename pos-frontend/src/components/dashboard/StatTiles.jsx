@@ -13,9 +13,14 @@ import { moneyClass } from '../ui'
  * label sits in row 1, every value in row 2, no matter how tall any one cell's hint text
  * makes that single cell.
  */
-function StatTiles({ title = null, subtitle = null, items = [], embedded = false }) {
+function StatTiles({ title = null, subtitle = null, items = [], embedded = false, variant = 'default', todayBadge = false }) {
   if (!items.length) return null
-  const toneClass = (tone) => (tone === 'danger' ? 'text-brand-danger' : 'text-brand-ink')
+  const isToday = variant === 'today'
+  const showTodayBadge = isToday || todayBadge
+  const toneClass = (tone) => {
+    if (tone === 'danger') return isToday ? 'text-brand-danger-ondark' : 'text-brand-danger'
+    return isToday ? 'text-brand-gold' : 'text-brand-ink'
+  }
 
   if (embedded) {
     return (
@@ -45,12 +50,46 @@ function StatTiles({ title = null, subtitle = null, items = [], embedded = false
     )
   }
 
+  const cardClass = isToday
+    ? 'flex h-full min-w-0 flex-col rounded-[10px] border border-brand-gold/50 bg-brand-dark px-3.5 py-2.5 shadow-[0_0_0_1px_rgba(233,185,73,0.12)]'
+    : 'mb-2.5 min-w-0 rounded-[10px] border border-brand-line bg-brand-card px-3.5 py-2.5'
+  const labelMutedClass = isToday ? 'text-brand-ondark-dim' : 'text-brand-subtle'
+  const dividerClass = isToday
+    ? 'border-l border-brand-gold/25 pl-4 max-[560px]:border-l-0 max-[560px]:pl-0'
+    : 'border-l border-brand-softline pl-4 max-[560px]:border-l-0 max-[560px]:pl-0'
+
   return (
-    <div className="mb-2.5 min-w-0 rounded-[10px] border border-brand-line bg-brand-card px-3.5 py-2.5">
-      {(title || subtitle) && (
-        <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
-          {title && <h3 className="m-0 text-[10px] font-bold tracking-wide text-brand-subtle uppercase">{title}</h3>}
-          {subtitle && <span className="text-[10px] text-brand-subtle">{subtitle}</span>}
+    <div className={cardClass}>
+      {(title || subtitle || showTodayBadge) && (
+        <div className="mb-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              {title && (
+                <h3
+                  className={`m-0 text-[10px] font-bold tracking-wide uppercase ${
+                    isToday ? 'text-brand-gold' : 'text-brand-subtle'
+                  }`}
+                >
+                  {title}
+                </h3>
+              )}
+              {!isToday && subtitle && <span className={`text-[10px] ${labelMutedClass}`}>{subtitle}</span>}
+            </div>
+            {showTodayBadge && (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-bold tracking-wide uppercase ${
+                  isToday
+                    ? 'border-brand-gold/60 bg-brand-gold/15 text-brand-gold'
+                    : 'border-brand-line bg-brand-subtle/10 text-brand-subtle'
+                }`}
+              >
+                Today only
+              </span>
+            )}
+          </div>
+          {isToday && subtitle && (
+            <span className={`mt-0.5 block text-[10px] ${labelMutedClass}`}>{subtitle}</span>
+          )}
         </div>
       )}
       <div
@@ -60,15 +99,15 @@ function StatTiles({ title = null, subtitle = null, items = [], embedded = false
         {items.map((item, index) => (
           <Fragment key={item.label}>
             <span
-              className={`row-start-1 self-end text-[9px] font-semibold tracking-wide text-brand-subtle uppercase max-[560px]:row-auto ${
-                index > 0 ? 'border-l border-brand-softline pl-4 max-[560px]:border-l-0 max-[560px]:pl-0' : ''
+              className={`row-start-1 self-end text-[9px] font-semibold tracking-wide uppercase max-[560px]:row-auto ${labelMutedClass} ${
+                index > 0 ? dividerClass : ''
               }`}
             >
               {item.label}
             </span>
             <span
               className={`row-start-2 self-start leading-tight max-[560px]:row-auto max-[560px]:text-right ${
-                index > 0 ? 'border-l border-brand-softline pl-4 max-[560px]:border-l-0 max-[560px]:pl-0' : ''
+                index > 0 ? dividerClass : ''
               }`}
             >
               <strong
@@ -77,7 +116,7 @@ function StatTiles({ title = null, subtitle = null, items = [], embedded = false
                 {item.value}
               </strong>
               {item.hint ? (
-                <span className="block text-[9px] font-normal text-brand-subtle">{item.hint}</span>
+                <span className={`block text-[9px] font-normal ${labelMutedClass}`}>{item.hint}</span>
               ) : null}
             </span>
           </Fragment>

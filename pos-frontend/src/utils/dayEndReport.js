@@ -112,6 +112,40 @@ export function buildDayEndReport({
   }
 }
 
+/**
+ * Live "needs restock" list computed straight from current stock — no dependency on a
+ * previous closed day-end existing, or on the item having sold that day.
+ *
+ * `previousDayRestockReport` below is a frozen snapshot from the last close, so it stays
+ * blank until a branch has closed at least one full day, and even then only surfaces items
+ * that both sold AND are low — real low stock that didn't move the day before never
+ * showed up. Callers use this as the fallback so the dashboard card is never silently
+ * empty for a brand-new branch (or any day one's close hasn't landed yet).
+ */
+export function liveRestockReport(products = []) {
+  const restock = (products || [])
+    .filter((product) => {
+      const onHand = Number(product.stock ?? 0)
+      const lowStockAt = Number(product.lowStockAt ?? 5)
+      return onHand <= lowStockAt
+    })
+    .map((product) => {
+      const onHand = Number(product.stock ?? 0)
+      const lowStockAt = Number(product.lowStockAt ?? 5)
+      return {
+        productId: product.id,
+        name: product.name,
+        sku: product.sku || '',
+        pricingMode: product.pricingMode || 'pc',
+        onHand,
+        lowStockAt,
+        suggestedQty: Number(Math.max(lowStockAt * 2 - onHand, 0).toFixed(2)),
+      }
+    })
+    .sort((a, b) => a.onHand - b.onHand)
+  return { businessDate: null, orderCount: 0, revenue: 0, refunded: 0, sold: [], restock }
+}
+
 /** Latest closed day before today that has a restock list (next-morning alert). */
 export function previousDayRestockReport(dayEnds = [], todayDate) {
   const rows = (dayEnds || [])

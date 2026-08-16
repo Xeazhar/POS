@@ -816,15 +816,6 @@ export const ERROR_CATALOG = {
     cause: 'adjust_shift_cash() refused the caller — either the role is too low or the shift is at another branch.',
     fix: 'Ask a supervisor at that branch, or a manager.',
   },
-  SHIFT06: {
-    message: 'You already have an open shift on another till.',
-    severity: B,
-    saleImpact: SALE_IMPACT.none,
-    retry: false,
-    cause: 'That drawer still holds cash this account is answerable for, so this terminal cannot silently open a second one.',
-    fix: 'Go back and cash out on that till, or have a supervisor open a separate shift here.',
-  },
-
   // ── PRINT ────────────────────────────────────────────────────────────────
   PRINT01: {
     message: 'Pop-up blocked. Allow pop-ups to print receipts.',
