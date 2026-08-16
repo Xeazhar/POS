@@ -464,6 +464,7 @@ export async function pushQueue(branchId = null, { maxItems = PUSH_BATCH_SIZE } 
       blocked: await countBlocked(branchId),
       error: null,
       pushedOnlySelfHealing: true,
+      sessionRevoked: false,
     }
   }
   if (pushInFlight) {
@@ -473,11 +474,34 @@ export async function pushQueue(branchId = null, { maxItems = PUSH_BATCH_SIZE } 
       blocked: await countBlocked(branchId),
       error: null,
       pushedOnlySelfHealing: true,
+      sessionRevoked: false,
     }
   }
 
   pushInFlight = true
   try {
+  // Verify this device's session is still valid BEFORE touching any queued item. This is
+  // what makes offline-then-reconnect safe: if the account was claimed on another device
+  // while this one was offline, every item would otherwise fail identically and each would
+  // burn retries toward MAX_SYNC_ATTEMPTS and get wrongly quarantined as BLOCKED. Catching
+  // it here means the queue is left untouched — still pending, first-in-line — until the
+  // user signs back in on this device.
+  try {
+    await api.heartbeatStaffSession()
+  } catch (heartbeatErr) {
+    if (api.isSessionRevokedError(heartbeatErr)) {
+      return {
+        pushed: 0,
+        remaining: await countPending(branchId),
+        blocked: await countBlocked(branchId),
+        error: null,
+        pushedOnlySelfHealing: true,
+        sessionRevoked: true,
+      }
+    }
+    // Any other heartbeat failure (network blip) — don't block the push attempt on it.
+  }
+
   await resetStuckSyncing()
   const pending = await listPending(branchId)
   let pushed = 0
@@ -513,6 +537,7 @@ export async function pushQueue(branchId = null, { maxItems = PUSH_BATCH_SIZE } 
     blocked: await countBlocked(branchId),
     error,
     pushedOnlySelfHealing,
+    sessionRevoked: false,
   }
   } finally {
     pushInFlight = false
@@ -557,7 +582,7 @@ export async function drainQueueInBackground(branchId) {
     pending: await countPending(branchId),
   })
   try {
-    let lastPush = { pushed: 0, remaining: await countPending(branchId), error: null }
+    let lastPush = { pushed: 0, remaining: await countPending(branchId), error: null, sessionRevoked: false }
     let totalPushed = 0
     let allPushedOnlySelfHealing = true
     while ((await canSyncWithBackend()) && lastPush.remaining > 0) {
@@ -572,7 +597,9 @@ export async function drainQueueInBackground(branchId) {
         backendReachable: true,
         pending: lastPush.remaining,
         lastError: lastPush.error,
+        sessionRevoked: lastPush.sessionRevoked,
       })
+      if (lastPush.sessionRevoked) break
       if (lastPush.error && lastPush.pushed === 0) break
       if (lastPush.remaining > 0) {
         await new Promise((resolve) => setTimeout(resolve, 50))
@@ -592,6 +619,7 @@ export async function drainQueueInBackground(branchId) {
       pending: await countPending(branchId),
       blocked: await countBlocked(branchId),
       lastError: lastPush.error,
+      sessionRevoked: lastPush.sessionRevoked,
     })
     return data
   } catch (err) {
@@ -631,6 +659,7 @@ export async function syncBranch(branchId) {
         pending: pushResult.remaining,
         online: true,
         lastError: pushResult.error,
+        sessionRevoked: pushResult.sessionRevoked,
       })
       // Large backlog keeps draining in the background — don't block this caller on all N sales.
       if (pushResult.remaining > 0 && !pushResult.error) {
