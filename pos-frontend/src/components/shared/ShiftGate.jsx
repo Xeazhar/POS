@@ -51,6 +51,7 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
   const gate = useShiftStore((state) => state.gate)
   const blocker = useShiftStore((state) => state.blocker)
   const handoff = useShiftStore((state) => state.handoff)
+  const restartPrompt = useShiftStore((state) => state.restartPrompt)
   const drawerLabel = useShiftStore((state) => state.drawerLabel)
   const startShift = useShiftStore((state) => state.startShift)
   const resolve = useShiftStore((state) => state.resolve)
@@ -194,7 +195,13 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
   // choosing "Working the register" must land on the same screen either way and confirm with
   // the Start shift button below, never fire the moment the option is picked.
   const autoStartedRef = useRef(false)
-  const autoStarting = !canChooseDrawer && gate === 'start' && !dayClosed && holdsDrawer && !needsFreshCount
+  const autoStarting =
+    !canChooseDrawer &&
+    gate === 'start' &&
+    !dayClosed &&
+    holdsDrawer &&
+    !needsFreshCount &&
+    !restartPrompt
   useEffect(() => {
     if (!autoStarting || autoStartedRef.current) return
     autoStartedRef.current = true
@@ -336,6 +343,37 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
           )}
           <PrimaryButton compact type="button" disabled={busy} onClick={onSignOut}>
             Sign out
+          </PrimaryButton>
+        </ModalActions>
+      </Modal>
+    )
+  }
+
+  // This cashier ended their own shift on this drawer before (see restartPrompt in
+  // shiftStore.resolve()) — ask instead of silently reopening one. A genuinely first-ever
+  // shift on this drawer has no restartPrompt and keeps the silent auto-start below.
+  if (!canChooseDrawer && gate === 'start' && !dayClosed && holdsDrawer && !needsFreshCount && restartPrompt) {
+    return (
+      <Modal>
+        <Eyebrow>SHIFT ENDED</Eyebrow>
+        <h2 className="mb-1 text-lg">Start your shift again?</h2>
+        <p className="m-0 text-xs text-brand-muted">
+          Your last shift on {drawerLabel || 'this drawer'} ended
+          {restartPrompt.clockOut ? ` at ${sinceLabel(restartPrompt.clockOut)}` : ''}. Start a new
+          one now, or sign out.
+        </p>
+        {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
+        <ModalActions>
+          <SecondaryButton compact type="button" disabled={busy} onClick={onSignOut}>
+            Sign out
+          </SecondaryButton>
+          <PrimaryButton
+            compact
+            type="button"
+            disabled={busy}
+            onClick={() => void doStart({ startingCash: 0 })}
+          >
+            {busy ? 'Starting…' : 'Start shift'}
           </PrimaryButton>
         </ModalActions>
       </Modal>

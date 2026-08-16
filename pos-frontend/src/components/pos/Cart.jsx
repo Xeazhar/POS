@@ -478,6 +478,14 @@ function Cart({
       waitForRealOrNumber(user?.branchId, saved?.id).then((realOrNumber) => {
         if (!realOrNumber) return
         setPaidResult((prev) => (prev && prev.orNumber === orLabel ? { ...prev, orNumber: realOrNumber } : prev))
+        // Also patch the cached receipt object so the "Print receipt" button reprints the
+        // real OR instead of the PENDING placeholder baked in at checkout time.
+        if (lastReceiptRef.current?.document?.isPendingOr) {
+          lastReceiptRef.current = {
+            ...lastReceiptRef.current,
+            document: { ...lastReceiptRef.current.document, orNumber: realOrNumber, isPendingOr: false },
+          }
+        }
       })
 
       const branchHeader =

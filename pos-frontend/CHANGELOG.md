@@ -19,6 +19,19 @@ computation, OR numbering).
 
 ## Unreleased
 
+## 0.22.0 — 2026-08-16
+
+### Changed: "Start shift again?" prompt on re-login after ending own shift
+
+A cashier who ends their own shift (**End shift** → plain clock-out, unchanged) and then
+signs back in on the same drawer no longer silently reopens a new ₱0 shift — `ShiftGate.jsx`
+now asks "Start your shift again?" (Yes/No) first. Detected via `restartPrompt`
+(`useShiftStore.resolve()` + `getLastClosedShiftForStaffOnDrawer`, `offline/shifts.js`): this
+exact cashier's own last closed shift on this exact drawer. A genuinely first-ever shift on a
+drawer has no such record and still auto-starts with no prompt, unchanged. Supervisor's
+existing Day End "Confirm received handoff" (`receiveShiftHandoff`) is untouched and stays
+independent — it still only gates Close day, not the next shift's start.
+
 ## 0.21.0 — 2026-08-15
 
 ### Changed: Atomic checkout — one RPC, not four round trips

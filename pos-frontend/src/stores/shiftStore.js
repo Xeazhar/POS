@@ -3,6 +3,7 @@ import * as api from '../lib/api'
 import {
   closeLocalShift,
   enqueue,
+  getLastClosedShiftForStaffOnDrawer,
   getLastClosedShiftOnDrawer,
   getLocalOpenShift,
   getLocalShift,
@@ -54,6 +55,9 @@ export const useShiftStore = create((set, get) => ({
   blocker: null,
   /** Previous shift on this drawer whose ending count pre-fills a handoff. */
   handoff: null,
+  /** This cashier's own last-ended shift on this drawer — set only to trigger the
+   *  "start shift again?" prompt instead of silently auto-starting (see resolve()). */
+  restartPrompt: null,
   drawerId: null,
   drawerLabel: '',
   checking: false,
@@ -114,26 +118,55 @@ export const useShiftStore = create((set, get) => ({
       }
 
       if (local && local.status === 'open') {
-        set({ shift: local, gate: 'ready', blocker: null, handoff: null, checking: false })
+        set({
+          shift: local,
+          gate: 'ready',
+          blocker: null,
+          handoff: null,
+          restartPrompt: null,
+          checking: false,
+        })
         return { gate: 'ready', shift: local }
       }
 
-      // Floor shifts (supervisor) do not hold a drawer, so the handoff pre-fill does not
-      // apply to them.
+      // Floor shifts (supervisor) do not hold a drawer, so the handoff pre-fill and the
+      // "start again?" prompt (both drawer-cash concepts) do not apply to them.
       if (!holdsDrawer) {
-        set({ shift: null, gate: 'start', blocker: null, handoff: null, checking: false })
+        set({
+          shift: null,
+          gate: 'start',
+          blocker: null,
+          handoff: null,
+          restartPrompt: null,
+          checking: false,
+        })
         return { gate: 'start' }
       }
 
       const elsewhere = await findShiftOnAnotherDrawer(user, drawerId)
       if (elsewhere) {
-        set({ shift: null, gate: 'moved', blocker: elsewhere, handoff: null, checking: false })
+        set({
+          shift: null,
+          gate: 'moved',
+          blocker: elsewhere,
+          handoff: null,
+          restartPrompt: null,
+          checking: false,
+        })
         return { gate: 'moved', blocker: elsewhere }
       }
 
       const handoff = await findHandoff(user, drawerId)
-      set({ shift: null, gate: 'start', blocker: null, handoff, checking: false })
-      return { gate: 'start', handoff }
+      // This cashier's own last shift on THIS drawer, if it was them who ended it — the
+      // signal to ask "start shift again?" instead of silently reopening one. Stays null
+      // (silent auto-start) for a genuinely first-ever shift on this drawer.
+      const restartPrompt = await getLastClosedShiftForStaffOnDrawer({
+        branchId: user.branchId,
+        staffId: user.id,
+        drawerId,
+      })
+      set({ shift: null, gate: 'start', blocker: null, handoff, restartPrompt, checking: false })
+      return { gate: 'start', handoff, restartPrompt }
     } catch (err) {
       set({ checking: false, error: err?.message || 'Could not check shift status.' })
       // Fail closed: an unknown shift state must not let sales through unattributed.
@@ -336,7 +369,15 @@ export const useShiftStore = create((set, get) => ({
 
   /** Forget the in-memory pointer on sign-out. The LOCAL SHIFT RECORD IS NOT TOUCHED —
    *  that is what lets a re-login resume instead of asking for the float again. */
-  forget: () => set({ shift: null, gate: 'checking', blocker: null, handoff: null, error: '' }),
+  forget: () =>
+    set({
+      shift: null,
+      gate: 'checking',
+      blocker: null,
+      handoff: null,
+      restartPrompt: null,
+      error: '',
+    }),
 }))
 
 /**

@@ -73,6 +73,29 @@ export async function getLastClosedShiftOnDrawer({ branchId, drawerId }) {
 }
 
 /**
+ * This exact cashier's own most recently closed shift on this drawer — set only when THEY
+ * themselves ended it before. Used to ask "start shift again?" instead of silently reopening
+ * one on their next login, while a genuinely first-ever shift on this drawer still auto-starts
+ * with no prompt.
+ */
+export async function getLastClosedShiftForStaffOnDrawer({ branchId, staffId, drawerId }) {
+  if (!branchId || !staffId || !drawerId) return null
+  const rows = await db.shifts
+    .where('drawerId')
+    .equals(drawerId)
+    .filter(
+      (row) =>
+        row.branchId === branchId &&
+        row.staffId === staffId &&
+        row.status === 'closed' &&
+        row.clockOut,
+    )
+    .toArray()
+  rows.sort((a, b) => String(b.clockOut).localeCompare(String(a.clockOut)))
+  return rows[0] || null
+}
+
+/**
  * Server uuid for a shift the app only knows by clientId. Null while the open is still
  * queued — callers must treat that as "retry later", never as "no shift".
  */

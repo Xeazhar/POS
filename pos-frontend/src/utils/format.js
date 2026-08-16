@@ -34,6 +34,14 @@ export function formatShiftWhen(iso) {
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+/** AM/PM shift label from clock-in hour ("AM shift" / "PM shift"), or `—` if missing/invalid. */
+export function formatShiftPeriod(clockIn) {
+  if (!clockIn) return '—'
+  const d = new Date(clockIn)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.getHours() < 12 ? 'AM shift' : 'PM shift'
+}
+
 /** Elapsed time between shift start and end (or now), as "45m" / "2h 05m", or `—` if missing/invalid/reversed. */
 export function formatShiftDuration(clockIn, clockOut = null, nowMs = Date.now()) {
   if (!clockIn) return '—'

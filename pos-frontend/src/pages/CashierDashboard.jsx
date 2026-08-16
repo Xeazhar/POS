@@ -8,7 +8,7 @@ import { hasSupabase } from '../lib/api'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { useShiftStore } from '../stores/shiftStore'
 import { useSyncStore } from '../stores/syncStore'
-import { formatShiftDuration, formatShiftWhen, greetingFor, money } from '../utils/format'
+import { formatShiftDuration, formatShiftPeriod, formatShiftWhen, greetingFor, money } from '../utils/format'
 import { syncCopy, syncToneDot, syncToneText } from '../utils/syncStatus'
 
 const PAYMENT_BAR_CLASS = {
@@ -99,6 +99,7 @@ function CashierDashboard() {
 
   const shiftItems = shift
     ? [
+        { label: 'Shift', value: formatShiftPeriod(shift.clockIn) },
         { label: 'Started', value: formatShiftWhen(shift.clockIn) },
         { label: 'On shift', value: formatShiftDuration(shift.clockIn) },
         { label: 'Drawer', value: shift.holdsDrawer !== false ? shift.drawerLabel || shift.drawerId || '—' : 'Floor (no till)' },

@@ -686,8 +686,12 @@ Start shift  → auto-starts at startingCash 0, no prompt → useShiftStore.star
                → open_staff_shift() RPC → staff_shifts row (serverId)
                (a stale open shift left by a previous cashier on this drawer is
                 auto-closed here, no count, so the new shift is never blocked)
-               EXCEPT right after a manager reopens a closed day — see
-               `needsFreshCount` below, the one case that still asks for a count.
+               EXCEPT: right after a manager reopens a closed day — see
+               `needsFreshCount` below, the one case that still asks for a count —
+               OR when this cashier ended their OWN last shift on this same drawer
+               (`restartPrompt`, ShiftGate.jsx) — then a "Start your shift again?"
+               Yes/No replaces the silent auto-start. A genuinely first-ever shift
+               on this drawer still starts silently.
                Add real cash any time via POS → Open Drawer → Opening float
                (only offered while startingCash is still 0).
 
