@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { FiChevronLeft, FiChevronRight, FiLock, FiLogOut, FiMenu, FiRefreshCw, FiX } from 'react-icons/fi'
 import { navLinksFor } from '../../constants/nav'
-import { fetchCompanyProfile, hasSupabase, heartbeatStaffSession } from '../../lib/api'
+import { fetchCompanyProfile, hasSupabase, heartbeatStaffSession, isSessionRevokedError } from '../../lib/api'
 import { useAppVersion } from '../../hooks/useAppVersion'
 import { useBranchOperationsLive } from '../../hooks/useBranchOperationsLive'
+import { subscribeBroadcast } from '../../offline/realtime'
 import { useAuthStore, useCartStore } from '../../stores/posStore'
 import { useShiftStore } from '../../stores/shiftStore'
 import { useSyncStore } from '../../stores/syncStore'
@@ -35,7 +36,6 @@ function Shell({ children }) {
   const screenLocked = useAuthStore((state) => state.screenLocked)
   const lockScreen = useAuthStore((state) => state.lockScreen)
   const unlockScreen = useAuthStore((state) => state.unlockScreen)
-  const deviceSessionId = useAuthStore((state) => state.deviceSessionId)
   const online = useSyncStore((state) => state.online)
   const backendReachable = useSyncStore((state) => state.backendReachable)
   const pending = useSyncStore((state) => state.pending)
@@ -133,15 +133,35 @@ function Shell({ children }) {
 
   useEffect(() => {
     if (!hasSupabase || !user?.id) return undefined
-    const sid = deviceSessionId || user.deviceSessionId
-    if (!sid) return undefined
-    const tick = () => {
-      heartbeatStaffSession(user.id, sid).catch(() => {})
+    const tick = async () => {
+      try {
+        await heartbeatStaffSession()
+      } catch (err) {
+        if (isSessionRevokedError(err)) void useAuthStore.getState().sessionRevoked()
+        // Any other failure (offline, transient blip) — do nothing, same as before; the
+        // next tick or the next RLS-gated action will catch a real revocation.
+      }
     }
     tick()
     const t = window.setInterval(tick, HEARTBEAT_MS)
     return () => window.clearInterval(t)
-  }, [user?.id, deviceSessionId, user?.deviceSessionId])
+  }, [user?.id])
+
+  useEffect(() => {
+    if (!hasSupabase || !user?.id || !user?.branchId) return undefined
+    return subscribeBroadcast({
+      topic: `pos:branch:${user.branchId}:operations`,
+      events: ['OPERATIONS_CHANGED'],
+      onEvent: (payload) => {
+        if (payload?.kind !== 'session_revoked' || payload?.staff_id !== user.id) return
+        // Never trust the broadcast payload as truth (see CODEMAP.md Realtime section) —
+        // it only triggers an authoritative re-check against Postgres.
+        heartbeatStaffSession().catch((err) => {
+          if (isSessionRevokedError(err)) void useAuthStore.getState().sessionRevoked()
+        })
+      },
+    })
+  }, [user?.id, user?.branchId])
 
   // Only cashiers and supervisors work shifts; managers sign in to look at reports.
   // `holdsDrawer` separates the two kinds: a cashier is accountable for a till and must
