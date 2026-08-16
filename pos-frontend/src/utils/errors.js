@@ -168,6 +168,15 @@ export const ERROR_CATALOG = {
       'A previous "Create staff login" attempt created the Auth login but failed before the staff row saved (e.g. a rejected write), leaving an orphaned login with no matching account — Supabase Auth now refuses to reuse that email/code.',
     fix: 'Pick a different staff code (or email, for a manager/admin account) and save again. Ask an admin to remove the orphaned Auth user for the old code if you need to reuse it.',
   },
+  AUTH11: {
+    message: 'Your session has ended because this account was signed in on another device.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause:
+      'Single-active-session policy (migrate_single_active_session_enforcement.sql): a newer login for this staff account replaced this device\'s session. Detected via the periodic heartbeat, a realtime notice, or a rejected offline-queue sync.',
+    fix: 'Sign in again to resume on this device. Anything rung offline before the switch is still queued locally and syncs once signed back in.',
+  },
 
   // ── TILL — opening and closing the drawer ────────────────────────────────
   TILL01: {
@@ -956,6 +965,9 @@ export function formatSupportError(err, fallbackCode = 'GEN01') {
   if (/Too many failed PIN|PIN.*locked|locked out|login.*locked/i.test(raw)) {
     return `${errorMessage('AUTH07')} · Code AUTH07`
   }
+  if (/signed in on another device|session has ended/i.test(raw)) {
+    return `${errorMessage('AUTH11')} · Code AUTH11`
+  }
   // Role-ceiling refusals arrive as raw Postgres exceptions carrying their own code.
   const sec = raw.match(/\b(SEC0[1-4])\b/)
   if (sec) return `${errorMessage(sec[1])} · Code ${sec[1]}`
@@ -990,6 +1002,9 @@ export function classifyError(err, fallbackCode = 'GEN01') {
   }
   if (/Too many failed PIN|PIN.*locked|locked out|login.*locked/i.test(raw)) {
     return appError('AUTH07', raw)
+  }
+  if (/signed in on another device|session has ended/i.test(raw)) {
+    return appError('AUTH11', raw)
   }
   if (/JWT expired|refresh_token_not_found|invalid JWT/i.test(raw)) return appError('AUTH08', raw)
   if (/Invalid supervisor|Invalid.*PIN|wrong (code|pin)/i.test(raw)) return appError('AUTH09', raw)
