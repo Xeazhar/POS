@@ -16,6 +16,42 @@ export function validatePromoDates(startsAt, endsAt, { allowPastStart = false } 
   return null
 }
 
+/**
+ * Pure validation for adding one rule to a promo being authored. `usedProductIdsByType` is
+ * the caller's Map<ruleType, Set<productId>> of products already used by an existing rule of
+ * the same type on this promo. Returns null when valid; { message } for a plain error; or
+ * { duplicateIds } when the block is a product-already-used-for-this-type conflict — the
+ * caller resolves product names to build the final message (this function has no product list).
+ */
+export function validatePromoRuleDraft({
+  ruleType,
+  discountPct,
+  productA,
+  productB,
+  bundleName,
+  bundleSelected,
+  selectedProductsForRule,
+  usedProductIdsByType,
+}) {
+  if (!selectedProductsForRule.length) {
+    return { message: 'Select at least one product for this rule.' }
+  }
+  if (discountPct < 0 || discountPct > 100) {
+    return { message: 'Discount must be between 0 and 100.' }
+  }
+  if (ruleType === 'pair_pct' && productA && productB && productA === productB) {
+    return { message: 'Pair rule needs two different products.' }
+  }
+  if (ruleType === 'bundle_pct') {
+    if (!bundleName.trim()) return { message: 'Enter a bundle name before adding this rule.' }
+    if (bundleSelected.length < 2) return { message: 'Select at least 2 products for a bundle.' }
+  }
+  const usedForType = usedProductIdsByType.get(ruleType) || new Set()
+  const duplicateIds = selectedProductsForRule.filter((id) => usedForType.has(id))
+  if (duplicateIds.length) return { duplicateIds }
+  return null
+}
+
 export function isPromoDiscountType(type) {
   const t = String(type || '')
     .trim()

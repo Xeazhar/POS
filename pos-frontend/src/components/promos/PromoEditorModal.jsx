@@ -10,7 +10,7 @@ import {
   updatePromoEventDetails,
 } from '../../lib/api'
 import { formatSupportError } from '../../utils/errors'
-import { expandPromoRuleRows, validatePromoDates } from '../../utils/promo'
+import { expandPromoRuleRows, validatePromoDates, validatePromoRuleDraft } from '../../utils/promo'
 import {
   Eyebrow,
   Field,
@@ -330,34 +330,23 @@ export default function PromoEditorModal({
 
   const handleAddRule = async () => {
     setRuleAttempted(true)
-    if (!selectedProductsForRule.length) {
-      setRuleError('Select at least one product for this rule.')
+    const result = validatePromoRuleDraft({
+      ruleType,
+      discountPct,
+      productA,
+      productB,
+      bundleName,
+      bundleSelected,
+      selectedProductsForRule,
+      usedProductIdsByType,
+    })
+    if (result?.message) {
+      setRuleError(result.message)
       return
     }
-    if (discountPct < 0 || discountPct > 100) {
-      setRuleError('Discount must be between 0 and 100.')
-      return
-    }
-    if (ruleType === 'pair_pct' && productA && productB && productA === productB) {
-      setRuleError('Pair rule needs two different products.')
-      return
-    }
-    if (ruleType === 'bundle_pct') {
-      if (!bundleName.trim()) {
-        setRuleError('Enter a bundle name before adding this rule.')
-        return
-      }
-      if (bundleSelected.length < 2) {
-        setRuleError('Select at least 2 products for a bundle.')
-        return
-      }
-    }
-
-    const usedForType = usedProductIdsByType.get(ruleType) || new Set()
-    const duplicates = selectedProductsForRule.filter((id) => usedForType.has(id))
-    if (duplicates.length) {
+    if (result?.duplicateIds) {
       setRuleError(
-        `${formatProductNames(duplicates)} already ${duplicates.length > 1 ? 'have' : 'has'} a ${RULE_TYPE_LABELS[ruleType] || 'matching'} rule on this promo. Remove the existing rule or pick other products. A different rule type is fine (e.g. also in a pair or bundle).`,
+        `${formatProductNames(result.duplicateIds)} already ${result.duplicateIds.length > 1 ? 'have' : 'has'} a ${RULE_TYPE_LABELS[ruleType] || 'matching'} rule on this promo. Remove the existing rule or pick other products. A different rule type is fine (e.g. also in a pair or bundle).`,
       )
       return
     }
