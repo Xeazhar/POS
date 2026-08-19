@@ -41,6 +41,8 @@ export const duplicateField = (existing, draft) => {
   return 'field'
 }
 
+export const isValidPriceOverride = (value) => Number.isFinite(Number(value)) && Number(value) >= 0
+
 /** Next cart-line quantity for a +/- tap: 0.1kg steps for weighed items, whole units otherwise. shouldRemove is true when the step would take the line to zero or below. */
 export const nextCartQuantity = (item, delta) => {
   if (item?.pricingMode === 'kg') {

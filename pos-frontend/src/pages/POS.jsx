@@ -49,6 +49,7 @@ import {
 } from '../utils/promo'
 import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 import { formatSupportError } from '../utils/errors'
+import { isValidPriceOverride } from '../utils/validate'
 
 function menuSetupKey(branchId, bizDate) {
   return `cale-menu-setup:${branchId || 'x'}:${bizDate}`
@@ -292,7 +293,7 @@ function POS() {
   const applyPriceChange = async (approvedBy = null, approver = null) => {
     if (!priceTarget) return
     const next = Number(priceValue)
-    if (!Number.isFinite(next) || next < 0) {
+    if (!isValidPriceOverride(next)) {
       setPriceError('Enter a valid price.')
       return
     }
