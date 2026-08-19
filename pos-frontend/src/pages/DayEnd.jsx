@@ -88,15 +88,17 @@ function shiftExpectedCash(row) {
  * that figure becomes the reopened shift's startingCash. A carry from a shift that closed on
  * an EARLIER business date is real: that cash never went through today's cashSales, so it
  * still belongs in today's float — those predecessors are simply absent from `drawerShiftIds`
- * (scoped to today) and nothing here excludes them.
+ * (scoped by the caller to just this date, via fetchStaffShifts) and nothing here excludes them.
  *
  * The exclusion only holds while startingCash still EQUALS the carried figure — that is the
  * signal that nothing but a recount happened. `carriedAmount` freezes what was carried at
  * shift-open; startingCash can still diverge from it afterward (the cashier adjusts the
  * pre-filled count before starting, or later declares a fresh 'opening_float' cash_movement
- * once the shift opened at ₱0). Either path means this shift's float is no longer "the same
+ * once the shift opened at ₱0 — see migrate_cash_movement_cash_in.sql, only legal when
+ * starting_cash is still 0). Either path means this shift's float is no longer "the same
  * drawer contents recounted" but a genuinely different declared amount, so it belongs in the
- * day's float same as any non-carried shift.
+ * day's float same as any non-carried shift — excluding it unconditionally would silently
+ * drop that declared cash from Float/Expected drawer everywhere this total is used.
  */
 function isDuplicateCarry(row, drawerShiftIds) {
   return (
