@@ -31,7 +31,7 @@ import {
 } from '../../offline'
 import { withTimeout } from '../../utils/withTimeout'
 import { useAuthStore, useProductStore } from '../../stores/posStore'
-import { money, qty } from '../../utils/format'
+import { money, qty, stockTone } from '../../utils/format'
 import { formatSupportError } from '../../utils/errors'
 
 const PAGE_SIZE = 10
@@ -131,14 +131,7 @@ export default function SupervisorCatalogAdopt() {
         if (stockFilter === 'out') {
           if (Number(product.stock) > 0) return false
         } else if (stockFilter !== 'all') {
-          const tone =
-            Number(product.stock) <= 0
-              ? 'out'
-              : Number(product.stock) <= Number(product.lowStockAt || 10)
-                ? 'low'
-                : Number(product.stock) <= Number(product.mediumStockAt || 30)
-                  ? 'fair'
-                  : 'good'
+          const tone = Number(product.stock) <= 0 ? 'out' : stockTone(product)
           if (tone !== stockFilter && !(stockFilter === 'out' && tone === 'out')) {
             if (stockFilter === 'low' && tone !== 'low') return false
             if (stockFilter === 'fair' && tone !== 'fair') return false
