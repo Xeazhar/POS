@@ -40,6 +40,24 @@ Browser (Vite + React)
 
 **Rule of thumb:** UI never talks to Supabase directly except via `api.js`. Stores own session + live catalog/cart. Offline writes go to IndexedDB + queue, then syncEngine replays.
 
+**Layer boundaries (enforced):**
+
+```
+UI                    src/pages/*, src/components/*
+  — render + call store actions / utils functions
+  — no inline money/tax/discount math, no inline validation rules
+  ↓
+Application / business logic   src/stores/*.js, src/utils/*
+  — money, tax, promo, validation, stock, shift/cash rules live here
+  ↓
+Data layer             src/lib/api.js
+  — Supabase queries/RPC/mapping only, no business rules
+  ↓
+Supabase / IndexedDB    src/lib/supabase.js, src/offline/db.js
+```
+
+`src/pages/**` and `src/components/**` are not allowed to `import` from `src/lib/supabase.js` — enforced by a `no-restricted-imports` rule in `eslint.config.js` (`npm run lint` fails on violation). `src/offline/realtime.js` is the one sanctioned exception outside `api.js` (it owns the Realtime subscription, not general queries) and is exempt from the ESLint rule by being outside `pages/`/`components/`.
+
 ---
 
 ## AI Quick Orientation
