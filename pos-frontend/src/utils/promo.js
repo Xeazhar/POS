@@ -3,6 +3,19 @@ import { newUuidClientId } from '../offline/queueTypes'
 
 /** Helpers for active promo display on POS tiles and cart lines. */
 
+export function validatePromoDates(startsAt, endsAt, { allowPastStart = false } = {}) {
+  if (!startsAt || !endsAt) return 'Enter a promo duration (Starts at + Ends at).'
+  const startDate = new Date(startsAt)
+  const endDate = new Date(endsAt)
+  if (endDate <= startDate) return 'End date must be after start date.'
+  if (!allowPastStart) {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    if (startDate < today) return 'Start date cannot be in the past.'
+  }
+  return null
+}
+
 export function isPromoDiscountType(type) {
   const t = String(type || '')
     .trim()

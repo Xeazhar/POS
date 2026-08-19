@@ -10,7 +10,7 @@ import {
   updatePromoEventDetails,
 } from '../../lib/api'
 import { formatSupportError } from '../../utils/errors'
-import { expandPromoRuleRows } from '../../utils/promo'
+import { expandPromoRuleRows, validatePromoDates } from '../../utils/promo'
 import {
   Eyebrow,
   Field,
@@ -135,19 +135,6 @@ function localDateTimeValue(date) {
   if (Number.isNaN(d.getTime())) return ''
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-function validatePromoDates(startsAt, endsAt, { allowPastStart = false } = {}) {
-  if (!startsAt || !endsAt) return 'Enter a promo duration (Starts at + Ends at).'
-  const startDate = new Date(startsAt)
-  const endDate = new Date(endsAt)
-  if (endDate <= startDate) return 'End date must be after start date.'
-  if (!allowPastStart) {
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    if (startDate < today) return 'Start date cannot be in the past.'
-  }
-  return null
 }
 
 let stagedRuleSeq = 0
