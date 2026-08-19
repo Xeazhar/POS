@@ -43,6 +43,37 @@ export const duplicateField = (existing, draft) => {
 
 export const isValidPriceOverride = (value) => Number.isFinite(Number(value)) && Number(value) >= 0
 
+/**
+ * Field-shape validation shared by the branch product form (Products.jsx) and the network
+ * catalog form (ManagerNetworkCatalog.jsx). Does NOT check for duplicates — the two callers
+ * check against different lists (branch products vs network catalog) and the caller is
+ * responsible for that check itself.
+ */
+export const validateProductDraft = (
+  { name, sku, barcode, price, budgetPrice, stock },
+  { isRestaurant = false, requireStock = true } = {},
+) => {
+  const cleanName = sanitizeText(name)
+  const cleanSku = sanitizeText(sku)
+  const cleanBarcode = digitsOnly(barcode)
+  if (!cleanName || !cleanSku) return 'Name and SKU are required.'
+  if (!isRestaurant && !cleanBarcode) return 'Name, SKU, and barcode are required.'
+  if (cleanBarcode && !/^\d+$/.test(cleanBarcode)) return 'Barcode must contain numbers only.'
+  if (price === '' || Number(price) < 0) return 'Enter a valid price.'
+  if (
+    isRestaurant &&
+    budgetPrice !== '' &&
+    budgetPrice != null &&
+    (Number.isNaN(Number(budgetPrice)) || Number(budgetPrice) < 0)
+  ) {
+    return 'Enter a valid budget price (or leave blank).'
+  }
+  if (requireStock && !isRestaurant && (stock === '' || Number.isNaN(Number(stock)))) {
+    return 'Enter a valid stock amount.'
+  }
+  return null
+}
+
 /** Next cart-line quantity for a +/- tap: 0.1kg steps for weighed items, whole units otherwise. shouldRemove is true when the step would take the line to zero or below. */
 export const nextCartQuantity = (item, delta) => {
   if (item?.pricingMode === 'kg') {

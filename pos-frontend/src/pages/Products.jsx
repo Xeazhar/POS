@@ -44,6 +44,7 @@ import {
   findProductDuplicate,
   formatMoneyOnBlur,
   sanitizeText,
+  validateProductDraft,
 } from '../utils/validate'
 
 const PAGE_SIZE = 10
@@ -269,23 +270,11 @@ function Products() {
   }
 
   const validateForm = () => {
+    const fieldError = validateProductDraft(form, { isRestaurant, requireStock: true })
+    if (fieldError) return fieldError
     const name = sanitizeText(form.name)
     const sku = sanitizeText(form.sku)
     const barcode = digitsOnly(form.barcode)
-    if (!name || !sku) return 'Name and SKU are required.'
-    if (!isRestaurant && !barcode) return 'Name, SKU, and barcode are required.'
-    if (barcode && !/^\d+$/.test(barcode)) return 'Barcode must contain numbers only.'
-    if (form.price === '' || Number(form.price) < 0) return 'Enter a valid price.'
-    if (
-      isRestaurant &&
-      form.budgetPrice !== '' &&
-      (Number.isNaN(Number(form.budgetPrice)) || Number(form.budgetPrice) < 0)
-    ) {
-      return 'Enter a valid budget price (or leave blank).'
-    }
-    if (!isRestaurant && (form.stock === '' || Number.isNaN(Number(form.stock)))) {
-      return 'Enter a valid stock amount.'
-    }
     const duplicate = findProductDuplicate(products, { name, sku, barcode }, selected)
     if (duplicate) return `Duplicate ${duplicateField(duplicate, { name, sku, barcode })} already exists.`
     return null

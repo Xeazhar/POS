@@ -52,7 +52,13 @@ import { money } from '../../utils/format'
 import { formatSupportError } from '../../utils/errors'
 import ImportPreviewLines from '../shared/ImportPreviewLines'
 import { categoryForMenuKind, hasBudgetTier, MENU_KINDS } from '../../utils/ulam'
-import { decimalOnly, digitsOnly, formatMoneyOnBlur, sanitizeText } from '../../utils/validate'
+import {
+  decimalOnly,
+  digitsOnly,
+  formatMoneyOnBlur,
+  sanitizeText,
+  validateProductDraft,
+} from '../../utils/validate'
 
 import { readSpreadsheetBuffer, loadXlsx } from '../../lib/xlsxLoader'
 
@@ -315,24 +321,9 @@ export default function ManagerNetworkCatalog() {
     const name = sanitizeText(form.name)
     const sku = sanitizeText(form.sku)
     const barcode = digitsOnly(form.barcode)
-    if (!name || !sku) {
-      setFormError('Name and SKU are required.')
-      return
-    }
-    if (!isRestaurant && !barcode) {
-      setFormError('Name, SKU, and barcode are required for retail goods.')
-      return
-    }
-    if (form.price === '' || Number(form.price) < 0) {
-      setFormError('Enter a valid price.')
-      return
-    }
-    if (
-      isRestaurant &&
-      form.budgetPrice !== '' &&
-      (Number.isNaN(Number(form.budgetPrice)) || Number(form.budgetPrice) < 0)
-    ) {
-      setFormError('Enter a valid budget price (or leave blank).')
+    const fieldError = validateProductDraft(form, { isRestaurant, requireStock: false })
+    if (fieldError) {
+      setFormError(fieldError)
       return
     }
     const skuKey = sku.toLowerCase()
