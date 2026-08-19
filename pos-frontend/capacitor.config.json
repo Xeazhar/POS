@@ -1,0 +1,16 @@
+{
+  "appId": "com.calepos",
+  "appName": "CalePOS",
+  "webDir": "dist",
+  "android": {
+    "adjustMarginsForEdgeToEdge": "disable"
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css",
+      "style": "DEFAULT",
+      "hidden": true,
+      "animation": "NONE"
+    }
+  }
+}

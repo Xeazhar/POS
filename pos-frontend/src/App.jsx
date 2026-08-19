@@ -1,7 +1,6 @@
 import { Suspense, useCallback, useEffect, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import Shell from './components/shared/Shell'
-import DesktopModeHint from './components/shared/DesktopModeHint'
 import LoginIntro from './components/shared/LoginIntro'
 import { PageSkeleton } from './components/ui'
 import { useAppVersion } from './hooks/useAppVersion'
@@ -15,6 +14,7 @@ import { bindSyncStore } from './stores/syncStore'
 import { canAccessModule } from './utils/roles'
 import { staffHomePath } from './constants/nav'
 import { clearChunkReloadFlag, lazyWithRetry } from './utils/lazyWithRetry'
+
 
 const Login = lazyWithRetry(() => import('./pages/Login.jsx'))
 const Dashboard = lazyWithRetry(() => import('./pages/Dashboard.jsx'))
@@ -390,8 +390,7 @@ function AppRoutes() {
 function App() {
   return (
     <BrowserRouter>
-      <DesktopModeHint />
-      <AppRoutes />
+          <AppRoutes />
     </BrowserRouter>
   )
 }

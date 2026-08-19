@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">calepos</string>
+    <string name="title_activity_main">calepos</string>
+    <string name="package_name">com.calepos</string>
+    <string name="custom_url_scheme">com.calepos</string>
+</resources>
