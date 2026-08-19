@@ -216,6 +216,11 @@ export function stockTone(product) {
   return 'good'
 }
 
+/** New stock level after a signed restock/adjustment/shrinkage delta, rounded to 2 decimals. */
+export function applyStockDelta(currentStock, signedAmount) {
+  return Number((Number(currentStock || 0) + Number(signedAmount || 0)).toFixed(2))
+}
+
 /** Sale total minus what's been refunded off it, floored at 0. */
 export function netAfterRefund(total, refundedAmount) {
   return Math.max(0, Number((Number(total || 0) - Number(refundedAmount || 0)).toFixed(2)))

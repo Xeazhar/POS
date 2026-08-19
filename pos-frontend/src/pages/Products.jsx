@@ -33,7 +33,7 @@ import {
 } from '../lib/api'
 import { isOnline, readBranchSnapshot } from '../offline'
 import { withTimeout } from '../utils/withTimeout'
-import { isDayFullyClosed, money, qty, today, formatDate, stockTone } from '../utils/format'
+import { isDayFullyClosed, money, qty, today, formatDate, stockTone, applyStockDelta } from '../utils/format'
 import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 import { categoryForMenuKind } from '../utils/ulam'
 import InventoryImportPanel from '../components/inventory/InventoryImportPanel'
@@ -354,7 +354,7 @@ function Products() {
     }
     const signed = action === 'Restock' ? amount : -amount
     const product = products.find((item) => item.id === selected)
-    const stock = Number((product.stock + signed).toFixed(2))
+    const stock = applyStockDelta(product.stock, signed)
     try {
       if (hasSupabase) {
         await addMovement({
