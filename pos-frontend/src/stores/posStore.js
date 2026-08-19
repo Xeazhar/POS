@@ -26,6 +26,7 @@ import { withTimeout } from '../utils/withTimeout'
 import { dayEndForBusinessDate, isTillClosed, today } from '../utils/format'
 import { isSupervisorOrAbove } from '../utils/roles'
 import { detectUlamCombo, effectiveUnitPrice, hasBudgetTier, lineTotal, normalizeMenuKind } from '../utils/ulam'
+import { nextCartQuantity } from '../utils/validate'
 import { useShiftStore } from './shiftStore'
 import { useSyncStore } from './syncStore'
 
@@ -455,18 +456,11 @@ export const useCartStore = create(persist((set, get) => ({
   adjustQuantity: (index, delta) => set((state) => {
     const item = state.items[index]
     if (!item) return state
-    // kg lines: adjust weight by 0.1 kg steps
-    if (item.pricingMode === 'kg') {
-      const nextWeight = Number((Number(item.weight || 0) + Number(delta) * 0.1).toFixed(3))
-      if (nextWeight <= 0) return state // removal handled separately (needs supervisor)
-      return {
-        items: state.items.map((row, i) => (i === index ? { ...row, weight: nextWeight } : row)),
-      }
-    }
-    const nextQty = Number(item.quantity || 0) + Number(delta)
-    if (nextQty <= 0) return state
+    const { next, shouldRemove } = nextCartQuantity(item, delta)
+    if (shouldRemove) return state // removal handled separately (needs supervisor)
+    const field = item.pricingMode === 'kg' ? 'weight' : 'quantity'
     return {
-      items: state.items.map((row, i) => (i === index ? { ...row, quantity: nextQty } : row)),
+      items: state.items.map((row, i) => (i === index ? { ...row, [field]: next } : row)),
     }
   }),
   removeItem: (index) => set((state) => ({ items: state.items.filter((_, i) => i !== index) })),

@@ -13,6 +13,7 @@ import { buildCartDisplayGroups, computePromoDiscounts } from '../../utils/promo
 import { canCompleteSale, computeChange, computeVatBreakdown, VAT_RATE_DEFAULT } from '../../utils/vat'
 import { hasBudgetTier, lineTotal } from '../../utils/ulam'
 import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
+import { nextCartQuantity } from '../../utils/validate'
 import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton, StatusOverlay, moneyClass } from '../ui'
 import CartRemoveApprove from './CartRemoveApprove'
 import NumPad from './NumPad'
@@ -565,17 +566,8 @@ function Cart({
   const bumpQty = (index, delta) => {
     const item = items[index]
     if (!item) return
-    if (item.pricingMode === 'kg') {
-      const next = Number(item.weight || 0) + delta * 0.1
-      if (next <= 0) {
-        requestRemove(index)
-        return
-      }
-      adjustQuantity(index, delta)
-      return
-    }
-    const next = Number(item.quantity || 0) + delta
-    if (next <= 0) {
+    const { shouldRemove } = nextCartQuantity(item, delta)
+    if (shouldRemove) {
       requestRemove(index)
       return
     }

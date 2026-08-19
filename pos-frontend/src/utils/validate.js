@@ -40,3 +40,13 @@ export const duplicateField = (existing, draft) => {
   if (draft.barcode && String(existing.barcode || '') === String(draft.barcode)) return 'barcode'
   return 'field'
 }
+
+/** Next cart-line quantity for a +/- tap: 0.1kg steps for weighed items, whole units otherwise. shouldRemove is true when the step would take the line to zero or below. */
+export const nextCartQuantity = (item, delta) => {
+  if (item?.pricingMode === 'kg') {
+    const next = Number((Number(item.weight || 0) + Number(delta) * 0.1).toFixed(3))
+    return { next, shouldRemove: next <= 0 }
+  }
+  const next = Number(item?.quantity || 0) + Number(delta)
+  return { next, shouldRemove: next <= 0 }
+}
