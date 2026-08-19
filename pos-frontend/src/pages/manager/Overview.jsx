@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import AuditSummary from '../../components/dashboard/AuditSummary'
 import RevenueChart from '../../components/dashboard/RevenueChart'
@@ -24,6 +24,8 @@ import {
 } from '../../lib/api'
 import { useAuthStore } from '../../stores/posStore'
 import { isOnline, readBranchesCache } from '../../offline'
+import { NETWORK_OPERATIONS_TOPIC } from '../../offline/realtime'
+import { useLiveData } from '../../hooks/useLiveData'
 import { withTimeout } from '../../utils/withTimeout'
 import { mapLimit } from '../../utils/mapLimit'
 import { businessDate, greetingFor, money } from '../../utils/format'
@@ -82,7 +84,7 @@ const PAYMENT_BAR_CLASS = {
  */
 function ManagerOverview() {
   const user = useAuthStore((state) => state.user)
-  const [period, setPeriod] = useState('week')
+  const [period, setPeriod] = useState('day')
   const [branches, setBranches] = useState([])
   const [summaries, setSummaries] = useState({})
   const [linePoints, setLinePoints] = useState([])
@@ -98,13 +100,25 @@ function ManagerOverview() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
+  // Guards against a live-refresh (broadcast/poll) response landing after the user has
+  // already switched period — only apply results that still match the period they're on.
+  const periodRef = useRef(period)
   useEffect(() => {
-    let active = true
-    setLoading(true)
-    setSelectedPointIndex(null)
+    periodRef.current = period
+  }, [period])
+
+  // `silent`: a background live-refresh (broadcast/poll) — keep whatever's on screen
+  // (no skeleton flash, don't clear the chart-point drill-down) and just swap the
+  // numbers in once the refetch resolves. A real period change resets both.
+  const loadMetrics = async ({ silent = false } = {}) => {
     const meta = PERIODS.find((p) => p.id === period) || PERIODS[1]
-    Promise.resolve()
+    if (!silent) {
+      setLoading(true)
+      setSelectedPointIndex(null)
+    }
+    await Promise.resolve()
       .then(async () => {
+        const active = periodRef.current === meta.id
         if (!hasSupabase) {
           if (!active) return
           setBranches([
@@ -243,15 +257,27 @@ function ManagerOverview() {
         setLoading(false)
       })
       .catch((err) => {
-        if (active) {
+        if (periodRef.current === meta.id) {
           setError(err.message)
           setLoading(false)
         }
       })
-    return () => {
-      active = false
-    }
+  }
+
+  useEffect(() => {
+    void loadMetrics({ silent: false })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMetrics closes over `period` itself
   }, [period])
+
+  // Broadcast (pos:network:operations, pushed on every branch's sale/void/refund/cash-drawer/
+  // day-end change — see broadcast_pos_event) + poll fallback. Silent: swaps numbers in
+  // without the loading skeleton or resetting the chart-point drill-down.
+  useLiveData({
+    enabled: hasSupabase && isOnline(),
+    fetch: () => loadMetrics({ silent: true }),
+    broadcasts: [{ topic: NETWORK_OPERATIONS_TOPIC, events: ['OPERATIONS_CHANGED'] }],
+    pollMs: 15_000,
+  })
 
   const totals = Object.values(summaries).reduce(
     (acc, row) => ({
@@ -317,11 +343,9 @@ function ManagerOverview() {
         { label: 'Cash sales', value: money(cashImpactTotals.cashSales) },
         { label: 'Card sales', value: money(cashImpactTotals.cardSales) },
         { label: 'E-wallet sales', value: money(cashImpactTotals.ewalletSales) },
-        {
-          label: 'Cash in / out',
-          value: money(cashImpactTotals.changeFund - cashImpactTotals.pickup - cashImpactTotals.paidOut),
-          hint: `${money(cashImpactTotals.changeFund)} in · ${money(cashImpactTotals.pickup + cashImpactTotals.paidOut)} out`,
-        },
+        { label: 'Change fund in', value: money(cashImpactTotals.changeFund) },
+        { label: 'Petty cash out', value: money(cashImpactTotals.paidOut), tone: 'danger', hint: 'Expense' },
+        { label: 'Cash pickup', value: money(cashImpactTotals.pickup), hint: 'To safe, not an expense' },
       ]
     : []
 

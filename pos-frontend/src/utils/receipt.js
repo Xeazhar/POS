@@ -4,20 +4,20 @@ import { money, qty } from './format'
  * Build a BIR-oriented receipt payload from branch + transaction detail.
  * Hardware printers can consume this object; browser print uses HTML.
  *
- * Invoice/OR number: never generated on-device — a client-computed number is only
+ * Invoice number: never generated on-device — a client-computed number is only
  * atomic within one browser's IndexedDB, not across every till selling at the branch, so
- * it can't be trusted as the official sequential number. The server assigns the real OR
- * (`allocate_or_number`, row-locked per branch) once this sale's queued write reaches it.
+ * it can't be trusted as the official sequential number. The server assigns the real invoice
+ * number (`allocate_invoice_number`, row-locked per branch) once this sale's queued write reaches it.
  * Until then the receipt prints PENDING with the sale's local reference (`transaction.id`,
  * same short id shown elsewhere in the app for an unsynced row) so this slip can be
- * matched to the synced sale later and reprinted with its real OR (Transactions → Reprint).
+ * matched to the synced sale later and reprinted with its real invoice number (Transactions → Reprint).
  */
 export function buildReceipt({ branch = {}, transaction = {}, lines = [], user = {} }) {
   const businessName = branch.business_name || branch.name || 'CalePOS Store'
-  const rawOrNumber = transaction.orNumber || transaction.or_number || null
-  const isPendingOr = !rawOrNumber
+  const rawInvoiceNumber = transaction.invoiceNumber || transaction.invoice_number || null
+  const isPendingInvoice = !rawInvoiceNumber
   const localRef = transaction.id ? String(transaction.id).slice(0, 8) : null
-  const orNumber = rawOrNumber || (localRef ? `PENDING-${localRef}` : 'PENDING')
+  const invoiceNumber = rawInvoiceNumber || (localRef ? `PENDING-${localRef}` : 'PENDING')
   return {
     header: {
       businessName,
@@ -37,8 +37,8 @@ export function buildReceipt({ branch = {}, transaction = {}, lines = [], user =
       // longer valid proof of sale. Printing "Official Receipt" as the primary document is one
       // of the most common post-EOPT compliance mistakes.
       title: 'SALES INVOICE',
-      orNumber,
-      isPendingOr,
+      invoiceNumber,
+      isPendingInvoice,
       dateTime: transaction.createdAt || transaction.time || new Date().toISOString(),
       cashier: transaction.cashier || user.name || 'Staff',
       status: transaction.status || 'Paid',
@@ -161,7 +161,7 @@ export function receiptToHtml(receipt) {
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>${escapeHtml(d.title)} ${escapeHtml(String(d.orNumber))}</title>
+  <title>${escapeHtml(d.title)} ${escapeHtml(String(d.invoiceNumber))}</title>
   <style>
     body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #111; margin: 0; padding: 16px; }
     .ticket { width: 300px; margin: 0 auto; }
@@ -203,7 +203,7 @@ export function receiptToHtml(receipt) {
     <div class="center muted">MIN: ${escapeHtml(h.machineId || '—')} · SN: ${escapeHtml(h.serialNumber || '—')}</div>
     <div class="rule"></div>
     <div class="center"><strong>${escapeHtml(d.title)}</strong></div>
-    <div>OR No: <strong>${escapeHtml(String(d.orNumber))}</strong>${d.isPendingOr ? ' <span class="muted">(assigns on sync)</span>' : ''}</div>
+    <div>Sales Invoice No: <strong>${escapeHtml(String(d.invoiceNumber))}</strong>${d.isPendingInvoice ? ' <span class="muted">(assigns on sync)</span>' : ''}</div>
     <div>Date: ${escapeHtml(formatReceiptDate(d.dateTime))}</div>
     <div>Cashier: ${escapeHtml(d.cashier)}</div>
     <div>Status: ${escapeHtml(d.status)}${d.voidReason ? ` (${escapeHtml(d.voidReason)})` : ''}</div>

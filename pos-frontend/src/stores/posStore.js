@@ -85,7 +85,12 @@ export const useAuthStore = create(persist((set, get) => ({
         await saveLocalSession(user)
         return user
       }
-      if (!isOnline()) {
+      // `isOnline()` is just navigator.onLine — true on dead wifi/captive portals, which
+      // used to send this straight into the real signIn call below, hang on a fetch that
+      // can never complete, and surface a generic "could not reach the server" AUTH01
+      // instead of the cached-session path this branch exists for. Check actual backend
+      // reachability, same pattern as restoreSession.
+      if (!isOnline() || !(await isBackendReachable())) {
         if (await needsFreshLogin()) {
           throw appError('AUTH04')
         }
@@ -199,7 +204,7 @@ export const useAuthStore = create(persist((set, get) => ({
       }
 
       await saveLocalSession(user)
-      if (user?.id && isOnline()) {
+      if (user?.id && isOnline() && (await isBackendReachable())) {
         const sessionId = user.deviceSessionId || api.getOrCreateDeviceSessionId()
         try {
           // Verify-only: a plain reload keeps the same JWT session_id, so this succeeds for
@@ -211,14 +216,20 @@ export const useAuthStore = create(persist((set, get) => ({
           await saveLocalSession(user)
           set({ user, booting: false, deviceSessionId: sessionId })
         } catch (verifyErr) {
-          await api.signOut().catch(() => {})
-          await clearLocalSession()
-          await api.clearManagerUnlockSecret().catch(() => {})
-          const message = api.isSessionRevokedError(verifyErr)
-            ? appError('AUTH11').message
-            : verifyErr.message
-          set({ user: null, booting: false, error: message, screenLocked: false })
-          return null
+          // Only a definitive SESSION_REVOKED means this device actually lost the claim —
+          // any other failure (network blip, backend hiccup right as reachability flipped)
+          // must not sign the cashier out and wipe their cached session over it. This used
+          // to force-logout on a plain "Failed to fetch", which then also broke the next
+          // login attempt by deleting the very cached session offline login falls back to.
+          if (!api.isSessionRevokedError(verifyErr)) {
+            set({ user, booting: false, deviceSessionId: sessionId })
+          } else {
+            await api.signOut().catch(() => {})
+            await clearLocalSession()
+            await api.clearManagerUnlockSecret().catch(() => {})
+            set({ user: null, booting: false, error: appError('AUTH11').message, screenLocked: false })
+            return null
+          }
         }
       } else {
         set({ user, booting: false })
@@ -896,15 +907,16 @@ export const useInventoryStore = create((set, get) => ({
     const bizDate = today(get().dayOpenHour)
     const localId = payload.id || newClientId('txn')
 
-    // The official invoice/OR number is never generated on-device. A client-computed
+    // The official invoice number is never generated on-device. A client-computed
     // number is only atomic within this one browser's IndexedDB, not across the other
     // devices selling at the same branch, so two tills checking out at once (or two
     // offline devices with the same last-synced counter) could each print the same
     // number. The receipt prints with `localId` as its reference instead (buildReceipt's
-    // PENDING branch); the server assigns the real OR atomically (`allocate_or_number`,
-    // row-locked per branch) once this sale's COMPLETE_SALE queue item pushes, and the
-    // authoritative row — with its real OR — replaces this local one on the next pull.
-    const orNumber = null
+    // PENDING branch); the server assigns the real invoice number atomically
+    // (`allocate_invoice_number`, row-locked per branch) once this sale's COMPLETE_SALE
+    // queue item pushes, and the authoritative row — with its real invoice number —
+    // replaces this local one on the next pull.
+    const invoiceNumber = null
 
     if (!isRestaurant) {
       for (const item of items) {
@@ -938,7 +950,7 @@ export const useInventoryStore = create((set, get) => ({
     const localTxn = {
       ...payload,
       id: localId,
-      orNumber,
+      invoiceNumber,
       itemsList: items,
       date: payload.date || bizDate,
       branchId: user?.branchId,
@@ -1010,7 +1022,7 @@ export const useInventoryStore = create((set, get) => ({
           discountIdNote: payload.discountIdNote || null,
           shiftClientId: activeShift?.clientId || null,
           shiftId: activeShift?.serverId || null,
-          orNumber,
+          invoiceNumber,
           localTransactionId: localId,
           clientId: localId,
         },

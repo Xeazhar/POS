@@ -34,7 +34,7 @@ function TransactionDetailModal({
       ) : (
         <>
           <Eyebrow>TRANSACTION DETAIL</Eyebrow>
-          <h2 className="mb-1 text-[22px]">{detail.orNumber || String(detail.id).slice(0, 8)}</h2>
+          <h2 className="mb-1 text-[22px]">{detail.invoiceNumber || String(detail.id).slice(0, 8)}</h2>
           <p className="m-0 text-xs text-brand-muted">
             {detail.time || detail.date || '—'} · {detail.cashier || 'Staff'} · {detail.status}
             {detail.syncStatus === 'pending' || detail.syncStatus === 'local' ? ' · Pending sync' : ''}

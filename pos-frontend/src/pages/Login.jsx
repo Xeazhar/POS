@@ -3,6 +3,7 @@ import { Eyebrow, ErrorBanner, Field, PrimaryButton, Skeleton } from '../compone
 import Turnstile, { useTurnstileSiteKey } from '../components/shared/Turnstile'
 import { CredentialAutofillTrap, secureFormProps } from '../components/shared/SecureCredential'
 import { allowDemoMode, hasSupabase } from '../lib/api'
+import { isBackendReachable } from '../offline'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { formatSupportError } from '../utils/errors'
 import { sanitizePinInput } from '../utils/pin'
@@ -21,7 +22,6 @@ function Login() {
   const configured = hasSupabase || allowDemoMode
   const { siteKey: turnstileSiteKey, loading: captchaLoading, error: captchaConfigError, enabled: captchaRequired } =
     useTurnstileSiteKey()
-  const captchaActive = hasSupabase && captchaRequired
   const [mode, setMode] = useState('pin') // pin | email
   const [loginCode, setLoginCode] = useState('')
   const [pin, setPin] = useState('')
@@ -54,6 +54,25 @@ function Login() {
     }
   }, [])
 
+  // navigator.onLine lies on wifi-without-internet / captive portals — probe actual
+  // backend reachability too, so the captcha widget isn't shown (and submit isn't
+  // blocked waiting on a token that can never arrive) when it can never load or verify.
+  useEffect(() => {
+    if (!hasSupabase) return undefined
+    let cancelled = false
+    isBackendReachable().then((reachable) => {
+      if (!cancelled && !reachable) setIsOffline(true)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Offline PIN sign-in reads the cached local session (posStore.login) and never touches
+  // the network, so Turnstile can't load and shouldn't be required — see posStore.js's
+  // offline branch, which returns the cached user before captchaToken is ever used.
+  const captchaActive = hasSupabase && captchaRequired && !isOffline
+
   const resetCaptcha = () => {
     setCaptchaToken('')
     setCaptchaKey((k) => k + 1)
@@ -71,8 +90,13 @@ function Login() {
   }
 
   return (
-    <main className="grid min-h-screen place-items-center bg-brand-dark">
-      <div className="w-[min(420px,calc(100%-32px))] rounded-[10px] border border-brand-line bg-brand-card p-11">
+    <main className="flex h-dvh justify-center overflow-y-auto bg-brand-dark py-8">
+      {/* `my-auto` (not align/place-items center) so an overflowing card scrolls into
+          view from the top instead of being clipped by CSS's "unsafe centering" — a
+          plain centered flex/grid item stays visually centered even past the
+          container's bounds, making its top half permanently unreachable when the
+          page can't grow taller (mobile landscape, short viewports). */}
+      <div className="my-auto w-[min(420px,calc(100%-32px))] rounded-[10px] border border-brand-line bg-brand-card p-11">
         <div className="mb-7 grid h-[43px] w-[43px] place-items-center rounded-lg bg-brand-gold text-[21px] font-bold text-brand-on-gold">
           C
         </div>
@@ -106,8 +130,17 @@ function Login() {
                 event.preventDefault()
                 try {
                   if (captchaActive && !captchaToken) {
-                    useAuthStore.setState({ error: 'Complete the security check before signing in.' })
-                    return
+                    // Re-probe instead of trusting stale isOffline state: connectivity can
+                    // drop between mount and submit without a browser 'offline' event
+                    // (e.g. wifi stays associated but loses internet), which would
+                    // otherwise strand the form on a captcha that can never complete.
+                    const reachable = await isBackendReachable(true)
+                    if (!reachable) {
+                      setIsOffline(true)
+                    } else {
+                      useAuthStore.setState({ error: 'Complete the security check before signing in.' })
+                      return
+                    }
                   }
                   const user =
                     mode === 'pin'

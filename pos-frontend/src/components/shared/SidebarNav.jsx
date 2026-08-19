@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { FiCheck, FiMove, FiRotateCcw } from 'react-icons/fi'
+import { FiCheck, FiRotateCcw } from 'react-icons/fi'
+import { FaRegEdit } from "react-icons/fa";
 import { isSettingsNavActive } from '../../constants/nav'
 import { moveNavPath } from '../../utils/navOrder'
 
@@ -164,10 +165,10 @@ export default function SidebarNav({
           reorderMode ? 'bg-brand-gold/15 text-brand-gold' : ''
         }`}
       >
-        {reorderMode ? <FiCheck size={13} /> : <FiMove size={13} />}
+        {reorderMode ? <FiCheck size={13} /> : <FaRegEdit size={13} />}
         {!iconOnly && (
           <span className="mt-0.5 text-[8px] font-bold tracking-wide uppercase max-[700px]:mt-0 compact:mt-0">
-            {reorderMode ? 'Done' : 'Order'}
+            {reorderMode ? 'Done' : 'Edit'}
           </span>
         )}
       </button>
@@ -189,11 +190,7 @@ export default function SidebarNav({
           )}
         </button>
       )}
-      {reorderMode && !iconOnly && (
-        <p className="m-0 mt-1.5 px-1 text-center text-[8px] leading-snug text-brand-n600 max-[700px]:px-3 max-[700px]:text-left compact:px-3 compact:text-left">
-          Drag a tab — it follows your finger. Saved on this till.
-        </p>
-      )}
+      
     </div>
   )
 

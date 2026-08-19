@@ -642,11 +642,9 @@ function ManagerBranchDashboard() {
         { label: 'Cash sales', value: money(cashImpact.cashSales) },
         { label: 'Card sales', value: money(cashImpact.cardSales) },
         { label: 'E-wallet sales', value: money(cashImpact.ewalletSales) },
-        {
-          label: 'Cash in / out',
-          value: money(cashImpact.changeFund - cashImpact.pickup - cashImpact.paidOut),
-          hint: `${money(cashImpact.changeFund)} in · ${money(cashImpact.pickup + cashImpact.paidOut)} out`,
-        },
+        { label: 'Change fund in', value: money(cashImpact.changeFund) },
+        { label: 'Petty cash out', value: money(cashImpact.paidOut), tone: 'danger', hint: 'Expense' },
+        { label: 'Cash pickup', value: money(cashImpact.pickup), hint: 'To safe, not an expense' },
       ]
     : []
   const todayEntry = (data.dayEnds || []).find((entry) => entry.date === todayKey)
@@ -1089,12 +1087,12 @@ function ManagerBranchDashboard() {
               }}
             >
               <span className="self-center text-[11px] text-brand-slate">{item.time || item.date || '—'}</span>
-              {/* Tags sit inline on one line rather than stacking under the OR number —
+              {/* Tags sit inline on one line rather than stacking under the invoice number —
                   three stacked blocks made every discounted row three times taller and
                   turned the list into a wall. Full detail is still in the row's modal. */}
               <span className="flex min-w-0 items-center gap-1.5 self-center">
                 <strong className="truncate text-brand-ink">
-                  {item.orNumber || `Pending · ${item.id.slice(0, 8)}`}
+                  {item.invoiceNumber || `Pending · ${item.id.slice(0, 8)}`}
                 </strong>
                 {Number(item.discountAmount || 0) > 0 && (
                   <span
@@ -1523,7 +1521,7 @@ function ManagerBranchDashboard() {
             meta={`${refundRequests.length} pending`}
           />
           <div className="grid grid-cols-[0.9fr_0.7fr_1.4fr_1fr_1.1fr] gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[1fr_1fr_1.2fr]">
-            <span>OR #</span>
+            <span>Invoice #</span>
             <span className="max-[900px]:hidden">Type</span>
             <span>Reason</span>
             <span className="max-[900px]:hidden">Requested by</span>
@@ -1534,7 +1532,7 @@ function ManagerBranchDashboard() {
               key={row.id}
               className="grid grid-cols-[0.9fr_0.7fr_1.4fr_1fr_1.1fr] items-center gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[1fr_1fr_1.2fr]"
             >
-              <span className="truncate text-brand-ink">{row.orNumber || row.transactionId.slice(0, 8)}</span>
+              <span className="truncate text-brand-ink">{row.invoiceNumber || row.transactionId.slice(0, 8)}</span>
               <span className="capitalize text-brand-slate max-[900px]:hidden">
                 {row.mode === 'full' ? 'Full' : 'Items'}
               </span>
@@ -1581,7 +1579,7 @@ function ManagerBranchDashboard() {
         <Modal onClose={() => !refundBusyId && setRejectingRefund(null)}>
           <Eyebrow>REJECT REFUND</Eyebrow>
           <h2 className="m-0 mb-2 text-lg">
-            Reject refund for {rejectingRefund.orNumber || rejectingRefund.transactionId.slice(0, 8)}?
+            Reject refund for {rejectingRefund.invoiceNumber || rejectingRefund.transactionId.slice(0, 8)}?
           </h2>
           <p className="m-0 mb-3 text-xs text-brand-muted">
             The cashier will see this reason and can try again.
@@ -2230,7 +2228,7 @@ function ManagerBranchDashboard() {
               <Field label="BIR permit no." value={form.bir_permit_no || ''} onChange={(e) => setForm({ ...form, bir_permit_no: e.target.value })} />
               <Field label="Machine ID (MIN)" value={form.machine_identification_no || ''} onChange={(e) => setForm({ ...form, machine_identification_no: e.target.value })} />
               <Field label="Serial number" value={form.serial_number || ''} onChange={(e) => setForm({ ...form, serial_number: e.target.value })} />
-              <Field label="OR prefix" value={form.or_prefix || 'OR'} onChange={(e) => setForm({ ...form, or_prefix: e.target.value })} />
+              <Field label="Invoice prefix" value={form.invoice_prefix || 'SI'} onChange={(e) => setForm({ ...form, invoice_prefix: e.target.value })} />
               <label className="grid gap-1.5 text-xs font-bold text-brand-n700">
                 Day opens at
                 <select

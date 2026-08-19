@@ -291,8 +291,8 @@ export function buildTerminalReportData({
       address: branch.address || '',
       tin: branch.full_tin || branch.tin || '',
       serial: branch.serial_number || branch.serialNumber || '',
-      terminal: branch.or_prefix || branch.terminal_id || '00001',
-      footerOfficial: branch.receipt_footer_official || 'THIS IS YOUR OFFICIAL RECEIPT',
+      terminal: branch.invoice_prefix || branch.terminal_id || '00001',
+      footerOfficial: branch.receipt_footer_official || 'THIS IS YOUR SALES INVOICE',
       footerThanks: branch.receipt_footer_thanks || 'THANK YOU, COME AGAIN',
       footerContact: branch.receipt_footer_contact || branch.contact_phone || '',
       footerTagline: branch.receipt_footer_tagline || '',
@@ -751,7 +751,7 @@ export function formatReportPdfHtml(kind, data, opts = {}) {
 <h2>Summary</h2>
 ${body || '<p>No rows.</p>'}
 <div class="foot">
-  <div>${esc(b.footerOfficial || 'THIS IS YOUR OFFICIAL RECEIPT')}</div>
+  <div>${esc(b.footerOfficial || 'THIS IS YOUR SALES INVOICE')}</div>
   <div>${esc(b.footerThanks || 'THANK YOU, COME AGAIN')}</div>
   ${b.footerContact ? `<div>${esc(b.footerContact)}</div>` : ''}
   ${b.footerTagline ? `<div>${esc(b.footerTagline)}</div>` : ''}

@@ -1967,7 +1967,7 @@ export default function ManagerPromos() {
                 </p>
                 <div className="max-h-[240px] overflow-auto rounded border border-brand-softline">
                   <div className="grid grid-cols-[1fr_1fr_0.9fr_0.9fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
-                    <span>OR / Time</span>
+                    <span>Invoice / Time</span>
                     <span>Cashier</span>
                     <span className="text-right">Discount</span>
                     <span className="text-right">Total</span>
@@ -1985,7 +1985,7 @@ export default function ManagerPromos() {
                     >
                       <div className="min-w-0">
                         <strong className="block truncate text-brand-ink">
-                          {r.orNumber || String(r.id).slice(0, 8)}
+                          {r.invoiceNumber || String(r.id).slice(0, 8)}
                         </strong>
                         <span className="text-[10px] text-brand-subtle">{r.time}</span>
                       </div>

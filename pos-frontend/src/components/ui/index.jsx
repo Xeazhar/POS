@@ -587,7 +587,7 @@ ModalActions.displayName = 'ModalActions'
  *
  * That second line is the point. Without it a cashier facing a failed payment has two
  * options and no basis to choose between them: ring it again (and risk double-charging a
- * customer) or wave the customer off (and lose the sale plus break the OR sequence). The
+ * customer) or wave the customer off (and lose the sale plus break the invoice sequence). The
  * catalog in utils/errors.js knows which is correct for every code, so it says so instead
  * of leaving it to nerve.
  */

@@ -44,6 +44,7 @@ import {
   isItemPercentPromo,
   promoBadgeLabel,
   promoDisplayName,
+  promoPartnerLabel,
   promoUnitPrice,
 } from '../utils/promo'
 import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'

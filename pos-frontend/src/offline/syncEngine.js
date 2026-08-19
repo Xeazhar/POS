@@ -93,8 +93,8 @@ export async function pullFromRemote(branchId) {
     branchId,
     name: remote.branchName || '',
     dayOpenHour: Number(remote.dayOpenHour ?? 7),
-    orPrefix: remote.orPrefix,
-    orNext: remote.orNext,
+    invoicePrefix: remote.invoicePrefix,
+    invoiceNext: remote.invoiceNext,
     updatedAt: new Date().toISOString(),
   })
 
@@ -558,8 +558,8 @@ const FULL_PULL_SAFETY_NET_MS = 5 * 60 * 1000
 
 /** Whether the next drainQueueInBackground() call should pay for a full pullFromRemote(). */
 async function needsFullPull(justPushedCount, pushedOnlySelfHealing) {
-  // Pushed at least one non-self-healing write — reconcile immediately (authoritative OR
-  // numbers, other terminals' concurrent changes, etc.). Never skip this case.
+  // Pushed at least one non-self-healing write — reconcile immediately (authoritative
+  // invoice numbers, other terminals' concurrent changes, etc.). Never skip this case.
   if (justPushedCount > 0 && !pushedOnlySelfHealing) return true
   const meta = await db.meta.get(META_KEYS.lastPullAt)
   if (!meta?.value) return true // never pulled yet this session

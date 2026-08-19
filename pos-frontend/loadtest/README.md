@@ -3,9 +3,9 @@
 `pos-checkout.js` simulates concurrent cashier terminals ringing sales against the
 **POS-Stress test** Supabase project — the same `resolve_pin_login` → password grant →
 `complete_sale` sequence `completeSale()` in `src/lib/api.js` uses (its primary path since
-`migrate_complete_sale_rpc.sql`: one atomic RPC does till check + OR allocation + transaction
+`migrate_complete_sale_rpc.sql`: one atomic RPC does till check + invoice allocation + transaction
 insert + item inserts + stock movements + audit event server-side, instead of 4 separate
-round trips), so it exercises real contention on `allocate_or_number`'s per-branch row lock,
+round trips), so it exercises real contention on `allocate_invoice_number`'s per-branch row lock,
 not a synthetic approximation.
 
 It targets `SUPABASE_URL` from `pos-frontend/.env.test` — only ever the dedicated load-test
@@ -49,7 +49,7 @@ npm run loadtest -- -e LEVEL=50
   create/approve dual-control flow, same shortcut the product seeding takes.
 - **Per VU:** logs in once as one of the 28 cashier accounts (cycles through them by VU
   number, so multiple VUs land on the same branch at higher concurrency — that's
-  deliberate, it's what actually contends on `branches.or_next`), then loops: ring a 1-3
+  deliberate, it's what actually contends on `branches.invoice_next`), then loops: ring a 1-3
   line sale (payment method randomized 70% cash / 20% card / 10% e-wallet; a line lands
   under the branch's promo whenever its product is one of the discount-eligible ones),
   then independently rolls the sale into exactly one of — void (5%), a partial or full
@@ -59,7 +59,7 @@ npm run loadtest -- -e LEVEL=50
 - Custom metrics: `checkout_duration`, `complete_sale_duration` (same span as
   `checkout_duration` now that checkout is one round trip — kept as a separate metric name
   since that's what the perf task asked for), `void_duration`, `refund_duration`,
-  `login_duration`, `checkout_errors`, `or_numbers_allocated`, `voids_processed`,
+  `login_duration`, `checkout_errors`, `invoice_numbers_allocated`, `voids_processed`,
   `partial_refunds_processed`, `full_item_refunds_processed`, `cash_sales`, `card_sales`,
   `ewallet_sales`, `promo_lines_sold`, `deadlock_retries` (Postgres 40P01 on
   `complete_sale` — see `migrate_complete_sale_rpc.sql`; retried once, same as
@@ -70,10 +70,10 @@ npm run loadtest -- -e LEVEL=50
 
 ## After a run
 
-Sales/voids/OR numbers pile up in `POS-Stress test` — that's expected, it's a throwaway
+Sales/voids/invoice numbers pile up in `POS-Stress test` — that's expected, it's a throwaway
 project. Nothing here ever touches `calepos-dev`/`calepos-staging`/production.
 
 To reset between runs without recreating the project: re-run the SQL in
 `supabase/wipe_non_user_data.sql` against `POS-Stress test` (truncates sales/inventory/
-promos/shifts, keeps staff/branches) — or just let sales accumulate; OR numbers and
+promos/shifts, keeps staff/branches) — or just let sales accumulate; invoice numbers and
 `client_id` dedup mean repeat runs don't collide.

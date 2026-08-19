@@ -3,9 +3,9 @@
  * POS-Stress test Supabase project via the exact REST/RPC calls the app itself makes
  * (resolve_pin_login -> password grant -> complete_sale), the same primary path as
  * completeSale() in src/lib/api.js. complete_sale() (migrate_complete_sale_rpc.sql) does
- * till check + OR allocation + transaction insert + item inserts + stock movements + audit
+ * till check + invoice allocation + transaction insert + item inserts + stock movements + audit
  * event atomically in one round trip; if that RPC isn't deployed yet, completeSale() falls
- * back to the older 4-round-trip flow (assert_till_open + allocate/reserve_or_number ->
+ * back to the older 4-round-trip flow (assert_till_open + allocate/reserve_invoice_number ->
  * insert transactions -> insert transaction_items -> record_stock_movement), but this load
  * test always exercises the atomic path since that's what the perf work targets. Every sale
  * randomizes payment method (cash/card/e-wallet); a share of lines fall under each branch's
@@ -44,7 +44,7 @@ const loginErrors = new Counter('login_errors');
 // (working as intended). If this climbs, the account/rate-limit problem is real and durable,
 // not a blip — see ensureSession()'s comment.
 const loginGiveUps = new Counter('login_give_ups');
-const orNumbersAllocated = new Counter('or_numbers_allocated');
+const orNumbersAllocated = new Counter('invoice_numbers_allocated');
 const voidsProcessed = new Counter('voids_processed');
 const partialRefundsProcessed = new Counter('partial_refunds_processed');
 const fullItemRefundsProcessed = new Counter('full_item_refunds_processed');
@@ -55,7 +55,7 @@ const promoLinesSold = new Counter('promo_lines_sold');
 
 // Per-operation timing. Since completeSale() now calls the atomic complete_sale() RPC
 // (migrate_complete_sale_rpc.sql) instead of 4 separate round trips (assert_till_open +
-// allocate_or_number + insert transactions + insert transaction_items + record_stock_movement
+// allocate_invoice_number + insert transactions + insert transaction_items + record_stock_movement
 // per line), those steps are no longer independently observable from the client — they run
 // inside one server-side transaction. complete_sale_duration and checkout_duration now cover
 // the same span; both are kept because the task asked for complete_sale_total_duration
@@ -501,7 +501,7 @@ export default function (data) {
     vat_category: 'vatable',
   }));
 
-  // Mirrors completeSale(): one atomic complete_sale() RPC call does till check + OR
+  // Mirrors completeSale(): one atomic complete_sale() RPC call does till check + invoice
   // allocation + transaction insert + item inserts + stock movements + audit event, all in
   // one server-side transaction (migrate_complete_sale_rpc.sql) — see loadtest/README.md.
   // Up to one retry on a Postgres deadlock victim (40P01) — same mitigation completeSale()
@@ -539,7 +539,7 @@ export default function (data) {
     sleep(randomInt(300, 1000) / 1000);
     return;
   }
-  if (txn.or_number) orNumbersAllocated.add(1);
+  if (txn.invoice_number) orNumbersAllocated.add(1);
   if (paymentMethod === 'cash') cashSales.add(1);
   else if (paymentMethod === 'card') cardSales.add(1);
   else ewalletSales.add(1);

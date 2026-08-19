@@ -7,15 +7,34 @@
 | `schema.sql` | **Canonical full schema** for new projects (tables + RLS + core functions). Keep organized; update when you add features. |
 | `migrate_*.sql` | **One-shot patches** for databases that already exist. Run in order if a column/table is missing. Do not delete old migrations after they’ve been applied in production. |
 
-## Known drift: `schema.sql` is stale
+## `schema.sql` status
 
-`schema.sql` has not been kept in sync with the `migrate_*.sql` files — entire
-subsystems exist only as migrations. **Do not bootstrap a new environment from
-`schema.sql` alone** until you dump a verified copy (see below).
+`schema.sql` was regenerated 2026-08-16 by introspecting `CalePOS_Demo`
+(commit `b039438`) and is a verified bootstrap as of that commit — apply it
+start-to-finish and you do **not** need to replay the `migrate_*.sql` history
+below it.
 
-After applying the full order through `migrate_network_manager_overview.sql`
-(including `migrate_schema_cleanup_v1.sql`), regenerate `schema.sql` from a
-scratch project dump so fresh installs can use schema alone again.
+**Apply these on top of `schema.sql`, in this order** — authored/committed
+after the regeneration, so they are not yet baked in:
+
+```
+migrate_announcements.sql
+migrate_announcements_backfill_permissions.sql
+migrate_terminal_report_old_grand_total_rpc.sql
+migrate_single_active_session_enforcement.sql
+migrate_rename_or_to_invoice.sql   -- last: supersedes complete_sale/void_sale_secure/
+                                    -- refund_sale_items bodies from every earlier file
+```
+
+`CalePOS_Demo` itself (the shared dev project) has **not** had these 5
+applied as of this writing — apply them there too before relying on it for
+local dev, or its `or_number`/`or_prefix` columns will disagree with the
+`invoice_number`/`invoice_prefix` naming the current frontend (`api.js`,
+`CODEMAP.md`) already expects.
+
+The `migrate_*.sql` full-order list below is kept for the rare case you need
+to bootstrap without `schema.sql` (e.g. reconstructing history, or auditing
+a specific migration's prerequisites) — it is not the fresh-install path.
 
 ## Full apply order (fresh project)
 
@@ -39,8 +58,9 @@ migrate_day_end_till_lock.sql
 migrate_branch_presence.sql
 migrate_price_change_history.sql
 migrate_bir_pos_compliance.sql
-migrate_offline_or_reserve.sql                 -- reserve_or_number: accept till-assigned OR
-                                                -- on sync without shrinking branches.or_next
+migrate_offline_or_reserve.sql                 -- reserve_invoice_number: accept till-assigned
+                                                -- invoice number on sync without shrinking
+                                                -- branches.invoice_next
 migrate_restaurant_branch.sql
 migrate_ulam_ordering.sql
 migrate_product_code.sql
@@ -52,6 +72,8 @@ migrate_refund_sale_items.sql
 migrate_fix_pin_login_auth.sql
 migrate_staff_login_code_unique.sql
 migrate_import_batches_branch_staff.sql
+migrate_import_revert_request.sql              -- needs migrate_import_batches.sql and
+                                                -- migrate_import_batches_branch_staff.sql above
 migrate_promos_events_and_rules.sql            -- creates promo_events/promo_rules
 migrate_promos_event_duration.sql              -- alters promo_events, needs the file above
 migrate_discountable_transaction_items.sql
@@ -65,8 +87,11 @@ migrate_staff_active_session.sql               -- one active login + lock-screen
 migrate_staff_shift_period.sql                 -- AM/PM on clock-in
 migrate_rename_petty_cash_to_cash_drawer_entries.sql  -- (NOT migrate_cash_accountability_controls.sql, see above)
 migrate_manager_can_approve_any_branch.sql
+migrate_offline_supervisor_pin.sql             -- needs migrate_pin_security_hardening.sql and
+                                                -- migrate_manager_can_approve_any_branch.sql above
 migrate_promo_auto_expire.sql
 migrate_promo_line_attribution.sql
+migrate_promo_group_id.sql                     -- needs migrate_promo_line_attribution.sql above
 migrate_promo_multi_active.sql
 migrate_vat_breakdown.sql
 migrate_sale_dedupe_hardening.sql
@@ -86,6 +111,11 @@ migrate_admin_session_release.sql
 migrate_branch_staff_roster.sql
 migrate_reveal_staff_pin.sql                    -- needs migrate_branch_staff_roster.sql above; manager-only PIN reveal RPC
 migrate_security_definer_hardening_v1.sql       -- session/audit/price/promo RPC auth checks; run after session + audit migrations
+migrate_single_active_session_enforcement.sql  -- needs migrate_staff_active_session.sql,
+                                                -- migrate_admin_session_release.sql, and this
+                                                -- file above (redefines current_staff_id/
+                                                -- branch/role again); deploy with matching
+                                                -- frontend build (drops old 2-arg RPC signatures)
 migrate_revoke_cash_movement_internal_grants.sql -- revoke EXECUTE on internal cash-movement definer helpers
 migrate_company_tin.sql
 migrate_promo_expired_status.sql
@@ -94,6 +124,8 @@ migrate_shift_close_no_supervisor_flag.sql     -- needs migrate_shift_cash_accou
 migrate_day_end_request_no_shift_count.sql     -- needs both files above (dual-checks on apply)
 migrate_promo_description.sql
 migrate_sync_catalog_identity_fields.sql       -- one-time catch-up, safe to re-run
+migrate_notification_cleanup.sql               -- needed before migrate_day_end_reject_request.sql
+                                                -- and migrate_day_end_request_notify_fix.sql below
 migrate_day_end_reject_request.sql             -- needs migrate_day_end_request_no_shift_count.sql above
 migrate_day_end_request_notify_fix.sql        -- needs reject + notification_cleanup; closed_at null on request so bell shows
 migrate_promo_reject_reason.sql                -- needs migrate_promo_dual_control.sql above; adds
@@ -143,6 +175,8 @@ migrate_receive_shift_handoff.sql              -- receive_shift_handoff() — su
 migrate_retire_admin_role.sql                  -- remap staff.role admin→manager; delete roles.admin;
                                                 -- master is sole top account (run after ceiling)
 migrate_cash_movements.sql                     -- cash_movements ledger + RPCs; POS Open Drawer
+migrate_cash_movement_cash_in.sql              -- needs migrate_cash_movements.sql above; put
+                                                -- before migrate_cash_movement_self_approve.sql
                                                 -- petty/pickup; updates shift_cash_summary
 migrate_cash_movement_cancel.sql               -- cancel_cash_movement — cashier X/Cancel voids
                                                 -- pending_remote Open Drawer requests
@@ -187,7 +221,7 @@ migrate_fix_overview_cash_impact_carry.sql     -- needs migrate_fix_manager_over
 migrate_revoke_anon_sale_rpc_grants.sql        -- CRITICAL, apply everywhere ASAP: closes an
                                                 -- unauthenticated-bypass gap where the anon/
                                                 -- publishable key alone could call
-                                                -- allocate_or_number/reserve_or_number/
+                                                -- allocate_invoice_number/reserve_invoice_number/
                                                 -- void_sale_secure/refund_sale_items/
                                                 -- record_stock_movement with no login;
                                                 -- needs exact signatures from
@@ -207,7 +241,7 @@ migrate_login_conditional_rehash.sql           -- needs migrate_fix_pin_login_au
                                                 -- already verify, instead of rehashing + writing
                                                 -- unconditionally on every login
 migrate_complete_sale_rpc.sql                  -- needs assert_till_open,
-                                                -- reserve_or_number/allocate_or_number,
+                                                -- reserve_invoice_number/allocate_invoice_number,
                                                 -- record_stock_movement, and every
                                                 -- transactions/transaction_items column above.
                                                 -- complete_sale() — one atomic RPC replacing
@@ -243,7 +277,7 @@ migrate_terminal_report_old_grand_total_rpc.sql -- sum_completed_sales_before(br
 
 **Dev wipe (optional, non-user data only):** `wipe_non_user_data.sql` truncates sales/inventory/promos/shifts/drawer while **keeping** `staff`, `branches`, `roles`, `company_profile`, and Auth users. Run on DEV before cleanup if you want a clean slate.
 
-**Go-live wipe (keeps master only):** `wipe_for_deployment.sql` — same operational wipe as above, **plus** deletes every non-master `staff` / Auth user and resets `branches.or_next` to `1` (first invoice = `PREFIX-00000001`). Aborts if no active master exists. Run once when ready for live trading, never casually on a DB you still need.
+**Go-live wipe (keeps master only):** `wipe_for_deployment.sql` — same operational wipe as above, **plus** deletes every non-master `staff` / Auth user and resets `branches.invoice_next` to `1` (first invoice = `PREFIX-00000001`). Aborts if no active master exists. Run once when ready for live trading, never casually on a DB you still need.
 
 `wipe_products_clean_start.sql` is **destructive** and not part of the apply order —
 run it by hand only when you want to wipe products/catalog for a fresh import.
@@ -264,10 +298,13 @@ is to apply everything to a real Postgres and dump the result, not to hand-edit
 superseded function version could be silently dropped.
 
 **`CalePOS_Demo` (Supabase project `pcasudqyqgzrlpyfdvbe`) is the tested
-reference project** — it already has every file in the full apply order above
-applied (verified against its migration history), so it's the canonical
-source for a dump instead of spinning up a fresh scratch project. Only fall
-back to a scratch project if `CalePOS_Demo` is ever reset or goes stale.
+reference project** and is now the team's dev-tier database (`calepos-dev`
+in `.env.local`) — it has every file in the full apply order above applied
+through the `schema.sql` regeneration commit, **but not yet the 5
+post-regeneration migrations listed in "`schema.sql` status" above**. Apply
+those there before dumping, or the dump will carry the same gap forward.
+Only fall back to a scratch project if `CalePOS_Demo` is ever reset or goes
+stale.
 
 1. Get `CalePOS_Demo`'s connection string from Settings → Database
    (Session pooler or direct connection; needs the DB password, not the

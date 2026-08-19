@@ -18,7 +18,7 @@ app alone does not complete government accreditation or registration.
 - [ ] **DTI / SEC / CDA** — business name registered for the entity that will own the stores
 - [ ] **BIR registration** — TIN, books of accounts, authority to print / invoices as required for your setup
 - [ ] **Mayor’s / business permit (LGU)** for each branch that will trade
-- [ ] **BIR POS / PTU accreditation** — CalePOS has BIR-*oriented* controls (OR sequence, immutable sales, voids, X/Z). That is **not** the same as formal accredited POS software approval. Ask your BIR contact or tax adviser what your branch needs before using ORs for live sales
+- [ ] **BIR POS / PTU accreditation** — CalePOS has BIR-*oriented* controls (sequential invoice numbering, immutable sales, voids, X/Z). That is **not** the same as formal accredited POS software approval. Ask your BIR contact or tax adviser what your branch needs before using this invoice sequence for live sales
 - [ ] **NPC / Data Privacy Act** — Privacy Policy in the app is **disclosure only**. Check whether the **store (Merchant)** must register with the NPC and/or appoint a DPO because you process staff data and SC/PWD ID numbers. **Policy ≠ registration**
 
 ---
@@ -54,7 +54,7 @@ app alone does not complete government accreditation or registration.
 
 ## 4. Clean go-live data
 
-- [ ] Only when you are ready to throw away test sales: run `wipe_for_deployment.sql` **once** on the **real** DB (keeps master, resets OR to `…00000001`)
+- [ ] Only when you are ready to throw away test sales: run `wipe_for_deployment.sql` **once** on the **real** DB (keeps master, resets invoice number to `…00000001`)
 - [ ] Never wipe casually; never wipe Demo if you still need that data for testing
 
 ---
@@ -62,7 +62,7 @@ app alone does not complete government accreditation or registration.
 ## 5. Store setup inside CalePOS
 
 - [ ] **Settings → Business Information** — legal name, TIN, address
-- [ ] Each **branch** — name, address, TIN branch code, OR prefix, MIN / serial / permit fields used on receipts
+- [ ] Each **branch** — name, address, TIN branch code, invoice prefix, MIN / serial / permit fields used on receipts
 - [ ] Receipt footers (thanks / contact / official lines)
 - [ ] **Idle lock** 5 / 10 / 15 minutes
 - [ ] Create **real staff** (cashier / supervisor / manager) — new PINs, not leftover demo users
@@ -85,7 +85,7 @@ app alone does not complete government accreditation or registration.
 ## 7. Smoke test (before first live peso)
 
 - [ ] Cashier PIN login + manager email login (with Turnstile)
-- [ ] Sale → stock drops → OR prints with correct TIN / name
+- [ ] Sale → stock drops → sales invoice prints with correct TIN / name
 - [ ] Offline sale → reconnect → syncs
 - [ ] End shift + day-end dual control
 - [ ] SC/PWD with ID note + register/report

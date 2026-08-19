@@ -66,7 +66,7 @@ export function BusinessInformationPanel() {
       <h2 className="m-0 mb-1 text-base font-bold">Business Information</h2>
       <p className="m-0 mb-4 text-xs text-brand-muted">
         Company-wide identity for receipts and invoices. Branch names, BIR branch codes, and
-        OR prefixes stay on each branch dashboard.
+        invoice prefixes stay on each branch dashboard.
       </p>
       {error && <ErrorBanner error={error} className="mb-3" />}
       {saved && <p className="mb-3 text-xs text-brand-success">Saved. New receipts will use this identity.</p>}
@@ -154,8 +154,8 @@ export function ReceiptsInvoicesPanel() {
       <h2 className="m-0 mb-1 text-base font-bold">Receipts &amp; Invoices</h2>
       <p className="m-0 mb-4 text-xs text-brand-muted">
         What prints on the sales invoice. Header identity comes from the company profile.
-        Branch-specific BIR fields and OR numbering stay on the branch — this page does not
-        change OR sequences.
+        Branch-specific BIR fields and invoice numbering stay on the branch — this page does not
+        change invoice sequences.
       </p>
       <dl className="grid max-w-xl gap-3 text-sm">
         <div className="rounded-md border border-brand-softline bg-brand-n50 px-3 py-2.5">
@@ -175,9 +175,9 @@ export function ReceiptsInvoicesPanel() {
         <div className="rounded-md border border-brand-softline bg-brand-n50 px-3 py-2.5">
           <dt className="text-[10px] font-bold tracking-wide text-brand-label uppercase">Per branch (not here)</dt>
           <dd className="m-0 mt-0.5 text-xs leading-relaxed text-brand-muted">
-            BIR permit, machine ID, serial number, OR prefix, and the offline OR counter live
-            on Branches → that branch. Tills assign OR numbers locally; sync reserves the same
-            number on the server.
+            BIR permit, machine ID, serial number, invoice prefix, and the offline invoice
+            counter live on Branches → that branch. Tills assign invoice numbers locally; sync
+            reserves the same number on the server.
           </dd>
         </div>
         <div className="rounded-md border border-brand-softline bg-brand-n50 px-3 py-2.5">

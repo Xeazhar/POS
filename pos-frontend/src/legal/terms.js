@@ -87,7 +87,7 @@ export const TERMS_DOCUMENT = {
         'Attempt to bypass role gates, row-level security, captcha, PIN lockout, or audit logging.',
         'Reverse engineer, copy, resell, sublicense, or host the software for third parties.',
         'Probe, scrape, or attack the hosted database, auth, or realtime channels.',
-        'Falsify official receipts, OR numbers, VAT figures, or SC/PWD claims.',
+        'Falsify sales invoices, invoice numbers, VAT figures, or SC/PWD claims.',
         'Use the system to process transactions you know to be fraudulent or unlawful.',
       ],
     },
@@ -114,7 +114,7 @@ export const TERMS_DOCUMENT = {
     {
       title: '12. Disclaimer of warranties',
       body: [
-        `THE SOFTWARE IS PROVIDED “AS IS” AND “AS AVAILABLE,” WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. In particular, while ${P} implements BIR-oriented VAT, SC/PWD, and sequential OR numbering, we do not warrant that a given deployment is BIR-accredited, that reports are complete for filing, or that the system is ready for live sales before version 1.0.0.`,
+        `THE SOFTWARE IS PROVIDED “AS IS” AND “AS AVAILABLE,” WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. In particular, while ${P} implements BIR-oriented VAT, SC/PWD, and sequential invoice numbering, we do not warrant that a given deployment is BIR-accredited, that reports are complete for filing, or that the system is ready for live sales before version 1.0.0.`,
       ],
     },
     {

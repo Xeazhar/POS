@@ -114,6 +114,18 @@ export default defineConfig({
               cacheName: 'calepos-pages',
               networkTimeoutSeconds: 3,
               expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 },
+              plugins: [
+                {
+                  // This route matches every navigation, so it always wins over the
+                  // `navigateFallback` route below (Workbox uses the first matching
+                  // route and never falls through to a later one on failure) — meaning
+                  // navigateFallback never actually fires. Without this, a network miss
+                  // on a URL not yet in `calepos-pages` (first-ever offline visit, or a
+                  // route never opened before) fell through to the browser's own
+                  // offline page (the dino) instead of the precached app shell.
+                  handlerDidError: async () => (await caches.match('/index.html')) || Response.error(),
+                },
+              ],
             },
           },
           {

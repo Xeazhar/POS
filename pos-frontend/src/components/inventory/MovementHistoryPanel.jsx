@@ -75,8 +75,8 @@ const TYPE_TEXT = {
 }
 
 /**
- * A void's restock detail already spells out the OR ("Void restock OR-00000071") — showing
- * `reference` again next to it would just repeat the same OR number.
+ * A void's restock detail already spells out the invoice number ("Void restock SI-00000071")
+ * — showing `reference` again next to it would just repeat the same invoice number.
  */
 function noteReference(row) {
   if (!row.reference) return ''
@@ -225,7 +225,7 @@ function MovementHistoryPanel({ branchId, products = [], compact = false }) {
             label="Search"
             className="min-w-[200px] flex-1"
             icon={<FiSearch />}
-            placeholder="Product, note, OR number or staff"
+            placeholder="Product, note, invoice number or staff"
             value={query}
             onChange={(e) => setQuery(e.target.value.replace(/[<>]/g, ''))}
           />
@@ -404,11 +404,11 @@ function MovementHistoryPanel({ branchId, products = [], compact = false }) {
                 >
                   {isPrice ? '—' : qty(row.resultingStock, unit)}
                 </strong>
-                {/* `reference` has already been turned into an OR number or dropped by
+                {/* `reference` has already been turned into an invoice number or dropped by
                     fetchStockMovements — a raw transaction/batch id is a key the reader
                     cannot act on, so it never reaches this column. A void's restock detail
-                    already spells out "Void restock OR-00000071" server-side, so showing
-                    the same OR again as reference would just repeat it. */}
+                    already spells out "Void restock SI-00000071" server-side, so showing
+                    the same invoice number again as reference would just repeat it. */}
                 <span className="min-w-0 truncate text-brand-slate max-[900px]:hidden">
                   {row.staffName || 'System'}
                   {row.detail ? ` · ${row.detail}` : ''}

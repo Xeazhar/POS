@@ -22,7 +22,13 @@ export function useBranchHeartbeat(user) {
 
     const tick = async () => {
       if (cancelled || !isOnline()) return
-      await heartbeatBranch({ branchId: user.branchId, staffId: user.id })
+      try {
+        await heartbeatBranch({ branchId: user.branchId, staffId: user.id })
+      } catch {
+        // navigator.onLine can read true on dead wifi — an unreachable backend here must
+        // not throw past this tick, or it becomes an unhandled rejection on every retry.
+        return
+      }
       try {
         const remoteSettings = await fetchBranchDeviceSettings(user.branchId)
         const settings = normalizeDeviceSettings(remoteSettings ?? user.deviceSettings)

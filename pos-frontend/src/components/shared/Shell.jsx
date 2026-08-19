@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { FiChevronLeft, FiChevronRight, FiLock, FiLogOut, FiMenu, FiRefreshCw, FiX } from 'react-icons/fi'
 import { navLinksFor } from '../../constants/nav'
+import { isCompactChrome } from '../../hooks/useCompactChrome'
 import { fetchCompanyProfile, hasSupabase, heartbeatStaffSession, isSessionRevokedError } from '../../lib/api'
 import { useAppVersion } from '../../hooks/useAppVersion'
 import { useBranchOperationsLive } from '../../hooks/useBranchOperationsLive'
@@ -214,6 +215,57 @@ function Shell({ children }) {
     }
   }
 
+  // Edge swipe-right opens the mobile menu, matching native app drawer conventions —
+  // only tracked when a touch starts within EDGE_PX of the left edge so it can't hijack
+  // a normal horizontal scroll/swipe started mid-screen. Skipped while the shift
+  // gate/lock screen covers the app (hideAppContent) since there's no menu button to
+  // mirror there.
+  useEffect(() => {
+    if (hideAppContent || menuOpen) return undefined
+    const EDGE_PX = 24
+    const OPEN_THRESHOLD_PX = 60
+    const MAX_VERTICAL_DRIFT_PX = 60
+    let startX = null
+    let startY = null
+    let tracking = false
+
+    const onTouchStart = (event) => {
+      if (!isCompactChrome()) return
+      const touch = event.touches[0]
+      if (!touch || touch.clientX > EDGE_PX) return
+      startX = touch.clientX
+      startY = touch.clientY
+      tracking = true
+    }
+    const onTouchMove = (event) => {
+      if (!tracking) return
+      const touch = event.touches[0]
+      if (!touch) return
+      const dx = touch.clientX - startX
+      const dy = Math.abs(touch.clientY - startY)
+      if (dy > MAX_VERTICAL_DRIFT_PX) {
+        tracking = false
+        return
+      }
+      if (dx > OPEN_THRESHOLD_PX) {
+        tracking = false
+        setMenuOpen(true)
+      }
+    }
+    const onTouchEnd = () => {
+      tracking = false
+    }
+
+    window.addEventListener('touchstart', onTouchStart, { passive: true })
+    window.addEventListener('touchmove', onTouchMove, { passive: true })
+    window.addEventListener('touchend', onTouchEnd, { passive: true })
+    return () => {
+      window.removeEventListener('touchstart', onTouchStart)
+      window.removeEventListener('touchmove', onTouchMove)
+      window.removeEventListener('touchend', onTouchEnd)
+    }
+  }, [hideAppContent, menuOpen])
+
   const sidebarNav = (iconOnly, onNavigate) => (
     <SidebarNav
       links={links}
@@ -271,15 +323,19 @@ function Shell({ children }) {
         </div>
 
         <div className="flex min-w-0 flex-1 items-center justify-center gap-2.5 px-2">
-          <small className="max-w-[40%] truncate text-[11px] font-semibold text-brand-gold">
+          <small className="max-w-[40%] truncate text-[11px] font-semibold text-brand-gold max-[700px]:max-w-full compact:max-w-full">
             {isManagerRole(user?.role)
               ? 'All branches'
               : user?.branchName || 'Branch'}
           </small>
-          <Clock className="text-[12px]" />
+          {/* Clock crowds the branch name into an unreadable sliver on narrow/landscape
+              phones — the header already has a menu button and five icons fighting for
+              the same row, so it drops on compact chrome; full date/time isn't worth
+              losing branch identification for. */}
+          <Clock className="text-[12px] max-[700px]:hidden compact:hidden" />
         </div>
 
-        <div className="flex shrink-0 items-center gap-2.5 text-[13px]">
+        <div className="flex shrink-0 items-center gap-2.5 text-[13px] max-[700px]:gap-1.5 compact:gap-1.5">
           {/* Refresh and Lock live up here with the other whole-session controls
               (notifications, sign out) rather than at the foot of the sidebar — and they
               stay reachable on mobile, where the sidebar is behind a menu. */}

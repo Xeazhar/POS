@@ -242,7 +242,7 @@ export function mapTransaction(row) {
   const refundedAmount = Number(row.refunded_amount || 0)
   return {
     id: row.id,
-    orNumber: row.or_number || null,
+    invoiceNumber: row.invoice_number || null,
     time: Number.isNaN(created.getTime())
       ? '—'
       : created.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
@@ -372,13 +372,13 @@ export async function fetchStockMovements({
   if (error) throw error
   const rows = data || []
   const who = await fetchStaffIdentities(rows.map((r) => r.staff_id)).catch(() => ({}))
-  const orNumbers = await resolveMovementReferences(rows)
+  const invoiceNumbers = await resolveMovementReferences(rows)
   return rows.map((row) =>
     mapMovement({
       ...row,
       staff_name: who[row.staff_id]?.name || null,
       product: row.products?.name || '',
-      reference: readableReference(row, orNumbers),
+      reference: readableReference(row, invoiceNumbers),
     }),
   )
 }
@@ -388,7 +388,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /**
  * `stock_movements.reference` holds whatever caused the movement, and for a sale that is the
  * transaction's internal id — a UUID nobody can look a receipt up with, printed in a column
- * staff read. Trade it for the OR number, which is the one identifier that appears on the
+ * staff read. Trade it for the invoice number, which is the one identifier that appears on the
  * receipt, in Transactions and in the BIR reports.
  */
 async function resolveMovementReferences(rows) {
@@ -405,21 +405,21 @@ async function resolveMovementReferences(rows) {
   for (let i = 0; i < ids.length; i += 200) {
     const { data, error } = await supabase
       .from('transactions')
-      .select('id, or_number')
+      .select('id, invoice_number')
       .in('id', ids.slice(i, i + 200))
-    if (error) return map // a missing OR is cosmetic; never fail the whole history for it
-    for (const t of data || []) if (t.or_number) map[t.id] = t.or_number
+    if (error) return map // a missing invoice number is cosmetic; never fail the whole history for it
+    for (const t of data || []) if (t.invoice_number) map[t.id] = t.invoice_number
   }
   return map
 }
 
 /** Human-readable reference, or nothing. A bare id is noise, not information. */
-function readableReference(row, orNumbers) {
+function readableReference(row, invoiceNumbers) {
   const raw = String(row.reference || '')
   if (!raw) return ''
-  // or_number already carries its own prefix (e.g. "OR-00000001", or a branch's own
-  // or_prefix) — prepending "OR " here duplicated it as "OR OR-00000001".
-  if (orNumbers[raw]) return orNumbers[raw]
+  // invoice_number already carries its own prefix (e.g. "SI-00000001", or a branch's own
+  // invoice_prefix) — prepending "SI " here would duplicate it as "SI SI-00000001".
+  if (invoiceNumbers[raw]) return invoiceNumbers[raw]
   // Import batch ids and unresolvable sale ids both land here — say nothing rather than
   // print a key the reader cannot act on.
   return UUID_RE.test(raw) ? '' : raw
@@ -877,7 +877,7 @@ export function clearDeviceSessionId() {
 const BOOTSTRAP_PRODUCT_COLS =
   'id, branch_id, name, sku, barcode, category_id, menu_kind, pricing_mode, price, unit_cost, budget_price, low_stock_threshold, available_today, discount_eligible, product_no, created_at, categories(name)'
 const BOOTSTRAP_TX_COLS =
-  'id, or_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, shift_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, discount_amount, discount_type, discount_id_note, transaction_items(id)'
+  'id, invoice_number, status, total_amount, refunded_amount, amount_tendered, change_given, created_at, staff_id, branch_id, shift_id, void_reason, voided_at, voided_by, void_approved_by, client_id, order_type, ulam_combo, payment_method, payment_reference, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, discount_amount, discount_type, discount_id_note, transaction_items(id)'
 const BOOTSTRAP_MOVE_COLS =
   'id, created_at, product_id, movement_type, quantity_in, quantity_out, quantity_on_hand_after, old_price, new_price, detail, branch_id, products(name)'
 const BOOTSTRAP_DAY_END_COLS =
@@ -910,7 +910,7 @@ export async function bootstrapPosCatalog(branchId) {
     supabase
       .from('branches')
       .select(
-        'id, day_open_hour, or_prefix, or_next, name, address, business_name, tin, branch_tin_code, bir_permit_no, machine_identification_no, serial_number',
+        'id, day_open_hour, invoice_prefix, invoice_next, name, address, business_name, tin, branch_tin_code, bir_permit_no, machine_identification_no, serial_number',
       )
       .eq('id', branchId)
       .maybeSingle(),
@@ -933,8 +933,8 @@ export async function bootstrapPosCatalog(branchId) {
     ),
     categories: catsRes.data || [],
     dayOpenHour: Number(branchRes.data?.day_open_hour ?? 7),
-    orPrefix: branchRes.data?.or_prefix || 'OR',
-    orNext: Number(branchRes.data?.or_next ?? 1),
+    invoicePrefix: branchRes.data?.invoice_prefix || 'SI',
+    invoiceNext: Number(branchRes.data?.invoice_next ?? 1),
     fiscalHeader: branchRes.data ? mapBranchFiscalHeader(branchRes.data) : null,
   }
 }
@@ -1003,8 +1003,8 @@ export async function bootstrapBranchData(branchId) {
     products,
     categories: catalog.categories,
     dayOpenHour: catalog.dayOpenHour,
-    orPrefix: catalog.orPrefix,
-    orNext: catalog.orNext,
+    invoicePrefix: catalog.invoicePrefix,
+    invoiceNext: catalog.invoiceNext,
     fiscalHeader: catalog.fiscalHeader,
     transactions: activity.transactions,
     movements: activity.movements,
@@ -1905,7 +1905,7 @@ export async function completeSale({
   discountType = null,
   discountIdNote = null,
   shiftId = null,
-  orNumber: clientOrNumber = null,
+  invoiceNumber: clientInvoiceNumber = null,
 }) {
   if (clientId) {
     const existing = await loadTransactionByClientId(branchId, clientId).catch(() => null)
@@ -1916,7 +1916,7 @@ export async function completeSale({
     if (existing?.id) return mapTransaction(existing)
   }
 
-  // Atomic path: complete_sale() does till check + OR allocation + transaction + items +
+  // Atomic path: complete_sale() does till check + invoice allocation + transaction + items +
   // stock movements + audit event in ONE server-side transaction (migrate_complete_sale_rpc.sql).
   // Either the whole sale lands or none of it does — no orphaned money-only transaction rows,
   // and one network round trip instead of four. Falls through to the legacy multi-step flow
@@ -1957,7 +1957,7 @@ export async function completeSale({
       p_total: total,
       p_tendered: tendered,
       p_client_id: clientId,
-      p_client_or_number: clientOrNumber,
+      p_client_invoice_number: clientInvoiceNumber,
       p_order_type: orderType,
       p_ulam_combo: ulamCombo,
       p_payment_method: paymentMethod,
@@ -1999,19 +1999,19 @@ export async function completeSale({
   }
 
   // ---- legacy multi-step path (pre migrate_complete_sale_rpc.sql) ----
-  // Run till check + OR reserve/allocate (+ branch type if unknown) together
+  // Run till check + invoice reserve/allocate (+ branch type if unknown) together
   const tillPromise = supabase.rpc('assert_till_open', { p_branch_id: branchId })
-  const orPromise = clientOrNumber
-    ? supabase.rpc('reserve_or_number', { p_branch_id: branchId, p_or_number: clientOrNumber })
-    : supabase.rpc('allocate_or_number', { p_branch_id: branchId })
+  const invoicePromise = clientInvoiceNumber
+    ? supabase.rpc('reserve_invoice_number', { p_branch_id: branchId, p_invoice_number: clientInvoiceNumber })
+    : supabase.rpc('allocate_invoice_number', { p_branch_id: branchId })
   const branchPromise =
     branchType != null
       ? Promise.resolve({ data: { branch_type: branchType } })
       : supabase.from('branches').select('branch_type').eq('id', branchId).maybeSingle()
 
-  const [{ error: tillError }, orRes, branchRes] = await Promise.all([
+  const [{ error: tillError }, invoiceRes, branchRes] = await Promise.all([
     tillPromise,
-    orPromise,
+    invoicePromise,
     branchPromise,
   ])
   if (tillError) throw tillError
@@ -2019,20 +2019,20 @@ export async function completeSale({
   const isRestaurant =
     isRestaurantBranchType(branchType) || isRestaurantBranchType(branchRes?.data?.branch_type)
 
-  let orNumber = null
-  if (!orRes.error) orNumber = orRes.data
+  let invoiceNumber = null
+  if (!invoiceRes.error) invoiceNumber = invoiceRes.data
   else if (
-    clientOrNumber &&
-    String(orRes.error.message || '').includes('Could not find the function')
+    clientInvoiceNumber &&
+    String(invoiceRes.error.message || '').includes('Could not find the function')
   ) {
-    // DB without migrate_offline_or_reserve.sql — fall back to server-side allocate.
-    const fallback = await supabase.rpc('allocate_or_number', { p_branch_id: branchId })
-    if (!fallback.error) orNumber = fallback.data
+    // DB without migrate_rename_or_to_invoice.sql — fall back to server-side allocate.
+    const fallback = await supabase.rpc('allocate_invoice_number', { p_branch_id: branchId })
+    if (!fallback.error) invoiceNumber = fallback.data
     else if (!String(fallback.error.message || '').includes('Could not find the function')) {
       throw fallback.error
     }
-  } else if (!String(orRes.error.message || '').includes('Could not find the function')) {
-    throw orRes.error
+  } else if (!String(invoiceRes.error.message || '').includes('Could not find the function')) {
+    throw invoiceRes.error
   }
 
   const insertRow = {
@@ -2054,7 +2054,7 @@ export async function completeSale({
     discount_type: discountType || null,
     discount_id_note: discountIdNote || null,
   }
-  if (orNumber) insertRow.or_number = orNumber
+  if (invoiceNumber) insertRow.invoice_number = invoiceNumber
   if (clientId) insertRow.client_id = clientId
   // Attributes the sale to the shift that rang it, so cash rolls up per shift as well as
   // per day. Omitted (not null) on older databases — see the shift_id fallback below.
@@ -2190,7 +2190,7 @@ export async function completeSale({
       transaction_id: txn.id,
       staff_id: staffId,
       event_type: 'sale',
-      or_number: txn.or_number,
+      invoice_number: txn.invoice_number,
       amount: total,
       payload: {
         client_id: clientId,
@@ -2859,7 +2859,7 @@ export async function fetchRefundRequestById(id) {
 export async function fetchRefundRequests(branchId, { status = 'pending' } = {}) {
   let query = supabase
     .from('refund_requests')
-    .select('id, transaction_id, branch_id, mode, reason, items, status, requested_by, requested_at, transactions(or_number, total_amount), staff:requested_by(full_name)')
+    .select('id, transaction_id, branch_id, mode, reason, items, status, requested_by, requested_at, transactions(invoice_number, total_amount), staff:requested_by(full_name)')
     .eq('branch_id', branchId)
     .order('requested_at', { ascending: false })
   if (status) query = query.eq('status', status)
@@ -2876,7 +2876,7 @@ export async function fetchRefundRequests(branchId, { status = 'pending' } = {})
     requestedBy: row.requested_by,
     requestedByName: row.staff?.full_name || null,
     requestedAt: row.requested_at,
-    orNumber: row.transactions?.or_number || null,
+    invoiceNumber: row.transactions?.invoice_number || null,
     totalAmount: row.transactions?.total_amount ?? null,
   }))
 }
@@ -3095,7 +3095,7 @@ export async function requestDayEnd({ branchId, staffId, businessDate, requestMa
 }
 
 const BRANCH_LIST_COLS =
-  'id, name, address, is_active, sort_order, day_open_hour, branch_type, device_settings, vat_rate, tin, branch_tin_code, business_name, bir_permit_no, machine_identification_no, serial_number, or_prefix'
+  'id, name, address, is_active, sort_order, day_open_hour, branch_type, device_settings, vat_rate, tin, branch_tin_code, business_name, bir_permit_no, machine_identification_no, serial_number, invoice_prefix'
 const BRANCH_LIST_COLS_LEGACY =
   'id, name, address, is_active, sort_order, day_open_hour, branch_type, device_settings, vat_rate'
 
@@ -3255,7 +3255,7 @@ export function mapBranchFiscalHeader(row, company = null) {
     bir_permit_no: row.bir_permit_no || '',
     machine_identification_no: row.machine_identification_no || '',
     serial_number: row.serial_number || '',
-    or_prefix: row.or_prefix || 'OR',
+    invoice_prefix: row.invoice_prefix || 'SI',
   }
 }
 
@@ -3458,8 +3458,8 @@ export async function saveBranch(payload) {
   if ('serial_number' in payload || 'serialNumber' in payload) {
     fields.serial_number = payload.serial_number ?? payload.serialNumber ?? null
   }
-  if ('or_prefix' in payload || 'orPrefix' in payload) {
-    fields.or_prefix = payload.or_prefix ?? payload.orPrefix
+  if ('invoice_prefix' in payload || 'invoicePrefix' in payload) {
+    fields.invoice_prefix = payload.invoice_prefix ?? payload.invoicePrefix
   }
   if (payload.day_open_hour != null) {
     fields.day_open_hour = Math.min(23, Math.max(0, Number(payload.day_open_hour)))
@@ -3536,7 +3536,7 @@ export async function saveBranch(payload) {
       ...fields,
       is_active: payload.is_active ?? true,
       branch_type: fields.branch_type || 'retail',
-      or_prefix: fields.or_prefix || 'OR',
+      invoice_prefix: fields.invoice_prefix || 'SI',
     })
     .select('*')
     .single()
@@ -5709,9 +5709,9 @@ export async function fetchReportSalesDetail({ start, end, branchId, includeVoid
   const PRODUCT_FULL = 'products(id, product_no, name, sku, unit_cost, category_id, categories(name))'
   const PRODUCT_MIN = 'products(id, product_no, name, sku, category_id, categories(name))'
   const TXN_FULL =
-    'id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo, payment_method, payment_reference'
+    'id, invoice_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo, payment_method, payment_reference'
   const TXN_MIN =
-    'id, or_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo'
+    'id, invoice_number, created_at, status, void_reason, voided_at, branch_id, staff_id, amount_tendered, total_amount, order_type, ulam_combo'
 
   const { startIso: detailStartIso, endIso: detailEndIso } = localDayBoundsIso(start, end)
   const build = (productCols, txnCols) => (from, to) => {
@@ -5932,7 +5932,7 @@ export async function fetchSaleEvents({ start, end, branchId, eventType, limit =
  */
 export async function fetchDailyReading({ date, branchId }) {
   const VAT_COLS =
-    'id, or_number, status, total_amount, void_reason, created_at, staff_id, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, discount_amount'
+    'id, invoice_number, status, total_amount, void_reason, created_at, staff_id, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, discount_amount'
   // Paged: a busy branch can clear 1000 sales in a day, and PostgREST would truncate to
   // exactly that with no error — producing a day's total that is short by an unknown
   // amount and looks entirely plausible.
@@ -5953,7 +5953,7 @@ export async function fetchDailyReading({ date, branchId }) {
     // Pre-migrate_vat_breakdown database: still produce the operational figures rather
     // than failing the whole report. The VAT columns simply read as zero.
     ;({ data, error } = await fetchAllRows(
-      build('id, or_number, status, total_amount, void_reason, created_at, staff_id'),
+      build('id, invoice_number, status, total_amount, void_reason, created_at, staff_id'),
     ))
   }
   if (error) throw error
@@ -5964,7 +5964,7 @@ export async function fetchDailyReading({ date, branchId }) {
   const sum = (list, key) => list.reduce((acc, r) => acc + Number(r[key] || 0), 0)
   const salesTotal = sum(completed, 'total_amount')
   const voidTotal = sum(voided, 'total_amount')
-  const orNumbers = rows.map((r) => r.or_number).filter(Boolean)
+  const invoiceNumbers = rows.map((r) => r.invoice_number).filter(Boolean)
   return {
     date,
     branchId: branchId || null,
@@ -5983,10 +5983,10 @@ export async function fetchDailyReading({ date, branchId }) {
     // "Gross sales" for BIR is the pre-discount figure: what was rung up before any
     // deduction. total_amount is already net of discounts, so add them back.
     grossSales: salesTotal + sum(completed, 'discount_amount'),
-    orFrom: orNumbers[0] || null,
-    orTo: orNumbers[orNumbers.length - 1] || null,
+    invoiceFrom: invoiceNumbers[0] || null,
+    invoiceTo: invoiceNumbers[invoiceNumbers.length - 1] || null,
     rows: rows.map((r) => ({
-      or_number: r.or_number,
+      invoice_number: r.invoice_number,
       status: r.status,
       total: Number(r.total_amount),
       cashier: staffNames[r.staff_id] || null,
@@ -6003,7 +6003,7 @@ export async function fetchDailyReading({ date, branchId }) {
  */
 async function fetchFiscalTransactions({ start, end, branchId, includeVoided = true }) {
   const FULL =
-    'id, or_number, status, total_amount, amount_tendered, change_given, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, discount_id_note, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, void_reason, refunded_amount'
+    'id, invoice_number, status, total_amount, amount_tendered, change_given, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, discount_id_note, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, vat_rate_applied, void_reason, refunded_amount'
   const { startIso: dayStart, endIso: dayEnd } = localDayBoundsIso(start, end)
   const build = (cols) => (from, to) => {
     let q = supabase
@@ -6015,7 +6015,7 @@ async function fetchFiscalTransactions({ start, end, branchId, includeVoided = t
       // inside one transaction gives them an identical now(). Ordering on it alone leaves
       // ties in arbitrary order, so a row straddling a 1000-row page boundary can appear
       // twice or vanish. `id` breaks the tie deterministically. An Electronic Journal that
-      // duplicates or drops an OR number is worthless as evidence.
+      // duplicates or drops an invoice number is worthless as evidence.
       .order('created_at', { ascending: true })
       .order('id', { ascending: true })
       .range(from, to)
@@ -6032,7 +6032,7 @@ async function fetchFiscalTransactions({ start, end, branchId, includeVoided = t
     // failed query. Only the genuinely newer VAT/discount columns are dropped here.
     ;({ data, error } = await fetchAllRows(
       build(
-        'id, or_number, status, total_amount, amount_tendered, created_at, staff_id, branch_id, void_reason, payment_method',
+        'id, invoice_number, status, total_amount, amount_tendered, created_at, staff_id, branch_id, void_reason, payment_method',
       ),
     ))
   }
@@ -6040,7 +6040,7 @@ async function fetchFiscalTransactions({ start, end, branchId, includeVoided = t
     // Only if payment_method itself is what is missing does the tender split become
     // impossible. Flagged on every row so the report can say so rather than imply cash.
     const bare = await fetchAllRows(
-      build('id, or_number, status, total_amount, amount_tendered, created_at, staff_id, branch_id, void_reason'),
+      build('id, invoice_number, status, total_amount, amount_tendered, created_at, staff_id, branch_id, void_reason'),
     )
     if (bare.error) throw bare.error
     data = (bare.data || []).map((r) => ({ ...r, payment_method: null, paymentMethodUnavailable: true }))
@@ -6079,7 +6079,7 @@ export async function fetchBirDailyBreakdown({ start, end, branchId }) {
     ).padStart(2, '0')}`
     byDay.set(key, {
       date: key,
-      orNumbers: [],
+      invoiceNumbers: [],
       transactionCount: 0,
       voidCount: 0,
       salesTotal: 0,
@@ -6097,7 +6097,7 @@ export async function fetchBirDailyBreakdown({ start, end, branchId }) {
   rows.forEach((r) => {
     const day = byDay.get(dayOf(r.created_at))
     if (!day) return
-    if (r.or_number) day.orNumbers.push(r.or_number)
+    if (r.invoice_number) day.invoiceNumbers.push(r.invoice_number)
     if (r.status === 'voided') {
       day.voidCount += 1
       day.voidTotal += Number(r.total_amount || 0)
@@ -6118,8 +6118,8 @@ export async function fetchBirDailyBreakdown({ start, end, branchId }) {
     netSales: day.salesTotal,
     // BIR "gross sales" is the pre-discount figure; total_amount is already net of them.
     grossSales: day.salesTotal + day.discountTotal,
-    orFrom: day.orNumbers[0] || null,
-    orTo: day.orNumbers[day.orNumbers.length - 1] || null,
+    invoiceFrom: day.invoiceNumbers[0] || null,
+    invoiceTo: day.invoiceNumbers[day.invoiceNumbers.length - 1] || null,
   }))
 }
 
@@ -6149,7 +6149,7 @@ export async function fetchScPwdReport({ start, end, branchId }) {
     })
     .map((r) => ({
       date: String(r.created_at || '').slice(0, 10),
-      or_number: r.or_number || r.id,
+      invoice_number: r.invoice_number || r.id,
       discount_type: r.discount_type || '—',
       id_number: r.discount_id_note || '(NOT RECORDED)',
       gross_amount: Number(r.total_amount || 0) + Number(r.discount_amount || 0),
@@ -6165,7 +6165,7 @@ export async function fetchScPwdReport({ start, end, branchId }) {
     const sum = (key) => Number(register.reduce((n, r) => n + Number(r[key] || 0), 0).toFixed(2))
     register.push({
       date: 'TOTAL',
-      or_number: '',
+      invoice_number: '',
       discount_type: `${register.length} sale(s)`,
       id_number: '',
       gross_amount: sum('gross_amount'),
@@ -6193,7 +6193,7 @@ export async function fetchDiscountReport({ start, end, branchId }) {
       const gross = Number(r.total_amount || 0) + total
       return {
         date: String(r.created_at || '').slice(0, 10),
-        or_number: r.or_number || r.id,
+        invoice_number: r.invoice_number || r.id,
         discount_type: r.discount_type || 'Unlabelled',
         gross_amount: gross,
         // Promo and SC/PWD are reported apart: only the SC/PWD half is a statutory
@@ -6255,7 +6255,7 @@ export async function fetchElectronicJournal({ start, end, branchId }) {
   const rows = await fetchFiscalTransactions({ start, end, branchId, includeVoided: true })
   return rows.map((r) => ({
     datetime: r.created_at,
-    or_number: r.or_number || r.id,
+    invoice_number: r.invoice_number || r.id,
     status: r.status === 'voided' ? 'VOIDED' : 'COMPLETED',
     cashier: r.cashier || '—',
     payment_method: r.payment_method || 'cash',
@@ -6488,7 +6488,7 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
     const { data, error } = await supabase
       .from('branches')
       .select(
-        'id, name, address, business_name, tin, serial_number, or_prefix, terminal_id, receipt_footer_official, receipt_footer_thanks, receipt_footer_contact, receipt_footer_tagline, contact_phone, vat_rate, branch_type',
+        'id, name, address, business_name, tin, serial_number, invoice_prefix, terminal_id, receipt_footer_official, receipt_footer_thanks, receipt_footer_contact, receipt_footer_tagline, contact_phone, vat_rate, branch_type',
       )
       .eq('id', branchId)
       .maybeSingle()
@@ -6510,7 +6510,7 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
     let q = supabase
       .from('transactions')
       .select(
-        'id, or_number, status, total_amount, refunded_amount, amount_tendered, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, order_type, void_reason',
+        'id, invoice_number, status, total_amount, refunded_amount, amount_tendered, created_at, staff_id, branch_id, payment_method, payment_reference, discount_amount, discount_type, vat_amount, vatable_sales, vat_exempt_sales, zero_rated_sales, sc_pwd_discount, order_type, void_reason',
       )
       .gte('created_at', reportStartIso)
       .lte('created_at', reportEndIso)
@@ -6531,7 +6531,7 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
     const buildFallbackTxnQuery = (from, to) => {
       let q = supabase
         .from('transactions')
-        .select('id, or_number, status, total_amount, created_at, staff_id, branch_id, void_reason')
+        .select('id, invoice_number, status, total_amount, created_at, staff_id, branch_id, void_reason')
         .gte('created_at', reportStartIso)
         .lte('created_at', reportEndIso)
         .order('created_at', { ascending: true })
@@ -7353,7 +7353,7 @@ async function fetchPromoAttributedLines({ branchId, promoName, startsAt, endsAt
   const window = promoQueryWindow(startsAt, endsAt)
   const select = minimal
     ? 'transaction_id, discount_amount, transactions!inner(id, total_amount, created_at, status, branch_id)'
-    : 'transaction_id, product_id, quantity, unit_price, line_total, discount_amount, promo_name, promo_group_id, transactions!inner(id, or_number, total_amount, discount_amount, created_at, status, staff_id, refunded_amount, branch_id)'
+    : 'transaction_id, product_id, quantity, unit_price, line_total, discount_amount, promo_name, promo_group_id, transactions!inner(id, invoice_number, total_amount, discount_amount, created_at, status, staff_id, refunded_amount, branch_id)'
 
   const build = (from, to) => {
     let q = supabase
@@ -7515,7 +7515,7 @@ async function buildPromoReceipts(rows) {
     const created = r.created_at ? new Date(r.created_at) : null
     return {
       id: r.id,
-      orNumber: r.or_number || null,
+      invoiceNumber: r.invoice_number || null,
       total: Number(r.total_amount || 0),
       discountAmount: Number(r.discount_amount || 0),
       refundedAmount: Number(r.refunded_amount || 0),
@@ -7549,7 +7549,7 @@ async function fetchPromoSalesStatsLegacy({ branchId, promoName, startsAt, endsA
   let txnQ = supabase
     .from('transactions')
     .select(
-      'id, or_number, total_amount, discount_amount, discount_type, created_at, status, staff_id, refunded_amount',
+      'id, invoice_number, total_amount, discount_amount, discount_type, created_at, status, staff_id, refunded_amount',
     )
     .eq('branch_id', branchId)
     .eq('discount_type', promoName)
@@ -8350,7 +8350,7 @@ export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, r
     if (!manager) return []
     const { data: refundRows, error: refundErr } = await supabase
       .from('refund_requests')
-      .select('id, mode, reason, requested_at, branch_id, branches(name), transactions(or_number)')
+      .select('id, mode, reason, requested_at, branch_id, branches(name), transactions(invoice_number)')
       .eq('status', 'pending')
       .order('requested_at', { ascending: false })
       .limit(40)
@@ -8361,7 +8361,7 @@ export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, r
         id: `refund-${row.id}`,
         kind: 'refund_pending',
         title: 'Refund awaiting approval',
-        detail: `${branchName} · ${row.transactions?.or_number || 'sale'} · ${row.mode === 'full' ? 'Full refund' : 'Item refund'} · ${row.reason || ''}`,
+        detail: `${branchName} · ${row.transactions?.invoice_number || 'sale'} · ${row.mode === 'full' ? 'Full refund' : 'Item refund'} · ${row.reason || ''}`,
         href: `/manager/branches/${row.branch_id}`,
         createdAt: row.requested_at || null,
         priority: 1,

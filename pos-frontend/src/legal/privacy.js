@@ -80,7 +80,7 @@ export const PRIVACY_DOCUMENT = {
       list: [
         'Operate the POS (sales, inventory, shifts, day-end, promos, devices): contract / legitimate interest in running authorized stores.',
         'Authenticate users, lock idle tills, audit privileged actions, and detect abuse: legitimate interest and, where applicable, legal obligation.',
-        'Apply VAT, sequential OR numbering, SC/PWD discounts, and produce fiscal and management reports: legal obligation of the Merchant; our processing as processor.',
+        'Apply VAT, sequential invoice numbering, SC/PWD discounts, and produce fiscal and management reports: legal obligation of the Merchant; our processing as processor.',
         'Sync offline tills with the hosted database so records are not lost: contract / legitimate interest.',
         'Improve reliability of an authorized deployment (error codes, version checks): legitimate interest. We do not sell personal data.',
       ],
@@ -111,7 +111,7 @@ export const PRIVACY_DOCUMENT = {
       title: '10. Retention',
       list: [
         'Staff accounts: for as long as the person is authorized, then as needed for audit and security.',
-        'Sales, OR numbers, VAT breakdowns, SC/PWD registers, voids, and related fiscal records: for at least the period Philippine tax rules require for books of accounts and supporting papers (commonly ten years from the relevant filing deadline), and longer if a dispute or investigation is open.',
+        'Sales, invoice numbers, VAT breakdowns, SC/PWD registers, voids, and related fiscal records: for at least the period Philippine tax rules require for books of accounts and supporting papers (commonly ten years from the relevant filing deadline), and longer if a dispute or investigation is open.',
         'Audit and security events: for operational security and incident review; older events may be retained where they support fiscal or access investigations.',
         'Offline till copies: until overwritten by sync or until the browser profile is cleared. Clearing a till that has not synced can destroy records. Do not do that to “delete” data.',
       ],
@@ -127,7 +127,7 @@ export const PRIVACY_DOCUMENT = {
       title: '12. Your rights',
       body: [
         `Under the Data Privacy Act, data subjects may request access, correction, erasure or blocking, objection to processing, and data portability, and may withdraw consent where processing is based on consent, subject to limitations in the Act and other laws of ${LEGAL_JURISDICTION}.`,
-        'Erasure does not apply where we or the Merchant must keep the data for a legal obligation, in particular immutable sales and official receipts. We will not delete a completed OR because a shopper or cashier later asks us to “remove the sale.”',
+        'Erasure does not apply where we or the Merchant must keep the data for a legal obligation, in particular immutable sales and sales invoices. We will not delete a completed sales invoice because a shopper or cashier later asks us to “remove the sale.”',
         'Staff should send account requests to their manager and, if needed, to the contact email below. Customers of a store should contact that store (the Merchant) first; we will refer or assist the Merchant as processor.',
       ],
     },

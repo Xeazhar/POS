@@ -32,23 +32,23 @@ function joinPromoNames(names = []) {
 
 /**
  * Polls for the server to assign this sale's real sequential invoice number
- * (`allocate_or_number`, row-locked per branch — never computed on-device, see
+ * (`allocate_invoice_number`, row-locked per branch — never computed on-device, see
  * buildReceipt's doc comment), so the on-screen "Sale complete" banner can upgrade from a
  * PENDING placeholder to the real one if it lands quickly. Called fire-and-forget — a
  * paying customer at the counter must never wait on a network round trip, on a slow
  * connection least of all, so the receipt prints immediately with whatever it has and
  * this only ever patches state after the fact. If it doesn't land in time (or the sale
  * was offline), the receipt keeps PENDING exactly as before, reconcilable later via
- * Transactions → Print receipt once the real OR syncs down.
+ * Transactions → Print receipt once the real invoice number syncs down.
  */
-async function waitForRealOrNumber(branchId, clientId, { timeoutMs = 4000, intervalMs = 350 } = {}) {
+async function waitForRealInvoiceNumber(branchId, clientId, { timeoutMs = 4000, intervalMs = 350 } = {}) {
   if (!branchId || !clientId) return null
   if (!isOnline() || !(await isBackendReachable())) return null
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
     const row = await loadTransactionByClientId(branchId, clientId).catch(() => null)
-    if (row?.or_number) return row.or_number
+    if (row?.invoice_number) return row.invoice_number
   }
   return null
 }
@@ -455,7 +455,7 @@ function Cart({
           discountType === 'pwd' || discountType === 'senior' ? String(discountIdNote).trim() : null,
       })
       const change = Math.max(0, cash - payTotal)
-      const orLabel = saved?.orNumber || `PENDING-${String(saved?.id || '').slice(0, 8)}`
+      const invoiceLabel = saved?.invoiceNumber || `PENDING-${String(saved?.id || '').slice(0, 8)}`
       const saleOrderType = isRestaurant ? orderType : undefined
 
       clear()
@@ -466,24 +466,24 @@ function Cart({
       setPaymentMethod('cash')
       setPaying(false)
       setPaidResult({
-        orNumber: orLabel,
+        invoiceNumber: invoiceLabel,
         total: payTotal,
         tendered: cash,
         change,
         paymentMethod,
       })
 
-      // Fire-and-forget: upgrade the banner from PENDING to the real OR if it lands while
-      // the overlay is still up. Never awaited — see waitForRealOrNumber's doc comment.
-      waitForRealOrNumber(user?.branchId, saved?.id).then((realOrNumber) => {
-        if (!realOrNumber) return
-        setPaidResult((prev) => (prev && prev.orNumber === orLabel ? { ...prev, orNumber: realOrNumber } : prev))
+      // Fire-and-forget: upgrade the banner from PENDING to the real invoice number if it
+      // lands while the overlay is still up. Never awaited — see waitForRealInvoiceNumber's doc comment.
+      waitForRealInvoiceNumber(user?.branchId, saved?.id).then((realInvoiceNumber) => {
+        if (!realInvoiceNumber) return
+        setPaidResult((prev) => (prev && prev.invoiceNumber === invoiceLabel ? { ...prev, invoiceNumber: realInvoiceNumber } : prev))
         // Also patch the cached receipt object so the "Print receipt" button reprints the
-        // real OR instead of the PENDING placeholder baked in at checkout time.
-        if (lastReceiptRef.current?.document?.isPendingOr) {
+        // real invoice number instead of the PENDING placeholder baked in at checkout time.
+        if (lastReceiptRef.current?.document?.isPendingInvoice) {
           lastReceiptRef.current = {
             ...lastReceiptRef.current,
-            document: { ...lastReceiptRef.current.document, orNumber: realOrNumber, isPendingOr: false },
+            document: { ...lastReceiptRef.current.document, invoiceNumber: realInvoiceNumber, isPendingInvoice: false },
           }
         }
       })
@@ -499,7 +499,7 @@ function Cart({
         user,
         transaction: {
           ...saved,
-          orNumber: saved?.orNumber || null,
+          invoiceNumber: saved?.invoiceNumber || null,
           tendered: cash,
           change,
           total: payTotal,
@@ -1203,7 +1203,7 @@ function Cart({
         <StatusOverlay
           done
           title="Sale complete"
-          message={`OR ${paidResult.orNumber} · ${money(paidResult.total)} · ${methodLabel}${
+          message={`Sales Invoice ${paidResult.invoiceNumber} · ${money(paidResult.total)} · ${methodLabel}${
             paidResult.paymentMethod === 'cash' ? ` · Change ${money(paidResult.change)}` : ''
           }`}
           onClose={() => setPaidResult(null)}
@@ -1212,6 +1212,12 @@ function Cart({
             <SecondaryButton
               compact
               type="button"
+              disabled={!isDeviceEnabled(user?.deviceSettings, 'receipt_printer')}
+              title={
+                isDeviceEnabled(user?.deviceSettings, 'receipt_printer')
+                  ? undefined
+                  : 'Receipt printer is disabled for this branch. Ask a manager to turn it On. (DEV03)'
+              }
               onClick={() => {
                 const receipt = lastReceiptRef.current
                 if (receipt) void receiptPrinter.printReceipt(receipt).catch(() => {})

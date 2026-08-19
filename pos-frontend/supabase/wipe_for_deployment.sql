@@ -14,9 +14,9 @@
 --     catalog/products, import batches, PIN lockouts
 --   • every non-master staff row and their Auth users
 --
--- OR / invoice numbering:
---   branches.or_next is reset to 1 (schema check: or_next >= 1 — cannot be 0).
---   First sale after this wipe gets PREFIX-00000001 (e.g. OR-00000001).
+-- Invoice numbering:
+--   branches.invoice_next is reset to 1 (schema check: invoice_next >= 1 — cannot be 0).
+--   First sale after this wipe gets PREFIX-00000001 (e.g. SI-00000001).
 --
 -- After running: log in as master, re-create cashiers/supervisors/managers,
 -- re-import / adopt catalog, then take the first live sale.
@@ -75,11 +75,11 @@ truncate table public.branch_presence restart identity cascade;
 truncate table public.pin_login_attempts restart identity cascade;
 
 -- ---------------------------------------------------------------------------
--- 2) Reset invoice / OR sequence on every branch
---    or_next = 1 → first allocate_or_number returns PREFIX-00000001
+-- 2) Reset invoice sequence on every branch
+--    invoice_next = 1 → first allocate_invoice_number returns PREFIX-00000001
 -- ---------------------------------------------------------------------------
 update public.branches
-set or_next = 1;
+set invoice_next = 1;
 
 -- ---------------------------------------------------------------------------
 -- 3) Drop every non-master staff account (+ Auth user when linked)

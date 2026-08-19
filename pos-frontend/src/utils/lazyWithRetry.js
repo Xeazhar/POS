@@ -36,6 +36,13 @@ export function lazyWithRetry(importFn) {
       return await importFn()
     } catch (err) {
       if (!isChunkLoadError(err)) throw err
+      // A chunk fetch fails with this same "failed to fetch" wording whether the deploy
+      // moved on (needs a reload) or the device is simply offline and never cached this
+      // page's chunk yet. Reloading cannot fix the offline case — it can only trigger an
+      // unload/reload cycle that risks landing on the browser's own offline page instead
+      // of the app. Let AppErrorBoundary show its offline-aware message instead; the
+      // "Try again" button there covers the case where connectivity returns.
+      if (typeof navigator !== 'undefined' && !navigator.onLine) throw err
       let tried = false
       try {
         tried = sessionStorage.getItem(CHUNK_RELOAD_KEY) === '1'

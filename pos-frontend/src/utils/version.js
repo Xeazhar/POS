@@ -10,7 +10,7 @@
  *
  * Versioning: MAJOR.MINOR.PATCH
  *   MAJOR — a change staff must be retrained on, or one that alters fiscal output
- *           (receipt format, tax computation, OR numbering)
+ *           (receipt format, tax computation, invoice numbering)
  *   MINOR — new capability that doesn't change existing behaviour
  *   PATCH — bug fix, copy change, styling
  *

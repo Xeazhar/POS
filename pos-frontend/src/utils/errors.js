@@ -10,7 +10,7 @@
  *
  * A bare message answers neither, so staff guess — and the two guesses available are
  * "ring it again" (double-charges the customer) and "let them go" (loses the sale and
- * breaks the OR sequence). `saleImpact` exists so nobody has to guess: it states whether
+ * breaks the invoice sequence). `saleImpact` exists so nobody has to guess: it states whether
  * the sale is recorded, not recorded, saved locally, or genuinely unknown. `unknown` is
  * a real value and must stay one — pretending a failure is safe to retry when it might
  * have gone through is how a customer gets charged twice.
@@ -71,7 +71,7 @@ export const SALE_IMPACT_GUIDANCE = {
   atRisk:
     'Saved on this device but not yet on the server. Keep this device on and call support. Do not clear browser data.',
   unknown:
-    'It is not certain whether this sale went through. Check Transactions for the OR number BEFORE ringing it again, or the customer may be charged twice.',
+    'It is not certain whether this sale went through. Check Transactions for the invoice number BEFORE ringing it again, or the customer may be charged twice.',
 }
 
 const B = SEVERITY.blocking

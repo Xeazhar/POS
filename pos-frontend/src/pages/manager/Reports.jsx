@@ -534,7 +534,7 @@ function ManagerReports() {
             .map((e) => ({
               when: e.created_at,
               type: e.event_type,
-              or_number: e.or_number,
+              invoice_number: e.invoice_number,
               amount: Number(e.amount || 0),
               reason: e.reason,
               staff: e.staff?.full_name,
@@ -634,8 +634,8 @@ function ManagerReports() {
       const table = readings.map((reading) => {
         const row = {
           date: reading.date,
-          or_from: reading.orFrom || '—',
-          or_to: reading.orTo || '—',
+          invoice_from: reading.invoiceFrom || '—',
+          invoice_to: reading.invoiceTo || '—',
           sales_count: reading.transactionCount,
           void_count: reading.voidCount,
           gross_sales: reading.grossSales,
@@ -659,8 +659,8 @@ function ManagerReports() {
       if (table.length > 1) {
         table.push({
           date: 'TOTAL',
-          or_from: '',
-          or_to: '',
+          invoice_from: '',
+          invoice_to: '',
           sales_count: table.reduce((n, r) => n + Number(r.sales_count || 0), 0),
           void_count: table.reduce((n, r) => n + Number(r.void_count || 0), 0),
           ...Object.fromEntries(
@@ -855,7 +855,7 @@ function ManagerReports() {
         ensureRows(
           detail.map((row) => ({
             date: row.transactions?.created_at?.slice(0, 10),
-            or_number: row.transactions?.or_number || row.transactions?.id,
+            invoice_number: row.transactions?.invoice_number || row.transactions?.id,
             cashier: row.transactions?.staff?.full_name,
             product: row.products?.name,
             sku: row.products?.sku || '',
@@ -877,7 +877,7 @@ function ManagerReports() {
         const id = row.transactions?.id
         if (!byTxn[id]) {
           byTxn[id] = {
-            or_number: row.transactions?.or_number || id,
+            invoice_number: row.transactions?.invoice_number || id,
             date: row.transactions?.created_at?.slice(0, 10),
             cashier: row.transactions?.staff?.full_name,
             status: row.transactions?.status,
@@ -905,7 +905,7 @@ function ManagerReports() {
         const sid = row.transactions?.staff_id || 'unknown'
         const name = row.transactions?.staff?.full_name || 'Unknown'
         if (!byStaff[sid]) byStaff[sid] = { cashier: name, invoices: new Set(), sales: 0 }
-        byStaff[sid].invoices.add(row.transactions?.or_number || row.transactions?.id)
+        byStaff[sid].invoices.add(row.transactions?.invoice_number || row.transactions?.id)
         byStaff[sid].sales += Number(row.line_total)
       })
       setRows(

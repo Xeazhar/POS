@@ -185,7 +185,7 @@ function Transactions() {
       // Cashiers only see current business-day transactions.
       if (user?.role === 'cashier' && businessDay !== cashierDay) return false
       if (q) {
-        const hay = `${item.id} ${item.orNumber || ''} ${item.cashier || ''} ${item.time || ''} ${item.paymentMethod || ''} ${item.paymentReference || ''} ${item.discountType || ''}`.toLowerCase()
+        const hay = `${item.id} ${item.invoiceNumber || ''} ${item.cashier || ''} ${item.time || ''} ${item.paymentMethod || ''} ${item.paymentReference || ''} ${item.discountType || ''}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       if (statusFilter !== 'all' && item.status !== statusFilter) return false
@@ -599,13 +599,13 @@ function Transactions() {
       </div>
 
       <TableCard>
-        {/* Promo and Discount are their own columns. They used to be stacked under the OR
+        {/* Promo and Discount are their own columns. They used to be stacked under the invoice
             number, which made that cell carry three unrelated facts and left the promo
             name truncated — so the one thing a manager scans this table for was the
             hardest thing to read. Own columns also mean the values line up down the page
             and can be compared at a glance. */}
         <div className={`grid ${TXN_GRID} ${TXN_GRID_NARROW} gap-2.5 border-0 bg-brand-dark px-5 py-[17px] text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase`}>
-          <span className="truncate">OR / Invoice</span>
+          <span className="truncate">Sales Invoice</span>
           <span className="truncate">Time</span>
           <span className="truncate">Cashier</span>
           <span className="truncate max-[700px]:hidden">Discount type</span>
@@ -631,9 +631,9 @@ function Transactions() {
             }}
           >
             <strong className="min-w-0 truncate text-brand-ink">
-              {item.orNumber || `Pending · ${item.id.slice(0, 8)}`}
+              {item.invoiceNumber || `Pending · ${item.id.slice(0, 8)}`}
               {/* Narrow screens drop the Promo and Discount columns, so the discount is
-                  summarised back under the OR number there rather than disappearing. */}
+                  summarised back under the invoice number there rather than disappearing. */}
               {Number(item.discountAmount || 0) > 0 && (
                 <span className="mt-0.5 hidden truncate text-[10px] font-bold text-brand-warn max-[700px]:block">
                   {discountLabelFor(item)} −{money(item.discountAmount)}
@@ -773,7 +773,7 @@ function Transactions() {
         <Modal onClose={closeRefund}>
           <Eyebrow>REFUND</Eyebrow>
           <h2 className="mb-[5px] text-[22px]">
-            {refunding.orNumber || String(refunding.id).slice(0, 8)}
+            {refunding.invoiceNumber || String(refunding.id).slice(0, 8)}
           </h2>
           <p className="text-[13px] text-brand-muted">
             Voids are only allowed as a full refund of the whole sale. Or refund selected items.
@@ -807,7 +807,7 @@ function Transactions() {
         <Modal wide onClose={closeRefund}>
           <Eyebrow>SELECT ITEMS</Eyebrow>
           <h2 className="mb-2 text-[20px]">
-            Refund · {refunding.orNumber || String(refunding.id).slice(0, 8)}
+            Refund · {refunding.invoiceNumber || String(refunding.id).slice(0, 8)}
           </h2>
           <div className="max-h-[260px] overflow-auto rounded-md border border-brand-softline">
             {refundDisplayGroups.map((group) => {
@@ -928,7 +928,7 @@ function Transactions() {
         <Modal onClose={closeRefund}>
           <Eyebrow>FULL REFUND</Eyebrow>
           <h2 className="mb-[5px] text-[22px]">
-            {refunding.orNumber || String(refunding.id).slice(0, 8)}
+            {refunding.invoiceNumber || String(refunding.id).slice(0, 8)}
           </h2>
           <p className="text-[13px] text-brand-muted">
             {canApproveDirect
@@ -1010,7 +1010,7 @@ function Transactions() {
           branchId={user?.branchId}
           title={pendingApproval.mode === 'full' ? 'Approve full refund' : 'Approve item refund'}
           detail={`Supervisor approval required for ${
-            pendingApproval.item.orNumber || String(pendingApproval.item.id).slice(0, 8)
+            pendingApproval.item.invoiceNumber || String(pendingApproval.item.id).slice(0, 8)
           }.`}
           pending={busy}
           onCancel={() => setPendingApproval(null)}

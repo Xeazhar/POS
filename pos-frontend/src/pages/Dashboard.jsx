@@ -13,6 +13,7 @@ import {
   moneyClass,
 } from '../components/ui'
 import { fetchBranchCashImpact, fetchSaleEvents, hasSupabase } from '../lib/api'
+import { useLiveData } from '../hooks/useLiveData'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { liveRestockReport, previousDayRestockReport } from '../utils/dayEndReport'
 import { businessDate, greetingFor, money, stockTone } from '../utils/format'
@@ -89,24 +90,6 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally only re-run on branch change, not on every storeProducts update
   }, [scopedBranchId, user?.branchId, loadBranch, hydrate])
 
-  // Cash impact is always TODAY's business day, regardless of the Today/Week/Month toggle
-  // above — an "expected cash" figure is a once-per-day drawer count (see DayEnd.jsx), not
-  // something that means anything summed over a week.
-  useEffect(() => {
-    if (!hasSupabase || !branchIdForFetch) return undefined
-    let active = true
-    fetchBranchCashImpact(branchIdForFetch, businessDate(new Date(), dayOpenHour), dayOpenHour)
-      .then((row) => {
-        if (active) setCashImpact(row)
-      })
-      .catch(() => {
-        if (active) setCashImpact(null)
-      })
-    return () => {
-      active = false
-    }
-  }, [branchIdForFetch, dayOpenHour])
-
   const products = storeProducts
   const transactions = storeTransactions
   const days = period === 'Today' ? 1 : period === 'Week' ? 7 : 30
@@ -121,43 +104,50 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   // Net of refunds — headline KPI is labelled "Net sales" (gross−refunds for paid sales).
   const revenue = filtered.reduce((sum, item) => sum + item.total - Number(item.refundedAmount || 0), 0)
 
-  // Audit follows the same Today/Week/Month toggle as Sales performance.
-  useEffect(() => {
-    if (!hasSupabase || !branchIdForFetch) return undefined
-    let active = true
-    // Buffered a day on each side, then re-bucketed by calendar date client-side to match
-    // filtered/voidedInPeriod above exactly — mapTransaction sets a transaction's `.date` to
-    // localDateKey(created_at) (the plain CALENDAR date), not a business_date column, so
-    // bucketing this fetch by business date (open-hour-shifted) would disagree with those
-    // tiles instead of agreeing with them. The buffer only exists to counter DST-adjacent
-    // edge cases in the raw Supabase range; the real bucketing happens in this filter.
-    const bufferStart = new Date(cutoff)
-    bufferStart.setDate(bufferStart.getDate() - 1)
-    const bufferEnd = new Date()
-    bufferEnd.setDate(bufferEnd.getDate() + 1)
-    fetchSaleEvents({
-      branchId: branchIdForFetch,
-      start: toDateKey(bufferStart),
-      end: toDateKey(bufferEnd),
-    })
-      .then((rows) => {
-        if (!active) return
-        setAuditEvents(
-          (rows || []).filter(
-            (e) =>
-              (e.event_type === 'void' || e.event_type === 'refund') &&
-              inPeriod(toDateKey(new Date(e.created_at)), cutoff),
-          ),
-        )
-      })
-      .catch(() => {
-        if (active) setAuditEvents([])
-      })
-    return () => {
-      active = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchIdForFetch, period])
+  // Cash impact is always TODAY's business day, regardless of the Today/Week/Month toggle
+  // above — an "expected cash" figure is a once-per-day drawer count (see DayEnd.jsx), not
+  // something that means anything summed over a week. Audit follows the same toggle as
+  // Sales performance. Both are kept live the same way transactions already are elsewhere
+  // (Shell's useBranchOperationsLive) — broadcast on pos:branch:<id>:operations, 15s poll
+  // fallback — instead of the previous fetch-once-on-mount effects, which never refreshed
+  // after the initial load.
+  useLiveData({
+    enabled: hasSupabase && Boolean(branchIdForFetch),
+    fetch: async () => {
+      // Buffered a day on each side, then re-bucketed by calendar date client-side to match
+      // filtered/voidedInPeriod above exactly — mapTransaction sets a transaction's `.date`
+      // to localDateKey(created_at) (the plain CALENDAR date), not a business_date column,
+      // so bucketing this fetch by business date (open-hour-shifted) would disagree with
+      // those tiles instead of agreeing with them. The buffer only exists to counter
+      // DST-adjacent edge cases in the raw Supabase range; the real bucketing happens below.
+      const bufferStart = new Date(cutoff)
+      bufferStart.setDate(bufferStart.getDate() - 1)
+      const bufferEnd = new Date()
+      bufferEnd.setDate(bufferEnd.getDate() + 1)
+      const [cashRow, events] = await Promise.all([
+        fetchBranchCashImpact(branchIdForFetch, businessDate(new Date(), dayOpenHour), dayOpenHour).catch(
+          () => null,
+        ),
+        fetchSaleEvents({
+          branchId: branchIdForFetch,
+          start: toDateKey(bufferStart),
+          end: toDateKey(bufferEnd),
+        }).catch(() => []),
+      ])
+      setCashImpact(cashRow)
+      setAuditEvents(
+        (events || []).filter(
+          (e) =>
+            (e.event_type === 'void' || e.event_type === 'refund') &&
+            inPeriod(toDateKey(new Date(e.created_at)), cutoff),
+        ),
+      )
+    },
+    broadcasts: branchIdForFetch
+      ? [{ topic: `pos:branch:${branchIdForFetch}:operations`, events: ['OPERATIONS_CHANGED'] }]
+      : [],
+    pollMs: 15_000,
+  })
 
   const low = products.filter((product) => stockTone(product) === 'low')
   const menuOn = products.filter((p) => p.availableToday !== false)
@@ -204,11 +194,9 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
         { label: 'Cash sales', value: money(cashImpact.cashSales) },
         { label: 'Card sales', value: money(cashImpact.cardSales) },
         { label: 'E-wallet sales', value: money(cashImpact.ewalletSales) },
-        {
-          label: 'Cash in / out',
-          value: money(cashImpact.changeFund - cashImpact.pickup - cashImpact.paidOut),
-          hint: `${money(cashImpact.changeFund)} in · ${money(cashImpact.pickup + cashImpact.paidOut)} out`,
-        },
+        { label: 'Change fund in', value: money(cashImpact.changeFund) },
+        { label: 'Petty cash out', value: money(cashImpact.paidOut), tone: 'danger', hint: 'Expense' },
+        { label: 'Cash pickup', value: money(cashImpact.pickup), hint: 'To safe, not an expense' },
       ]
     : []
   const canOpenReports = canAccessModule(user, 'manager_reports')
