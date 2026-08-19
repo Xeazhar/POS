@@ -44,6 +44,7 @@ import {
   duplicateField,
   findProductDuplicate,
   formatMoneyOnBlur,
+  isShrinkageAllowed,
   sanitizeText,
   validateProductDraft,
 } from '../utils/validate'
@@ -337,7 +338,7 @@ function Products() {
       setError('Enter a valid adjustment quantity.')
       return
     }
-    if (action === 'Shrinkage' && form.category !== 'Meat') {
+    if (action === 'Shrinkage' && !isShrinkageAllowed(form.category)) {
       setError('Shrinkage is only available for Meat products.')
       return
     }
@@ -790,7 +791,7 @@ function Products() {
                   <SelectField label="Action" name="action" defaultValue="Restock">
                     <option>Restock</option>
                     <option>Adjustment</option>
-                    {form.category === 'Meat' && <option>Shrinkage</option>}
+                    {isShrinkageAllowed(form.category) && <option>Shrinkage</option>}
                   </SelectField>
                   <Field
                     label="Quantity"

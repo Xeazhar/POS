@@ -83,3 +83,6 @@ export const nextCartQuantity = (item, delta) => {
   const next = Number(item?.quantity || 0) + Number(delta)
   return { next, shouldRemove: next <= 0 }
 }
+
+/** Shrinkage is a meat-counter-only stock-adjustment reason. */
+export const isShrinkageAllowed = (category) => category === 'Meat'
