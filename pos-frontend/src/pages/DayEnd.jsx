@@ -80,6 +80,33 @@ function shiftExpectedCash(row) {
 }
 
 /**
+ * A shift that carried its starting cash forward from another shift OPENED THE SAME
+ * BUSINESS DAY is not new money — it is the same drawer contents someone recounted, and
+ * those sales are already inside `cashSales` (day-wide, not shift-scoped). Summing its
+ * startingCash again double-counted the whole prior shift's takings as a fresh float — most
+ * visibly after a manager reopen, where the cashier re-confirms the same cash on hand and
+ * that figure becomes the reopened shift's startingCash. A carry from a shift that closed on
+ * an EARLIER business date is real: that cash never went through today's cashSales, so it
+ * still belongs in today's float — those predecessors are simply absent from `drawerShiftIds`
+ * (scoped to today) and nothing here excludes them.
+ *
+ * The exclusion only holds while startingCash still EQUALS the carried figure — that is the
+ * signal that nothing but a recount happened. `carriedAmount` freezes what was carried at
+ * shift-open; startingCash can still diverge from it afterward (the cashier adjusts the
+ * pre-filled count before starting, or later declares a fresh 'opening_float' cash_movement
+ * once the shift opened at ₱0). Either path means this shift's float is no longer "the same
+ * drawer contents recounted" but a genuinely different declared amount, so it belongs in the
+ * day's float same as any non-carried shift.
+ */
+function isDuplicateCarry(row, drawerShiftIds) {
+  return (
+    row.carriedFromShiftId &&
+    drawerShiftIds.has(row.carriedFromShiftId) &&
+    Math.abs(Number(row.startingCash || 0) - Number(row.carriedAmount || 0)) <= 0.004
+  )
+}
+
+/**
  * Day end / End shift.
  *
  * One route, two screens, because these are two different jobs done by two different
@@ -459,33 +486,9 @@ function SupervisorDayEnd() {
   // this page's own day-wide total did — a real source of "cashier and supervisor numbers
   // don't match" independent of shift count.
   const drawerHolderShift = drawerShifts.find((row) => row.open)
-  // A shift that carried its starting cash forward from another shift OPENED THE SAME
-  // BUSINESS DAY is not new money — it is the same drawer contents someone recounted, and
-  // those sales are already inside `cashSales` above (day-wide, not shift-scoped). Summing
-  // its startingCash again here double-counted the whole prior shift's takings as a fresh
-  // float — most visibly after a manager reopen, where the cashier re-confirms the same
-  // cash on hand and that figure becomes the reopened shift's startingCash. A carry from a
-  // shift that closed on an EARLIER business date is real: that cash never went through
-  // today's cashSales, so it still belongs in today's float (fetchStaffShifts above is
-  // already scoped to just this date, so those predecessors are simply absent from the set
-  // below and nothing here excludes them).
-  //
-  // The exclusion only holds while startingCash still EQUALS the carried figure — that is
-  // the signal that nothing but a recount happened. `carriedAmount` freezes what was carried
-  // at shift-open; startingCash can still diverge from it afterward (the cashier adjusts the
-  // pre-filled count before starting, or later declares a fresh 'opening_float' cash_movement
-  // once the shift opened at ₱0 — see migrate_cash_movement_cash_in.sql, only legal when
-  // starting_cash is still 0). Either path means this shift's float is no longer "the same
-  // drawer contents recounted" but a genuinely different declared amount, so it belongs in
-  // the day's float same as any non-carried shift — excluding it unconditionally silently
-  // dropped that declared cash from Float/Expected drawer everywhere this total is used.
   const drawerShiftIds = new Set(drawerShifts.map((row) => row.id).filter(Boolean))
-  const isDuplicateCarry = (row) =>
-    row.carriedFromShiftId &&
-    drawerShiftIds.has(row.carriedFromShiftId) &&
-    Math.abs(Number(row.startingCash || 0) - Number(row.carriedAmount || 0)) <= 0.004
   const shiftFloatTotal = drawerShifts
-    .filter((row) => !isDuplicateCarry(row))
+    .filter((row) => !isDuplicateCarry(row, drawerShiftIds))
     .reduce((sum, row) => sum + Number(row.startingCash || 0), 0)
   const legacyFloatTotal = changeFundRows.reduce((sum, row) => sum + Number(row.amount || 0), 0)
   const changeFundTotal = shiftFloatTotal + legacyFloatTotal
