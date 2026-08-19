@@ -215,3 +215,8 @@ export function stockTone(product) {
   if (stock <= lowAt * 2) return 'fair'
   return 'good'
 }
+
+/** Sale total minus what's been refunded off it, floored at 0. */
+export function netAfterRefund(total, refundedAmount) {
+  return Math.max(0, Number((Number(total || 0) - Number(refundedAmount || 0)).toFixed(2)))
+}

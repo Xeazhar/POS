@@ -1,6 +1,6 @@
 import { Eyebrow, Modal, ModalActions, PageSkeleton, PrimaryButton, SecondaryButton, moneyClass } from '../ui'
 import { approverLabel } from '../../lib/api'
-import { money, qty } from '../../utils/format'
+import { money, netAfterRefund, qty } from '../../utils/format'
 
 function TransactionDetailModal({
   detail,
@@ -22,7 +22,7 @@ function TransactionDetailModal({
   const netTotal =
     detail?.netTotal != null && !refundSummary
       ? Number(detail.netTotal)
-      : Math.max(0, Number((originalTotal - refundTotal).toFixed(2)))
+      : netAfterRefund(originalTotal, refundTotal)
   const hasRefunds = refundTotal > 0
   const refundLines = refundSummary?.lines || []
   const voidApprover = approverLabel(detail?.voidApprovedByName, detail?.voidApprovedByRole)

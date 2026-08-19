@@ -3,7 +3,7 @@ import { allowDemoMode, supabase } from './supabase'
 import { mapDayReport } from '../utils/dayEndReport'
 import { appError } from '../utils/errors'
 import { normalizeBranchType, isRestaurantBranchType, RESTAURANT_FEATURES_ENABLED } from '../utils/features'
-import { localDateKey, rowBusinessDate, today } from '../utils/format'
+import { localDateKey, netAfterRefund, rowBusinessDate, today } from '../utils/format'
 import { pinAuthEmail, isSupervisorOrAbove, isManagerRole } from '../utils/roles'
 import { normalizeMenuKind } from '../utils/ulam'
 import { clearUnlockSecret, loadUnlockSecret, saveUnlockSecret } from '../offline/session'
@@ -249,7 +249,7 @@ export function mapTransaction(row) {
     cashier: row.staff?.full_name || 'Staff',
     total,
     refundedAmount,
-    netTotal: Math.max(0, Number((total - refundedAmount).toFixed(2))),
+    netTotal: netAfterRefund(total, refundedAmount),
     status: row.status === 'voided' ? 'Voided' : 'Paid',
     items: row.transaction_items?.length || row.item_count || 0,
     date: localDateKey(row.created_at),
