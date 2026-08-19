@@ -158,6 +158,29 @@ export function computeChange(tendered, total) {
   return Math.max(0, Number(tendered || 0) - Number(total || 0))
 }
 
+/** Whether Complete Sale can be pressed right now — till open, cart non-empty, tender/reference/ID-note requirements met per payment method and discount type. */
+export function canCompleteSale({
+  tillClosed,
+  itemCount,
+  paying,
+  paymentMethod,
+  tendered,
+  payTotal,
+  paymentReference,
+  discountType,
+  discountIdNote,
+}) {
+  const needsCash = paymentMethod === 'cash'
+  return (
+    !tillClosed &&
+    itemCount > 0 &&
+    !paying &&
+    (needsCash ? Number(tendered) >= payTotal : true) &&
+    (paymentMethod !== 'ewallet' || String(paymentReference).trim().length > 0) &&
+    (!(discountType === 'pwd' || discountType === 'senior') || String(discountIdNote).trim().length > 0)
+  )
+}
+
 function round2(value) {
   return Number((Number(value) || 0).toFixed(2))
 }

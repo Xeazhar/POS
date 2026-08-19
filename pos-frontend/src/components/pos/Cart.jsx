@@ -10,7 +10,7 @@ import { formatSupportError } from '../../utils/errors'
 import { buildReceipt } from '../../utils/receipt'
 import { money, pesoWhole, PESO, qty, today, formatOpenHourLabel } from '../../utils/format'
 import { buildCartDisplayGroups, computePromoDiscounts } from '../../utils/promo'
-import { computeChange, computeVatBreakdown, VAT_RATE_DEFAULT } from '../../utils/vat'
+import { canCompleteSale, computeChange, computeVatBreakdown, VAT_RATE_DEFAULT } from '../../utils/vat'
 import { hasBudgetTier, lineTotal } from '../../utils/ulam'
 import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton, StatusOverlay, moneyClass } from '../ui'
@@ -365,13 +365,17 @@ function Cart({
   }
 
   const needsCash = paymentMethod === 'cash'
-  const canPay =
-    !tillClosed &&
-    items.length > 0 &&
-    !paying &&
-    (needsCash ? Number(tendered) >= payTotal : true) &&
-    (paymentMethod !== 'ewallet' || String(paymentReference).trim().length > 0) &&
-    (!(discountType === 'pwd' || discountType === 'senior') || String(discountIdNote).trim().length > 0)
+  const canPay = canCompleteSale({
+    tillClosed,
+    itemCount: items.length,
+    paying,
+    paymentMethod,
+    tendered,
+    payTotal,
+    paymentReference,
+    discountType,
+    discountIdNote,
+  })
 
   const shouldNudgeDayEnd = () => {
     const hour = new Date().getHours()
