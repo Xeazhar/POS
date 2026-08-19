@@ -9,7 +9,13 @@ import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '
 import { formatSupportError } from '../../utils/errors'
 import { buildReceipt } from '../../utils/receipt'
 import { money, pesoWhole, PESO, qty, today, formatOpenHourLabel, shouldNudgeDayEnd, dayEndNudgeMessage } from '../../utils/format'
-import { buildCartDisplayGroups, computePromoDiscounts } from '../../utils/promo'
+import {
+  buildCartDisplayGroups,
+  computePromoDiscounts,
+  promoGroupGross,
+  promoGroupDiscount,
+  promoGroupNet,
+} from '../../utils/promo'
 import { canCompleteSale, computeChange, computeVatBreakdown, VAT_RATE_DEFAULT } from '../../utils/vat'
 import { hasBudgetTier, lineTotal } from '../../utils/ulam'
 import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
@@ -225,39 +231,9 @@ function Cart({
   const lineUnits = (item) =>
     item?.pricingMode === 'kg' ? Number(item.weight || 0) : Number(item.quantity || 0)
 
-  const entryGross = (entry) => {
-    const item = items[entry.lineIndex]
-    if (!item) return 0
-    const units = lineUnits(item)
-    if (!(units > 0)) return 0
-    return (lineTotal(item) / units) * Number(entry.units || 0)
-  }
-
-  const entryDiscount = (entry) => {
-    const item = items[entry.lineIndex]
-    if (!item) return 0
-    const units = lineUnits(item)
-    if (!(units > 0)) return 0
-    return ((pricing.lineDiscounts[entry.lineIndex] || 0) / units) * Number(entry.units || 0)
-  }
-
-  const entryNet = (entry) => {
-    const item = items[entry.lineIndex]
-    if (!item) return 0
-    const units = lineUnits(item)
-    if (!(units > 0)) return 0
-    const net = Number(pricing.lineBreakdown[entry.lineIndex]?.netAmount ?? lineTotal(item))
-    return (net / units) * Number(entry.units || 0)
-  }
-
-  const groupGross = (group) =>
-    group.entries.reduce((sum, entry) => sum + entryGross(entry), 0)
-
-  const groupDiscount = (group) =>
-    group.entries.reduce((sum, entry) => sum + entryDiscount(entry), 0)
-
-  const groupNet = (group) =>
-    group.entries.reduce((sum, entry) => sum + entryNet(entry), 0)
+  const groupGross = (group) => promoGroupGross(group, items)
+  const groupDiscount = (group) => promoGroupDiscount(group, items, pricing.lineDiscounts)
+  const groupNet = (group) => promoGroupNet(group, items, pricing.lineBreakdown)
 
   useEffect(() => {
     if ((discountType === 'pwd' || discountType === 'senior') && !pricing.hasEligibleItems) {

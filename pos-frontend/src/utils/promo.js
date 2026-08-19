@@ -809,3 +809,45 @@ export function expandPromoRuleRows(rules = []) {
   }
   return rows
 }
+
+function promoEntryUnits(item) {
+  return item?.pricingMode === 'kg' ? Number(item.weight || 0) : Number(item.quantity || 0)
+}
+
+/** Cart-checkout display: gross/discount/net share of a promo-group entry, prorated by unit count against the line's own total. */
+export function promoEntryGross(entry, items) {
+  const item = items[entry.lineIndex]
+  if (!item) return 0
+  const units = promoEntryUnits(item)
+  if (!(units > 0)) return 0
+  return (lineTotal(item) / units) * Number(entry.units || 0)
+}
+
+export function promoEntryDiscount(entry, items, lineDiscounts) {
+  const item = items[entry.lineIndex]
+  if (!item) return 0
+  const units = promoEntryUnits(item)
+  if (!(units > 0)) return 0
+  return ((lineDiscounts[entry.lineIndex] || 0) / units) * Number(entry.units || 0)
+}
+
+export function promoEntryNet(entry, items, lineBreakdown) {
+  const item = items[entry.lineIndex]
+  if (!item) return 0
+  const units = promoEntryUnits(item)
+  if (!(units > 0)) return 0
+  const net = Number(lineBreakdown[entry.lineIndex]?.netAmount ?? lineTotal(item))
+  return (net / units) * Number(entry.units || 0)
+}
+
+export function promoGroupGross(group, items) {
+  return group.entries.reduce((sum, entry) => sum + promoEntryGross(entry, items), 0)
+}
+
+export function promoGroupDiscount(group, items, lineDiscounts) {
+  return group.entries.reduce((sum, entry) => sum + promoEntryDiscount(entry, items, lineDiscounts), 0)
+}
+
+export function promoGroupNet(group, items, lineBreakdown) {
+  return group.entries.reduce((sum, entry) => sum + promoEntryNet(entry, items, lineBreakdown), 0)
+}
