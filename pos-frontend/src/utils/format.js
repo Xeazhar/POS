@@ -189,6 +189,24 @@ export function formatOpenHourLabel(openHour) {
   return `${display}:00 ${suffix}`
 }
 
+/** Soft nudge window: last 2h before typical close (open+14h), or after 8pm, or after 10pm on an overnight-close schedule. */
+export function shouldNudgeDayEnd(dayOpenHour) {
+  const hour = new Date().getHours()
+  const open = Number(dayOpenHour ?? 7)
+  const closeHour = (open + 14) % 24
+  if (hour >= 20) return true
+  if (closeHour > open) return hour >= closeHour - 2
+  return hour >= 22
+}
+
+export function dayEndNudgeMessage(dayOpenHour) {
+  const open = Number(dayOpenHour ?? 7)
+  const closeHour = (open + 14) % 24
+  const closeLabel = formatOpenHourLabel(closeHour)
+  const now = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  return `It's ${now}. Typical day-end is around ${closeLabel} (or after 8:00 PM). Close the till when you're ready.`
+}
+
 export function stockTone(product) {
   const stock = Number(product.stock)
   const lowAt = Number(product.lowStockAt ?? 5)

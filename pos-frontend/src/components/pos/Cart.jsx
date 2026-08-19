@@ -8,7 +8,7 @@ import { useIsTouchUi } from '../../hooks/useIsTouchUi'
 import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '../../stores/posStore'
 import { formatSupportError } from '../../utils/errors'
 import { buildReceipt } from '../../utils/receipt'
-import { money, pesoWhole, PESO, qty, today, formatOpenHourLabel } from '../../utils/format'
+import { money, pesoWhole, PESO, qty, today, formatOpenHourLabel, shouldNudgeDayEnd, dayEndNudgeMessage } from '../../utils/format'
 import { buildCartDisplayGroups, computePromoDiscounts } from '../../utils/promo'
 import { canCompleteSale, computeChange, computeVatBreakdown, VAT_RATE_DEFAULT } from '../../utils/vat'
 import { hasBudgetTier, lineTotal } from '../../utils/ulam'
@@ -377,25 +377,6 @@ function Cart({
     discountIdNote,
   })
 
-  const shouldNudgeDayEnd = () => {
-    const hour = new Date().getHours()
-    const open = Number(dayOpenHour ?? 7)
-    // Soft nudge in the last 2 hours before typical close (open + 14h), or after 8:00 PM
-    const closeHour = (open + 14) % 24
-    if (hour >= 20) return true
-    if (closeHour > open) return hour >= closeHour - 2
-    // Overnight close window (e.g. open 10 -> close 0): nudge from 22:00
-    return hour >= 22
-  }
-
-  const dayEndNudgeMessage = () => {
-    const open = Number(dayOpenHour ?? 7)
-    const closeHour = (open + 14) % 24
-    const closeLabel = formatOpenHourLabel(closeHour)
-    const now = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-    return `It's ${now}. Typical day-end is around ${closeLabel} (or after 8:00 PM). Close the till when you're ready.`
-  }
-
   const complete = async () => {
     if (tillClosed) {
       setError(
@@ -552,7 +533,7 @@ function Cart({
         void tryPrint()
       }
 
-      if (shouldNudgeDayEnd() && !isManagerRole(user?.role)) {
+      if (shouldNudgeDayEnd(dayOpenHour) && !isManagerRole(user?.role)) {
         setTimeout(() => setDayEndNudge(true), 400)
       }
     } catch (err) {
@@ -1236,7 +1217,7 @@ function Cart({
         <StatusOverlay
           done
           title="Day end?"
-          message={dayEndNudgeMessage()}
+          message={dayEndNudgeMessage(dayOpenHour)}
           onClose={() => {
             setDayEndNudge(false)
             setPaidResult(null)
