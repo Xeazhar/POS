@@ -35,6 +35,7 @@ import { isOnline, readBranchSnapshot } from '../offline'
 import { withTimeout } from '../utils/withTimeout'
 import { isDayFullyClosed, money, qty, today, formatDate, stockTone } from '../utils/format'
 import { isManagerRole, isSupervisorOrAbove } from '../utils/roles'
+import { categoryForMenuKind } from '../utils/ulam'
 import InventoryImportPanel from '../components/inventory/InventoryImportPanel'
 import MovementHistoryPanel from '../components/inventory/MovementHistoryPanel'
 import {
@@ -846,18 +847,7 @@ function Products() {
                       setForm((prev) => ({
                         ...prev,
                         menuKind: kind,
-                        category:
-                          kind === 'meat'
-                            ? 'Meat'
-                            : kind === 'veggie'
-                              ? 'Veggie'
-                              : kind === 'pancit'
-                                ? 'Pancit'
-                                : kind === 'drink'
-                                  ? 'Drink'
-                                  : kind === 'rice'
-                                    ? 'Rice'
-                                    : 'Extra',
+                        category: categoryForMenuKind(kind, prev.category),
                       }))
                     }}
                   >
