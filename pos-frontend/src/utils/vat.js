@@ -153,6 +153,11 @@ export function computeVatBreakdown({
   }
 }
 
+/** Change owed on a cash sale — never negative even if tendered is short. */
+export function computeChange(tendered, total) {
+  return Math.max(0, Number(tendered || 0) - Number(total || 0))
+}
+
 function round2(value) {
   return Number((Number(value) || 0).toFixed(2))
 }

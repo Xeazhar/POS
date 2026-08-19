@@ -10,7 +10,7 @@ import { formatSupportError } from '../../utils/errors'
 import { buildReceipt } from '../../utils/receipt'
 import { money, pesoWhole, PESO, qty, today, formatOpenHourLabel } from '../../utils/format'
 import { buildCartDisplayGroups, computePromoDiscounts } from '../../utils/promo'
-import { computeVatBreakdown, VAT_RATE_DEFAULT } from '../../utils/vat'
+import { computeChange, computeVatBreakdown, VAT_RATE_DEFAULT } from '../../utils/vat'
 import { hasBudgetTier, lineTotal } from '../../utils/ulam'
 import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { Eyebrow, Modal, ModalActions, PrimaryButton, SecondaryButton, StatusOverlay, moneyClass } from '../ui'
@@ -454,7 +454,7 @@ function Cart({
         discountIdNote:
           discountType === 'pwd' || discountType === 'senior' ? String(discountIdNote).trim() : null,
       })
-      const change = Math.max(0, cash - payTotal)
+      const change = computeChange(cash, payTotal)
       const invoiceLabel = saved?.invoiceNumber || `PENDING-${String(saved?.id || '').slice(0, 8)}`
       const saleOrderType = isRestaurant ? orderType : undefined
 
@@ -1171,7 +1171,7 @@ function Cart({
               <div className="mt-2 flex justify-between text-2xl text-brand-ink">
                 <span>Change</span>
                 <strong className="text-brand-success">
-                  {money(Math.max(0, Number(tendered || 0) - payTotal))}
+                  {money(computeChange(tendered, payTotal))}
                 </strong>
               </div>
             </div>
