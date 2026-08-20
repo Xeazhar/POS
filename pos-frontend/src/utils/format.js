@@ -53,6 +53,14 @@ export function formatShiftDuration(clockIn, clockOut = null, nowMs = Date.now()
   return h <= 0 ? `${mins}m` : `${h}h ${String(mins % 60).padStart(2, '0')}m`
 }
 
+/** Milliseconds a shift row covers — an open shift (no clockOut) counts up to `openEndsAt` (default: now). Returns 0 for a missing/invalid clockIn or a clockOut before clockIn. */
+export function shiftDurationMs(row, { openEndsAt = Date.now() } = {}) {
+  const start = row.clockIn ? new Date(row.clockIn).getTime() : NaN
+  if (Number.isNaN(start)) return 0
+  const end = row.clockOut ? new Date(row.clockOut).getTime() : openEndsAt
+  return end > start ? end - start : 0
+}
+
 export const qty = (value, unit) => {
   const amount = Number(value || 0).toFixed(2)
   return unit ? `${amount} ${unit}` : amount

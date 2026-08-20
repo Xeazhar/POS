@@ -76,7 +76,7 @@ import {
 import { withTimeout } from '../../utils/withTimeout'
 import { liveRestockReport, previousDayRestockReport } from '../../utils/dayEndReport'
 import { formatSupportError } from '../../utils/errors'
-import { businessDate, formatOpenHourLabel, money, qty, rowBusinessDate } from '../../utils/format'
+import { businessDate, formatOpenHourLabel, money, qty, rowBusinessDate, shiftDurationMs } from '../../utils/format'
 import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { discountSourceLabel, isPromoDiscountType } from '../../utils/promo'
 import { isUuid } from '../../utils/transactionDetail'
@@ -135,11 +135,7 @@ function rollUpStaffHours(rows = [], todayKey, openHour) {
     }
     entry.sessions += 1
     if (!entry.role && row.staffRole) entry.role = row.staffRole
-    const start = row.clockIn ? new Date(row.clockIn).getTime() : NaN
-    const end = row.clockOut ? new Date(row.clockOut).getTime() : NaN
-    // An open shift counts up to now — otherwise today's hours read as zero all day.
-    const stop = Number.isNaN(end) ? Date.now() : end
-    const duration = !Number.isNaN(start) && stop > start ? stop - start : 0
+    const duration = shiftDurationMs(row)
     entry.totalMs += duration
     // Rows predating `business_date` fall back to the clock-in's own business date,
     // same fallback fetchStaffShifts documents for the identical gap.

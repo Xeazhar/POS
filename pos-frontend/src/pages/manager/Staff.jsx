@@ -50,7 +50,7 @@ import {
 } from '../../offline'
 import { withTimeout } from '../../utils/withTimeout'
 import { formatSupportError } from '../../utils/errors'
-import { money, today } from '../../utils/format'
+import { money, shiftDurationMs, today } from '../../utils/format'
 import { decimalOnly, formatMoneyOnBlur } from '../../utils/validate'
 import {
   MODULES,
@@ -180,14 +180,7 @@ function formatDuration(clockIn, clockOut) {
 }
 
 function totalHoursLabel(shifts = []) {
-  let ms = 0
-  for (const row of shifts) {
-    const start = row.clockIn ? new Date(row.clockIn).getTime() : NaN
-    if (Number.isNaN(start)) continue
-    // An open shift counts up to now, otherwise today's hours read as zero all day.
-    const end = row.clockOut ? new Date(row.clockOut).getTime() : Date.now()
-    if (end > start) ms += end - start
-  }
+  const ms = shifts.reduce((sum, row) => sum + shiftDurationMs(row), 0)
   if (ms <= 0) return '—'
   const mins = Math.round(ms / 60000)
   return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`
