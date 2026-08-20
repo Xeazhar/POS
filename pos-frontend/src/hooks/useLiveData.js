@@ -27,7 +27,11 @@ import {
  * @param {object}   options
  * @param {Function} options.fetch     async () => void — does the refetch + state write
  * @param {Array}    [options.broadcasts] [{ topic, events? }] private Broadcast topics
- * @param {Array}    [options.tables]  [{ table, filter }] postgres_changes (optional fallback)
+ * @param {Array}    [options.tables]  [{ table, filter, match? }] postgres_changes (optional
+ *   fallback). `match(payload)` is an optional client-side guard for tables that have no
+ *   column to filter on server-side (e.g. child tables without branch_id) — return false to
+ *   drop an irrelevant event instead of refetching. Read from a ref each event, so it can
+ *   close over the latest component state without forcing a resubscribe.
  * @param {boolean}  options.enabled   skip everything when false (no branch/session yet)
  * @param {number}   options.pollMs    fallback interval; 0 disables
  * @param {number}   options.debounceMs coalesce bursts
@@ -44,6 +48,11 @@ export function useLiveData({
   useEffect(() => {
     fetchRef.current = fetch
   }, [fetch])
+
+  const tablesRef = useRef(tables)
+  useEffect(() => {
+    tablesRef.current = tables
+  }, [tables])
 
   const tableKey = JSON.stringify(tables.map((t) => [t?.table, t?.filter || '']))
   const broadcastKey = JSON.stringify(
@@ -82,9 +91,13 @@ export function useLiveData({
     }
 
     const unsubTables = subscribeMany(
-      subs.map((sub) => ({
+      subs.map((sub, i) => ({
         ...sub,
-        onChange: debouncedRun,
+        onChange: (payload) => {
+          const match = tablesRef.current[i]?.match
+          if (match && !match(payload)) return
+          debouncedRun(payload)
+        },
         onStatus,
       })),
     )

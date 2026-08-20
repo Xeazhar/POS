@@ -42,6 +42,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
   const user = useAuthStore((s) => s.user)
   const shift = useShiftStore((s) => s.shift)
   const syncShiftServerId = useShiftStore((s) => s.syncShiftServerId)
+  const cashPosition = useShiftStore((s) => s.cashPosition)
   const online = useSyncStore((s) => s.online)
   const backendReachable = useSyncStore((s) => s.backendReachable)
   const offlineMode = hasSupabase && (!online || !backendReachable)
@@ -59,6 +60,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
   const [ack, setAck] = useState(false)
   const [resultMsg, setResultMsg] = useState('')
   const [notifyConfirm, setNotifyConfirm] = useState(false)
+  const [drawerCash, setDrawerCash] = useState(null)
   const pollRef = useRef(null)
   const tickRef = useRef(null)
 
@@ -76,6 +78,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
     setAck(false)
     setResultMsg('')
     setNotifyConfirm(false)
+    setDrawerCash(null)
     if (pollRef.current) window.clearInterval(pollRef.current)
     if (tickRef.current) window.clearInterval(tickRef.current)
     pollRef.current = null
@@ -121,7 +124,27 @@ export default function OpenDrawer({ open, onClose, onDone }) {
           ? 'Opening float'
           : 'Petty cash'
   const isCashIn = moveType === 'cash_in' || moveType === 'opening_float'
+  const isOutflow = moveType === 'petty_cash' || moveType === 'pickup'
   const noOpeningFloat = Number(shift?.startingCash || 0) <= 0.004
+
+  // Petty cash / pickup take cash out of a real drawer — fetch what it currently holds so
+  // the form can block an amount that would leave it negative before a request even goes out.
+  useEffect(() => {
+    if (step !== 'form' || !isOutflow) return undefined
+    let active = true
+    cashPosition()
+      .then((result) => {
+        if (active) setDrawerCash(Number(result?.expectedCash ?? 0))
+      })
+      .catch(() => {
+        if (active) setDrawerCash(null)
+      })
+    return () => {
+      active = false
+    }
+  }, [step, isOutflow, cashPosition])
+
+  const overDrawerLimit = isOutflow && drawerCash != null && Number(amount || 0) > drawerCash
   const movementReason = () => {
     const trimmed = reason.trim()
     if (trimmed) return trimmed
@@ -434,7 +457,7 @@ export default function OpenDrawer({ open, onClose, onDone }) {
 
   if (!open) return null
 
-  const amountOk = Number(amount) > 0
+  const amountOk = Number(amount) > 0 && !overDrawerLimit
   const reasonOk = movementReason().length > 0
   const drawerName = shift?.drawerLabel || shift?.drawerId || 'Drawer'
 
@@ -574,6 +597,17 @@ export default function OpenDrawer({ open, onClose, onDone }) {
             autoFocus
             inputClassName="h-12 text-lg"
           />
+          {isOutflow && (
+            <p
+              className={`mt-1 text-[11px] ${overDrawerLimit ? 'text-brand-danger' : 'text-brand-subtle'}`}
+            >
+              {drawerCash == null
+                ? 'Checking drawer total…'
+                : overDrawerLimit
+                  ? `Only ${money(drawerCash)} is in the drawer right now.`
+                  : `${money(drawerCash)} currently in the drawer.`}
+            </p>
+          )}
           <Field
             label="Reason"
             value={reason}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { FiSearch } from 'react-icons/fi'
 import Cart from '../components/pos/Cart'
@@ -149,8 +149,13 @@ function POS() {
   const liveEnabled = Boolean(hasSupabase && branchId)
 
   // Live: a manager creating/editing/activating a promo reaches this screen immediately.
-  // promo_rules/promo_rule_products have no branch_id to filter on — cheap enough to
-  // watch unfiltered and let the per-branch refetch do the real filtering.
+  // promo_rules/promo_rule_products have no branch_id to filter on server-side, so they're
+  // watched unfiltered but matched client-side against this branch's currently-active event
+  // (and rule) ids — cross-branch edits get dropped before triggering a refetch. Safe because
+  // any event that newly becomes relevant to this branch (e.g. pending → active) also fires
+  // the branch-filtered promo_events change below, which repopulates these id sets.
+  const knownEventIdsRef = useRef(new Set())
+  const knownRuleIdsRef = useRef(new Set())
   const loadPromos = useCallback(async () => {
     if (!branchId) {
       setActivePromos([])
@@ -168,6 +173,8 @@ function POS() {
     try {
       const rows = await fetchActivePromoEventsWithRules(branchId)
       setActivePromos(rows)
+      knownEventIdsRef.current = new Set(rows.map((r) => r.event?.id).filter(Boolean))
+      knownRuleIdsRef.current = new Set(rows.flatMap((r) => (r.rules || []).map((rule) => rule.id)))
       await writePromoCache(branchId, { active: rows })
     } catch (err) {
       console.warn('Failed to load active promos', err)
@@ -180,8 +187,20 @@ function POS() {
     fetch: loadPromos,
     tables: [
       { table: 'promo_events', filter: `branch_id=eq.${branchId}` },
-      { table: 'promo_rules' },
-      { table: 'promo_rule_products' },
+      {
+        table: 'promo_rules',
+        match: (payload) => {
+          const id = payload?.new?.promo_event_id || payload?.old?.promo_event_id
+          return !id || knownEventIdsRef.current.has(id)
+        },
+      },
+      {
+        table: 'promo_rule_products',
+        match: (payload) => {
+          const id = payload?.new?.promo_rule_id || payload?.old?.promo_rule_id
+          return !id || knownRuleIdsRef.current.has(id)
+        },
+      },
     ],
   })
 

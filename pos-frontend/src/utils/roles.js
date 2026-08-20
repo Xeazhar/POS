@@ -237,6 +237,19 @@ export function canAccessModule(user, moduleId) {
   return effectivePermissions(user).includes(moduleId)
 }
 
+/**
+ * A supervisor who started today's shift as Floor (`holdsDrawer: false`) is supervising
+ * only — no drawer, no change fund, nothing to ring up. POS stays hidden for that shift
+ * even though `pos` is in their default permissions; picking "Working the register" at
+ * shift start (`holdsDrawer: true`) restores it. Other roles are unaffected — `shift` is
+ * only ever `holdsDrawer: false` for a supervisor's own choice (see ShiftGate.jsx).
+ */
+export function canAccessPos(user, shift) {
+  if (!canAccessModule(user, 'pos')) return false
+  if (user?.role === 'supervisor' && shift?.holdsDrawer === false) return false
+  return true
+}
+
 export function pinAuthEmail(loginCode, branchId) {
   const code = String(loginCode || '').replace(/\D/g, '')
   const branch = String(branchId || 'x').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 8)

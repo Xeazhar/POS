@@ -83,7 +83,7 @@ export function buildDayEndReport({
         // Today's report flags restock only for items that actually sold today — a product
         // sitting low on stock without any sales today is carry-over inventory noise, not
         // something today's sales report should surface.
-        const needsRestock = soldQty > 0 && onHand <= lowStockAt * 1.5
+        const needsRestock = soldQty > 0 && onHand <= lowStockAt * 1.5 && product.is_active !== false
         if (!needsRestock) return null
         const suggestedQty = Number(Math.max(lowStockAt * 2 - onHand, soldQty, 0).toFixed(2))
         return {
@@ -125,6 +125,7 @@ export function buildDayEndReport({
 export function liveRestockReport(products = []) {
   const restock = (products || [])
     .filter((product) => {
+      if (product.is_active === false) return false
       const onHand = Number(product.stock ?? 0)
       const lowStockAt = Number(product.lowStockAt ?? 5)
       return onHand <= lowStockAt

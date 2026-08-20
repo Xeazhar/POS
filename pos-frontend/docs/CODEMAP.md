@@ -1397,6 +1397,37 @@ Nothing else has to special-case `'rejected'`: `dayRequested`/`dayInProgress` in
 falls straight through to the normal "Request day end" form again — `CashierEndShift` shows a
 one-line "your last request was declined" notice above that form when it does.
 
+**Manager notification routing + remote close.** A manager's own login is tied to their
+home branch (`user.branchId`, fixed at login, never switched) — `/day-end` always shows
+whatever branch THIS session loaded, not the branch that requested. So the bell's
+`day_end_requested` item routes a manager to `/manager/branches/{branch_id}`
+(`fetchPendingApprovals` → `fetchDayEndsRequested`, `api.js`) instead of `/day-end`, same
+split `day_end_submitted` already used. `BranchDashboard.jsx` shows a banner for a
+`'requested'` row today with **Decline request** (`rejectDayEndRequest`, no branch-session
+dependency) and, manager-only, **Count & close remotely**
+(`components/dayend/RemoteDayEndClose.jsx`) — cash figures reported by phone from whoever
+is on-site, submitted via the same `submit_day_end` RPC (server already permits
+cross-branch calls for `is_manager()`). The money math (recorded/expected cash, float, the
+open-shift/pending-handoff/unreviewed-movement gates) is factored into
+`utils/dayEndClose.js`'s `computeDayEndFigures` — the single source both the on-site
+`SupervisorDayEnd` screen and the remote-close modal call, so the two paths can never
+diverge on the numbers. Remote close enforces the open-shift and unreviewed-movement gates
+same as on-site (those genuinely need someone physically there); the pending-cashier-handoff
+gate is the one exception — there is no supervisor on-site to receive it in this flow, so
+remote close does not block on it. The shift's `ending_cash` simply stays null
+(unconfirmed) and the row surfaces on `BranchHandoffs.jsx`'s table as a pending cashier →
+manager handoff, confirmable there whenever the cash actually changes hands — no fabricated
+"received" event, no deadline, same pattern as the existing supervisor → manager handoff.
+
+**Handoffs tab is one filterable table.** `BranchHandoffs.jsx` combines both legs of the
+custody chain — cashier → supervisor/manager (`staff_shifts.ending_cash`, confirmed via
+`receiveShiftHandoff`) and supervisor → manager (`day_ends`, confirmed via
+`confirmDayEndHandoff`) — into a single table, filterable by leg and by pending/confirmed
+status. A shift handoff's direction label reads "Cashier → Manager" once confirmed by a
+manager-role staff member (`fetchShiftAdjustments`'s `adjustedByRole`), "Cashier →
+Supervisor" otherwise. Both legs can be bulk-confirmed from here now (previously the
+cashier leg was read-only, confirm-only-from-`DayEnd.jsx`).
+
 **Closing no longer waits on a separate approval.** `submit_day_end` auto-closes (sets
 `status = 'closed'`, `approved_by`/`approved_at`) when the caller is supervisor_or_above, by
 calling `approve_day_end` on itself in the same statement — see
@@ -1503,6 +1534,16 @@ POS → **Open Drawer** (`OpenDrawer.jsx` on `POS.jsx`):
   **Approved** / **Resolved** / **Flagged**. Manager-only `resolve_flagged_cash_movement`
   (`migrate_cash_movement_resolve_flagged.sql`) turns Flagged → Resolved.
 - Counting statuses (reduce expected cash): approved, remote_approved, self_recorded, confirmed, flagged
+- **Drawer limit:** a `petty_cash`/`pickup` amount cannot exceed the shift's current
+  `expected_cash` (change fund + cash sales so far, minus prior paid-outs/pickups) — blocks
+  the drawer from going negative. `OpenDrawer.jsx` fetches `useShiftStore.cashPosition()` on
+  the amount step and disables submit past that total (best-effort offline: local-only
+  estimate). The real boundary is server-side: `validate_cash_movement_outflow()`
+  (`migrate_cash_movement_drawer_limit.sql`, `MOVE24`) runs inside
+  `create_cash_movement_approved/_pending`, `approve_cash_movement_pin/_manager`, and
+  `self_record_cash_movement` — covers the offline-sync path too, where the client-side
+  estimate could be stale by the time the queued RPC actually runs. `cash_in`/`opening_float`
+  are exempt (they add cash).
 - Notify Manager = in-app + realtime (Shell bell inline Approve/Deny + BranchDashboard); no FCM;
   POS waits **60s** then offers self-record (`OPEN_DRAWER_WAIT_SEC` in `SupervisorPinWait.jsx`)
 - Shared PIN/wait UI: `SupervisorPinPanel` + `ManagerWaitPanel` in `SupervisorPinWait.jsx`
@@ -2094,7 +2135,7 @@ receipts stay legible on paper regardless of the on-screen theme.
 | Ulam / restaurant | `migrate_ulam_ordering.sql` |
 | Devices / presence | `migrate_device_settings.sql`, `migrate_branch_presence.sql` |
 | Petty cash rename | `migrate_rename_petty_cash_to_cash_drawer_entries.sql` |
-| Cash movements (POS Open Drawer) | `migrate_cash_movements.sql`, `migrate_cash_movement_cash_in.sql`, `migrate_cash_movement_self_approve.sql` (supervisor+ self-approve) |
+| Cash movements (POS Open Drawer) | `migrate_cash_movements.sql`, `migrate_cash_movement_cash_in.sql`, `migrate_cash_movement_self_approve.sql` (supervisor+ self-approve), `migrate_cash_movement_drawer_limit.sql` (blocks paid-out/pickup over the drawer's current cash) |
 | Cart remove / till action notify | `migrate_till_action_requests.sql` |
 | Manager cross-branch approve | `migrate_manager_can_approve_any_branch.sql` |
 | PIN lockout hardening | `migrate_pin_security_hardening.sql` |

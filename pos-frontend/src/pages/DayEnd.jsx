@@ -17,7 +17,6 @@ import {
 } from '../components/ui'
 import {
   closeShift,
-  CASH_MOVEMENT_COUNTING_STATUSES,
   fetchCashMovements,
   fetchPettyCash,
   fetchSoldLineItems,
@@ -33,35 +32,16 @@ import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posS
 import { useShiftStore } from '../stores/shiftStore'
 import { buildDayEndReport } from '../utils/dayEndReport'
 import { formatSupportError } from '../utils/errors'
+import { computeDayEndFigures, countUnreviewedSelfRecorded } from '../utils/dayEndClose'
 import {
   businessDate,
   dayEndForBusinessDate,
   formatOpenHourLabel,
-  grossFromNetAndDiscounts,
   money,
   rowBusinessDate,
 } from '../utils/format'
 import { isManagerRole, isSupervisorOrAbove, usesPinLogin } from '../utils/roles'
 import { decimalOnly, formatMoneyOnBlur } from '../utils/validate'
-
-const rowKind = (row) =>
-  row.kind ||
-  (String(row.reason || '').startsWith('[CHANGE FUND]')
-    ? 'change_fund'
-    : String(row.reason || '').startsWith('[PICKUP]')
-      ? 'pickup'
-      : 'paid_out')
-
-const rowStatus = (row) => row.status || (rowKind(row) === 'paid_out' ? 'fulfilled' : 'recorded')
-
-/**
- * Counts cash-movement rows recorded by the current user that still require review.
- * @param {Array<Object>} rows - Cash-movement rows to inspect.
- * @return {number} The number of rows with a `self_recorded` status.
- */
-function countUnreviewedSelfRecorded(rows = []) {
-  return rows.filter((r) => r.status === 'self_recorded').length
-}
 
 /**
  * Expected drawer for a shift from its recorded components (float + sales − outs).
@@ -77,35 +57,6 @@ function shiftExpectedCash(row) {
       Number(row?.cashPaidOut || 0) -
       Number(row?.cashPickups || 0)
     ).toFixed(2),
-  )
-}
-
-/**
- * A shift that carried its starting cash forward from another shift OPENED THE SAME
- * BUSINESS DAY is not new money — it is the same drawer contents someone recounted, and
- * those sales are already inside `cashSales` (day-wide, not shift-scoped). Summing its
- * startingCash again double-counted the whole prior shift's takings as a fresh float — most
- * visibly after a manager reopen, where the cashier re-confirms the same cash on hand and
- * that figure becomes the reopened shift's startingCash. A carry from a shift that closed on
- * an EARLIER business date is real: that cash never went through today's cashSales, so it
- * still belongs in today's float — those predecessors are simply absent from `drawerShiftIds`
- * (scoped by the caller to just this date, via fetchStaffShifts) and nothing here excludes them.
- *
- * The exclusion only holds while startingCash still EQUALS the carried figure — that is the
- * signal that nothing but a recount happened. `carriedAmount` freezes what was carried at
- * shift-open; startingCash can still diverge from it afterward (the cashier adjusts the
- * pre-filled count before starting, or later declares a fresh 'opening_float' cash_movement
- * once the shift opened at ₱0 — see migrate_cash_movement_cash_in.sql, only legal when
- * starting_cash is still 0). Either path means this shift's float is no longer "the same
- * drawer contents recounted" but a genuinely different declared amount, so it belongs in the
- * day's float same as any non-carried shift — excluding it unconditionally would silently
- * drop that declared cash from Float/Expected drawer everywhere this total is used.
- */
-function isDuplicateCarry(row, drawerShiftIds) {
-  return (
-    row.carriedFromShiftId &&
-    drawerShiftIds.has(row.carriedFromShiftId) &&
-    Math.abs(Number(row.startingCash || 0) - Number(row.carriedAmount || 0)) <= 0.004
   )
 }
 
@@ -395,35 +346,6 @@ function SupervisorDayEnd() {
   const date = businessDate(new Date(), dayOpenHour)
   const { petty, shifts, movements, loading, reload } = useDayEndData(user, date)
 
-  // rowBusinessDate, NOT item.date: `date` here is a business date, and item.date is the
-  // plain calendar date. Comparing them drops every sale rung between midnight and the open
-  // hour out of its own business day (and counts the previous day's early hours instead) —
-  // which is exactly how this screen's total could disagree with the cashier's shift figure,
-  // since shift_cash_summary() scopes by shift_id and applies no date filter at all.
-  const inBusinessDay = (item) => rowBusinessDate(item, dayOpenHour) === date
-  const recorded = transactions
-    .filter((item) => item.status === 'Paid' && inBusinessDay(item))
-    .reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
-  const cashTransactions = transactions.filter(
-    (item) =>
-      item.status === 'Paid' && inBusinessDay(item) && (item.paymentMethod || 'cash') === 'cash',
-  )
-  const cashSales = cashTransactions.reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
-  // Non-cash tenders — informational only, never part of the Expected-in-drawer math below.
-  // Net of refunds, same as cashSales, so Cash + Card + E-wallet reconciles to `recorded`.
-  const cardSales = transactions
-    .filter((item) => item.status === 'Paid' && inBusinessDay(item) && item.paymentMethod === 'card')
-    .reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
-  const ewalletSales = transactions
-    .filter((item) => item.status === 'Paid' && inBusinessDay(item) && item.paymentMethod === 'ewallet')
-    .reduce((sum, item) => sum + Number(item.netTotal ?? item.total), 0)
-  // Informational only — `total`/`netTotal` are already net of discount (the customer only
-  // ever hands over the discounted amount), so this does not change any cash figure above.
-  // It exists so "why is cash sales lower than the sticker prices would suggest" has an
-  // answer on this screen instead of only in the separate Discount Report.
-  const cashDiscounts = cashTransactions.reduce((sum, item) => sum + Number(item.discountAmount || 0), 0)
-  const cashSalesGross = grossFromNetAndDiscounts(cashSales, cashDiscounts)
-
   const existing = dayEndForBusinessDate(dayEnds, date)
   const isSubmitted = existing?.status === 'submitted'
   const isClosed = existing?.status === 'closed'
@@ -468,69 +390,28 @@ function SupervisorDayEnd() {
 
   const ownShift = useShiftStore((state) => state.shift)
 
-  const changeFundRows = petty.filter((row) => rowKind(row) === 'change_fund')
-  const pickupRows = petty.filter((row) => rowKind(row) === 'pickup')
-  const paidOutRows = petty.filter((row) => rowKind(row) === 'paid_out')
-
-  // The change fund now lives on the shift that counted it (starting_cash), one per
-  // cashier per drawer. The legacy cash_drawer_entries rows are still added in for days
-  // recorded before migrate_shift_cash_accountability.sql — the two never overlap, because
-  // the new flow writes no change_fund entry at all.
-  const drawerShifts = shifts.filter((row) => row.holdsDrawer !== false)
-  const openDrawerShifts = drawerShifts.filter((row) => row.open)
-  const pendingHandoffs = drawerShifts.filter(
-    (row) => !row.open && row.endingCash == null,
-  )
-  // Whoever is actually holding the drawer right now — NOT the viewing supervisor's own
-  // shift (`ownShift`). A supervisor recording a pickup or requesting petty cash from
-  // this screen is usually a different person than the cashier on the till, often with no
-  // drawer shift of their own at all. Attributing to `ownShift` silently charged the
-  // entry to the wrong shift (or none), so the cashier's shift-scoped RPC never saw it while
-  // this page's own day-wide total did — a real source of "cashier and supervisor numbers
-  // don't match" independent of shift count.
-  const drawerHolderShift = drawerShifts.find((row) => row.open)
-  const drawerShiftIds = new Set(drawerShifts.map((row) => row.id).filter(Boolean))
-  const shiftFloatTotal = drawerShifts
-    .filter((row) => !isDuplicateCarry(row, drawerShiftIds))
-    .reduce((sum, row) => sum + Number(row.startingCash || 0), 0)
-  const legacyFloatTotal = changeFundRows.reduce((sum, row) => sum + Number(row.amount || 0), 0)
-  const changeFundTotal = shiftFloatTotal + legacyFloatTotal
-  const pickupTotal = pickupRows.reduce((sum, row) => sum + Number(row.amount || 0), 0)
-  const countingMoves = movements.filter((m) =>
-    CASH_MOVEMENT_COUNTING_STATUSES.includes(m.status),
-  )
-  const movePaidOutTotal = countingMoves
-    .filter((m) => m.type === 'petty_cash')
-    .reduce((sum, m) => sum + Number(m.amount || 0), 0)
-  const movePickupTotal = countingMoves
-    .filter((m) => m.type === 'pickup')
-    .reduce((sum, m) => sum + Number(m.amount || 0), 0)
-
-  // Only cash that has actually been handed over leaves the drawer. An approved request
-  // still sitting in the till is a commitment, not a disbursement — deducting it here made
-  // the drawer read short for as long as it went unfulfilled.
-  const paidOutTotal = paidOutRows
-    .filter((row) => rowStatus(row) === 'fulfilled')
-    .reduce((sum, row) => sum + Number(row.amount || 0), 0)
-  const approvedUnfulfilled = paidOutRows
-    .filter((row) => rowStatus(row) === 'approved')
-    .reduce((sum, row) => sum + Number(row.amount || 0), 0)
-
-  const moveCashInTotal = countingMoves
-    .filter((m) => m.type === 'cash_in')
-    .reduce((sum, m) => sum + Number(m.amount || 0), 0)
-
-  const expectedCash = Number(
-    (
-      changeFundTotal +
-      moveCashInTotal +
-      cashSales -
-      paidOutTotal -
-      pickupTotal -
-      movePaidOutTotal -
-      movePickupTotal
-    ).toFixed(2),
-  )
+  // Single source of truth for the money math (recorded/expected cash, float, gates) —
+  // shared with a manager's remote close on BranchDashboard.jsx. See dayEndClose.js.
+  const {
+    recorded,
+    cashSales,
+    cardSales,
+    ewalletSales,
+    cashDiscounts,
+    cashSalesGross,
+    pickupRows,
+    openDrawerShifts,
+    pendingHandoffs,
+    changeFundTotal,
+    moveCashInTotal,
+    pickupTotal,
+    paidOutTotal,
+    movePaidOutTotal,
+    movePickupTotal,
+    approvedUnfulfilled,
+    expectedCash,
+    pettyCashHandedOver,
+  } = computeDayEndFigures({ transactions, movements, shifts, petty, date, dayOpenHour })
   // An untouched field is "not yet counted", not "counted as ₱0.00" — treating it as zero
   // showed a false "Short" the instant this screen loaded, before anyone had counted anything.
   const hasCashOnHand = countingActive ? cashOnHandDraft !== '' : cashOnHand !== ''
@@ -590,12 +471,6 @@ function SupervisorDayEnd() {
     [date, transactions, soldItemRows, products, isRestaurant, dayOpenHour],
   )
   const report = isLocked && existing?.dayReport ? existing.dayReport : liveReport
-
-  // Petty cash handed over now comes from two sources — the legacy paid-out request flow
-  // and Open Drawer's cash_movements — same merge `expectedCash` above already does. The
-  // persisted record and the Close Day confirmation must agree with that same total, or
-  // the filed dayReport under-reports whatever moved through Open Drawer.
-  const pettyCashHandedOver = Number((paidOutTotal + movePaidOutTotal).toFixed(2))
 
   const buildEntry = () => {
     const dayReport = buildDayEndReport({

@@ -11,7 +11,8 @@ import { startConnectivityWatcher } from './offline'
 import { installSessionLifecycle, consumeBrowserClosedFlag } from './offline/sessionLifecycle'
 import { useAuthStore, useInventoryStore, useProductStore, bindSessionRevokedWatcher } from './stores/posStore'
 import { bindSyncStore } from './stores/syncStore'
-import { canAccessModule, isSupervisorOrAbove } from './utils/roles'
+import { canAccessModule, canAccessPos, isSupervisorOrAbove } from './utils/roles'
+import { useShiftStore } from './stores/shiftStore'
 import { staffHomePath } from './constants/nav'
 import { clearChunkReloadFlag, lazyWithRetry } from './utils/lazyWithRetry'
 
@@ -91,7 +92,9 @@ function firstHomePath(user) {
 
 function RequireModule({ moduleId, children, fallback }) {
   const user = useAuthStore((state) => state.user)
-  if (!canAccessModule(user, moduleId)) {
+  const shift = useShiftStore((state) => state.shift)
+  const allowed = moduleId === 'pos' ? canAccessPos(user, shift) : canAccessModule(user, moduleId)
+  if (!allowed) {
     return <Navigate to={fallback || firstHomePath(user)} replace />
   }
   return children

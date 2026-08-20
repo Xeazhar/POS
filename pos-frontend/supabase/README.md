@@ -25,6 +25,7 @@ migrate_single_active_session_enforcement.sql
 migrate_rename_or_to_invoice.sql   -- last: supersedes complete_sale/void_sale_secure/
                                     -- refund_sale_items bodies from every earlier file
 migrate_promo_expire_supervisor_gate.sql
+migrate_cash_movement_drawer_limit.sql
 ```
 
 `CalePOS_Demo` itself (the shared dev project) has **not** had these 5
@@ -259,6 +260,14 @@ migrate_cash_movement_self_approve.sql         -- put last: needs migrate_cash_m
                                                 -- their OWN Open Drawer activity is cleanly
                                                 -- 'approved' with no PIN/flag; cashiers still need
                                                 -- real dual control. Safe to re-run.
+migrate_cash_movement_drawer_limit.sql         -- needs migrate_cash_movement_cash_in.sql and
+                                                -- migrate_cash_movement_self_approve.sql above;
+                                                -- blocks a petty_cash/pickup request, approval, or
+                                                -- self-record whose amount exceeds the shift's
+                                                -- current expected_cash (adds
+                                                -- validate_cash_movement_outflow(), called from
+                                                -- every cash-movement RPC that takes cash out).
+                                                -- Safe to re-run.
 migrate_announcements.sql                      -- announcements table (manager-authored, branch or
                                                 -- network-wide) + staff.announcements_seen_at +
                                                 -- mark_announcements_seen(); read by CashierDashboard.jsx,
@@ -309,7 +318,7 @@ superseded function version could be silently dropped.
 **`CalePOS_Demo` (Supabase project `pcasudqyqgzrlpyfdvbe`) is the tested
 reference project** and is now the team's dev-tier database (`calepos-dev`
 in `.env.local`) — it has every file in the full apply order above applied
-through the `schema.sql` regeneration commit, **but not yet the 5
+through the `schema.sql` regeneration commit, **but not yet the 6
 post-regeneration migrations listed in "`schema.sql` status" above**. Apply
 those there before dumping, or the dump will carry the same gap forward.
 Only fall back to a scratch project if `CalePOS_Demo` is ever reset or goes

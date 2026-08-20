@@ -1,5 +1,5 @@
 import { FiBarChart2, FiBell, FiClipboard, FiCpu, FiDatabase, FiGrid, FiMoon, FiPackage, FiSettings, FiUsers, FiMapPin, FiFileText, FiCoffee, FiTag } from 'react-icons/fi'
-import { canAccessModule, isManagerRole, isSupervisorOrAbove } from '../utils/roles'
+import { canAccessModule, canAccessPos, isManagerRole, isSupervisorOrAbove } from '../utils/roles'
 import { isRestaurantBranchType } from '../utils/features'
 
 export const staffLinks = [
@@ -14,7 +14,7 @@ export const staffLinks = [
   ['/shifts', 'Staff', FiUsers, 'shifts'],
 ]
 
-export function staffLinksFor(user) {
+export function staffLinksFor(user, shift) {
   const base =
     isRestaurantBranchType(user?.branchType)
       ? [
@@ -51,6 +51,7 @@ export function staffLinksFor(user) {
   }
 
   return base.filter(([, , , moduleId]) => {
+    if (moduleId === 'pos') return canAccessPos(user, shift)
     if (!canAccessModule(user, moduleId)) return false
     // Managers already get these under the manager nav below (avoid duplicate tabs) —
     // shifts/promos/catalog all render the exact same page as their manager-nav counterpart
@@ -91,9 +92,9 @@ export function managerLinksFor(user) {
   return managerLinks.filter(([, , , moduleId]) => canAccessModule(user, moduleId))
 }
 
-export function navLinksFor(user) {
+export function navLinksFor(user, shift) {
   if (!user) return []
-  const staff = staffLinksFor(user)
+  const staff = staffLinksFor(user, shift)
   const mgr = managerLinksFor(user)
   const seen = new Set()
   const combined = [...mgr, ...staff]

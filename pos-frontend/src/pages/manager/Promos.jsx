@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   hasSupabase,
@@ -129,6 +129,15 @@ export default function ManagerPromos() {
   const [notice, setNotice] = useState('')
 
   const [history, setHistory] = useState([])
+  // Every event id this branch knows about (any status) — used to drop cross-branch
+  // promo_rules realtime noise client-side, since that table has no branch_id column.
+  const branchEventIdsRef = useRef(new Set())
+  useEffect(() => {
+    branchEventIdsRef.current = new Set([
+      ...activeEvents.map((e) => e.event?.id).filter(Boolean),
+      ...history.map((h) => h.id).filter(Boolean),
+    ])
+  }, [activeEvents, history])
   const [historyPage, setHistoryPage] = useState(0)
   const [pendingDelete, setPendingDelete] = useState(null)
   const [stopReason, setStopReason] = useState('')
@@ -501,21 +510,26 @@ export default function ManagerPromos() {
       .catch(() => setNetworkSalesTotal(null))
   }, [managerView, branchId, networkHistoryFrom, networkHistoryTo])
 
+  // Keyed on the id set, not the historyPageRows array reference: eventRuleTypes itself
+  // feeds sortedHistory's useMemo (it's used for the rule-type column/sort), so a
+  // reference-only dependency here reruns this fetch every time it resolves — same page,
+  // same ids, forever — since setEventRuleTypes always produces a new object that gives
+  // historyPageRows a new (but same-content) array reference downstream.
+  const historyPageIdsKey = historyPageRows.map((e) => e.id).join(',')
   useEffect(() => {
-    const ids = historyPageRows.map((e) => e.id)
-    if (!ids.length) return
-    fetchPromoRuleTypesForEvents(ids)
+    if (!historyPageIdsKey) return
+    fetchPromoRuleTypesForEvents(historyPageIdsKey.split(','))
       .then((map) => setEventRuleTypes((prev) => ({ ...prev, ...map })))
       .catch(() => {})
-  }, [historyPageRows])
+  }, [historyPageIdsKey])
 
+  const networkHistoryPageIdsKey = networkHistoryPageRows.map((e) => e.id).join(',')
   useEffect(() => {
-    const ids = networkHistoryPageRows.map((e) => e.id)
-    if (!ids.length) return
-    fetchPromoRuleTypesForEvents(ids)
+    if (!networkHistoryPageIdsKey) return
+    fetchPromoRuleTypesForEvents(networkHistoryPageIdsKey.split(','))
       .then((map) => setNetworkEventRuleTypes((prev) => ({ ...prev, ...map })))
       .catch(() => {})
-  }, [networkHistoryPageRows])
+  }, [networkHistoryPageIdsKey])
 
   // Receipts/discount-given on Promo History used to only fill in once a manager opened a
   // row's Sales modal. Fetch the currently-visible page eagerly and keep it live off the
@@ -541,13 +555,14 @@ export default function ManagerPromos() {
     setHistoryStats((prev) => ({ ...prev, ...Object.fromEntries(entries.filter(Boolean)) }))
   }, [branchId, historyPageRows])
 
+  // transaction_items is insert-only and always written alongside its parent transactions
+  // row in the same branch (see api.js) — the branch-filtered `transactions` change below
+  // is sufficient signal; a separate unfiltered transaction_items subscription only added
+  // one refetch trigger per line item, network-wide, for no extra correctness.
   useLiveData({
     enabled: !!branchId && historyPageRows.length > 0,
     fetch: refreshVisibleStats,
-    tables: [
-      { table: 'transactions', filter: `branch_id=eq.${branchId}` },
-      { table: 'transaction_items' },
-    ],
+    tables: [{ table: 'transactions', filter: `branch_id=eq.${branchId}` }],
   })
 
   const refreshNetworkVisibleStats = useCallback(async () => {
@@ -571,20 +586,29 @@ export default function ManagerPromos() {
   useLiveData({
     enabled: managerView && !branchId && networkHistoryPageRows.length > 0,
     fetch: refreshNetworkVisibleStats,
-    tables: [{ table: 'transactions' }, { table: 'transaction_items' }],
+    tables: [{ table: 'transactions' }],
   })
 
   // Live: a supervisor's pending request/edit reaching approval (or a manager's own edit)
   // on another device or tab must show up here immediately — mirrors POS.jsx's promo
-  // subscription. promo_rules/promo_rule_products have no branch_id to filter on; cheap
-  // enough to watch unfiltered and let refreshActive's branch-scoped refetch do the real
-  // filtering.
+  // subscription. promo_rules has no branch_id to filter on server-side, so it's watched
+  // unfiltered but matched client-side against every event id this branch knows about
+  // (any status, via branchEventIdsRef) — cross-branch edits get dropped before triggering
+  // a refetch. promo_rule_products is left unfiltered: it's low-volume (only fires while a
+  // promo is actively being edited) and its payload carries a rule id, not an event id, so
+  // matching it the same way would need caching every pending event's rule ids too.
   useLiveData({
     enabled: Boolean(hasSupabase && branchId),
     fetch: () => refreshActive(),
     tables: [
       { table: 'promo_events', filter: `branch_id=eq.${branchId}` },
-      { table: 'promo_rules' },
+      {
+        table: 'promo_rules',
+        match: (payload) => {
+          const id = payload?.new?.promo_event_id || payload?.old?.promo_event_id
+          return !id || branchEventIdsRef.current.has(id)
+        },
+      },
       { table: 'promo_rule_products' },
     ],
   })

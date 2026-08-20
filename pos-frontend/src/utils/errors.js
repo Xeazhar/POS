@@ -331,6 +331,14 @@ export const ERROR_CATALOG = {
     cause: 'The xlsx library failed to load, or the file could not be written.',
     fix: 'Retry. The movements already on screen are unaffected either way.',
   },
+  INV07: {
+    message: 'This product has sales, promo, or import history and cannot be deleted.',
+    severity: W,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'The delete was blocked by a foreign key (transaction_items, promo_rule_products, or import_batch_items reference this product).',
+    fix: 'Archive it instead (Status → Archived) — deleting is only for products with zero history, like an accidental import.',
+  },
 
   // ── CAT — shared network catalog vs. branch products ─────────────────────
   CAT01: {
@@ -715,6 +723,14 @@ export const ERROR_CATALOG = {
     retry: false,
     cause: 'Remote manager alerts require the server. Offline Open Drawer still works with a supervisor PIN on this device.',
     fix: 'Use Supervisor PIN on this terminal, or reconnect to notify a remote manager.',
+  },
+  MOVE24: {
+    message: 'That amount is more than what is currently in the drawer.',
+    severity: C,
+    saleImpact: SALE_IMPACT.none,
+    retry: false,
+    cause: 'validate_cash_movement_outflow blocked a petty cash / pickup that would take the drawer negative.',
+    fix: 'Enter an amount at or below the drawer total shown, or count the drawer to confirm.',
   },
 
   // ── TILL_ACT — cart remove / till gates (remote notify) ───────────────────

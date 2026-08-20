@@ -159,7 +159,17 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
   // read of current stock so the card is never blank just because no day has closed yet
   // (new branch) or nothing low happened to sell on the last closed day.
   const priorRestockEntry = !isRestaurant ? previousDayRestockReport(dayEnds, todayKey) : null
-  const restockReport = priorRestockEntry?.dayReport || (!isRestaurant ? liveRestockReport(products) : null)
+  // A frozen snapshot from a prior close can name a product archived since — `products`
+  // here is already active-only, so drop anything the snapshot lists that isn't in it.
+  const activeProductIds = new Set(products.map((p) => p.id))
+  const restockReport = priorRestockEntry?.dayReport
+    ? {
+        ...priorRestockEntry.dayReport,
+        restock: (priorRestockEntry.dayReport.restock || []).filter((r) => activeProductIds.has(r.productId)),
+      }
+    : !isRestaurant
+      ? liveRestockReport(products)
+      : null
 
   // Same reductions terminalReports.js uses for the X/Z reading — reused rather than
   // re-derived so this row and a printed reading for the same range can never disagree.

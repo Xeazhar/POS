@@ -66,9 +66,10 @@ function Shell({ children }) {
   const [syncBannerDismissed, setSyncBannerDismissed] = useState(false)
   const shiftGate = useShiftStore((state) => state.gate)
   const resolveShift = useShiftStore((state) => state.resolve)
+  const currentShift = useShiftStore((state) => state.shift)
   useBranchOperationsLive(user?.branchId)
   const isManager = isManagerRole(user?.role) && user?.role !== 'master'
-  const defaultLinks = navLinksFor(user)
+  const defaultLinks = navLinksFor(user, currentShift)
   const userId = user?.id
   const [navDraft, setNavDraft] = useState(null)
   const orderPaths = navDraft && navDraft.userId === userId ? navDraft.paths : loadNavOrder(userId)

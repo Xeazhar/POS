@@ -675,6 +675,14 @@ export const useProductStore = create((set, get) => ({
     if (sameBranch || !user?.branchId) set((state) => ({ products: [...state.products, product] }))
     return product
   },
+  // Hard delete — for a product that should never have existed (accidental import), not a
+  // "stopped selling" one (use setProductActive/archive for that). Requires connectivity;
+  // unlike addProduct/updateProduct there is no offline queue for this, since it should be
+  // a rare cleanup action, not something staff do mid-shift with no network.
+  removeProduct: async (id) => {
+    await api.deleteProduct(id)
+    set((state) => ({ products: state.products.filter((product) => product.id !== id) }))
+  },
   updateProduct: async (id, changes) => {
     const user = useAuthStore.getState().user
     const previous = get().products.find((item) => item.id === id)

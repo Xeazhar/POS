@@ -1687,6 +1687,22 @@ export async function setProductActive(productId, isActive) {
   return data
 }
 
+/**
+ * Permanently remove a product row — for a product that should never have existed in this
+ * branch (accidental import), not for one that just stopped selling (use setProductActive
+ * for that; it's reversible, this isn't). `transaction_items`, `promo_rule_products`, and
+ * `import_batch_items` all reference products with `ON DELETE RESTRICT`, so this fails with
+ * Postgres 23503 the moment the product has any real history — callers should catch that and
+ * point the user at archiving instead.
+ */
+export async function deleteProduct(productId) {
+  const { error } = await supabase.from('products').delete().eq('id', productId)
+  if (error) {
+    if (error.code === '23503') throw appError('INV07', error.message)
+    throw error
+  }
+}
+
 /** Products hidden via setProductActive, for the "Not selling" view + reactivate. */
 export async function fetchInactiveBranchProducts(branchId) {
   const [productsRes, inventoryRes] = await Promise.all([
@@ -4273,7 +4289,7 @@ export async function fetchShiftAdjustments(shiftIds = []) {
   if (!ids.length) return []
   const { data, error } = await supabase
     .from('shift_adjustments')
-    .select('id, shift_id, field, old_value, new_value, reason, adjusted_by, approved_by, created_at, staff:adjusted_by(full_name)')
+    .select('id, shift_id, field, old_value, new_value, reason, adjusted_by, approved_by, created_at, staff:adjusted_by(full_name, role)')
     .in('shift_id', ids)
     .order('created_at', { ascending: false })
   if (error) {
@@ -4289,6 +4305,7 @@ export async function fetchShiftAdjustments(shiftIds = []) {
     reason: row.reason || '',
     adjustedBy: row.adjusted_by || null,
     adjustedByName: row.staff?.full_name || '',
+    adjustedByRole: row.staff?.role || '',
     approvedBy: row.approved_by || null,
     createdAt: row.created_at,
   }))
@@ -8350,9 +8367,9 @@ export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, r
   const fetchDayEndsRequested = async () => {
     // Day-end requested by a cashier — no cash figures yet, just a flag that someone needs
     // to count the drawer. A supervisor only sees a request that was NOT specifically
-    // flagged for a manager; a manager sees every request (the universal fallback). Always
-    // routes to /day-end (not the branch dashboard) — that's the screen with the actual
-    // counting form.
+    // flagged for a manager; a manager sees every request (the universal fallback). Routes
+    // to /day-end (the counting form) for supervisor/cashier, since that's their own
+    // branch's session. Manager gets routed to the branch dashboard instead (below).
     //
     // Do NOT require closed_at IS NULL here: legacy schema defaulted closed_at to now() on
     // insert, which hid every live request from the bell (migrate_day_end_request_notify_fix.sql).
@@ -8388,7 +8405,10 @@ export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, r
         kind: 'day_end_requested',
         title: row.request_manager ? 'Day end requested (manager)' : 'Day end requested',
         detail: `${branchName} · ${row.business_date || 'today'}`,
-        href: '/day-end',
+        // Manager may not be logged into the requesting branch's own session — /day-end
+        // always shows whatever branch THIS session is loaded as, so route manager to the
+        // branch dashboard instead (same split fetchDayEndsSubmitted uses above).
+        href: manager ? `/manager/branches/${row.branch_id}` : '/day-end',
         createdAt: row.requested_at || null,
         priority: 1,
         dayEndId: row.id,
@@ -8435,7 +8455,14 @@ export async function fetchPendingApprovals({ role, branchId, dayOpenHour = 7, r
         manager,
       })
       return moveRows.map((row) => {
-        const typeLabel = row.type === 'pickup' ? 'Cash pickup' : 'Petty cash'
+        const typeLabel =
+          row.type === 'pickup'
+            ? 'Cash pickup'
+            : row.type === 'cash_in'
+              ? 'Additional float'
+              : row.type === 'opening_float'
+                ? 'Opening float'
+                : 'Petty cash'
         return {
           id: `cash-move-${row.id}`,
           kind: 'cash_movement_pending',

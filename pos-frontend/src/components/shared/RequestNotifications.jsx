@@ -36,6 +36,7 @@ export default function RequestNotifications() {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const [actionBusy, setActionBusy] = useState(null)
   const [actionError, setActionError] = useState('')
   const rootRef = useRef(null)
@@ -61,6 +62,7 @@ export default function RequestNotifications() {
       /* keep last list */
     } finally {
       setLoading(false)
+      setLoaded(true)
     }
   }, [canSee, user, dayOpenHour])
 
@@ -197,17 +199,17 @@ export default function RequestNotifications() {
         <div className="absolute top-[42px] right-0 z-40 w-[min(340px,calc(100vw-24px))] overflow-hidden rounded-lg border border-brand-border bg-brand-card text-brand-ink shadow-lg">
           <div className="border-b border-brand-softline px-3 py-2.5">
             <strong className="block text-xs">{label}</strong>
-            {loading && !items.length ? (
+            {loading && !loaded ? (
               <Skeleton className="mt-1.5 h-2.5 w-28" />
             ) : (
               <span className="text-[10px] text-brand-subtle">
-                {loading ? 'Updating…' : count ? `${count} awaiting action` : 'No pending requests'}
+                {count ? `${count} awaiting action` : 'No pending requests'}
               </span>
             )}
             {actionError && <p className="m-0 mt-1 text-[10px] text-brand-danger">{actionError}</p>}
           </div>
           <div className="max-h-[320px] overflow-auto">
-            {loading && !items.length ? (
+            {loading && !loaded ? (
               <div className="space-y-2 px-3 py-3" role="status" aria-label="Loading">
                 <Skeleton className="h-3 w-40" />
                 <Skeleton className="h-2.5 w-56" />
@@ -315,7 +317,7 @@ export default function RequestNotifications() {
                 </div>
               ))
             )}
-            {!loading && items.length === 0 && (
+            {(loaded || !loading) && items.length === 0 && (
               <div className="px-3 py-6 text-center text-[11px] text-brand-subtle">
                 {manager
                   ? 'No day-end, promo, refund, cash, or cart requests right now.'

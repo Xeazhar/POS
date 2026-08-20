@@ -3,6 +3,7 @@ import { FiX } from 'react-icons/fi'
 import { Link, useParams } from 'react-router-dom'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
 import DayEndClosingDetail from '../../components/dayend/DayEndClosingDetail'
+import RemoteDayEndClose from '../../components/dayend/RemoteDayEndClose'
 import { DayEndReportPanels } from '../../components/dayend/DayEndReportPanels'
 import BranchHandoffs from '../../components/dayend/BranchHandoffs'
 import AuditSummary from '../../components/dashboard/AuditSummary'
@@ -57,6 +58,7 @@ import {
   fetchCashMovements,
   fetchPendingCashMovements,
   fetchPendingTillActionRequests,
+  rejectDayEndRequest,
   rejectRefundRequest,
   reopenDayEnd,
   resolveTillActionRequest,
@@ -188,6 +190,10 @@ function ManagerBranchDashboard() {
   const [reopening, setReopening] = useState(null)
   const [reopenTarget, setReopenTarget] = useState(null)
   const [reopenReason, setReopenReason] = useState('')
+  const [declining, setDeclining] = useState(null)
+  const [declineTarget, setDeclineTarget] = useState(null)
+  const [declineReason, setDeclineReason] = useState('')
+  const [remoteCloseTarget, setRemoteCloseTarget] = useState(null)
   const [approving, setApproving] = useState(null)
   const [telemetry, setTelemetry] = useState({ devices: [] })
   const [detail, setDetail] = useState(null)
@@ -638,6 +644,7 @@ function ManagerBranchDashboard() {
   const todayEntry = (data.dayEnds || []).find((entry) => entry.date === todayKey)
   const submittedToday = todayEntry?.status === 'submitted'
   const closedToday = todayEntry?.status === 'closed'
+  const requestedToday = todayEntry?.status === 'requested'
   const canApprove = isSupervisorOrAbove(user?.role)
 
   const handleApprove = async (entry) => {
@@ -674,6 +681,24 @@ function ManagerBranchDashboard() {
       setError(formatSupportError(err, 'TILL02'))
     } finally {
       setReopening(null)
+    }
+  }
+
+  const handleDecline = async () => {
+    const entry = declineTarget
+    if (!entry) return
+    setDeclining(entry.id)
+    setError('')
+    try {
+      await rejectDayEndRequest({ id: entry.id, staffId: user.id, reason: declineReason.trim() })
+      setDeclineTarget(null)
+      setDeclineReason('')
+      await refreshBranchActivity(branchId)
+      await reload()
+    } catch (err) {
+      setError(formatSupportError(err, 'TILL02'))
+    } finally {
+      setDeclining(null)
     }
   }
 
@@ -902,8 +927,21 @@ function ManagerBranchDashboard() {
   const invSlice = data.products.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE)
   // Prefer yesterday's closed-day snapshot; fall back to a live read of current stock so
   // the card is never blank for a branch that hasn't closed a day yet (see Dashboard.jsx).
-  const priorRestockEntry = !isRestaurant
+  const rawPriorRestockEntry = !isRestaurant
     ? previousDayRestockReport(data.dayEnds || [], todayKey)
+    : null
+  // A frozen snapshot from a prior close can name a product archived since — `data.products`
+  // is already active-only, so drop anything the snapshot lists that isn't in it.
+  const priorRestockEntry = rawPriorRestockEntry
+    ? {
+        ...rawPriorRestockEntry,
+        dayReport: {
+          ...rawPriorRestockEntry.dayReport,
+          restock: (rawPriorRestockEntry.dayReport.restock || []).filter((r) =>
+            data.products.some((p) => p.id === r.productId),
+          ),
+        },
+      }
     : null
   const liveRestock = !isRestaurant && !priorRestockEntry ? liveRestockReport(data.products) : null
 
@@ -1207,6 +1245,33 @@ function ManagerBranchDashboard() {
               </PrimaryButton>
             </div>
           )}
+          {requestedToday && (
+            <div className="mx-4 my-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-brand-warn-bg px-3 py-2.5 text-xs text-brand-warn">
+              <span>
+                Day end requested for {todayKey}
+                {todayEntry.requestManager ? ' — a manager was specifically asked for' : ''}.
+                Count in person, or close remotely with a figure reported by phone.
+              </span>
+              <span className="flex flex-wrap gap-2">
+                {isManagerRole(user?.role) && (
+                  <PrimaryButton compact type="button" onClick={() => setRemoteCloseTarget(todayEntry)}>
+                    Count &amp; close remotely
+                  </PrimaryButton>
+                )}
+                <SecondaryButton
+                  compact
+                  type="button"
+                  disabled={declining === todayEntry.id}
+                  onClick={() => {
+                    setDeclineTarget(todayEntry)
+                    setDeclineReason('')
+                  }}
+                >
+                  Decline request
+                </SecondaryButton>
+              </span>
+            </div>
+          )}
           <div className="grid grid-cols-[minmax(0,1.3fr)_5.5rem_5.5rem_5.5rem_4.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[minmax(0,1fr)_5rem_4.25rem]">
             <span>Date</span>
             <span className="text-right max-[900px]:hidden">Expected</span>
@@ -1276,6 +1341,19 @@ function ManagerBranchDashboard() {
                     }}
                   >
                     Reopen
+                  </button>
+                ) : entry.status === 'requested' ? (
+                  <button
+                    type="button"
+                    className="border-0 bg-transparent text-[11px] font-bold whitespace-nowrap text-brand-ink underline disabled:opacity-40"
+                    disabled={declining === entry.id}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setDeclineTarget(entry)
+                      setDeclineReason('')
+                    }}
+                  >
+                    Decline
                   </button>
                 ) : entry.status === 'closed' ? (
                   <span className="text-[11px] text-brand-subtle">Locked</span>
@@ -1536,11 +1614,13 @@ function ManagerBranchDashboard() {
           {refundRequests.map((row) => (
             <div
               key={row.id}
-              className="grid grid-cols-[0.9fr_0.7fr_1.4fr_1fr_1.1fr] items-center gap-2 border-t border-brand-softline px-4 py-2.5 text-xs max-[900px]:grid-cols-[1fr_1fr_1.2fr]"
+              className="grid cursor-pointer grid-cols-[0.9fr_0.7fr_1.4fr_1fr_1.1fr] items-center gap-2 border-t border-brand-softline px-4 py-2.5 text-xs hover:bg-brand-n50 max-[900px]:grid-cols-[1fr_1fr_1.2fr]"
+              onClick={() => openTxnDetail({ id: row.transactionId })}
+              title="View the sale being refunded/voided"
             >
               <span className="truncate text-brand-ink">{row.invoiceNumber || row.transactionId.slice(0, 8)}</span>
               <span className="capitalize text-brand-slate max-[900px]:hidden">
-                {row.mode === 'full' ? 'Full' : 'Items'}
+                {row.mode === 'full' ? 'Full (void)' : 'Items'}
               </span>
               <span className="truncate text-brand-slate">{row.reason || '—'}</span>
               <span className="truncate text-brand-slate max-[900px]:hidden">{row.requestedByName || '—'}</span>
@@ -1549,7 +1629,8 @@ function ManagerBranchDashboard() {
                   compact
                   type="button"
                   disabled={refundBusyId === row.id}
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation()
                     setRejectingRefund(row)
                     setRejectRefundReason('')
                   }}
@@ -1560,7 +1641,8 @@ function ManagerBranchDashboard() {
                   compact
                   type="button"
                   disabled={refundBusyId === row.id}
-                  onClick={async () => {
+                  onClick={async (e) => {
+                    e.stopPropagation()
                     try {
                       setRefundBusyId(row.id)
                       setError('')
@@ -2487,11 +2569,64 @@ function ManagerBranchDashboard() {
           </ModalActions>
         </Modal>
       )}
+      {declineTarget && (
+        <Modal wide onClose={() => setDeclineTarget(null)}>
+          <Eyebrow>DECLINE REQUEST</Eyebrow>
+          <h2 className="mb-3 text-[22px] max-[700px]:text-lg">Decline day end request for {declineTarget.date}?</h2>
+          <p className="mb-3 text-xs text-brand-muted">
+            The branch stays open for sales. The cashier will need to request again if still needed.
+          </p>
+          <Field
+            label="Reason (optional)"
+            value={declineReason}
+            onChange={(e) => setDeclineReason(e.target.value.replace(/[<>]/g, ''))}
+            placeholder="e.g. requested by mistake, count already done on-site"
+          />
+          <ModalActions>
+            <SecondaryButton compact type="button" onClick={() => setDeclineTarget(null)}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton
+              compact
+              type="button"
+              disabled={declining === declineTarget.id}
+              onClick={handleDecline}
+            >
+              {declining === declineTarget.id ? 'Declining…' : 'Decline request'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+      {remoteCloseTarget && (
+        <RemoteDayEndClose
+          branchId={branchId}
+          dayOpenHour={openHour}
+          isRestaurant={isRestaurant}
+          date={remoteCloseTarget.date}
+          entry={remoteCloseTarget}
+          products={data.products}
+          transactions={data.transactions}
+          staffId={user.id}
+          onClose={() => setRemoteCloseTarget(null)}
+          onSubmitted={async () => {
+            setRemoteCloseTarget(null)
+            await refreshBranchActivity(branchId)
+            await reload()
+          }}
+        />
+      )}
       </>
       )}
 
       {mainTab === 'handoffs' && (
-        <BranchHandoffs dayEnds={data.dayEnds} staffShifts={staffShifts} onReload={reload} />
+        <BranchHandoffs
+          dayEnds={data.dayEnds}
+          staffShifts={staffShifts}
+          currentStaffId={user?.id}
+          onReload={async () => {
+            await Promise.all([reload(), loadStaffShifts()])
+          }}
+        />
       )}
     </div>
   )

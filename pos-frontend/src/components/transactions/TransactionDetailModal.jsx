@@ -57,10 +57,10 @@ function TransactionDetailModal({
             </p>
           )}
           <div className="mt-4 max-h-[240px] overflow-auto rounded-md border border-brand-softline">
-            <div className="grid grid-cols-[1.4fr_0.6fr_0.7fr_0.7fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
+            <div className="grid grid-cols-[1.4fr_0.6fr_0.7fr_0.7fr] max-[480px]:grid-cols-[1.4fr_0.7fr_0.7fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
               <span>Item</span>
               <span className="text-right">Qty</span>
-              <span className="text-right">Price</span>
+              <span className="text-right max-[480px]:hidden">Price</span>
               <span className="text-right">Total</span>
             </div>
             {(detail.lines || []).map((line) => {
@@ -71,10 +71,10 @@ function TransactionDetailModal({
               return (
                 <div
                   key={line.id}
-                  className="grid grid-cols-[1.4fr_0.6fr_0.7fr_0.7fr] gap-2 border-t border-brand-softline px-3 py-2.5 text-xs"
+                  className="grid grid-cols-[1.4fr_0.6fr_0.7fr_0.7fr] max-[480px]:grid-cols-[1.4fr_0.7fr_0.7fr] gap-2 border-t border-brand-softline px-3 py-2.5 text-xs"
                 >
-                  <div>
-                    <strong className="block text-brand-ink">{line.name}</strong>
+                  <div className="min-w-0">
+                    <strong className="block truncate text-brand-ink">{line.name}</strong>
                     {line.sku && <small className="text-[10px] text-brand-subtle">{line.sku}</small>}
                     {Number(line.discountAmount || 0) > 0 && (
                       <small className="block text-[10px] text-brand-danger">
@@ -96,7 +96,7 @@ function TransactionDetailModal({
                   <span className={`text-right ${moneyClass}`}>
                     {qty(line.quantity, line.pricingMode === 'kg' ? 'kg' : 'pc')}
                   </span>
-                  <span className={`text-right ${moneyClass}`}>{money(line.unitPrice)}</span>
+                  <span className={`text-right max-[480px]:hidden ${moneyClass}`}>{money(line.unitPrice)}</span>
                   <strong className={`text-right ${moneyClass}`}>
                     {refundedAmt > 0 ? money(netLine) : money(line.lineTotal)}
                   </strong>

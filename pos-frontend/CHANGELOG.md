@@ -17,6 +17,56 @@ computation, OR numbering).
 
 ---
 
+## 0.27.0 — 2026-08-21
+
+### Added: add/delete product from Inventory + fixed archived items lingering in restock alerts
+
+Inventory now has a manager-only **Add product** button (opens a form the same shape as
+the edit form) instead of new items only being reachable via CSV import or catalog
+adoption. Product detail also gets a **Delete product** action for cleaning up an
+accidental import — a real, irreversible `DELETE`, distinct from Archive (which stays
+reversible). It only succeeds for a product with zero history: `transaction_items`,
+`promo_rule_products`, and `import_batch_items` all reference products with
+`ON DELETE RESTRICT`, so anything ever sold, promo'd, or already-imported is blocked
+with a clear "archive it instead" message (`INV07`) rather than a raw DB error.
+
+Fixed: archiving a product could still leave it showing on the manager/branch dashboard's
+"needs restock" card. Root cause — that card prefers a *frozen* snapshot from the last
+day-end close, which never got re-checked against current active status; archiving a
+product the day after a close left it on the card indefinitely. Both dashboards now drop
+any restocked item that isn't in the current active product list, and
+`buildDayEndReport`/`liveRestockReport` also guard on `is_active` directly.
+
+### Files
+
+`src/lib/api.js`, `src/stores/posStore.js`, `src/pages/Products.jsx`,
+`src/utils/dayEndReport.js`, `src/pages/Dashboard.jsx`,
+`src/pages/manager/BranchDashboard.jsx`, `src/utils/errors.js`.
+
+---
+
+## 0.26.0 — 2026-08-20
+
+### Added: remote day-end close for managers + fixed notification routing
+
+A manager's "Day end requested" bell notification routed everyone to `/day-end`, which
+always shows the CURRENT session's own branch — a manager notified about a different
+branch's request landed on their own branch's (usually empty) day-end screen instead.
+The notification now routes a manager to that branch's dashboard
+(`/manager/branches/{branch_id}`) instead. That dashboard can now also act on the
+request directly: **Decline request**, or (manager-only) **Count & close remotely** —
+enter a cash figure reported by phone from whoever is on-site and close the day without
+traveling there. Same money math as the on-site counting screen; open cashier shifts and
+unreviewed cash movements still block (need someone on-site), but a pending cashier
+handoff no longer does — there's no supervisor there to receive it, so it stays open as a
+cashier → manager handoff instead, confirmable whenever the cash actually arrives.
+
+Also merged the branch dashboard's "Handoffs" tab from two separate read-mostly lists
+into one filterable table (`BranchHandoffs.jsx`) covering both legs of the custody
+chain — cashier → supervisor/manager and supervisor → manager — filterable by leg and
+by pending/confirmed status, with a bulk "Confirm received" that now also confirms
+cashier handoffs from here (previously view-only, confirm-only-from-DayEnd).
+
 ## 0.25.0 — 2026-08-20
 
 ### Added: supervisor→manager cash handoff tracking + fixed Handover notice

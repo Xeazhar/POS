@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { FiEdit2, FiEyeOff, FiSearch, FiX } from 'react-icons/fi'
+import { FiEdit2, FiPlus, FiSearch, FiTrash2, FiX } from 'react-icons/fi'
 import {
   Eyebrow,
   Field,
@@ -72,6 +72,8 @@ function Products() {
   const isRestaurant = user?.branchType === 'restaurant'
   const ownProducts = useProductStore((state) => state.products)
   const productsLoading = useProductStore((state) => state.loading)
+  const addProduct = useProductStore((state) => state.addProduct)
+  const removeProduct = useProductStore((state) => state.removeProduct)
   const updateProduct = useProductStore((state) => state.updateProduct)
   const toggleAvailableToday = useProductStore((state) => state.toggleAvailableToday)
   const ownMovements = useInventoryStore((state) => state.movements)
@@ -89,6 +91,10 @@ function Products() {
   const [confirmSave, setConfirmSave] = useState(false)
   const [confirmAdjust, setConfirmAdjust] = useState(null)
   const [adjustReason, setAdjustReason] = useState('')
+  const [adjustAction, setAdjustAction] = useState('Restock')
+  const [creating, setCreating] = useState(false)
+  const [confirmCreate, setConfirmCreate] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   // "Archived" = is_active=false — hidden everywhere (POS, dashboards, low-stock)
   // since every product fetch already filters is_active=true. Held separately from
   // `products`/`ownProducts` (which stay active-only, same reasoning as the cross-branch
@@ -121,6 +127,10 @@ function Products() {
   // Edits and stock adjustments always act on the signed-in branch's own rows, so another
   // branch's inventory is read-only here. Change it from that branch's own page.
   const canEditProduct = isManagerRole(user?.role) && viewingOwnBranch
+  // Archiving ("we stopped selling this") is a floor-level call, same tier as adjusting
+  // stock or importing — unlike Edit/Delete it doesn't touch price/identity, so supervisors
+  // don't need a manager for it.
+  const canArchiveProduct = isSupervisorOrAbove(user?.role) && viewingOwnBranch
   const canImportStock = isSupervisorOrAbove(user?.role) && !isRestaurant && viewingOwnBranch
 
   const reloadProducts = async () => {
@@ -241,6 +251,7 @@ function Products() {
     setConfirmSave(false)
     setConfirmAdjust(null)
     setAdjustReason('')
+    setAdjustAction('Restock')
   }
 
   const open = (product) => {
@@ -248,6 +259,7 @@ function Products() {
     setSelected(product.id)
     setEditing(false)
     setError('')
+    setAdjustAction('Restock')
     setForm({
       name: product.name,
       sku: product.sku,
@@ -332,8 +344,12 @@ function Products() {
 
   const requestAdjust = (event) => {
     event.preventDefault()
-    const amount = Number(decimalOnly(event.currentTarget.quantity.value))
     const action = event.currentTarget.action.value
+    if (action === 'Archive' || action === 'Reactivate') {
+      void commitDeactivate()
+      return
+    }
+    const amount = Number(decimalOnly(event.currentTarget.quantity.value))
     if (!amount || amount <= 0) {
       setError('Enter a valid adjustment quantity.')
       return
@@ -418,6 +434,66 @@ function Products() {
     }
   }
 
+  const openCreate = () => {
+    close()
+    setForm(emptyForm)
+    setCreating(true)
+  }
+
+  const closeCreate = () => {
+    setCreating(false)
+    setConfirmCreate(false)
+    setForm(emptyForm)
+    setError('')
+  }
+
+  const requestCreate = (event) => {
+    event.preventDefault()
+    const message = validateForm()
+    if (message) {
+      setError(message)
+      return
+    }
+    setConfirmCreate(true)
+  }
+
+  const commitCreate = async () => {
+    try {
+      await addProduct({
+        name: sanitizeText(form.name),
+        sku: sanitizeText(form.sku),
+        barcode: digitsOnly(form.barcode),
+        category: form.category,
+        menuKind: isRestaurant ? form.menuKind : undefined,
+        pricingMode: form.pricingMode,
+        price: Number(form.price),
+        budgetPrice: isRestaurant && form.budgetPrice !== '' ? Number(form.budgetPrice) : null,
+        stock: isRestaurant ? 0 : Number(form.stock || 0),
+        discountEligible: form.discountEligible === true,
+      })
+      closeCreate()
+      await reloadProducts()
+    } catch (err) {
+      setError(err.message || 'Could not add product')
+      setConfirmCreate(false)
+    }
+  }
+
+  const requestDelete = () => setConfirmDelete(true)
+
+  const commitDelete = async () => {
+    if (!selected) return
+    try {
+      await removeProduct(selected)
+      if (showInactive) setInactiveProducts((prev) => prev.filter((p) => p.id !== selected))
+      setConfirmDelete(false)
+      close()
+    } catch (err) {
+      setError(err.message || 'Delete failed')
+      setConfirmDelete(false)
+    }
+  }
+
   const unit = form.pricingMode === 'kg' ? 'kg' : 'pc'
   const productMovements = movements.filter((movement) => movement.productId === selected)
   const categories = [...new Set(products.map((p) => p.category).filter(Boolean))].sort()
@@ -493,20 +569,12 @@ function Products() {
           value={query}
           onChange={(event) => setQuery(event.target.value.replace(/[<>]/g, ''))}
         />
-        <SecondaryButton
-          compact
-          type="button"
-          className="!h-10"
-          onClick={() => {
-            close()
-            setShowInactive((v) => !v)
-          }}
-        >
-          <FiEyeOff className="shrink-0" size={13} />
-          {showInactive
-            ? 'Back to active'
-            : `Archived${inactiveProducts.length ? ` (${inactiveProducts.length})` : ''}`}
-        </SecondaryButton>
+        {canEditProduct && !showInactive && (
+          <PrimaryButton compact type="button" className="!h-10" onClick={openCreate}>
+            <FiPlus className="shrink-0" size={13} />
+            {isRestaurant ? 'Add menu item' : 'Add product'}
+          </PrimaryButton>
+        )}
         {canPickBranch && (
           <SelectField
             label="Branch"
@@ -543,19 +611,30 @@ function Products() {
         {isRestaurant ? (
           <SelectField
             label="Serving"
-            value={stockFilter}
-            onChange={(e) => setStockFilter(e.target.value)}
+            value={showInactive ? 'archived' : stockFilter}
+            onChange={(e) => {
+              const val = e.target.value
+              close()
+              setShowInactive(val === 'archived')
+              setStockFilter(val === 'archived' ? 'all' : val)
+            }}
             className="w-full max-w-[160px]"
           >
             <option value="all">All items</option>
             <option value="on">On today</option>
             <option value="off">Off today</option>
+            <option value="archived">{`Archived${inactiveProducts.length ? ` (${inactiveProducts.length})` : ''}`}</option>
           </SelectField>
         ) : (
           <SelectField
             label="Stock"
-            value={stockFilter}
-            onChange={(e) => setStockFilter(e.target.value)}
+            value={showInactive ? 'archived' : stockFilter}
+            onChange={(e) => {
+              const val = e.target.value
+              close()
+              setShowInactive(val === 'archived')
+              setStockFilter(val === 'archived' ? 'all' : val)
+            }}
             className="w-full max-w-[160px]"
           >
             <option value="all">All stock</option>
@@ -563,6 +642,7 @@ function Products() {
             <option value="fair">Fair</option>
             <option value="good">Good</option>
             <option value="out">Out of stock</option>
+            <option value="archived">{`Archived${inactiveProducts.length ? ` (${inactiveProducts.length})` : ''}`}</option>
           </SelectField>
         )}
       </div>
@@ -709,19 +789,14 @@ function Products() {
               )}
             </div>
             {!editing && canEditProduct && (
-              <SelectField
-                label="Status"
-                className="mb-3 max-w-[220px]"
-                value={showInactive ? 'not_selling' : 'selling'}
-                onChange={(e) => {
-                  const next = e.target.value === 'not_selling'
-                  if (next === showInactive) return
-                  void commitDeactivate()
-                }}
+              <SecondaryButton
+                compact
+                type="button"
+                className="mb-3 !border-brand-danger !text-brand-danger"
+                onClick={requestDelete}
               >
-                <option value="selling">Active</option>
-                <option value="not_selling">Archived</option>
-              </SelectField>
+                <FiTrash2 /> Delete product
+              </SecondaryButton>
             )}
             {typeof form.discountEligible === 'boolean' && (
               <p className="m-0 mb-2 text-[11px] text-brand-subtle">
@@ -788,23 +863,40 @@ function Products() {
                   onSubmit={requestAdjust}
                 >
                   <h3 className="m-0 text-sm">Adjust stock</h3>
-                  <SelectField label="Action" name="action" defaultValue="Restock">
+                  <SelectField
+                    label="Action"
+                    name="action"
+                    value={adjustAction}
+                    onChange={(e) => setAdjustAction(e.target.value)}
+                  >
                     <option>Restock</option>
                     <option>Adjustment</option>
                     {isShrinkageAllowed(form.category) && <option>Shrinkage</option>}
+                    {canArchiveProduct &&
+                      (showInactive ? (
+                        <option value="Reactivate">Reactivate (start selling again)</option>
+                      ) : (
+                        <option value="Archive">Archive (stop selling)</option>
+                      ))}
                   </SelectField>
-                  <Field
-                    label="Quantity"
-                    name="quantity"
-                    required
-                    inputMode="decimal"
-                    onChange={(event) => {
-                      event.target.value = decimalOnly(event.target.value)
-                    }}
-                  />
+                  {adjustAction !== 'Archive' && adjustAction !== 'Reactivate' && (
+                    <Field
+                      label="Quantity"
+                      name="quantity"
+                      required
+                      inputMode="decimal"
+                      onChange={(event) => {
+                        event.target.value = decimalOnly(event.target.value)
+                      }}
+                    />
+                  )}
                   <div>
                     <PrimaryButton compact type="submit">
-                      Save adjustment
+                      {adjustAction === 'Archive'
+                        ? 'Archive product'
+                        : adjustAction === 'Reactivate'
+                          ? 'Reactivate product'
+                          : 'Save adjustment'}
                     </PrimaryButton>
                   </div>
                 </form>
@@ -950,6 +1042,168 @@ function Products() {
             )}
           </aside>
         </div>
+      )}
+
+      {creating && (
+        <Modal wide onClose={closeCreate}>
+          <Eyebrow>NEW {isRestaurant ? 'MENU ITEM' : 'PRODUCT'}</Eyebrow>
+          <h2 className="mb-3 text-lg">{isRestaurant ? 'Add menu item' : 'Add product'}</h2>
+          {error && (
+            <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
+          )}
+          <form className="grid gap-3" onSubmit={requestCreate}>
+            <Field label="Product name" required value={form.name} onChange={(e) => setField('name', e.target.value)} />
+            <Field label="SKU / item code" required value={form.sku} onChange={(e) => setField('sku', e.target.value)} />
+            <Field
+              label="Barcode"
+              required
+              inputMode="numeric"
+              value={form.barcode}
+              onChange={(e) => setField('barcode', e.target.value)}
+            />
+            <SelectField label="Category" value={form.category} onChange={(e) => setField('category', e.target.value)}>
+              {isRestaurant ? (
+                <>
+                  <option>Meat</option>
+                  <option>Veggie</option>
+                  <option>Pancit</option>
+                  <option>Drink</option>
+                  <option>Rice</option>
+                  <option>Extra</option>
+                </>
+              ) : (
+                <>
+                  <option>Groceries</option>
+                  <option>Bakery</option>
+                  <option>Meat</option>
+                </>
+              )}
+            </SelectField>
+            {isRestaurant && (
+              <SelectField
+                label="Menu kind"
+                value={form.menuKind}
+                onChange={(e) => {
+                  const kind = e.target.value
+                  setForm((prev) => ({
+                    ...prev,
+                    menuKind: kind,
+                    category: categoryForMenuKind(kind, prev.category),
+                  }))
+                }}
+              >
+                <option value="meat">Meat ulam</option>
+                <option value="veggie">Veggie ulam</option>
+                <option value="pancit">Pancit</option>
+                <option value="drink">Drinks</option>
+                <option value="rice">Rice</option>
+                <option value="extra">Extra</option>
+              </SelectField>
+            )}
+            {!isRestaurant && (
+              <SelectField
+                label="Pricing mode"
+                value={form.pricingMode}
+                onChange={(e) => setField('pricingMode', e.target.value)}
+              >
+                <option value="pc">Price per pc</option>
+                <option value="kg">Price per kg</option>
+              </SelectField>
+            )}
+            <Field
+              label={isRestaurant ? 'Regular price' : 'Price'}
+              required
+              inputMode="decimal"
+              value={form.price}
+              onChange={(e) => setField('price', e.target.value)}
+              onBlur={(e) => setField('price', formatMoneyOnBlur(e.target.value))}
+            />
+            {isRestaurant && (form.menuKind === 'meat' || form.menuKind === 'veggie') && (
+              <Field
+                label="Budget price"
+                inputMode="decimal"
+                value={form.budgetPrice}
+                onChange={(e) => setField('budgetPrice', e.target.value)}
+                onBlur={(e) => setField('budgetPrice', formatMoneyOnBlur(e.target.value))}
+                placeholder="Optional"
+              />
+            )}
+            {!isRestaurant && (
+              <Field
+                label="Starting stock"
+                required
+                inputMode="decimal"
+                value={form.stock}
+                onChange={(e) => setField('stock', e.target.value)}
+              />
+            )}
+            <label className="flex items-center gap-2 text-xs font-bold text-brand-n700">
+              <input
+                type="checkbox"
+                checked={form.discountEligible === true}
+                onChange={(e) => setForm((prev) => ({ ...prev, discountEligible: e.target.checked }))}
+              />
+              Discountable (PWD / Senior 20% applies to this item)
+            </label>
+            <div className="mt-3 flex justify-end gap-2">
+              <SecondaryButton compact type="button" onClick={closeCreate}>
+                Cancel
+              </SecondaryButton>
+              <PrimaryButton compact type="submit">
+                Add product
+              </PrimaryButton>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {confirmCreate && (
+        <Modal wide layer onClose={() => setConfirmCreate(false)}>
+          <Eyebrow>CONFIRM NEW PRODUCT</Eyebrow>
+          <h2 className="mb-3 text-[22px]">Add this product?</h2>
+          <div className="my-3 grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-2.5 border-y border-brand-n300 py-3.5 text-[13px]">
+            <span>Name</span>
+            <strong className="text-right">{sanitizeText(form.name)}</strong>
+            <span>SKU</span>
+            <strong className="text-right">{sanitizeText(form.sku)}</strong>
+            {!isRestaurant && (
+              <>
+                <span>Starting stock</span>
+                <strong className="text-right">{qty(form.stock || 0, unit)}</strong>
+              </>
+            )}
+          </div>
+          <ModalActions>
+            <SecondaryButton compact type="button" onClick={() => setConfirmCreate(false)}>
+              Back
+            </SecondaryButton>
+            <PrimaryButton compact type="button" onClick={commitCreate}>
+              Confirm
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {confirmDelete && (
+        <Modal wide layer onClose={() => setConfirmDelete(false)}>
+          <Eyebrow>DELETE PRODUCT</Eyebrow>
+          <h2 className="mb-3 text-[22px]">Permanently delete {form.name || 'this product'}?</h2>
+          <p className="mb-3 text-xs text-brand-subtle">
+            This cannot be undone and only works for a product with zero history (e.g. an accidental
+            import). If it has ever sold or been part of a promo, delete will fail — use Archive instead.
+          </p>
+          {error && (
+            <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>
+          )}
+          <ModalActions>
+            <SecondaryButton compact type="button" onClick={() => setConfirmDelete(false)}>
+              Back
+            </SecondaryButton>
+            <PrimaryButton compact type="button" className="!bg-brand-danger" onClick={commitDelete}>
+              Delete
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
       )}
 
       {confirmSave && (
