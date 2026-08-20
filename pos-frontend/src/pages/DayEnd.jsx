@@ -814,8 +814,9 @@ function SupervisorDayEnd() {
       <TableCard className="mb-3.5 max-h-none p-5">
         <h2 className="m-0 mb-1 text-base">Accountability</h2>
         <p className="m-0 mb-3 text-xs text-brand-muted">
-          Opening float total today {money(changeFundTotal)}. Cash leaving the drawer is created
-          only from POS → Open Drawer (Drawer Activity below).
+          Opening float total today {money(changeFundTotal)}, plus {money(moveCashInTotal)} added
+          as Cash in. Cash leaving the drawer is created only from POS → Open Drawer (Drawer
+          Activity below).
         </p>
 
         {/* Slim open-shift list only — full change-fund-by-shift tracker removed; float
@@ -871,11 +872,17 @@ function SupervisorDayEnd() {
             ))}
           </div>
         )}
-        <div className="grid grid-cols-3 gap-3.5 max-[560px]:grid-cols-1">
+        <div className="grid grid-cols-4 gap-3.5 max-[900px]:grid-cols-2 max-[560px]:grid-cols-1">
           <div>
             <span className="block text-[11px] text-brand-subtle">Float</span>
             <strong className={`mt-1 block text-[22px] ${moneyClass} text-brand-ink`}>
               {money(changeFundTotal)}
+            </strong>
+          </div>
+          <div>
+            <span className="block text-[11px] text-brand-subtle">Cash in</span>
+            <strong className={`mt-1 block text-[22px] ${moneyClass} text-brand-ink`}>
+              {money(moveCashInTotal)}
             </strong>
           </div>
           <div>
@@ -981,6 +988,12 @@ function SupervisorDayEnd() {
         <div className="grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-1.5 rounded-md border border-brand-softline px-3.5 py-3 text-[13px]">
           <span className="text-brand-subtle">Change fund (float)</span>
           <strong className={`text-right ${moneyClass}`}>{money(changeFundTotal)}</strong>
+          {moveCashInTotal > 0 && (
+            <>
+              <span className="text-brand-subtle">+ Cash in (additional float)</span>
+              <strong className={`text-right ${moneyClass}`}>{money(moveCashInTotal)}</strong>
+            </>
+          )}
           <span className="text-brand-subtle">+ Cash sales</span>
           <strong className={`text-right ${moneyClass}`}>{money(cashSales)}</strong>
           {cashDiscounts > 0 && (

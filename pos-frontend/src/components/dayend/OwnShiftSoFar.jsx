@@ -133,6 +133,12 @@ export default function OwnShiftSoFar({
                 <strong className={`text-right ${moneyClass}`}>
                   {money(position?.startingCash ?? shift.startingCash)}
                 </strong>
+                {Number(position?.cashIn || 0) > 0 && (
+                  <>
+                    <span className="text-brand-subtle">+ Cash in (additional float)</span>
+                    <strong className={`text-right ${moneyClass}`}>{money(position?.cashIn)}</strong>
+                  </>
+                )}
                 <span className="text-brand-subtle">+ Cash sales</span>
                 <strong className={`text-right ${moneyClass}`}>{money(position?.cashSales)}</strong>
                 {cashDiscounts > 0 && (

@@ -4116,6 +4116,7 @@ export async function fetchShiftCashSummary(shiftId) {
     cashRefunds: Number(row.cash_refunds || 0),
     cashPaidOut: Number(row.cash_paid_out || 0),
     cashPickups: Number(row.cash_pickups || 0),
+    cashIn: Number(row.cash_in || 0),
     expectedCash: Number(row.expected_cash || 0),
     saleCount: Number(row.sale_count || 0),
   }

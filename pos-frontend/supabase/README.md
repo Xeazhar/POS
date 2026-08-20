@@ -24,6 +24,7 @@ migrate_terminal_report_old_grand_total_rpc.sql
 migrate_single_active_session_enforcement.sql
 migrate_rename_or_to_invoice.sql   -- last: supersedes complete_sale/void_sale_secure/
                                     -- refund_sale_items bodies from every earlier file
+migrate_promo_expire_supervisor_gate.sql
 ```
 
 `CalePOS_Demo` itself (the shared dev project) has **not** had these 5
@@ -273,6 +274,10 @@ migrate_terminal_report_old_grand_total_rpc.sql -- sum_completed_sales_before(br
                                                 -- of every completed sale in the branch's history.
                                                 -- api.js falls back to the old query if this isn't
                                                 -- applied yet, so it's safe to apply independently
+migrate_shift_cash_summary_expose_cash_in.sql  -- needs migrate_cash_movement_cash_in.sql above;
+                                                -- adds cash_in to shift_cash_summary's output so
+                                                -- OwnShiftSoFar.jsx can show it as its own line
+                                                -- instead of only being folded into expected_cash
 ```
 
 **Dev wipe (optional, non-user data only):** `wipe_non_user_data.sql` truncates sales/inventory/promos/shifts/drawer while **keeping** `staff`, `branches`, `roles`, `company_profile`, and Auth users. Run on DEV before cleanup if you want a clean slate.

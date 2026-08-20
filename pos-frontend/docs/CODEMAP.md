@@ -1219,10 +1219,18 @@ sales/refunds on top of the server figure (`source: 'server+pending'`); a row dr
 that delta on its own once it syncs, so there is no double count. `source: 'local'` (used
 only when no remote figure is reachable at all — offline, or an unmigrated schema) is
 labeled "Offline" vs "Estimate" based on actual connectivity (`reasonOffline`), and always
-omits paid-out/pickups — petty cash has no IndexedDB mirror, so an on-device-only estimate
-genuinely cannot know about it. `cashPositionNotice()` (`shiftStore.js`) is the single place
-that turns `source`/`reasonOffline` into the banner text shown in both `ShiftCashOut.jsx`
-and `CashierEndShift`.
+omits paid-out/pickups/cash-in — petty cash and Open Drawer cash movements have no IndexedDB
+mirror, so an on-device-only estimate genuinely cannot know about them. `cashPositionNotice()`
+(`shiftStore.js`) is the single place that turns `source`/`reasonOffline` into the banner text
+shown in both `ShiftCashOut.jsx` and `CashierEndShift`.
+
+`shift_cash_summary()` folds `cash_movements` `cash_in` rows (additional float added mid-shift
+via POS → Open Drawer → Cash in) into `expected_cash`, and also returns the raw amount as its
+own `cash_in` column (`migrate_shift_cash_summary_expose_cash_in.sql`) so `OwnShiftSoFar.jsx`
+can show it as its own line in the "Your shift so far" breakdown instead of it only showing up
+silently inside the final total. The branch-wide Day End Accountability card and its own
+Expected-drawer breakdown (`DayEnd.jsx`'s `moveCashInTotal`) show the same figure for the whole
+business day.
 
 **`shift.serverId` in the live store goes stale, so anything server-facing must resolve it
 fresh, not read it off the store.** `startShift()` sets the in-memory `shift` object once,

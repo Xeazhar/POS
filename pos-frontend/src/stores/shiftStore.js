@@ -471,9 +471,9 @@ async function pendingLocalDelta(shift) {
 /**
  * Offline estimate of the drawer's expected contents, from what this device knows.
  * Marked `source: 'local'` by the caller so the UI can say the count may be incomplete —
- * a sale rung on another terminal against this shift is not in here. Paid-out/pickups are
- * always 0 here: petty cash is not mirrored to IndexedDB, so this device has no way to know
- * about it while offline.
+ * a sale rung on another terminal against this shift is not in here. Paid-out/pickups/cash-in
+ * are always 0 here: petty cash and Open Drawer cash movements are not mirrored to IndexedDB,
+ * so this device has no way to know about them while offline.
  */
 async function localCashPosition(shift) {
   const mine = await shiftCashRows(shift)
@@ -485,6 +485,7 @@ async function localCashPosition(shift) {
     cashRefunds: refunds,
     cashPaidOut: 0,
     cashPickups: 0,
+    cashIn: 0,
     expectedCash: Number((startingCash + sales - refunds).toFixed(2)),
     saleCount: mine.filter((row) => row.status !== 'Voided').length,
   }

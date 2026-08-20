@@ -17,6 +17,21 @@ computation, OR numbering).
 
 ---
 
+## 0.24.1 — 2026-08-20
+
+### Fixed: Day End breakdowns missing Cash in (additional float)
+
+Both the branch-wide Accountability card and the cashier's own "Your shift so
+far" breakdown showed Change fund / Cash sales / Petty cash / Pickups, but not
+Cash in (additional float added mid-shift via POS → Open Drawer → Cash in).
+The Expected/expected-drawer totals already included it, so the totals were
+always correct, but manually re-adding the listed lines didn't reconcile since
+Cash in wasn't shown anywhere. Added a Cash in tile/line to both. The
+cashier's own view needed a DB change too — `shift_cash_summary()` computed
+cash-in into `expected_cash` but never returned it as a column
+(`migrate_shift_cash_summary_expose_cash_in.sql`, apply after
+`migrate_cash_movement_cash_in.sql`).
+
 ## 0.24.0 — 2026-08-20
 
 ### Added: refund/void confirmation, live promo updates, restock-import guardrail

@@ -1,22 +1,22 @@
--- Wipe test/operational data for a clean testing slate EXCEPT branches, users, and the
--- product catalog / inventory.
--- Kept: branches, roles (lookup table staff.role depends on), staff, auth.users,
---   products, catalog_products, categories (network catalog), branch_inventory
---   (each branch's current on-hand counts).
+-- Wipe test/operational data for a clean testing slate EXCEPT branches and users.
+-- Kept: branches, roles (lookup table staff.role depends on), staff, auth.users.
 -- Deleted: every sale, every shift/drawer/day-end record, every promo/import row,
--- presence/device rows, pin lockout rows, and the stock_movements log — network-wide,
--- no date filter. This is broader than debug_reset_all_transactions.sql (which only
--- touched sales) and debug_reset_todays_transactions.sql (today's sales only), but
--- narrower than a full wipe: catalog and inventory survive so a branch doesn't need
+-- presence/device rows, pin lockout rows, the stock_movements log, announcements,
+-- and the full product catalog (products, catalog_products, categories,
+-- branch_inventory) — network-wide, no date filter. This is broader than
+-- debug_reset_all_transactions.sql (which only touched sales) and
+-- debug_reset_todays_transactions.sql (today's sales only), and unlike its previous
+-- version, catalog/inventory no longer survive — every branch needs
 -- re-importing/restocking after running this.
 --
 -- Run the PREVIEW block first. This is NOT reversible once committed.
 --
 -- Deleting promo_events / import_batches cascades away promo_rules+promo_rule_products /
 -- import_batch_items respectively — no need to touch those child tables separately.
--- Nothing here needs FK-ordering against products/catalog_products/branch_inventory since
--- none of those are deleted — every delete below only removes rows that reference them,
--- never the referenced rows themselves.
+-- branch_inventory, products, catalog_products, categories are deleted in that order
+-- (each is FK-referenced by the one before it) after every other table that
+-- references products (transaction_items, stock_movements, sale_refund_lines,
+-- promo_rule_products, import_batch_items) has already been cleared above.
 
 -- ============================================================================
 -- 1. PREVIEW — read-only, run this first
@@ -35,12 +35,16 @@ union all select 'staff_shifts', count(*) from staff_shifts
 union all select 'branch_presence', count(*) from branch_presence
 union all select 'branch_devices', count(*) from branch_devices
 union all select 'pin_login_attempts', count(*) from pin_login_attempts
+union all select 'announcements', count(*) from announcements
+union all select 'branch_inventory', count(*) from branch_inventory
+union all select 'products', count(*) from products
+union all select 'catalog_products', count(*) from catalog_products
+union all select 'categories', count(*) from categories
 order by 1;
 
 -- Rows that will be KEPT, shown for reference only:
-select 'products (kept)' as table_name, count(*) from products
-union all select 'catalog_products (kept)', count(*) from catalog_products
-union all select 'branch_inventory (kept)', count(*) from branch_inventory
+select 'branches (kept)' as table_name, count(*) from branches
+union all select 'staff (kept)', count(*) from staff
 order by 1;
 
 -- ============================================================================
@@ -87,8 +91,7 @@ begin
   -- Inventory imports (import_batches cascades import_batch_items)
   delete from import_batches;
 
-  -- Stock movement LOG only — branch_inventory.quantity_on_hand (the actual on-hand
-  -- counts) is deliberately left alone, see file header.
+  -- Stock movement LOG (branch_inventory itself is cleared later with the catalog).
   delete from stock_movements;
 
   -- Shifts / drawer / day-end (shift_adjustments cascades from staff_shifts, deleted
@@ -116,8 +119,18 @@ begin
   delete from branch_devices;
   delete from pin_login_attempts;
 
-  -- products / catalog_products / categories / branch_inventory: deliberately NOT
-  -- touched — see file header.
+  -- Announcements
+  do $inner$ begin
+    delete from announcements;
+  exception when undefined_table then null;
+  end $inner$;
+
+  -- Full product catalog: branch_inventory before products (FK), products before
+  -- catalog_products (FK), catalog_products before categories (FK).
+  delete from branch_inventory;
+  delete from products;
+  delete from catalog_products;
+  delete from categories;
 
   -- Re-enable the guards.
   for r in
