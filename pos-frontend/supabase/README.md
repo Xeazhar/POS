@@ -278,6 +278,10 @@ migrate_shift_cash_summary_expose_cash_in.sql  -- needs migrate_cash_movement_ca
                                                 -- adds cash_in to shift_cash_summary's output so
                                                 -- OwnShiftSoFar.jsx can show it as its own line
                                                 -- instead of only being folded into expected_cash
+migrate_day_end_cash_handoff.sql               -- day_ends.handoff_confirmed_by/at +
+                                                -- confirm_day_end_handoff() — manager confirms
+                                                -- receiving a closed day's cash; non-blocking,
+                                                -- no deadline
 ```
 
 **Dev wipe (optional, non-user data only):** `wipe_non_user_data.sql` truncates sales/inventory/promos/shifts/drawer while **keeping** `staff`, `branches`, `roles`, `company_profile`, and Auth users. Run on DEV before cleanup if you want a clean slate.
