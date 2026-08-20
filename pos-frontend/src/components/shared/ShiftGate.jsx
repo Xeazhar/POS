@@ -364,6 +364,11 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
           {restartPrompt.clockOut ? ` at ${sinceLabel(restartPrompt.clockOut)}` : ''}. Start a new
           one now, or sign out.
         </p>
+        {carried != null && (
+          <p className="m-0 mt-1.5 text-xs text-brand-muted">
+            {money(carried)} was counted in {drawerLabel || 'the drawer'} at that handover.
+          </p>
+        )}
         {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
         <ModalActions>
           <SecondaryButton compact type="button" disabled={busy} onClick={onSignOut}>
