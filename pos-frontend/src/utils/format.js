@@ -225,3 +225,8 @@ export function applyStockDelta(currentStock, signedAmount) {
 export function netAfterRefund(total, refundedAmount) {
   return Math.max(0, Number((Number(total || 0) - Number(refundedAmount || 0)).toFixed(2)))
 }
+
+/** Pre-discount gross from a net figure and the discounts taken off it — the inverse of netting a discount in. */
+export function grossFromNetAndDiscounts(net, discounts) {
+  return Number((Number(net || 0) + Number(discounts || 0)).toFixed(2))
+}

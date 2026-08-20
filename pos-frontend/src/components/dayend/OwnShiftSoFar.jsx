@@ -4,7 +4,7 @@ import ShiftCashOut from '../shared/ShiftCashOut'
 import { PrimaryButton, TableCard, moneyClass } from '../ui'
 import { useInventoryStore } from '../../stores/posStore'
 import { cashPositionNotice, useShiftStore } from '../../stores/shiftStore'
-import { formatShiftDuration, formatShiftWhen, money } from '../../utils/format'
+import { formatShiftDuration, formatShiftWhen, grossFromNetAndDiscounts, money } from '../../utils/format'
 
 /**
  * Display the current user's shift timing, cash position, drawer activity, and shift-ending controls.
@@ -85,9 +85,7 @@ export default function OwnShiftSoFar({
   }, [transactions, shift])
 
   const expected = position ? Number(position.expectedCash || 0) : null
-  const cashSalesGross = position
-    ? Number((Number(position.cashSales || 0) + cashDiscounts).toFixed(2))
-    : null
+  const cashSalesGross = position ? grossFromNetAndDiscounts(position.cashSales, cashDiscounts) : null
   const shiftNotice = cashPositionNotice(position)
   const holdsDrawer = shift?.holdsDrawer !== false
 

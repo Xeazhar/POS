@@ -37,6 +37,7 @@ import {
   businessDate,
   dayEndForBusinessDate,
   formatOpenHourLabel,
+  grossFromNetAndDiscounts,
   money,
   rowBusinessDate,
 } from '../utils/format'
@@ -421,7 +422,7 @@ function SupervisorDayEnd() {
   // It exists so "why is cash sales lower than the sticker prices would suggest" has an
   // answer on this screen instead of only in the separate Discount Report.
   const cashDiscounts = cashTransactions.reduce((sum, item) => sum + Number(item.discountAmount || 0), 0)
-  const cashSalesGross = Number((cashSales + cashDiscounts).toFixed(2))
+  const cashSalesGross = grossFromNetAndDiscounts(cashSales, cashDiscounts)
 
   const existing = dayEndForBusinessDate(dayEnds, date)
   const isSubmitted = existing?.status === 'submitted'
