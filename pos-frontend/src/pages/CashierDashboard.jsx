@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { FiBarChart2, FiShoppingBag, FiTrendingUp, FiWifi, FiWifiOff } from 'react-icons/fi'
 import AnnouncementsCard from '../components/dashboard/AnnouncementsCard'
 import SalesMixBar from '../components/dashboard/SalesMixBar'
@@ -59,18 +59,27 @@ function CashierDashboard() {
   const hydrate = useInventoryStore((state) => state.hydrate)
   const shift = useShiftStore((state) => state.shift)
   const sync = useSyncStore()
+  const [bootingPage, setBootingPage] = useState(Boolean(hasSupabase))
 
   // Same cold-load guard as the branch Dashboard: only bootstrap when the store is
   // genuinely empty (a hard refresh landing directly on this route) — Shell already loads
-  // this branch at sign-in/session-restore otherwise.
+  // this branch at sign-in/session-restore otherwise. bootingPage (not storeProducts.length)
+  // gates the skeleton below so a branch with a genuinely empty catalog (no-data demo) still
+  // clears the skeleton once the load settles, instead of being stuck forever.
   useEffect(() => {
-    if (!hasSupabase || !user?.branchId || storeProducts.length > 0) return
+    if (!hasSupabase || !user?.branchId || storeProducts.length > 0) {
+      setBootingPage(false)
+      return
+    }
+    setBootingPage(true)
     loadBranch(user.branchId)
       .then((data) => {
         if (data) hydrate(data)
       })
       .catch(() => {})
-  }, [user?.branchId, storeProducts.length, loadBranch, hydrate])
+      .finally(() => setBootingPage(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally only re-run on branch change, not on every storeProducts update
+  }, [user?.branchId, loadBranch, hydrate])
 
   const shiftRows = useMemo(
     () => rowsForShift(storeTransactions, shift),
@@ -110,7 +119,7 @@ function CashierDashboard() {
   const status = syncCopy(sync)
   const SyncIcon = sync.online ? FiWifi : FiWifiOff
 
-  if (hasSupabase && !storeProducts.length && user?.branchId) {
+  if (bootingPage) {
     return <PageSkeleton variant="dashboard" />
   }
 

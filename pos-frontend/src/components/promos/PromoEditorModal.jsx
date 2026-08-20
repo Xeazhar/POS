@@ -11,6 +11,7 @@ import {
 } from '../../lib/api'
 import { formatSupportError } from '../../utils/errors'
 import { expandPromoRuleRows, validatePromoDates, validatePromoRuleDraft } from '../../utils/promo'
+import { withTimeout } from '../../utils/withTimeout'
 import {
   Eyebrow,
   Field,
@@ -250,7 +251,7 @@ export default function PromoEditorModal({
     // categories/branch only) gets the same result at a fraction of bootstrapBranchData's
     // payload, which also pulls up to 200 recent transactions + 500 stock movements +
     // day-ends this modal never uses (see egress audit, 2026-08-15).
-    bootstrapPosCatalog(effectiveBranchId)
+    withTimeout(bootstrapPosCatalog(effectiveBranchId), 15000, 'Promo catalog')
       .then((data) => {
         if (!cancelled) setCatalogProducts(data.products || [])
       })
@@ -298,8 +299,9 @@ export default function PromoEditorModal({
 
   // Scoped per rule type — a product can sit in an item_pct rule AND a pair_pct rule AND a
   // bundle_pct rule at once (computePromoDiscounts resolves overlaps at checkout by taking
-  // the best line discount, never stacking). Only a second rule of the SAME type for the
-  // same product is ambiguous authoring, so that's the only combination blocked here.
+  // the best line discount, never stacking). A second rule of the SAME type for the same
+  // product is blocked as ambiguous authoring — except bundle_pct, where a product can sit
+  // in multiple named bundles (see validatePromoRuleDraft).
   const usedProductIdsByType = useMemo(() => {
     const map = new Map()
     for (const r of allRules) {

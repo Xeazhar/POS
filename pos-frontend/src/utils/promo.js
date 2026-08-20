@@ -22,6 +22,9 @@ export function validatePromoDates(startsAt, endsAt, { allowPastStart = false } 
  * the same type on this promo. Returns null when valid; { message } for a plain error; or
  * { duplicateIds } when the block is a product-already-used-for-this-type conflict — the
  * caller resolves product names to build the final message (this function has no product list).
+ * bundle_pct is exempt: a product can legitimately belong to more than one named bundle
+ * (e.g. water in both a juice bundle and a coffee bundle) — checkout already resolves the
+ * overlap by taking the best line discount, so it's not ambiguous like a repeated item_pct.
  */
 export function validatePromoRuleDraft({
   ruleType,
@@ -46,9 +49,11 @@ export function validatePromoRuleDraft({
     if (!bundleName.trim()) return { message: 'Enter a bundle name before adding this rule.' }
     if (bundleSelected.length < 2) return { message: 'Select at least 2 products for a bundle.' }
   }
-  const usedForType = usedProductIdsByType.get(ruleType) || new Set()
-  const duplicateIds = selectedProductsForRule.filter((id) => usedForType.has(id))
-  if (duplicateIds.length) return { duplicateIds }
+  if (ruleType !== 'bundle_pct') {
+    const usedForType = usedProductIdsByType.get(ruleType) || new Set()
+    const duplicateIds = selectedProductsForRule.filter((id) => usedForType.has(id))
+    if (duplicateIds.length) return { duplicateIds }
+  }
   return null
 }
 

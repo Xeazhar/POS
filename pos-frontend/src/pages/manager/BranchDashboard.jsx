@@ -761,6 +761,10 @@ function ManagerBranchDashboard() {
       rows = rows.filter((t) => ['pwd', 'senior'].includes(String(t.discountType || '').toLowerCase()))
     } else if (receiptPromoFilter === 'none') {
       rows = rows.filter((t) => !(Number(t.discountAmount || 0) > 0))
+    } else if (receiptPromoFilter === 'voided') {
+      rows = rows.filter((t) => t.status === 'Voided')
+    } else if (receiptPromoFilter === 'partial_refund') {
+      rows = rows.filter((t) => t.status !== 'Voided' && Number(t.refundedAmount || 0) > 0)
     } else if (receiptPromoFilter !== 'all') {
       rows = rows.filter((t) => t.discountType === receiptPromoFilter)
     }
@@ -1044,6 +1048,8 @@ function ManagerBranchDashboard() {
                   ))}
                   <option value="pwd">PWD / Senior</option>
                   <option value="none">No discount</option>
+                  <option value="voided">Voided</option>
+                  <option value="partial_refund">Partial refund</option>
                 </select>
                 <span className="pl-1 text-[11px] font-semibold whitespace-nowrap text-brand-muted">
                   {recentTxns.length} of {data.transactions.length}

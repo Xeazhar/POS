@@ -29,7 +29,7 @@ import {
 import { isOnline, readBranchSnapshot, readPromoCache, writePromoCache } from '../../offline'
 import { withTimeout } from '../../utils/withTimeout'
 import { formatSupportError } from '../../utils/errors'
-import { useAuthStore, useProductStore } from '../../stores/posStore'
+import { useAuthStore } from '../../stores/posStore'
 import { useLiveData } from '../../hooks/useLiveData'
 import { money, qty } from '../../utils/format'
 import { expandPromoRuleRows, summarizePromoRuleTypes } from '../../utils/promo'
@@ -225,9 +225,13 @@ export default function ManagerPromos() {
 
   const historyPageCount = Math.max(1, Math.ceil(sortedHistory.length / HISTORY_PAGE_SIZE))
   const historyPageIndex = Math.min(historyPage, historyPageCount - 1)
-  const historyPageRows = sortedHistory.slice(
-    historyPageIndex * HISTORY_PAGE_SIZE,
-    historyPageIndex * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
+  const historyPageRows = useMemo(
+    () =>
+      sortedHistory.slice(
+        historyPageIndex * HISTORY_PAGE_SIZE,
+        historyPageIndex * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
+      ),
+    [sortedHistory, historyPageIndex],
   )
 
   const branchPerformanceSummary = useMemo(() => {
@@ -305,9 +309,13 @@ export default function ManagerPromos() {
 
   const networkHistoryPageCount = Math.max(1, Math.ceil(sortedNetworkHistory.length / HISTORY_PAGE_SIZE))
   const networkHistoryPageIndex = Math.min(networkHistoryPage, networkHistoryPageCount - 1)
-  const networkHistoryPageRows = sortedNetworkHistory.slice(
-    networkHistoryPageIndex * HISTORY_PAGE_SIZE,
-    networkHistoryPageIndex * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
+  const networkHistoryPageRows = useMemo(
+    () =>
+      sortedNetworkHistory.slice(
+        networkHistoryPageIndex * HISTORY_PAGE_SIZE,
+        networkHistoryPageIndex * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
+      ),
+    [sortedNetworkHistory, networkHistoryPageIndex],
   )
 
   const networkPerformanceSummary = useMemo(() => {
@@ -423,10 +431,7 @@ export default function ManagerPromos() {
     setPageLoading(true)
     void (async () => {
       try {
-        const storeProducts = useProductStore.getState().products
-        if (storeProducts.length) {
-          if (alive) setProducts(storeProducts)
-        } else if (!isOnline()) {
+        if (!isOnline()) {
           const local = await readBranchSnapshot(branchId)
           if (alive) setProducts(local.products || [])
         } else {
@@ -567,6 +572,21 @@ export default function ManagerPromos() {
     enabled: managerView && !branchId && networkHistoryPageRows.length > 0,
     fetch: refreshNetworkVisibleStats,
     tables: [{ table: 'transactions' }, { table: 'transaction_items' }],
+  })
+
+  // Live: a supervisor's pending request/edit reaching approval (or a manager's own edit)
+  // on another device or tab must show up here immediately — mirrors POS.jsx's promo
+  // subscription. promo_rules/promo_rule_products have no branch_id to filter on; cheap
+  // enough to watch unfiltered and let refreshActive's branch-scoped refetch do the real
+  // filtering.
+  useLiveData({
+    enabled: Boolean(hasSupabase && branchId),
+    fetch: () => refreshActive(),
+    tables: [
+      { table: 'promo_events', filter: `branch_id=eq.${branchId}` },
+      { table: 'promo_rules' },
+      { table: 'promo_rule_products' },
+    ],
   })
 
   useEffect(() => {

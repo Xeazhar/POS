@@ -31,7 +31,7 @@ import {
 } from '../../offline'
 import { withTimeout } from '../../utils/withTimeout'
 import { useAuthStore, useProductStore } from '../../stores/posStore'
-import { money, qty, stockTone } from '../../utils/format'
+import { money } from '../../utils/format'
 import { formatSupportError } from '../../utils/errors'
 
 const PAGE_SIZE = 10
@@ -127,18 +127,6 @@ export default function SupervisorCatalogAdopt() {
         if (!hay.includes(q)) return false
       }
       if (categoryFilter !== 'All' && product.category !== categoryFilter) return false
-      if (!isRestaurant && stockFilter !== 'all') {
-        if (stockFilter === 'out') {
-          if (Number(product.stock) > 0) return false
-        } else if (stockFilter !== 'all') {
-          const tone = Number(product.stock) <= 0 ? 'out' : stockTone(product)
-          if (tone !== stockFilter && !(stockFilter === 'out' && tone === 'out')) {
-            if (stockFilter === 'low' && tone !== 'low') return false
-            if (stockFilter === 'fair' && tone !== 'fair') return false
-            if (stockFilter === 'good' && tone !== 'good') return false
-          }
-        }
-      }
       if (isRestaurant && stockFilter === 'on' && product.availableToday === false) return false
       if (isRestaurant && stockFilter === 'off' && product.availableToday !== false) return false
       if (!isRestaurant && modeFilter !== 'all' && product.pricingMode !== modeFilter) return false
@@ -292,7 +280,7 @@ export default function SupervisorCatalogAdopt() {
           {/* Search belongs ON the filter row, not floated opposite the heading — it is a
               filter like the other three, and splitting it out made the controls read as
               two unrelated groups. `label` gives it the same height as the selects. */}
-          <div className="grid grid-cols-2 items-end gap-2 sm:grid-cols-4">
+          <div className="grid grid-cols-2 items-end gap-2 sm:grid-cols-3">
             <SearchBox
               label="Search"
               icon={<FiSearch />}
@@ -308,15 +296,6 @@ export default function SupervisorCatalogAdopt() {
                 </option>
               ))}
             </SelectField>
-            {!isRestaurant && (
-              <SelectField label="Stock" value={stockFilter} onChange={(e) => setStockFilter(e.target.value)}>
-                <option value="all">All stock</option>
-                <option value="low">Low</option>
-                <option value="fair">Fair</option>
-                <option value="good">Good</option>
-                <option value="out">Out of stock</option>
-              </SelectField>
-            )}
             {isRestaurant && (
               <SelectField label="Serving" value={stockFilter} onChange={(e) => setStockFilter(e.target.value)}>
                 <option value="all">All items</option>
@@ -345,13 +324,12 @@ export default function SupervisorCatalogAdopt() {
                 <th className="px-5 py-3 max-[700px]:hidden">Mode</th>
                 <th className="px-5 py-3 text-center">Discountable</th>
                 <th className="px-5 py-3 text-right">Price</th>
-                <th className="px-5 py-3 text-right">On hand</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="p-0">
+                  <td colSpan={8} className="p-0">
                     <SkeletonRows rows={8} cols={5} />
                   </td>
                 </tr>
@@ -384,9 +362,6 @@ export default function SupervisorCatalogAdopt() {
                   </td>
                   <td className="px-5 py-3 text-right tabular-nums font-bold text-brand-ink">
                     {money(product.price)}
-                  </td>
-                  <td className="px-5 py-3 text-right tabular-nums">
-                    {qty(product.stock, product.pricingMode === 'kg' ? 'kg' : 'pc')}
                   </td>
                 </tr>
               ))

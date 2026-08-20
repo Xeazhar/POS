@@ -17,6 +17,20 @@ computation, OR numbering).
 
 ---
 
+## 0.24.0 — 2026-08-20
+
+### Added: refund/void confirmation, live promo updates, restock-import guardrail
+
+Transactions now shows a "give back to customer" confirmation modal (invoice + amount)
+after a refund or void completes. Manager Promos picks up other devices' promo
+edits/approvals live via Broadcast instead of only on manual refresh. Remote refund
+requests switch from a `refund_requests` table subscription to the shared branch
+operations Broadcast topic. Branch Inventory import (restock) now only ever writes
+on-hand quantity for a matched product — identity/price/category fields on the sheet
+are ignored instead of silently overwritten, and the preview reflects that. Catalog
+Adopt drops the redundant Stock filter/column (branch-owned data, not catalog data).
+Promo rule authoring allows a product to sit in more than one `bundle_pct` bundle.
+
 ## 0.23.0 — 2026-08-16
 
 ### Added: single active session per staff account

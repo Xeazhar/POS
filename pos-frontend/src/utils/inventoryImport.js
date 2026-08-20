@@ -275,6 +275,7 @@ export function buildImportPreview(rawRows, existingProducts, { restaurant = fal
           },
           {
             restaurant,
+            restockOnly: !restaurant,
             stockDelta: restaurant
               ? null
               : { current: Number(existing.stock), next: nextStock, added: values.stock },
@@ -418,7 +419,7 @@ function catalogImportRowChanged(existing, values, { restaurant = false } = {}) 
 export function describeImportFieldChanges(
   existing,
   values,
-  { restaurant = false, stockDelta = null } = {},
+  { restaurant = false, stockDelta = null, restockOnly = false } = {},
 ) {
   if (!existing || !values) return []
   const changes = []
@@ -438,32 +439,38 @@ export function describeImportFieldChanges(
     changes.push({ field, label, from: prev, to: next, format })
   }
 
-  push('name', 'Name', existing.name, values.name)
-  push('sku', 'SKU', existing.sku, values.sku)
-  push('barcode', 'Barcode', existing.barcode || '', values.barcode || '')
-  push('category', 'Category', existing.category, values.category)
-  push('price', 'Price', Number(existing.price), Number(values.price), { format: 'money' })
-  push('discountEligible', 'Discountable', existing.discountEligible === true, values.discountEligible === true, {
-    format: 'bool',
-  })
+  // Branch Inventory import only ever restocks quantity on an existing product — name,
+  // barcode, price, category, etc. on the sheet are never written (see commitInventoryImport).
+  // Showing those as pending "changes" here would be a preview that doesn't match what
+  // commit actually does, so skip straight to the stock delta below.
+  if (!restockOnly) {
+    push('name', 'Name', existing.name, values.name)
+    push('sku', 'SKU', existing.sku, values.sku)
+    push('barcode', 'Barcode', existing.barcode || '', values.barcode || '')
+    push('category', 'Category', existing.category, values.category)
+    push('price', 'Price', Number(existing.price), Number(values.price), { format: 'money' })
+    push('discountEligible', 'Discountable', existing.discountEligible === true, values.discountEligible === true, {
+      format: 'bool',
+    })
 
-  if (!restaurant) {
-    push('pricingMode', 'Pricing mode', existing.pricingMode || 'pc', values.pricingMode || 'pc')
-  }
-  if (restaurant) {
-    const prevBudget = existing.budgetPrice == null ? null : Number(existing.budgetPrice)
-    const nextBudget =
-      values.budgetPrice == null || values.budgetPrice === '' ? null : Number(values.budgetPrice)
-    if (prevBudget !== nextBudget) {
-      changes.push({
-        field: 'budgetPrice',
-        label: 'Budget price',
-        from: prevBudget,
-        to: nextBudget,
-        format: 'money',
-      })
+    if (!restaurant) {
+      push('pricingMode', 'Pricing mode', existing.pricingMode || 'pc', values.pricingMode || 'pc')
     }
-    push('menuKind', 'Menu kind', existing.menuKind || '', values.menuKind || '')
+    if (restaurant) {
+      const prevBudget = existing.budgetPrice == null ? null : Number(existing.budgetPrice)
+      const nextBudget =
+        values.budgetPrice == null || values.budgetPrice === '' ? null : Number(values.budgetPrice)
+      if (prevBudget !== nextBudget) {
+        changes.push({
+          field: 'budgetPrice',
+          label: 'Budget price',
+          from: prevBudget,
+          to: nextBudget,
+          format: 'money',
+        })
+      }
+      push('menuKind', 'Menu kind', existing.menuKind || '', values.menuKind || '')
+    }
   }
 
   if (stockDelta && Number(stockDelta.added) > 0) {
@@ -480,10 +487,10 @@ export function describeImportFieldChanges(
   return changes
 }
 
-function attachImportChanges(line, { restaurant = false, stockDelta = null } = {}) {
+function attachImportChanges(line, { restaurant = false, stockDelta = null, restockOnly = false } = {}) {
   if (!line.existing) return line
   return {
     ...line,
-    changes: describeImportFieldChanges(line.existing, line.values, { restaurant, stockDelta }),
+    changes: describeImportFieldChanges(line.existing, line.values, { restaurant, stockDelta, restockOnly }),
   }
 }

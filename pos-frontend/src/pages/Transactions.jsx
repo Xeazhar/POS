@@ -32,7 +32,7 @@ import {
 } from '../lib/api'
 import { isDeviceEnabled, receiptPrinter } from '../devices'
 import { getLocalTransactionDetail, readBranchSnapshot } from '../offline'
-import { subscribeTable } from '../offline/realtime'
+import { branchOperationsTopic, subscribeBroadcast } from '../offline/realtime'
 import { useAuthStore, useInventoryStore, useProductStore } from '../stores/posStore'
 import { useSyncStore } from '../stores/syncStore'
 import { appError, formatSupportError } from '../utils/errors'
@@ -114,6 +114,7 @@ function Transactions() {
   const [selectedReason, setSelectedReason] = useState(null) // reason button clicked, while busy
   const [notifyManager, setNotifyManager] = useState(false)
   const [remoteRequest, setRemoteRequest] = useState(null) // refund_requests row while waiting on a remote manager
+  const [refundResult, setRefundResult] = useState(null) // { invoiceNumber, amount, mode } shown after a refund/void completes
   const [detail, setDetail] = useState(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [error, setError] = useState('')
@@ -315,6 +316,7 @@ function Transactions() {
     setPendingApproval(null)
     setNotifyManager(false)
     setRemoteRequest(null)
+    setRefundResult(null)
     setRefundBusyId(item.id)
     try {
       let lines = item.lines || []
@@ -362,7 +364,9 @@ function Transactions() {
         transactionId: item.id,
         staffId: approvedBy || user?.id,
       })
+      const amount = Number(item.netTotal ?? item.total - Number(item.refundedAmount || 0))
       closeRefund()
+      setRefundResult({ invoiceNumber: item.invoiceNumber || String(item.id).slice(0, 8), amount, mode: 'full' })
       setDetail(null)
     } catch (err) {
       setError(formatSupportError(err, 'SALE03'))
@@ -393,7 +397,13 @@ function Transactions() {
         transactionId: item.id,
         staffId: approvedBy || user?.id,
       })
+      // Matches migrate_refund_sale_items.sql's per-line amount: round(unit_price * refund_qty, 2).
+      const amount = selected.reduce(
+        (sum, line) => sum + Math.round(Number(line.unitPrice || 0) * Number(line.refundQty) * 100) / 100,
+        0,
+      )
       closeRefund()
+      setRefundResult({ invoiceNumber: item.invoiceNumber || String(item.id).slice(0, 8), amount, mode: 'items' })
       setDetail(null)
     } catch (err) {
       setError(formatSupportError(err, 'SALE03'))
@@ -468,10 +478,11 @@ function Transactions() {
   }
 
   // A manager acting remotely (not at this terminal) flips refund_requests.status —
-  // picked up here via realtime, with a poll as a fallback in case the channel never
-  // connects (e.g. migrate_refund_requests.sql's publication grant not applied yet). 20s,
-  // not 5s — this is a backstop for a channel that never came up at all, not the primary
-  // path, and a tight poll just burns requests on a flaky connection while a modal sits open.
+  // picked up here via the branch operations Broadcast (same tg_ops_broadcast trigger
+  // refund_requests already feeds the manager's notification bell through), with a poll
+  // as a backstop in case the channel never connects. 20s, not 5s — this is a backstop
+  // for a channel that never came up at all, not the primary path, and a tight poll just
+  // burns requests on a flaky connection while a modal sits open.
   useEffect(() => {
     if (!remoteRequest?.id || remoteRequest.status !== 'pending') return undefined
     const requestId = remoteRequest.id
@@ -495,14 +506,14 @@ function Transactions() {
       }
     }
 
-    const unsubscribe = subscribeTable({
-      table: 'refund_requests',
-      filter: `id=eq.${requestId}`,
-      onChange: (payload) => applyUpdate(payload?.new),
+    const refetch = () => fetchRefundRequestById(requestId).then(applyUpdate).catch(() => {})
+
+    const unsubscribe = subscribeBroadcast({
+      topic: branchOperationsTopic(user.branchId),
+      events: ['OPERATIONS_CHANGED'],
+      onEvent: refetch,
     })
-    const poll = window.setInterval(() => {
-      fetchRefundRequestById(requestId).then(applyUpdate).catch(() => {})
-    }, 20000)
+    const poll = window.setInterval(refetch, 20000)
     return () => {
       unsubscribe()
       window.clearInterval(poll)
@@ -1023,6 +1034,22 @@ function Transactions() {
             }
           }}
         />
+      )}
+
+      {refundResult && (
+        <Modal onClose={() => setRefundResult(null)}>
+          <Eyebrow>{refundResult.mode === 'full' ? 'VOID COMPLETE' : 'REFUND COMPLETE'}</Eyebrow>
+          <h2 className="mb-2 text-[20px]">{refundResult.invoiceNumber}</h2>
+          <div className="flex items-center justify-between rounded-md border border-brand-softline bg-brand-n50 px-3 py-2.5">
+            <span className="text-[12px] text-brand-muted">Give back to customer</span>
+            <strong className="text-[18px] text-brand-ink">{money(refundResult.amount)}</strong>
+          </div>
+          <ModalActions>
+            <PrimaryButton compact type="button" onClick={() => setRefundResult(null)}>
+              Done
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
       )}
 
       {offlineRefundOpen && (

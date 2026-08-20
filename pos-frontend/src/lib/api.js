@@ -6932,7 +6932,7 @@ export async function commitInventoryImport({
             quantity_on_hand: 0,
           })
         }
-      } else {
+      } else if (action !== 'restock') {
         await writeProductRow('update', { ...productPayload, is_active: true }, { id: productId })
         // Direct price edits elsewhere (Products.jsx, ManagerNetworkCatalog cascade) log
         // through recordPriceChange so the Price Change Register sees them — an import
@@ -6949,6 +6949,11 @@ export async function commitInventoryImport({
           })
         }
       }
+      // action === 'restock' (branch Inventory import matching an existing product): only
+      // the on-hand quantity changes, via record_stock_movement below. Name/SKU/barcode/
+      // category/price/pricingMode/discountEligible on the sheet are ignored so a restock
+      // file can never silently overwrite product identity or pricing — that's Catalog
+      // import's or Products.jsx's job, not a plain restock.
 
       if (action === 'create') actualCreated += 1
       else actualUpdated += 1
