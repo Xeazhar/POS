@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom'
 import TransactionDetailModal from '../../components/transactions/TransactionDetailModal'
 import DayEndClosingDetail from '../../components/dayend/DayEndClosingDetail'
 import { DayEndReportPanels } from '../../components/dayend/DayEndReportPanels'
+import BranchHandoffs from '../../components/dayend/BranchHandoffs'
 import AuditSummary from '../../components/dashboard/AuditSummary'
 import StatTiles from '../../components/dashboard/StatTiles'
 import MovementHistoryPanel from '../../components/inventory/MovementHistoryPanel'
@@ -157,6 +158,10 @@ function ManagerBranchDashboard() {
   const { branchId } = useParams()
   const user = useAuthStore((state) => state.user)
   const [branch, setBranch] = useState(null)
+  // Overview = everything this page already rendered; Handoffs = the new cash-custody
+  // report/confirm panel. A plain top-level switch, same Tabs component already used for
+  // invTab below — nothing under either branch depends on which one is active.
+  const [mainTab, setMainTab] = useState('overview')
   const [data, setData] = useState({
     products: [],
     transactions: [],
@@ -946,6 +951,18 @@ function ManagerBranchDashboard() {
         <ErrorBanner error={error} onDismiss={() => setError('')} />
       )}
 
+      <Tabs
+        className="mb-3.5"
+        value={mainTab}
+        onChange={setMainTab}
+        tabs={[
+          { id: 'overview', label: 'Overview' },
+          { id: 'handoffs', label: 'Handoffs' },
+        ]}
+      />
+
+      {mainTab === 'overview' && (
+      <>
       <div className="mb-3.5 grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] items-stretch gap-3.5 max-[700px]:grid-cols-1">
         {(isRestaurant
           ? [
@@ -2469,6 +2486,12 @@ function ManagerBranchDashboard() {
             </PrimaryButton>
           </ModalActions>
         </Modal>
+      )}
+      </>
+      )}
+
+      {mainTab === 'handoffs' && (
+        <BranchHandoffs dayEnds={data.dayEnds} staffShifts={staffShifts} onReload={reload} />
       )}
     </div>
   )
