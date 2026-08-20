@@ -11,7 +11,7 @@ import { startConnectivityWatcher } from './offline'
 import { installSessionLifecycle, consumeBrowserClosedFlag } from './offline/sessionLifecycle'
 import { useAuthStore, useInventoryStore, useProductStore, bindSessionRevokedWatcher } from './stores/posStore'
 import { bindSyncStore } from './stores/syncStore'
-import { canAccessModule } from './utils/roles'
+import { canAccessModule, isSupervisorOrAbove } from './utils/roles'
 import { staffHomePath } from './constants/nav'
 import { clearChunkReloadFlag, lazyWithRetry } from './utils/lazyWithRetry'
 
@@ -33,6 +33,7 @@ const ManagerData = lazyWithRetry(() => import('./pages/manager/Data.jsx'))
 const ManagerPromos = lazyWithRetry(() => import('./pages/manager/Promos.jsx'))
 const ManagerReports = lazyWithRetry(() => import('./pages/manager/Reports.jsx'))
 const ManagerAnnouncements = lazyWithRetry(() => import('./pages/manager/Announcements.jsx'))
+const NotificationHistory = lazyWithRetry(() => import('./pages/NotificationHistory.jsx'))
 const Legal = lazyWithRetry(() => import('./pages/Legal.jsx'))
 
 /**
@@ -91,6 +92,17 @@ function firstHomePath(user) {
 function RequireModule({ moduleId, children, fallback }) {
   const user = useAuthStore((state) => state.user)
   if (!canAccessModule(user, moduleId)) {
+    return <Navigate to={fallback || firstHomePath(user)} replace />
+  }
+  return children
+}
+
+// Gated by role, not the module list — RequestNotifications.jsx's bell (which links here)
+// is itself shown to any supervisor-or-above regardless of their `permissions[]`, and
+// supervisors don't carry `manager_reports`, so RequireModule would lock them out.
+function RequireRole({ test, children, fallback }) {
+  const user = useAuthStore((state) => state.user)
+  if (!test(user?.role)) {
     return <Navigate to={fallback || firstHomePath(user)} replace />
   }
   return children
@@ -365,6 +377,14 @@ function AppRoutes() {
                   <RequireModule moduleId="manager_announcements">
                     <ManagerAnnouncements />
                   </RequireModule>
+                }
+              />
+              <Route
+                path="/notifications/history"
+                element={
+                  <RequireRole test={isSupervisorOrAbove}>
+                    <NotificationHistory />
+                  </RequireRole>
                 }
               />
               <Route path="*" element={<Navigate to="/" replace />} />

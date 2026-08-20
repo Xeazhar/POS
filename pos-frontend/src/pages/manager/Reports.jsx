@@ -18,6 +18,7 @@ import {
   fetchAuditEvents,
   fetchBirDailyBreakdown,
   fetchBranches,
+  fetchCashHandoffReport,
   fetchCashMovements,
   fetchCartRemoveReport,
   fetchDiscountReport,
@@ -138,6 +139,12 @@ const REPORTS = [
     group: 'Audit',
     title: 'Cash Movements',
     note: 'Petty cash and pickups from POS Open Drawer: cross-session history.',
+  },
+  {
+    id: 'cash-handoffs',
+    group: 'Audit',
+    title: 'Cash Handoff Log',
+    note: 'Custody chain: cashier→supervisor and supervisor→manager, who handed off, who received, and when.',
   },
   {
     id: 'cart-removes',
@@ -749,6 +756,18 @@ function ManagerReports() {
           'No cash movements in this range.',
         ),
       )
+      return
+    }
+
+    if (selected === 'cash-handoffs') {
+      const data = await fetchCashHandoffReport({ start: filters.start, end: filters.end, branchId })
+      const pending = data.filter((row) => row.status === 'Pending').length
+      setNote(
+        pending > 0
+          ? `${pending} supervisor→manager handoff(s) still Pending — confirm in Branch Dashboard → Handoffs once the cash arrives.`
+          : 'Every handoff in this range has been confirmed received.',
+      )
+      setRows(ensureRows(data, 'No cash handoffs in this range.'))
       return
     }
 

@@ -989,7 +989,16 @@ Deliberately non-blocking and deadline-free — Close day/Submit day/Approve day
 on it; a manager can confirm several closed days (a week's worth) in one action. The same
 tab also lists cashier→supervisor handoffs read-only (sourced from `staff_shifts` +
 `shift_adjustments`) — that half of the flow is unchanged, still confirmed once per
-business day from Day End's existing "Confirm received handoff".
+business day from Day End's existing "Confirm received handoff". The Handoffs tab's
+supervisor→manager rows show who handed off (`day_ends.staff_id`, the supervisor who
+submitted/closed the day) alongside who received.
+
+**Cash Handoff Log report** (`api.fetchCashHandoffReport`, `Reports.jsx` id
+`cash-handoffs`, group Audit): both handoff legs in one date-ranged, branch-filterable
+table — `leg`, `date`, `branch`, `amount`, `handed_by`, `handed_at`, `received_by`,
+`received_at`, `status`. Cashier→supervisor rows are always `status: 'Received'` (same
+construction as BranchHandoffs.jsx — `ending_cash` is only ever set post-confirmation);
+supervisor→manager rows show `Pending` until a manager confirms via the Handoffs tab.
 
 **Request day end is locked out while a shift is still open.** `CashierEndShift`'s "Day end"
 card shows a plain "End your shift first" message instead of the request form whenever
@@ -1511,6 +1520,8 @@ POS → **Open Drawer** (`OpenDrawer.jsx` on `POS.jsx`):
   `flagged_for_investigation`. Approved / remote_approved / denied never block close.
   Managers may later Mark Resolved on Flagged rows (Branch Cash drawer log).
 - Reports → **Cash Movements** (`Reports.jsx` id `cash-movements`) for cross-session analysis
+- Reports → **Cash Handoff Log** (`Reports.jsx` id `cash-handoffs`) covers the drawer-custody
+  chain (cashier→supervisor→manager) instead — see `api.fetchCashHandoffReport` above
 - RPCs in `api.js`: `createCashMovementApproved|Pending`, `approveCashMovementPin|Manager`, `denyCashMovement`, `cancelCashMovement`, `selfRecordCashMovement`, `reviewCashMovement`, `resolveFlaggedCashMovement`
 - **Self-approve for supervisor+.** A cashier's request still needs a real second person
   (PIN, remote manager approval, or the flagged self-record fallback) — dual control (approver
@@ -1948,6 +1959,46 @@ this — it's transparent at the `subscribeBroadcast`/`useLiveData` call site.
 | Schema | `supabase/migrate_realtime_broadcast_v1.sql` (+ `migrate_enable_realtime.sql` for promos) |
 
 **Deploy staleness:** counter terminals stay open for days. `useAppVersion` polls `/version.json` and shows Shell's update banner; auto-reload only when cart/queue are safe.
+
+---
+
+## Notification history
+
+`RequestNotifications.jsx`'s bell (see above, and the day-end/refund/promo/cash/cart
+sections) only ever shows **pending** items — nothing is kept once resolved. Notification
+history is a read-only past view over the same six approval categories, added because
+nothing else surfaced "what got approved/denied and by whom" outside of digging through
+per-feature audit panels.
+
+**No new table.** Every category's resolving RPC already writes an `audit_events` row
+(`day_end_*`, `cash_movement_*`, `till_action_*`, `promo_*`, `refund_request*`) — history is
+just those rows filtered to a `NOTIFICATION_EVENT_TYPES` allowlist. `import_batches` revert
+requests were the one category with no audit trail; `migrate_import_revert_audit.sql` adds
+`audit_events` logging to `request_import_revert` / `dismiss_import_revert_request` /
+`revert_import_batch` (event types `import_revert_requested` / `import_revert_dismissed` /
+`import_reverted`) so it isn't invisible in history.
+
+```
+audit_events (existing inserts from each RPC)
+   → src/lib/api.js fetchNotificationHistory({ start, end, branchId })
+        (fetchAuditEvents + NOTIFICATION_EVENT_TYPES filter)
+   → src/pages/NotificationHistory.jsx  (route: /notifications/history)
+        manager: branch filter available, network-wide by default
+        supervisor: own branch only
+   ← "View history →" link, RequestNotifications.jsx dropdown footer
+```
+
+Gated by role (`isSupervisorOrAbove`, `RequireRole` in `App.jsx`), **not** the
+`manager_reports` module — supervisors don't carry that module by default but do see the
+bell, so a `RequireModule` gate would have locked them out of their own branch's history.
+
+| Piece | File |
+|-------|------|
+| Query | `fetchNotificationHistory()` in `src/lib/api.js` |
+| Page | `src/pages/NotificationHistory.jsx` |
+| Route | `/notifications/history`, `App.jsx` |
+| Entry point | "View history →" in `RequestNotifications.jsx` |
+| SQL (import revert audit gap) | `supabase/migrate_import_revert_audit.sql` |
 
 ---
 

@@ -127,7 +127,10 @@ function BranchHandoffs({ dayEnds = [], staffShifts = [], onReload }) {
                   {!row.handoffConfirmedAt && (
                     <input type="checkbox" checked={selected.has(row.id)} onChange={() => toggle(row.id)} />
                   )}
-                  <span className="truncate text-brand-ink">{row.date}</span>
+                  <span className="truncate text-brand-ink">
+                    {row.date}
+                    <span className="text-brand-muted"> · handed by {row.cashier || 'supervisor'}</span>
+                  </span>
                 </label>
                 <span className="shrink-0 text-brand-muted">
                   {money(row.cashOnHand)}

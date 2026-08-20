@@ -323,6 +323,18 @@ export default function RequestNotifications() {
               </div>
             )}
           </div>
+          <div className="border-t border-brand-softline px-3 py-2">
+            <button
+              type="button"
+              className="w-full border-0 bg-transparent p-0 text-left text-[11px] font-bold text-brand-gold hover:opacity-80"
+              onClick={() => {
+                setOpen(false)
+                navigate('/notifications/history')
+              }}
+            >
+              View history →
+            </button>
+          </div>
         </div>
       )}
     </div>
