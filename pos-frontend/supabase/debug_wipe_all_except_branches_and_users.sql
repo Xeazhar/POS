@@ -27,6 +27,7 @@ union all select 'sale_events', count(*) from sale_events
 union all select 'audit_events', count(*) from audit_events
 union all select 'refund_requests', count(*) from refund_requests
 union all select 'stock_movements', count(*) from stock_movements
+union all select 'cash_movements', count(*) from cash_movements
 union all select 'promo_events', count(*) from promo_events
 union all select 'import_batches', count(*) from import_batches
 union all select 'day_ends', count(*) from day_ends
@@ -99,6 +100,12 @@ begin
   end $inner$;
   do $inner$ begin
     delete from petty_cash;
+  exception when undefined_table then null;
+  end $inner$;
+  -- cash_movements.shift_id references staff_shifts(id) on delete restrict — must go
+  -- before staff_shifts or the delete below fails with a FK violation.
+  do $inner$ begin
+    delete from cash_movements;
   exception when undefined_table then null;
   end $inner$;
   delete from staff_shifts;
