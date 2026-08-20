@@ -210,7 +210,7 @@ export const ERROR_CATALOG = {
     saleImpact: SALE_IMPACT.none,
     retry: false,
     cause:
-      'assert_business_day_mutable() (or the client lock check) refused the void/refund because that sale\'s business day is submitted or closed. Trading into a closed day would corrupt the Z-Read.',
+      'assert_business_day_mutable() (or the client lock check) refused the void/refund because that sale’s business day is submitted or closed. Trading into a closed day would corrupt the Z-Read.',
     fix: 'Manager reopens the till from Day end if the same business day must stay open, otherwise wait until the next business day opens and handle the customer then.',
   },
   TILL05: {
@@ -339,7 +339,7 @@ export const ERROR_CATALOG = {
     saleImpact: SALE_IMPACT.none,
     retry: true,
     cause:
-      'Copying a catalog_products template into this branch\'s products table failed — commonly a SKU already used locally.',
+      'Copying a catalog_products template into this branch’s products table failed — commonly a SKU already used locally.',
     fix: 'Check whether the branch already has that SKU. If so, edit the existing product instead of adopting again.',
   },
   CAT02: {
@@ -818,7 +818,7 @@ export const ERROR_CATALOG = {
     fix: 'Manager → Shifts: use Adjust on that shift. The old value, the new value and your reason are all kept.',
   },
   SHIFT05: {
-    message: 'Only a supervisor or manager can change a shift\'s cash figures.',
+    message: 'Only a supervisor or manager can change a shift’s cash figures.',
     severity: B,
     saleImpact: SALE_IMPACT.none,
     retry: false,
@@ -851,7 +851,7 @@ export const ERROR_CATALOG = {
     saleImpact: SALE_IMPACT.none,
     retry: false,
     cause: 'The role ceiling refused an edit to a peer or senior account.',
-    fix: 'Ask someone above that account\'s role to make the change.',
+    fix: 'Ask someone above that account’s role to make the change.',
   },
   SEC03: {
     message: 'You cannot change your own role, access, branch or active status.',
