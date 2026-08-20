@@ -188,6 +188,14 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
   // there is nothing left to confirm. `canChooseDrawer` is excluded on purpose: a supervisor
   // choosing "Working the register" must land on the same screen either way and confirm with
   // the Start shift button below, never fire the moment the option is picked.
+  // Ordinary cashier-to-cashier turnover on the SAME drawer, with a counted figure already
+  // on record (a supervisor ran Confirm received handoff for the previous shift at some
+  // earlier Day End) — informational only, no forced recount. Explicitly excludes
+  // needsFreshCount: right after a manager reopens a closed day the cashier holding the
+  // drawer never actually held that prior cash themselves (it was already handed to the
+  // supervisor at the close before reopening), so no previous figure is shown there at all.
+  const showHandoverNotice = holdsDrawer && carried != null && !needsFreshCount
+
   const autoStartedRef = useRef(false)
   const autoStarting =
     !canChooseDrawer &&
@@ -195,6 +203,7 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
     !dayClosed &&
     holdsDrawer &&
     !needsFreshCount &&
+    !showHandoverNotice &&
     !restartPrompt
   useEffect(() => {
     if (!autoStarting || autoStartedRef.current) return
@@ -373,6 +382,39 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
     )
   }
 
+  // Ordinary turnover with a counted figure on record — see showHandoverNotice above. Pure
+  // acknowledgment: no amount field, no checkbox, no forced recount. Day-end remains the
+  // only mandatory cash count; this is purely "here's what you're taking over".
+  if (showHandoverNotice) {
+    return (
+      <Modal>
+        <Eyebrow>START SHIFT</Eyebrow>
+        <h2 className="mb-1 text-lg">Start your shift</h2>
+        <div className="mt-1 rounded-md border border-brand-warn-line bg-brand-warn-surface px-3 py-2.5">
+          <strong className="block text-[11px] text-brand-warn">Handover</strong>
+          <p className="m-0 mt-1 text-[11px] leading-snug text-brand-warn">
+            {handoff?.staffName ? `${handoff.staffName} ` : 'The previous shift '}
+            cashed out with <strong>{money(carried)}</strong> in {drawerLabel || 'this drawer'}.
+          </p>
+        </div>
+        {error && <p className="mt-2 text-xs text-brand-danger">{error}</p>}
+        <ModalActions>
+          <SecondaryButton compact type="button" disabled={busy} onClick={onSignOut}>
+            Sign out
+          </SecondaryButton>
+          <PrimaryButton
+            compact
+            type="button"
+            disabled={busy}
+            onClick={() => void doStart({ startingCash: 0 })}
+          >
+            {busy ? 'Starting…' : 'Start shift'}
+          </PrimaryButton>
+        </ModalActions>
+      </Modal>
+    )
+  }
+
   // Routine case — see needsFreshCount above. No count needed; startShift already fired
   // from the effect. This only renders long enough to cover that local-first write (usually
   // imperceptible) or to offer a retry if it genuinely failed (offline mid-write, etc.).
@@ -493,16 +535,6 @@ function ShiftGate({ user, holdsDrawer: holdsDrawerDefault = true, onSignOut }) 
 
       {needsFreshCount && (
         <>
-          {carried != null && (
-            <div className="mt-3 rounded-md border border-brand-warn-line bg-brand-warn-surface px-3 py-2.5">
-              <strong className="block text-[11px] text-brand-warn">Handover</strong>
-              <p className="m-0 mt-1 text-[11px] leading-snug text-brand-warn">
-                {handoff?.staffName ? `${handoff.staffName} ` : 'The previous shift '}
-                cashed out with <strong>{money(carried)}</strong> in this drawer. Count it yourself,
-                from here it is your figure.
-              </p>
-            </div>
-          )}
           <Field
             className="mt-3"
             label="Change fund (starting cash)"
