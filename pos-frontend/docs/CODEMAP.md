@@ -974,6 +974,23 @@ while `ended` locks the app the same way `start` does. The cash-out modal's `onD
 (`DayEnd.jsx`) must NOT call `resolve()` afterward — that re-asks the server "is a shift
 open?", gets no, and overwrites `ended` back to `start`, undoing this.
 
+**`ShiftGate.jsx`'s Handover notice** shows only on ordinary same-drawer cashier turnover
+(`showHandoverNotice`), never during a manager-reopened day's fresh count
+(`needsFreshCount`) — a cashier picking up after a reopen never actually held the prior
+drawer's cash themselves, so no previous figure is referenced there. It is informational
+only: no amount field, no forced recount — day-end remains the single mandatory cash
+count per business day.
+
+**Supervisor→manager cash handoff** (`migrate_day_end_cash_handoff.sql`): a manager
+confirms physically receiving a closed day's cash via `confirm_day_end_handoff(day_end_id)`
+(`day_ends.handoff_confirmed_by`/`handoff_confirmed_at`), from the branch dashboard's
+**Handoffs** tab (`src/pages/manager/BranchDashboard.jsx` → `src/components/dayend/BranchHandoffs.jsx`).
+Deliberately non-blocking and deadline-free — Close day/Submit day/Approve day never wait
+on it; a manager can confirm several closed days (a week's worth) in one action. The same
+tab also lists cashier→supervisor handoffs read-only (sourced from `staff_shifts` +
+`shift_adjustments`) — that half of the flow is unchanged, still confirmed once per
+business day from Day End's existing "Confirm received handoff".
+
 **Request day end is locked out while a shift is still open.** `CashierEndShift`'s "Day end"
 card shows a plain "End your shift first" message instead of the request form whenever
 `shift` (the live open shift) is truthy — asking to close the whole business day while your

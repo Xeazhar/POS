@@ -17,6 +17,20 @@ computation, OR numbering).
 
 ---
 
+## 0.25.0 — 2026-08-20
+
+### Added: supervisor→manager cash handoff tracking + fixed Handover notice
+
+New branch-dashboard "Handoffs" tab lets a manager confirm receiving a closed day's
+cash whenever it physically arrives — no deadline, doesn't block Close day/Submit
+day/Approve day. Selecting several closed days confirms a week's worth in one action.
+The same tab also lists cashier→supervisor handoffs read-only (unchanged mechanics,
+still confirmed once per day from Day End). Also fixed `ShiftGate.jsx`'s "Handover"
+notice, which previously only appeared on a manager-reopened day (where it shouldn't
+— that cash was already handed to the supervisor before the reopen) and never on an
+ordinary cashier-to-cashier drawer turnover (where it should). It now shows correctly
+on ordinary turnover only, informational, with no forced recount.
+
 ## 0.24.1 — 2026-08-20
 
 ### Fixed: Day End breakdowns missing Cash in (additional float)

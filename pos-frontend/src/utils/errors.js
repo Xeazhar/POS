@@ -213,6 +213,15 @@ export const ERROR_CATALOG = {
       'assert_business_day_mutable() (or the client lock check) refused the void/refund because that sale’s business day is submitted or closed. Trading into a closed day would corrupt the Z-Read.',
     fix: 'Manager reopens the till from Day end if the same business day must stay open, otherwise wait until the next business day opens and handle the customer then.',
   },
+  TILL05: {
+    message: 'Could not confirm cash handoff.',
+    severity: B,
+    saleImpact: SALE_IMPACT.none,
+    retry: true,
+    cause:
+      'confirm_day_end_handoff() refused the request — either this day is not closed yet, the caller is not a manager, or the RPC/migration is missing (migrate_day_end_cash_handoff.sql).',
+    fix: 'Only a closed day can have its handoff confirmed. Confirm the migration is applied and the account is a manager, then retry.',
+  },
 
   // ── SALE — taking money ──────────────────────────────────────────────────
   SALE01: {

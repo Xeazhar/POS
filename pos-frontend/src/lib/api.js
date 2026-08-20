@@ -48,6 +48,11 @@ export function mapDayEndRow(row) {
     reopenRequestedAt: row.reopen_requested_at || null,
     reopenRequestedBy: row.reopen_requested_by || null,
     reopenRequestReason: row.reopen_request_reason || '',
+    // Supervisor→manager cash handoff (migrate_day_end_cash_handoff.sql) — non-blocking,
+    // no deadline, so these stay null on plenty of legitimately-closed days.
+    handoffConfirmedBy: row.handoff_confirmed_by || null,
+    handoffConfirmedByName: row.confirmer?.full_name || '',
+    handoffConfirmedAt: row.handoff_confirmed_at || null,
   }
 }
 
@@ -881,7 +886,7 @@ const BOOTSTRAP_TX_COLS =
 const BOOTSTRAP_MOVE_COLS =
   'id, created_at, product_id, movement_type, quantity_in, quantity_out, quantity_on_hand_after, old_price, new_price, detail, branch_id, products(name)'
 const BOOTSTRAP_DAY_END_COLS =
-  'id, business_date, recorded_cash, cash_on_hand, variance, expected_cash, note, status, closed_at, submitted_at, approved_at, reopened_at, reopen_reason, day_report, staff_id, branch_id, staff!staff_id(full_name), requested_at, requested_by, request_manager, reopen_requested_at, reopen_requested_by, reopen_request_reason'
+  'id, business_date, recorded_cash, cash_on_hand, variance, expected_cash, note, status, closed_at, submitted_at, approved_at, reopened_at, reopen_reason, day_report, staff_id, branch_id, staff!staff_id(full_name), requested_at, requested_by, request_manager, reopen_requested_at, reopen_requested_by, reopen_request_reason, handoff_confirmed_by, handoff_confirmed_at, confirmer:staff!handoff_confirmed_by(full_name)'
 
 /**
  * POS cold-path: catalog + stock + categories only.
@@ -3049,6 +3054,29 @@ export async function reopenDayEnd({ id, staffId, reason }) {
   })
   if (error) throw error
   return data
+}
+
+/**
+ * Manager confirms physically receiving a closed day's cash. Non-blocking, no deadline —
+ * Close day never waits on this; a manager runs it whenever the cash actually arrives,
+ * even days later for a branch that isn't close by. Idempotent on the server.
+ * Needs migrate_day_end_cash_handoff.sql.
+ */
+export async function confirmDayEndHandoff(dayEndId) {
+  const { data, error } = await supabase.rpc('confirm_day_end_handoff', {
+    p_day_end_id: dayEndId,
+  })
+  if (error) {
+    const raw = String(error?.message || error || '')
+    if (/Could not find the function.*confirm_day_end_handoff|function public\.confirm_day_end_handoff.*does not exist/i.test(raw)) {
+      throw appError('TILL05', 'confirm_day_end_handoff is missing — apply migrate_day_end_cash_handoff.sql')
+    }
+    if (/DAYEND_NOT_CLOSED|DAYEND_NOT_ALLOWED|DAYEND_NOT_FOUND/.test(raw)) {
+      throw appError('TILL05', raw)
+    }
+    throw error
+  }
+  return mapDayEndRow(Array.isArray(data) ? data[0] : data)
 }
 
 /**
