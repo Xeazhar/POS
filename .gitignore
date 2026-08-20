@@ -11,3 +11,5 @@ Thumbs.db
 .wrangler
 coverage/
 graphify-out/
+
+.worktrees/
