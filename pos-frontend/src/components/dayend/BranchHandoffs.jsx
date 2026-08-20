@@ -30,6 +30,7 @@ function BranchHandoffs({ dayEnds = [], staffShifts = [], onReload }) {
   useEffect(() => {
     let cancelled = false
     if (!shiftIds.length) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAdjustments([])
       return undefined
     }
