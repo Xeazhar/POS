@@ -131,35 +131,41 @@ All existing JSX in the component's return is wrapped under the `'overview'` bra
 unchanged. A new `'handoffs'` branch renders a new component,
 `src/components/dayend/BranchHandoffs.jsx`.
 
-Data fetching for both tabs happens regardless of which tab is active (existing
-`BranchDashboard` effects untouched) — the new tab's own data is fetched by its own
-effect scoped to the selected branch, following the same network-only pattern as
-Payment & cash impact / Audit.
+**No new bootstrap/fetch functions needed** — `BranchDashboard.jsx` already loads
+everything the panel needs:
+- `data.dayEnds` (`bootstrapBranchData` → `bootstrapBranchActivity`, 90-day cutoff)
+  already carries every closed day for this branch. Extending `BOOTSTRAP_DAY_END_COLS`
+  and `mapDayEndRow` with the two new columns (plus a `confirmer:staff!handoff_confirmed_by(full_name)`
+  embed for display) means `data.dayEnds` carries `handoffConfirmedBy`/
+  `handoffConfirmedByName`/`handoffConfirmedAt` for free, no new query.
+- `staffShifts` state (`fetchStaffShifts({ branchId, ... })`, 30-day window, already
+  fetched for the Staff/hours section) already carries every drawer shift for this
+  branch with `holdsDrawer`/`open`/`endingCash`/`staffName`/`businessDate` — exactly
+  what the cashier→supervisor list needs, filtered client-side
+  (`holdsDrawer && !open && endingCash != null`).
+- Who received each of those and when comes from the existing exported
+  `fetchShiftAdjustments(shiftIds)` (already used by `DayEnd.jsx`) — `BranchHandoffs.jsx`
+  calls it itself, scoped to the filtered shift ids, in its own effect.
 
-`BranchHandoffs.jsx` — two sections:
+`BranchHandoffs.jsx` receives `dayEnds`, `staffShifts`, `branchId`, `user`, `onReload` as
+props and renders two read/act sections:
 
-1. **Cashier → supervisor** (read-only). New API function
-   `fetchBranchShiftHandoffs(branchId, { limit })`: `staff_shifts` rows for that branch
-   where `holds_drawer` and `clock_out is not null` and `ending_cash is not null`, newest
-   first, joined to the `shift_adjustments` row with `field='ending_cash'` for that
-   `shift_id` to get who received it and when (`adjusted_by`/`created_at`). Rendered as a
-   plain list: staff name, business date, amount, received-by, received-at. No action —
+1. **Cashier → supervisor** (read-only): staff name, business date, amount
+   (`endingCash`), received-by/received-at from `fetchShiftAdjustments`. No action —
    already-confirmed by construction (only received shifts have `ending_cash` set).
 
-2. **Supervisor → manager**. New API function `fetchBranchDayEndHandoffs(branchId, { limit })`:
-   `day_ends` rows for that branch, `status='closed'`, newest first, with
-   `cash_on_hand`, `handoff_confirmed_by`, `handoff_confirmed_at`. Rendered as a checkbox
-   list (unconfirmed rows only get a checkbox; confirmed rows show name/time instead,
-   matching the existing DrawerActivity/Received-handoff visual pattern in
-   `DayEnd.jsx`). "Confirm received (N)" button loops selected ids through
+2. **Supervisor → manager**: `dayEnds` rows with `status === 'closed'`, newest first,
+   checkbox per unconfirmed row (confirmed rows show name/time instead, matching the
+   existing DrawerActivity/Received-handoff visual pattern in `DayEnd.jsx`). "Confirm
+   received (N)" button loops selected ids through the one new API call,
    `confirmDayEndHandoff(id)`, same loop-and-reload shape as `receiveAllHandoffs` in
-   `DayEnd.jsx`. Selecting 1 row confirms a single day; selecting several confirms a
-   week's worth in one action — no separate day/week toggle needed.
+   `DayEnd.jsx`, then calls `onReload()`. Selecting 1 row confirms a single day;
+   selecting several confirms a week's worth in one action — no separate day/week
+   toggle needed.
 
-New `api.js` exports: `fetchBranchShiftHandoffs`, `fetchBranchDayEndHandoffs`,
-`confirmDayEndHandoff`. All manager-only, direct Supabase calls (no offline queue, no
-Dexie mirror) — consistent with the rest of `BranchDashboard.jsx`'s existing
-network-only sections.
+Only one new `api.js` export: `confirmDayEndHandoff`. Manager-only, direct Supabase RPC
+call (no offline queue, no Dexie mirror) — consistent with the rest of
+`BranchDashboard.jsx`'s existing network-only sections.
 
 ## Error handling / edge cases
 
