@@ -81,6 +81,7 @@ import { isManagerRole, isSupervisorOrAbove } from '../../utils/roles'
 import { discountSourceLabel, isPromoDiscountType } from '../../utils/promo'
 import { isUuid } from '../../utils/transactionDetail'
 import { buildReceipt } from '../../utils/receipt'
+import { sumGrossAndDiscounts, sumRefunds, sumVoided } from '../../utils/terminalReports'
 
 const PAGE_SIZE = 10
 /** How far back the branch Staff table reads the clock-in/out log. */
@@ -598,26 +599,12 @@ function ManagerBranchDashboard() {
   // 'day' reads the live local transactions (see effectiveRevenue above); 'week'/'month'
   // read periodSummary — while that fetch is in flight this renders empty (StatTiles
   // hides itself on an empty items array) rather than showing today's breakdown mislabeled.
+  const { gross: todayGross, discounts: todayDiscounts } = sumGrossAndDiscounts(todayTx)
   const todaySalesPerformanceItems = [
-    {
-      label: 'Gross sales',
-      value: money(todayTx.reduce((sum, t) => sum + Number(t.total || 0) + Number(t.discountAmount || 0), 0)),
-    },
-    {
-      label: 'Discounts',
-      value: money(todayTx.reduce((sum, t) => sum + Number(t.discountAmount || 0), 0)),
-      tone: 'danger',
-    },
-    {
-      label: 'Refunds',
-      value: money(todayTx.reduce((sum, t) => sum + Number(t.refundedAmount || 0), 0)),
-      tone: 'danger',
-    },
-    {
-      label: 'Voided sales',
-      value: money(todayVoided.reduce((sum, t) => sum + Number(t.total || 0), 0)),
-      tone: 'danger',
-    },
+    { label: 'Gross sales', value: money(todayGross) },
+    { label: 'Discounts', value: money(todayDiscounts), tone: 'danger' },
+    { label: 'Refunds', value: money(sumRefunds(todayTx)), tone: 'danger' },
+    { label: 'Voided sales', value: money(sumVoided(todayVoided)), tone: 'danger' },
   ]
   // While a week/month fetch is in flight, periodSummary is still null (or still holds the
   // PREVIOUS period's figures) — falling through to `[]` there made StatTiles render nothing

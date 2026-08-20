@@ -110,6 +110,26 @@ export function reportCounters(branchId) {
   }
 }
 
+export function sumGrossAndDiscounts(transactions = []) {
+  const gross = transactions.reduce(
+    (s, t) => s + Number(t.total_amount ?? t.total ?? 0) + Number(t.discount_amount ?? t.discountAmount ?? 0),
+    0,
+  )
+  const discounts = transactions.reduce(
+    (s, t) => s + Number(t.discount_amount ?? t.discountAmount ?? 0),
+    0,
+  )
+  return { gross, discounts }
+}
+
+export function sumRefunds(transactions = []) {
+  return transactions.reduce((s, t) => s + Number(t.refunded_amount ?? t.refundedAmount ?? 0), 0)
+}
+
+export function sumVoided(voidedTransactions = []) {
+  return voidedTransactions.reduce((s, t) => s + Number(t.total_amount ?? t.total ?? 0), 0)
+}
+
 /**
  * Build one terminal/cashier report data object from fetched source rows.
  */
@@ -139,24 +159,13 @@ export function buildTerminalReportData({
   const completed = txns.filter((t) => t.status === 'completed' || t.status === 'Paid')
   const voided = txns.filter((t) => t.status === 'voided' || t.status === 'Voided')
 
-  const grossSales = completed.reduce((s, t) => {
-    const net = Number(t.total_amount ?? t.total ?? 0)
-    const disc = Number(t.discount_amount ?? t.discountAmount ?? 0)
-    return s + net + disc
-  }, 0)
-  const totalDisc = completed.reduce(
-    (s, t) => s + Number(t.discount_amount ?? t.discountAmount ?? 0),
-    0,
-  )
+  const { gross: grossSales, discounts: totalDisc } = sumGrossAndDiscounts(completed)
   const dailySales = completed.reduce(
     (s, t) => s + Number(t.total_amount ?? t.total ?? 0) - Number(t.refunded_amount ?? t.refundedAmount ?? 0),
     0,
   )
-  const refund = completed.reduce(
-    (s, t) => s + Number(t.refunded_amount ?? t.refundedAmount ?? 0),
-    0,
-  )
-  const voidAmt = voided.reduce((s, t) => s + Number(t.total_amount ?? t.total ?? 0), 0)
+  const refund = sumRefunds(completed)
+  const voidAmt = sumVoided(voided)
 
   const vat = completed.reduce((s, t) => s + Number(t.vat_amount ?? t.vatAmount ?? 0), 0)
   const taxable = completed.reduce((s, t) => {
