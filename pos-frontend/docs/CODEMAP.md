@@ -1935,11 +1935,13 @@ Do not delete `src/utils/ulam.js` (`lineTotal` is shared with retail).
 
 | Need | File |
 |------|------|
-| Money, qty, business date, stockTone | `src/utils/format.js` |
+| Money, qty, business date, stockTone, stock delta (`applyStockDelta`), net-after-refund (`netAfterRefund`), gross-from-discounts (`grossFromNetAndDiscounts`), shift duration (`shiftDurationMs`), day-end nudge timing (`shouldNudgeDayEnd`, `dayEndNudgeMessage`) | `src/utils/format.js` |
 | Which DB this build targets (env badge) | `src/utils/environment.js` |
 | Support error codes | `src/utils/errors.js` |
-| Sanitize / duplicate product checks | `src/utils/validate.js` |
+| Sanitize / duplicate product checks, product-draft field validation (`validateProductDraft`), price-override bounds (`isValidPriceOverride`), cart quantity-step (`nextCartQuantity`), shrinkage-category gate (`isShrinkageAllowed`) | `src/utils/validate.js` |
 | Ulam / menu kinds | `src/utils/ulam.js` |
+| VAT/SC-PWD breakdown, checkout readiness (`canCompleteSale`), change calculation (`computeChange`) | `src/utils/vat.js` |
+| Terminal report building, shared sales-performance reducers (`sumGrossAndDiscounts`, `sumRefunds`, `sumVoided`) | `src/utils/terminalReports.js` |
 | Dashboard charts | `src/components/dashboard/*` |
 
 ---

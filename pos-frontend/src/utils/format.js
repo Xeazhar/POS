@@ -1,3 +1,10 @@
+/**
+ * Beyond display formatting, this file also holds small cross-page arithmetic/derivation
+ * helpers that don't have a more specific home (money deltas, shift durations, day-end
+ * timing) - see validate.js for validation rules, promo.js for promo-specific math, vat.js
+ * for checkout/VAT math.
+ */
+
 export const PESO = '\u20B1'
 
 /** Use with money displays: className={MONEY_CLASS} (alias of ui moneyClass). */

@@ -8,7 +8,7 @@ import { useIsTouchUi } from '../../hooks/useIsTouchUi'
 import { useAuthStore, useCartStore, useInventoryStore, useProductStore } from '../../stores/posStore'
 import { formatSupportError } from '../../utils/errors'
 import { buildReceipt } from '../../utils/receipt'
-import { money, pesoWhole, PESO, qty, today, formatOpenHourLabel, shouldNudgeDayEnd, dayEndNudgeMessage } from '../../utils/format'
+import { money, pesoWhole, PESO, qty, today, shouldNudgeDayEnd, dayEndNudgeMessage } from '../../utils/format'
 import {
   buildCartDisplayGroups,
   computePromoDiscounts,

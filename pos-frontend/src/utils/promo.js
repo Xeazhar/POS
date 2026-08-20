@@ -230,6 +230,7 @@ function lineQtyForPromo(item, { allowKg = false } = {}) {
 }
 
 /** Cart row unit count — must stay aligned with lineTotal() so priced lines always render. */
+/** Do NOT merge with promoEntryUnits() below — that one defaults a falsy non-kg quantity to 0, not 1. */
 function lineDisplayUnits(item) {
   if (item.pricingMode === 'kg') return Number(item.weight || 0)
   return Number(item.quantity || 1)
@@ -859,11 +860,13 @@ export function expandPromoRuleRows(rules = []) {
   return rows
 }
 
+/** Do NOT merge with lineDisplayUnits() above — that one defaults a falsy non-kg quantity to 1, not 0; the `0` default here is load-bearing for the `units > 0` early-return guards below. */
 function promoEntryUnits(item) {
   return item?.pricingMode === 'kg' ? Number(item.weight || 0) : Number(item.quantity || 0)
 }
 
 /** Cart-checkout display: gross/discount/net share of a promo-group entry, prorated by unit count against the line's own total. */
+/** Currently only consumed internally by promoGroupGross/promoGroupDiscount/promoGroupNet below — still exported in case a future caller needs per-entry values directly. */
 export function promoEntryGross(entry, items) {
   const item = items[entry.lineIndex]
   if (!item) return 0
