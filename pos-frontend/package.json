@@ -70,14 +70,18 @@
       "!**/*.map"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "resources/icon.png",
+      "executableName": "CalePOS"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "shortcutName": "CalePOS",
+      "uninstallDisplayName": "CalePOS ${version}"
     }
   }
 }
