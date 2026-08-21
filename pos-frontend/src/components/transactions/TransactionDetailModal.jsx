@@ -12,9 +12,16 @@ function TransactionDetailModal({
   refundBlocked = false,
   refundBlockReason,
   layer = false,
+  pendingRequest = null,
 }) {
   const qtyByItem = refundSummary?.qtyByItem || {}
   const amountByItem = refundSummary?.amountByItem || {}
+  const requestedQtyByItem = (
+    pendingRequest?.mode === 'items' ? pendingRequest.items || [] : []
+  ).reduce((map, it) => {
+    map[it.item_id] = Number(it.quantity || 0)
+    return map
+  }, {})
   const refundTotal = Number(
     refundSummary?.totalAmount ?? detail?.refundedAmount ?? 0,
   )
@@ -56,6 +63,20 @@ function TransactionDetailModal({
               ) : null}
             </p>
           )}
+          {pendingRequest && (
+            <div className="mt-3 rounded-md border border-brand-warn-line bg-brand-warn-bg px-3 py-2">
+              <p className="m-0 mb-1 text-[10px] font-bold tracking-wide text-brand-warn uppercase">
+                Pending refund request
+              </p>
+              <p className="m-0 text-xs text-brand-ink">
+                {pendingRequest.mode === 'full' ? 'Full sale (void)' : 'Selected items'}
+                {pendingRequest.requestedByName ? ` · Requested by ${pendingRequest.requestedByName}` : ''}
+              </p>
+              {pendingRequest.reason && (
+                <p className="m-0 mt-1 text-xs text-brand-ink">Reason: {pendingRequest.reason}</p>
+              )}
+            </div>
+          )}
           <div className="mt-4 max-h-[240px] overflow-auto rounded-md border border-brand-softline">
             <div className="grid grid-cols-[1.4fr_0.6fr_0.7fr_0.7fr] max-[480px]:grid-cols-[1.4fr_0.7fr_0.7fr] gap-2 bg-brand-dark px-3 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase">
               <span>Item</span>
@@ -66,6 +87,7 @@ function TransactionDetailModal({
             {(detail.lines || []).map((line) => {
               const refundedQty = Number(qtyByItem[line.id] || 0)
               const refundedAmt = Number(amountByItem[line.id] || 0)
+              const requestedQty = Number(requestedQtyByItem[line.id] || 0)
               const remaining = Math.max(0, Number(line.quantity || 0) - refundedQty)
               const netLine = Math.max(0, Number((Number(line.lineTotal || 0) - refundedAmt).toFixed(2)))
               return (
@@ -90,6 +112,11 @@ function TransactionDetailModal({
                         {remaining > 0
                           ? ` · left ${qty(remaining, line.pricingMode === 'kg' ? 'kg' : 'pc')}`
                           : ' · fully refunded'}
+                      </small>
+                    )}
+                    {requestedQty > 0 && (
+                      <small className="block text-[10px] font-bold text-brand-warn">
+                        Requested to refund: {qty(requestedQty, line.pricingMode === 'kg' ? 'kg' : 'pc')}
                       </small>
                     )}
                   </div>

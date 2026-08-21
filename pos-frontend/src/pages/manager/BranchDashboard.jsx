@@ -198,6 +198,7 @@ function ManagerBranchDashboard() {
   const [telemetry, setTelemetry] = useState({ devices: [] })
   const [detail, setDetail] = useState(null)
   const [refundSummary, setRefundSummary] = useState(null)
+  const [pendingRefundView, setPendingRefundView] = useState(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState(null)
   const [deviceBusy, setDeviceBusy] = useState(null)
@@ -702,11 +703,12 @@ function ManagerBranchDashboard() {
     }
   }
 
-  const openTxnDetail = async (item) => {
+  const openTxnDetail = async (item, refundRequest = null) => {
     setError('')
     setLoadingDetail(true)
     setDetail(null)
     setRefundSummary(null)
+    setPendingRefundView(refundRequest)
     try {
       if (!hasSupabase || !isUuid(item.id)) {
         setError('Transaction details are only available after the sale has synced.')
@@ -1615,7 +1617,7 @@ function ManagerBranchDashboard() {
             <div
               key={row.id}
               className="grid cursor-pointer grid-cols-[0.9fr_0.7fr_1.4fr_1fr_1.1fr] items-center gap-2 border-t border-brand-softline px-4 py-2.5 text-xs hover:bg-brand-n50 max-[900px]:grid-cols-[1fr_1fr_1.2fr]"
-              onClick={() => openTxnDetail({ id: row.transactionId })}
+              onClick={() => openTxnDetail({ id: row.transactionId }, row)}
               title="View the sale being refunded/voided"
             >
               <span className="truncate text-brand-ink">{row.invoiceNumber || row.transactionId.slice(0, 8)}</span>
@@ -2407,9 +2409,11 @@ function ManagerBranchDashboard() {
           detail={detail}
           loading={loadingDetail}
           refundSummary={refundSummary}
+          pendingRequest={pendingRefundView}
           onClose={() => {
             setDetail(null)
             setRefundSummary(null)
+            setPendingRefundView(null)
           }}
           onPrint={async (row) => {
             try {
