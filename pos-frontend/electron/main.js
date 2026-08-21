@@ -4,6 +4,7 @@ import http from 'node:http'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, Menu, shell } from 'electron'
+import { loadWindowState, trackWindowState } from './windowState.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const RENDERER_DIR = path.join(__dirname, '..', 'dist-desktop')
@@ -81,9 +82,13 @@ if (!gotLock) {
   app.setAppUserModelId('com.calepos.desktop')
 
   const createWindow = (origin) => {
+    const state = loadWindowState()
+
     const win = new BrowserWindow({
-      width: 1280,
-      height: 800,
+      width: state.width,
+      height: state.height,
+      x: state.x,
+      y: state.y,
       minWidth: 1024,
       minHeight: 640,
       backgroundColor: '#f7f7f5',
@@ -99,6 +104,9 @@ if (!gotLock) {
         allowRunningInsecureContent: false,
       },
     })
+
+    if (state.isMaximized) win.maximize()
+    trackWindowState(win)
 
     if (isDev) win.webContents.openDevTools({ mode: 'detach' })
 
