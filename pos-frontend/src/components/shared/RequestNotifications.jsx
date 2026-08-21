@@ -196,7 +196,7 @@ export default function RequestNotifications() {
       </button>
 
       {open && (
-        <div className="absolute top-[42px] right-0 z-40 w-[min(340px,calc(100vw-24px))] overflow-hidden rounded-lg border border-brand-border bg-brand-card text-brand-ink shadow-lg">
+        <div className="absolute top-[42px] right-0 z-40 w-[min(340px,calc(100vw-24px))] overflow-hidden rounded-lg border border-brand-border bg-brand-card text-brand-ink shadow-lg max-[700px]:fixed max-[700px]:top-[68px] max-[700px]:right-3 max-[700px]:left-3 max-[700px]:w-auto">
           <div className="border-b border-brand-softline px-3 py-2.5">
             <strong className="block text-xs">{label}</strong>
             {loading && !loaded ? (
@@ -208,7 +208,7 @@ export default function RequestNotifications() {
             )}
             {actionError && <p className="m-0 mt-1 text-[10px] text-brand-danger">{actionError}</p>}
           </div>
-          <div className="max-h-[320px] overflow-auto">
+          <div className="max-h-[320px] overflow-auto max-[700px]:max-h-[calc(100vh-160px)]">
             {loading && !loaded ? (
               <div className="space-y-2 px-3 py-3" role="status" aria-label="Loading">
                 <Skeleton className="h-3 w-40" />

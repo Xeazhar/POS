@@ -187,7 +187,7 @@ export function SectionHeading({ title, subtitle, meta, className = '', tone = '
         : 'text-brand-ink'
   return (
     <div
-      className={`flex items-end justify-between gap-3 border-b border-brand-line bg-brand-card px-4 py-3.5 ${className}`}
+      className={`flex flex-wrap items-end justify-between gap-3 border-b border-brand-line bg-brand-card px-4 py-3.5 ${className}`}
     >
       <div className="min-w-0">
         <h2 className={`m-0 text-lg font-semibold tracking-[-0.02em] ${accent}`}>{title}</h2>

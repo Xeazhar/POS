@@ -8,12 +8,12 @@ import { isManagerRole } from '../../utils/roles'
 const FILTER_SELECT_CLASS = 'h-7 rounded border border-brand-line bg-brand-card px-1.5 text-[10px] font-medium text-brand-ink'
 
 /**
- * A branch's cash-custody trail as one filterable table — every drawer-to-drawer handoff,
+ * A branch's cash-custody trail as one filterable table, every drawer-to-drawer handoff,
  * both legs:
- *   - Cashier → supervisor (or → manager, when no supervisor was on-site to receive it —
+ *   - Cashier → supervisor (or → manager, when no supervisor was on-site to receive it,
  *     see RemoteDayEndClose.jsx): a drawer shift, confirmed via `receiveShiftHandoff`.
  *   - Supervisor → manager: a closed day_end's cash total, confirmed via
- *     `confirmDayEndHandoff` — no deadline, pure record-keeping.
+ *     `confirmDayEndHandoff`, no deadline, pure record-keeping.
  * Both legs can be confirmed from here, whenever the cash actually changes hands.
  */
 function BranchHandoffs({ dayEnds = [], staffShifts = [], currentStaffId = null, onReload }) {
@@ -147,33 +147,35 @@ function BranchHandoffs({ dayEnds = [], staffShifts = [], currentStaffId = null,
             </select>
           </div>
         }
-        subtitle="Every drawer-to-drawer cash handoff for this branch — confirm whenever the cash actually changes hands, no deadline"
+        subtitle="Every drawer-to-drawer cash handoff for this branch. Confirm whenever the cash actually changes hands, no deadline"
       />
-      <div className="grid grid-cols-[5.5rem_minmax(0,1.3fr)_minmax(0,1fr)_5.5rem_6.5rem_2rem] items-center gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[900px]:grid-cols-[5.5rem_minmax(0,1fr)_5.5rem_2rem]">
+      <div className="grid grid-cols-[5.5rem_minmax(0,1.3fr)_minmax(0,1fr)_5.5rem_6.5rem_2rem] items-center gap-2 bg-brand-dark px-4 py-2 text-[9px] font-bold tracking-[1px] text-brand-ondark uppercase max-[700px]:grid-cols-[4.5rem_minmax(0,1fr)_5rem_1.75rem] max-[700px]:gap-1.5 max-[700px]:px-3">
         <span>Date</span>
-        <span className="max-[900px]:hidden">Direction</span>
+        <span className="max-[700px]:hidden">Direction</span>
         <span>Person</span>
         <span className="text-right">Amount</span>
-        <span className="max-[900px]:hidden">Status</span>
+        <span className="max-[700px]:hidden">Status</span>
         <span />
       </div>
       {filteredRows.length === 0 && <div className="px-4 py-6 text-xs text-brand-subtle">No handoffs match this filter.</div>}
       {filteredRows.map((row) => (
         <div
           key={row.key}
-          className={`grid grid-cols-[5.5rem_minmax(0,1.3fr)_minmax(0,1fr)_5.5rem_6.5rem_2rem] items-center gap-2 text-xs max-[900px]:grid-cols-[5.5rem_minmax(0,1fr)_5.5rem_2rem] ${tableRowDenseClass}`}
+          className={`grid grid-cols-[5.5rem_minmax(0,1.3fr)_minmax(0,1fr)_5.5rem_6.5rem_2rem] items-center gap-2 text-xs max-[700px]:grid-cols-[4.5rem_minmax(0,1fr)_5rem_1.75rem] max-[700px]:gap-1.5 max-[700px]:px-3 ${tableRowDenseClass}`}
         >
           <span className="truncate text-brand-ink">{row.date}</span>
-          <span className="truncate text-brand-muted max-[900px]:hidden">{row.direction}</span>
+          <span className="truncate text-brand-muted max-[700px]:hidden">{row.direction}</span>
           <div className="min-w-0">
             <span className="block truncate text-brand-ink">{row.person}</span>
-            <small className="block truncate text-[10px] text-brand-subtle max-[900px]:block">
+            <small className="block truncate text-[10px] text-brand-subtle max-[700px]:block">
               {row.direction}
               {row.status === 'confirmed' && row.confirmedBy ? ` · received by ${row.confirmedBy}` : ''}
             </small>
           </div>
-          <span className={`text-right ${moneyClass}`}>{row.amount == null ? '—' : money(row.amount)}</span>
-          <span className="max-[900px]:hidden">
+          <span className={`text-right ${moneyClass} ${row.amount == null ? 'text-brand-subtle font-sans font-normal not-italic' : ''}`}>
+            {row.amount == null ? 'Pending' : money(row.amount)}
+          </span>
+          <span className="max-[700px]:hidden">
             <StatusBadge compact tone={row.status === 'confirmed' ? 'success' : 'warn'}>
               {row.status === 'confirmed' ? 'Confirmed' : 'Pending'}
             </StatusBadge>
