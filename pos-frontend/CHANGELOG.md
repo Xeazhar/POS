@@ -17,6 +17,16 @@ computation, OR numbering).
 
 ---
 
+## 0.29.0 — 2026-08-21
+
+**MINOR** — Windows desktop polish (Phase 2). CalePOS's branding icon now shows on the
+installer, Start Menu/Desktop shortcuts, taskbar, and installed `.exe`; installer/uninstall
+entries are correctly labeled `CalePOS`. Window size and position now persist across launches
+and recover safely if the saved position no longer matches a connected display. Hardened
+single-instance focus so a second launch always brings the existing window forward instead of
+risking a duplicate. Still online-only — no offline, hardware, or auto-update functionality
+added.
+
 ## 0.28.0 — 2026-08-21
 
 **MINOR** — Blocked-transaction recovery view. Manager+ can open **View details** from the
