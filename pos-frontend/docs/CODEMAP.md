@@ -241,7 +241,11 @@ maximized state) across launches in `<userData>/window-state.json` — never any
 sale/session/credential-related. On load, a saved `x`/`y` is discarded (falling back to
 Electron's default centered placement) unless it still overlaps some currently-connected
 display's work area by at least 100px in both axes — covers a removed/resized/rearranged
-monitor. Saves are debounced 500ms on `resize`/`move`, plus an unconditional save on `close`.
+monitor. A saved `width`/`height` is likewise rejected (falling back to the 1280×800 default)
+unless it's a number between 400 and 10000, so a corrupted or hand-edited state file can't
+hand `BrowserWindow` a negative or absurd size. Saves are debounced 500ms on `resize`/`move`,
+plus an unconditional save on `close` — but never while the window is minimized, preserving
+the last-remembered size on disk if the app is closed while minimized.
 
 **Code signing (not yet configured)**: the current build is intentionally unsigned —
 `build.win` has no `certificateFile`/`certificatePassword`, and nothing sets

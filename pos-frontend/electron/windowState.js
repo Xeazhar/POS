@@ -65,6 +65,7 @@ export function trackWindowState(win) {
 
   const save = () => {
     if (win.isDestroyed()) return
+    if (win.isMinimized()) return
     const isMaximized = win.isMaximized()
     const bounds = isMaximized ? win.getNormalBounds() : win.getBounds()
     const state = { ...bounds, isMaximized }
