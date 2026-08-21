@@ -26,6 +26,7 @@ migrate_rename_or_to_invoice.sql   -- last: supersedes complete_sale/void_sale_s
                                     -- refund_sale_items bodies from every earlier file
 migrate_promo_expire_supervisor_gate.sql
 migrate_cash_movement_drawer_limit.sql
+migrate_promo_cap_discount_pct.sql
 ```
 
 `CalePOS_Demo` itself (the shared dev project) has **not** had these 5

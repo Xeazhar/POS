@@ -472,10 +472,10 @@ function Shell({ children }) {
               never mistakes this for a finished system — disappears on its own at 1.0.0,
               since it keys off the version, not a flag someone must remember to flip. */}
           {IS_PRERELEASE && (
-            <div className="mt-1 text-center text-[8px] leading-tight font-bold tracking-wide text-brand-warn uppercase">
-              In development
+            <div className="mt-1 text-center text-[8px] leading-tight font-bold tracking-wide text-brand-warn uppercase break-words">
+              {collapsed ? 'Dev' : 'In development'}
               {!collapsed && (
-                <span className="mt-0.5 block font-normal normal-case tracking-normal">
+                <span className="mt-0.5 block font-normal normal-case tracking-normal break-words">
                   Not for live sales
                 </span>
               )}
@@ -505,19 +505,30 @@ function Shell({ children }) {
                   this browser&apos;s data. Contact support with code SYNC09.
                 </span>
               </p>
-              <button
-                type="button"
-                className="shrink-0 rounded-[5px] border border-brand-danger bg-brand-card px-2.5 py-1.5 text-[11px] font-semibold text-brand-danger"
-                onClick={async () => {
-                  const { retryBlocked } = await import('../../offline/syncQueue')
-                  await retryBlocked(user?.branchId || null)
-                  const { syncBranch } = await import('../../offline')
-                  if (user?.branchId) await syncBranch(user.branchId)
-                  await useSyncStore.getState().refresh(user?.branchId)
-                }}
-              >
-                Retry now
-              </button>
+              <div className="flex shrink-0 gap-2">
+                {isManagerRole(user?.role) && (
+                  <button
+                    type="button"
+                    className="rounded-[5px] border border-brand-danger bg-transparent px-2.5 py-1.5 text-[11px] font-semibold text-brand-danger underline"
+                    onClick={() => navigate('/blocked')}
+                  >
+                    View details
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="rounded-[5px] border border-brand-danger bg-brand-card px-2.5 py-1.5 text-[11px] font-semibold text-brand-danger"
+                  onClick={async () => {
+                    const { retryBlocked } = await import('../../offline/syncQueue')
+                    await retryBlocked(user?.branchId || null)
+                    const { syncBranch } = await import('../../offline')
+                    if (user?.branchId) await syncBranch(user.branchId)
+                    await useSyncStore.getState().refresh(user?.branchId)
+                  }}
+                >
+                  Retry now
+                </button>
+              </div>
             </div>
           )}
           {updateReady && (

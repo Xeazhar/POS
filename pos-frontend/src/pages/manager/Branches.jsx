@@ -1,5 +1,7 @@
 import { useRef, useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { FiCheck } from 'react-icons/fi'
+import { FaRegEdit } from 'react-icons/fa'
 import {
   Field,
   Modal,
@@ -35,12 +37,12 @@ const empty = {
   branch_type: 'retail',
 }
 
-function BranchCardBody({ branch, summary, summariesLoading, dayNotEnded }) {
+function BranchCardBody({ branch, summary, summariesLoading, dayNotEnded, editMode }) {
   return (
     <>
       <div className="mb-3 flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="m-0 mb-1 text-[10px] text-brand-subtle">⋮⋮ Drag to reorder</p>
+          {editMode && <p className="m-0 mb-1 text-[10px] text-brand-subtle">⋮⋮ Drag to reorder</p>}
           <h2 className="m-0 text-lg">{branch.name}</h2>
           <p className="mt-1 text-xs text-brand-muted">{branch.address || 'No address'}</p>
           {RESTAURANT_FEATURES_ENABLED && branch.branch_type === 'restaurant' && (
@@ -92,6 +94,7 @@ function ManagerBranches() {
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [editMode, setEditMode] = useState(false)
   const [dragIndex, setDragIndex] = useState(null)
   const [ghost, setGhost] = useState(null)
   const gridRef = useRef(null)
@@ -216,6 +219,7 @@ function ManagerBranches() {
   }
 
   const onPointerDown = (event, index) => {
+    if (!editMode) return
     if (event.button != null && event.button !== 0) return
     if (event.target.closest('a, button, input, label, [data-branch-edit]')) return
     event.preventDefault()
@@ -279,13 +283,27 @@ function ManagerBranches() {
   return (
     <div>
       <PageHeader eyebrow="MANAGER" title="Branches">
+        <SecondaryButton
+          compact
+          type="button"
+          onClick={() => {
+            if (editMode) clearDrag()
+            setEditMode((prev) => !prev)
+          }}
+          aria-pressed={editMode}
+        >
+          {editMode ? <FiCheck size={13} /> : <FaRegEdit size={13} />}
+          {editMode ? 'Done' : 'Reorder'}
+        </SecondaryButton>
         <PrimaryButton compact type="button" onClick={() => setForm({ ...empty })}>
           Add branch
         </PrimaryButton>
       </PageHeader>
-      <p className="mb-3 text-[11px] text-brand-subtle">
-        Drag cards to set display order — the card follows your pointer.
-      </p>
+      {editMode && (
+        <p className="mb-3 text-[11px] text-brand-subtle">
+          Drag cards to set display order — the card follows your pointer.
+        </p>
+      )}
       {error && <p className="mb-3 rounded-md bg-brand-danger-bg px-2.5 py-2 text-xs text-brand-danger">{error}</p>}
       {loading ? (
         <SkeletonCards count={3} />
@@ -308,7 +326,9 @@ function ManagerBranches() {
               <TableCard
                 key={branch.id}
                 data-branch-index={index}
-                className={`max-h-none cursor-grab touch-none select-none p-5 active:cursor-grabbing ${
+                className={`max-h-none p-5 ${
+                  editMode ? 'cursor-grab touch-none select-none active:cursor-grabbing' : ''
+                } ${
                   isPlaceholder
                     ? 'border border-dashed border-brand-gold/60 bg-brand-gold/10 opacity-40 shadow-none'
                     : ''
@@ -323,6 +343,7 @@ function ManagerBranches() {
                   summary={summary}
                   summariesLoading={summariesLoading}
                   dayNotEnded={dayNotEnded(branch)}
+                  editMode={editMode}
                 />
                 {!isPlaceholder && (
                   <div className="flex justify-end gap-2" onPointerDown={(e) => e.stopPropagation()}>

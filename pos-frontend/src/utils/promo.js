@@ -3,6 +3,9 @@ import { newUuidClientId } from '../offline/queueTypes'
 
 /** Helpers for active promo display on POS tiles and cart lines. */
 
+/** Hard ceiling on any promo rule's discount — an item must never ring up free. */
+export const MAX_PROMO_DISCOUNT_PCT = 99
+
 export function validatePromoDates(startsAt, endsAt, { allowPastStart = false } = {}) {
   if (!startsAt || !endsAt) return 'Enter a promo duration (Starts at + Ends at).'
   const startDate = new Date(startsAt)
@@ -39,8 +42,8 @@ export function validatePromoRuleDraft({
   if (!selectedProductsForRule.length) {
     return { message: 'Select at least one product for this rule.' }
   }
-  if (discountPct < 0 || discountPct > 100) {
-    return { message: 'Discount must be between 0 and 100.' }
+  if (discountPct < 0 || discountPct > MAX_PROMO_DISCOUNT_PCT) {
+    return { message: `Discount must be between 0 and ${MAX_PROMO_DISCOUNT_PCT} — an item can never be 100% off.` }
   }
   if (ruleType === 'pair_pct' && productA && productB && productA === productB) {
     return { message: 'Pair rule needs two different products.' }
@@ -518,7 +521,10 @@ export function computePromoDiscounts(items = [], promoRules = []) {
 
   const applyRule = (rule) => {
     const ruleType = normalizeRuleType(rule.ruleType || rule.rule_type)
-    const pct = Number(rule.discountPct ?? rule.discount_pct ?? 0) / 100
+    const rawPct = Number(rule.discountPct ?? rule.discount_pct ?? 0)
+    // Defense in depth: clamp even if a bad value reached the DB outside this validation
+    // (older row, direct SQL edit) — an item must never ring up free.
+    const pct = Math.min(rawPct, MAX_PROMO_DISCOUNT_PCT) / 100
     if (pct <= 0) return
 
     const products = rule.products || []

@@ -11,6 +11,7 @@ import {
 } from 'react-icons/fi'
 import {
   ErrorBanner,
+  Eyebrow,
   Field,
   Modal,
   ModalActions,
@@ -110,6 +111,7 @@ export default function ManagerNetworkCatalog() {
   // One editor for one row or many. `drafts` is keyed by catalog id and holds every
   // editable field, not just price — a per-field modal per field does not scale past two.
   const [editorIds, setEditorIds] = useState(null) // null = closed
+  const [confirmEditor, setConfirmEditor] = useState(null) // validated `changed` list awaiting confirmation, or null
   const [drafts, setDrafts] = useState({})
   const [rowMenuId, setRowMenuId] = useState(null)
   const [discountFilter, setDiscountFilter] = useState('all')
@@ -463,6 +465,13 @@ export default function ManagerNetworkCatalog() {
       seen.set(key, draft.name)
     }
 
+    setConfirmEditor(changed)
+  }
+
+  /** Write the changes a manager already reviewed and confirmed in the confirm dialog. */
+  const commitSaveEditor = async () => {
+    const changed = confirmEditor || []
+    setConfirmEditor(null)
     setBusy(true)
     setError('')
     try {
@@ -1356,6 +1365,37 @@ Pork Belly,MEA-BELLY,4801000000042,Meat,kg,320,false`}
                   ? `Saving ${bulkProgress.done + 1}/${bulkProgress.total}…`
                   : 'Saving…'
                 : 'Save changes'}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {confirmEditor && (
+        <Modal wide layer onClose={() => setConfirmEditor(null)}>
+          <Eyebrow>CONFIRM UPDATE</Eyebrow>
+          <h2 className="mb-3 text-[22px]">
+            Save {confirmEditor.length === 1 ? '1 catalog item' : `${confirmEditor.length} catalog items`}?
+          </h2>
+          <p className="mb-3 text-xs text-brand-muted">
+            This pushes to every branch that already adopted the item, not just future
+            adoptions.
+          </p>
+          <div className="my-3 max-h-[40vh] overflow-auto border-y border-brand-n300 py-2">
+            {confirmEditor.map(({ row, draft, price }) => (
+              <div key={row.id} className="grid grid-cols-[1fr_auto] gap-x-[18px] gap-y-1 py-1.5 text-[13px]">
+                <span>{draft.name.trim() || row.name}</span>
+                <strong className="text-right">
+                  {price !== Number(row.price) ? `${money(row.price)} → ${money(price)}` : money(price)}
+                </strong>
+              </div>
+            ))}
+          </div>
+          <ModalActions>
+            <SecondaryButton compact type="button" onClick={() => setConfirmEditor(null)}>
+              Back
+            </SecondaryButton>
+            <PrimaryButton compact type="button" onClick={() => void commitSaveEditor()}>
+              Confirm
             </PrimaryButton>
           </ModalActions>
         </Modal>

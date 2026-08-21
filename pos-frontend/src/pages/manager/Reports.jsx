@@ -69,6 +69,14 @@ const TERMINAL_IDS = new Set(['x-read', 'z-read', 'cashier', 'department', 'plu'
  */
 const NO_ALL_RANGE = new Set(['x-read', 'z-read'])
 
+/**
+ * X-Read and Z-Read mint a sequential BIR reading number per till (see reportCounters) —
+ * combining branches would mean one counter standing in for several registers, which is
+ * not a real fiscal document. Cashier/Department/PLU have no such per-till counter, so
+ * they can run network-wide.
+ */
+const SINGLE_BRANCH_ONLY = new Set(['x-read', 'z-read'])
+
 function isoDaysAgo(n) {
   const d = new Date()
   d.setDate(d.getDate() - n)
@@ -252,12 +260,19 @@ function ManagerReports() {
     fetchBranches()
       .then((list) => {
         setBranches(list)
-        if (list[0]?.id) setFilters((f) => ({ ...f, branchId: f.branchId || list[0].id }))
+        // Terminal reports (X/Z-Read, Cashier, Department, PLU) read one till's counter and
+        // can't run against "All branches" — the dropdown hides that option for them (see
+        // SelectField below), so the initial x-read default still needs a real branch.
+        // Every other report defaults to All branches.
+        if (SINGLE_BRANCH_ONLY.has(selected) && list[0]?.id) {
+          setFilters((f) => (f.branchId ? f : { ...f, branchId: list[0].id }))
+        }
       })
       .catch((err) => setError(err.message))
     fetchAllStaff()
       .then((staff) => setAllStaff(staff || []))
       .catch(() => setAllStaff([]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only; reads `selected` for its initial value, not tracked
   }, [])
 
   const clearOut = () => {
@@ -317,8 +332,8 @@ function ManagerReports() {
   }
 
   const runTerminal = async () => {
-    if (!filters.branchId) {
-      setError('Select a branch.')
+    if (!filters.branchId && SINGLE_BRANCH_ONLY.has(selected)) {
+      setError('X-Read and Z-Read read one till’s register. Select a branch.')
       return
     }
     if (!filters.start || !filters.end) {
@@ -735,7 +750,7 @@ function ManagerReports() {
             when: row.requestedAt
               ? new Date(row.requestedAt).toLocaleString()
               : '',
-            branch_id: row.branchId,
+            branch: branches.find((b) => b.id === row.branchId)?.name || row.branchId,
             type:
               row.type === 'pickup'
                 ? 'Pickup'
@@ -1038,8 +1053,12 @@ function ManagerReports() {
               className="mt-[7px] block w-full rounded-[5px] border border-brand-input bg-brand-card p-2.5 text-[13px]"
               value={selected}
               onChange={(e) => {
-                setSelected(e.target.value)
+                const next = e.target.value
+                setSelected(next)
                 clearOut()
+                if (SINGLE_BRANCH_ONLY.has(next) && branches.length) {
+                  setFilters((f) => (f.branchId ? f : { ...f, branchId: branches[0].id }))
+                }
               }}
             >
               {groups.map((g) => (
@@ -1114,7 +1133,7 @@ function ManagerReports() {
             value={filters.branchId}
             onChange={(e) => setFilters({ ...filters, branchId: e.target.value, staffId: '' })}
           >
-            {!isTerminal && <option value="">All branches</option>}
+            {!SINGLE_BRANCH_ONLY.has(selected) && <option value="">All branches</option>}
             {branches.map((b) => (
               <option key={b.id} value={b.id}>
                 {b.name}
@@ -1271,7 +1290,11 @@ function ManagerReports() {
         ) : rows.length === 0 ? (
           <div className="p-3 text-xs text-brand-n600">Run to preview table.</div>
         ) : (
-          <div className="max-h-[70vh] overflow-auto">
+          <div
+            className={`max-h-[70vh] overflow-auto ${
+              selected === 'e-journal' ? '[@media(hover:hover)]:overflow-x-scroll' : ''
+            }`}
+          >
             <table className="min-w-full border-collapse text-left text-xs">
               <thead>
                 <tr className={`${tableHeadClass} border-b border-brand-dark`}>

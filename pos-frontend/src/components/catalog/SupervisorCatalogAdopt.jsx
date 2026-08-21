@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { FiPlus, FiSearch } from 'react-icons/fi'
 import {
   ErrorBanner,
+  Eyebrow,
   Modal,
   ModalActions,
   PageHeader,
@@ -56,6 +57,7 @@ export default function SupervisorCatalogAdopt() {
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [discountBusyId, setDiscountBusyId] = useState(null)
+  const [confirmDiscount, setConfirmDiscount] = useState(null) // product pending Discountable toggle, or null
 
   const [showAdd, setShowAdd] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
@@ -355,7 +357,7 @@ export default function SupervisorCatalogAdopt() {
                           : 'bg-brand-n200 text-brand-subtle'
                       }`}
                       disabled={discountBusyId === product.id}
-                      onClick={() => toggleDiscountable(product)}
+                      onClick={() => setConfirmDiscount(product)}
                     >
                       {discountBusyId === product.id ? '…' : product.discountEligible ? 'Yes' : 'No'}
                     </button>
@@ -442,6 +444,31 @@ export default function SupervisorCatalogAdopt() {
             </SecondaryButton>
             <PrimaryButton compact type="button" disabled={busy || !selected.size} onClick={adopt}>
               {busy ? 'Adding…' : `Add selected (${selected.size})`}
+            </PrimaryButton>
+          </ModalActions>
+        </Modal>
+      )}
+
+      {confirmDiscount && (
+        <Modal onClose={() => setConfirmDiscount(null)}>
+          <Eyebrow>CONFIRM UPDATE</Eyebrow>
+          <h2 className="mb-3 text-[22px]">
+            Make {confirmDiscount.name} {confirmDiscount.discountEligible ? 'not discountable' : 'discountable'}?
+          </h2>
+          <ModalActions>
+            <SecondaryButton compact type="button" onClick={() => setConfirmDiscount(null)}>
+              Back
+            </SecondaryButton>
+            <PrimaryButton
+              compact
+              type="button"
+              onClick={() => {
+                const product = confirmDiscount
+                setConfirmDiscount(null)
+                void toggleDiscountable(product)
+              }}
+            >
+              Confirm
             </PrimaryButton>
           </ModalActions>
         </Modal>

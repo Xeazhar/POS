@@ -11,7 +11,7 @@ import { startConnectivityWatcher } from './offline'
 import { installSessionLifecycle, consumeBrowserClosedFlag } from './offline/sessionLifecycle'
 import { useAuthStore, useInventoryStore, useProductStore, bindSessionRevokedWatcher } from './stores/posStore'
 import { bindSyncStore } from './stores/syncStore'
-import { canAccessModule, canAccessPos, isSupervisorOrAbove } from './utils/roles'
+import { canAccessModule, canAccessPos, isSupervisorOrAbove, isManagerRole } from './utils/roles'
 import { useShiftStore } from './stores/shiftStore'
 import { staffHomePath } from './constants/nav'
 import { clearChunkReloadFlag, lazyWithRetry } from './utils/lazyWithRetry'
@@ -35,6 +35,7 @@ const ManagerPromos = lazyWithRetry(() => import('./pages/manager/Promos.jsx'))
 const ManagerReports = lazyWithRetry(() => import('./pages/manager/Reports.jsx'))
 const ManagerAnnouncements = lazyWithRetry(() => import('./pages/manager/Announcements.jsx'))
 const NotificationHistory = lazyWithRetry(() => import('./pages/NotificationHistory.jsx'))
+const BlockedTransactions = lazyWithRetry(() => import('./pages/BlockedTransactions.jsx'))
 const Legal = lazyWithRetry(() => import('./pages/Legal.jsx'))
 
 /**
@@ -387,6 +388,14 @@ function AppRoutes() {
                 element={
                   <RequireRole test={isSupervisorOrAbove}>
                     <NotificationHistory />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="/blocked"
+                element={
+                  <RequireRole test={isManagerRole}>
+                    <BlockedTransactions />
                   </RequireRole>
                 }
               />

@@ -17,6 +17,16 @@ computation, OR numbering).
 
 ---
 
+## 0.28.0 — 2026-08-21
+
+**MINOR** — Blocked-transaction recovery view. Manager+ can open **View details** from the
+existing "records could not sync" banner (or `/blocked` directly) to see each locally-quarantined
+sale/void/etc: timestamp, amount, attempts, last error, full payload. Per-item or bulk retry,
+CSV export (for manual bookkeeping), and a "mark as manually recorded" flag that clears the item
+from the working list without deleting it — the row stays in the local queue forever either way,
+this only tracks whether a human has handled it. No data-loss risk existed before this (blocked
+rows were already never auto-deleted); this adds visibility and recovery tooling on top.
+
 ## 0.27.0 — 2026-08-21
 
 ### Added: add/delete product from Inventory + fixed archived items lingering in restock alerts

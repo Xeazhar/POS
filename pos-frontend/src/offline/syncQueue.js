@@ -78,6 +78,16 @@ export async function retryBlocked(branchId = null) {
   return rows.length
 }
 
+/** Put a single quarantined item back in line (per-row retry from the detail view). */
+export async function retryBlockedItem(id) {
+  await db.syncQueue.update(id, {
+    status: QUEUE_STATUS.PENDING,
+    attempts: 0,
+    nextRetryAt: null,
+    updatedAt: new Date().toISOString(),
+  })
+}
+
 export async function countPending(branchId = null) {
   const rows = await listPending(branchId)
   return rows.length
@@ -123,6 +133,24 @@ export async function markFailed(id, errorMessage) {
     console.warn('[SYNC_FAILED]', row?.type, attempts, blocked ? 'BLOCKED' : `retry in ${delayMs}ms`)
   }
   return { blocked, attempts }
+}
+
+/**
+ * Mark a BLOCKED item as manually recorded elsewhere (paper book / another system).
+ * Row stays in `syncQueue` for audit — this only records that a human has handled it.
+ */
+export async function markManuallyRecorded(id) {
+  await db.syncQueue.update(id, {
+    manuallyRecordedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  })
+}
+
+export async function unmarkManuallyRecorded(id) {
+  await db.syncQueue.update(id, {
+    manuallyRecordedAt: null,
+    updatedAt: new Date().toISOString(),
+  })
 }
 
 export async function resetStuckSyncing() {

@@ -1912,6 +1912,20 @@ Online again → connectivity watcher → syncEngine
 | Engine | `syncEngine.js` |
 | Connectivity | `connectivity.js` |
 | Shell status | `syncStore.js` |
+| Blocked-item recovery UI | `src/pages/BlockedTransactions.jsx` (`/blocked`) |
+
+**BLOCKED items never disappear on their own** — `syncQueue.js`'s `listBlocked`/`countBlocked`
+find them, `retryBlocked`/`retryBlockedItem` requeue them (bulk or single-row), and
+`markManuallyRecorded`/`unmarkManuallyRecorded` set a `manuallyRecordedAt` timestamp so a
+manager can flag one as handled outside the app (paper book, manual entry) without deleting the
+row — it stays in `syncQueue` for audit either way. `BlockedTransactions.jsx`, gated
+manager-and-above via `RequireRole test={isManagerRole}` (not the module/permission system, so
+it applies to every manager+ account immediately, no backfill needed), surfaces this: per-item
+payload detail, retry, mark-recorded, and CSV export (bulk or single row) for manual bookkeeping.
+Reachable from the existing Shell banner's "View details" link (manager+ only; the banner itself
+and its "Retry now" stay visible to every role) or directly at `/blocked`. Because BLOCKED rows
+live in the local Dexie `syncQueue` on the device that failed to sync, this view only shows what
+that device holds — a manager checking from a different terminal sees nothing for that terminal.
 
 **A queued op must be safe to run twice, because the queue WILL run it twice.** `pushQueue`
 retries a failed item until it succeeds; if the server actually committed but the response
@@ -2453,6 +2467,13 @@ the UI — never render `reference` raw.
   (`migrate_promo_line_attribution.sql`) matches `transaction_items.promo_name` against the
   promo EVENT's name; a bundle name there would silently zero out that event's sales stats
   for every one of its bundle's receipts.
+- **Promo discount % is capped at 99, never 100.** `MAX_PROMO_DISCOUNT_PCT` (`utils/promo.js`)
+  is enforced in three places so an item can never ring up free: `validatePromoRuleDraft`
+  (rule authoring, `PromoEditorModal.jsx`), a defensive clamp inside `computePromoDiscounts`
+  itself (catches a pre-cap row already in the DB), and the `promo_rules_discount_pct_check`
+  DB constraint (`migrate_promo_cap_discount_pct.sql`) — UI validation is not the security
+  boundary here. SC/PWD's fixed 20% (`utils/vat.js` `SC_PWD_DISCOUNT_PCT`) is unaffected and
+  needs no cap.
 - **Reject reason.** `reject_promo_event(p_promo_event_id, p_staff_id, p_reason)` — 3-arg RPC as
   of `migrate_promo_reject_reason.sql` (adds `promo_events.reject_reason`, required, mirrors the
   `stop_reason` pattern). `rejectPromoEvent()` in `api.js` takes a `reason`; `Promos.jsx` opens a

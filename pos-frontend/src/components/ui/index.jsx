@@ -58,7 +58,7 @@ export function PrimaryButton({ className = '', compact = false, tooltip, title,
 export function SecondaryButton({ className = '', compact = false, tooltip, title, children, ...props }) {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-brand-n400 bg-brand-n100 font-semibold text-brand-n800 hover:bg-brand-n200 hover:border-brand-n400 active:bg-brand-n300 disabled:cursor-not-allowed disabled:opacity-35 ${
+      className={`mr-2 inline-flex items-center justify-center gap-1.5 rounded-[5px] border border-brand-n400 bg-brand-n100 font-semibold text-brand-n800 hover:bg-brand-n200 hover:border-brand-n400 active:bg-brand-n300 disabled:cursor-not-allowed disabled:opacity-35 ${
         compact
           ? 'h-10 w-auto min-w-0 px-3 text-xs whitespace-nowrap max-[700px]:h-9 max-[700px]:px-2.5 max-[700px]:text-[11px]'
           : 'px-3.5 py-[11px] max-[700px]:px-3 max-[700px]:text-sm'

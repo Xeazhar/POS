@@ -10,7 +10,12 @@ import {
   updatePromoEventDetails,
 } from '../../lib/api'
 import { formatSupportError } from '../../utils/errors'
-import { expandPromoRuleRows, validatePromoDates, validatePromoRuleDraft } from '../../utils/promo'
+import {
+  MAX_PROMO_DISCOUNT_PCT,
+  expandPromoRuleRows,
+  validatePromoDates,
+  validatePromoRuleDraft,
+} from '../../utils/promo'
 import { withTimeout } from '../../utils/withTimeout'
 import {
   Eyebrow,
@@ -719,10 +724,14 @@ export default function PromoEditorModal({
             <option value="bogo_pct">Buy 1 Take 1 % off second (B1T1)</option>
           </SelectField>
           <Field
-            label="Discount % (0-100)"
+            label={`Discount % (0-${MAX_PROMO_DISCOUNT_PCT})`}
             inputMode="decimal"
             value={String(discountPct)}
-            onChange={(e) => setDiscountPct(Number(e.target.value.replace(/[^\d.]/g, '')))}
+            onChange={(e) =>
+              setDiscountPct(
+                Math.min(MAX_PROMO_DISCOUNT_PCT, Number(e.target.value.replace(/[^\d.]/g, '')) || 0),
+              )
+            }
           />
           {ruleType === 'item_pct' && (
             <ProductMultiSelect

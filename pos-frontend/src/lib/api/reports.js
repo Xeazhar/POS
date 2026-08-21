@@ -1255,7 +1255,7 @@ export async function fetchTerminalReportSource({ date, endDate, branchId, staff
     const { data, error } = await supabase
       .from('branches')
       .select(
-        'id, name, address, business_name, tin, serial_number, invoice_prefix, terminal_id, receipt_footer_official, receipt_footer_thanks, receipt_footer_contact, receipt_footer_tagline, contact_phone, vat_rate, branch_type',
+        'id, name, address, business_name, tin, serial_number, invoice_prefix, receipt_footer_official, receipt_footer_thanks, receipt_footer_contact, receipt_footer_tagline, contact_phone, vat_rate, branch_type',
       )
       .eq('id', branchId)
       .maybeSingle()
