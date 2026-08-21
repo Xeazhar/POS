@@ -9,11 +9,23 @@ const DEFAULT_STATE = { width: 1280, height: 800, x: undefined, y: undefined, is
 // How much of a saved window rect must land on some real display before we trust it.
 const MIN_VISIBLE_PX = 100
 
+// Sanity range for a saved width/height. Guards against a corrupted or hand-tampered
+// window-state.json (e.g. a negative or absurdly large value) reaching BrowserWindow
+// unguarded — mirrors the x/y validation done by fitsOnADisplay below.
+const MIN_DIMENSION = 400
+const MAX_DIMENSION = 10000
+
 function readState() {
   try {
     const raw = fs.readFileSync(stateFile(), 'utf-8')
     const parsed = JSON.parse(raw)
     if (typeof parsed.width !== 'number' || typeof parsed.height !== 'number') {
+      return { ...DEFAULT_STATE }
+    }
+    if (
+      parsed.width < MIN_DIMENSION || parsed.width > MAX_DIMENSION ||
+      parsed.height < MIN_DIMENSION || parsed.height > MAX_DIMENSION
+    ) {
       return { ...DEFAULT_STATE }
     }
     return { ...DEFAULT_STATE, ...parsed }
