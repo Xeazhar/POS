@@ -75,6 +75,11 @@ if (!gotLock) {
 
   const isDev = !app.isPackaged
 
+  // Without an explicit AppUserModelId, Windows can group/taskbar-identify the app as
+  // "Electron" instead of "CalePOS" — most visible when running unpackaged in dev, but
+  // cheap insurance for packaged installs too. Must match electron-builder's `appId`.
+  app.setAppUserModelId('com.calepos.desktop')
+
   const createWindow = (origin) => {
     const win = new BrowserWindow({
       width: 1280,
@@ -82,6 +87,9 @@ if (!gotLock) {
       minWidth: 1024,
       minHeight: 640,
       backgroundColor: '#f7f7f5',
+      // Packaged builds get their icon from the .exe resource electron-builder embeds
+      // (Task 1); this only matters for `npm run electron:start`'s unpackaged dev run.
+      icon: isDev ? path.join(__dirname, '..', 'resources', 'icon.png') : undefined,
       webPreferences: {
         preload: path.join(__dirname, 'preload.cjs'),
         contextIsolation: true,
