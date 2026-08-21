@@ -58,6 +58,8 @@ Supabase / IndexedDB    src/lib/supabase.js, src/offline/db.js
 
 `src/pages/**` and `src/components/**` are not allowed to `import` from `src/lib/supabase.js` — enforced by a `no-restricted-imports` rule in `eslint.config.js` (`npm run lint` fails on violation). `src/offline/realtime.js` is the one sanctioned exception outside `api.js` (it owns the Realtime subscription, not general queries) and is exempt from the ESLint rule by being outside `pages/`/`components/`.
 
+**`src/lib/api.js` is a barrel, not a single file.** The implementation lives in `src/lib/api/<domain>.js` (`shared`, `auth`, `catalog`, `inventory`, `inventoryImport`, `sales`, `till`, `approvals`, `announcements`, `dayend`, `branches`, `staff`, `shifts`, `cash`, `reports`, `audit`, `promos`) — one file per business domain, split out of what used to be one 8,600-line file. `api.js` itself only re-exports; every existing `import { x } from '../lib/api'` elsewhere in the app is unaffected and does not need to change. `src/lib/api/shared.js` holds the cross-domain primitives (`fetchAllRows`, `isMissingColumnError`, staff-identity/mapper helpers, etc.) that most of the other domain files import from. When adding a new API function, put it in the domain file it belongs to (create a new one only for a genuinely new domain) and add its name to the matching `export { ... } from './api/<domain>.js'` block in `api.js`.
+
 ---
 
 ## AI Quick Orientation
