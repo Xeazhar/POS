@@ -55,8 +55,8 @@ function StatTiles({ title = null, subtitle = null, items = [], embedded = false
     : 'mb-2.5 min-w-0 rounded-[10px] border border-brand-line bg-brand-card px-3.5 py-2.5'
   const labelMutedClass = isToday ? 'text-brand-ondark-dim' : 'text-brand-subtle'
   const dividerClass = isToday
-    ? 'border-l border-brand-gold/25 pl-4 max-[560px]:border-l-0 max-[560px]:pl-0'
-    : 'border-l border-brand-softline pl-4 max-[560px]:border-l-0 max-[560px]:pl-0'
+    ? 'border-l border-brand-gold/25 pl-4 max-[900px]:border-l-0 max-[900px]:pl-0'
+    : 'border-l border-brand-softline pl-4 max-[900px]:border-l-0 max-[900px]:pl-0'
 
   return (
     <div className={cardClass}>
@@ -93,20 +93,20 @@ function StatTiles({ title = null, subtitle = null, items = [], embedded = false
         </div>
       )}
       <div
-        className="grid grid-flow-col grid-rows-2 items-start justify-start gap-x-4 gap-y-1 overflow-x-auto max-[560px]:grid-flow-row max-[560px]:grid-cols-[auto_1fr] max-[560px]:gap-x-3"
+        className="grid grid-flow-col grid-rows-2 items-start justify-start gap-x-4 gap-y-1 overflow-x-auto max-[900px]:grid-flow-row max-[900px]:grid-cols-[auto_1fr] max-[900px]:gap-x-3"
         style={{ gridAutoColumns: 'max-content' }}
       >
         {items.map((item, index) => (
           <Fragment key={item.label}>
             <span
-              className={`row-start-1 self-end text-[9px] font-semibold tracking-wide uppercase max-[560px]:row-auto ${labelMutedClass} ${
+              className={`row-start-1 self-end text-[9px] font-semibold tracking-wide uppercase max-[900px]:row-auto ${labelMutedClass} ${
                 index > 0 ? dividerClass : ''
               }`}
             >
               {item.label}
             </span>
             <span
-              className={`row-start-2 self-start leading-tight max-[560px]:row-auto max-[560px]:text-right ${
+              className={`row-start-2 self-start leading-tight max-[900px]:row-auto max-[900px]:text-right ${
                 index > 0 ? dividerClass : ''
               }`}
             >

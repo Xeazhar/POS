@@ -38,6 +38,16 @@ const POLL_MS = 60_000
 const PRIME_TIMEOUT_MS = 15_000
 
 /**
+ * The whole point of this hook is PWA-tab staleness: a service worker precache plus a
+ * hard reload onto the new bundle. The Electron desktop build has no service worker
+ * (see vite.config.js) and updates by reinstalling a new build of the app, not by
+ * swapping assets under a live window — so this hook must not do anything there. Effect
+ * bodies below early-return instead of skipping the hook calls themselves, so the hooks
+ * still run in the same order every render.
+ */
+const isDesktopBuild = import.meta.env.VITE_DESKTOP_BUILD === 'true'
+
+/**
  * Ask the service worker to go fetch the new build now, rather than on its own schedule.
  *
  * Returns a promise the reload path AWAITS. Firing this and reloading on a fixed timer
@@ -100,6 +110,7 @@ export function useAppVersion({ safeToReload = true, autoReload = true } = {}) {
   }, [readVersion])
 
   useEffect(() => {
+    if (isDesktopBuild) return undefined
     // Async: the setState lands in a later tick, not synchronously during the effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void check()

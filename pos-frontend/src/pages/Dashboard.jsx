@@ -264,7 +264,7 @@ function Dashboard({ branchId: scopedBranchId, branchName } = {}) {
         ))}
       </div>
 
-      <div className="mb-3.5 grid grid-cols-2 items-stretch gap-3.5 max-[900px]:grid-cols-1">
+      <div className="mb-3.5 grid grid-cols-2 items-stretch gap-3.5 max-[1550px]:grid-cols-1">
         <StatTiles
           title="Payment & cash impact"
           subtitle={todayKey}

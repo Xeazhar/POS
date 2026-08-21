@@ -13,6 +13,12 @@ const pkg = JSON.parse(
 )
 const APP_VERSION = pkg.version
 
+// Set only by `npm run build:desktop`. Kept out of MODE/DEV/PROD on purpose: Vite ties
+// import.meta.env.DEV/PROD to `--mode`, and Turnstile's dev-test-key fallback and the
+// demo-mode fallback in src/lib/supabase.js both key off DEV — flipping mode would
+// silently loosen both in a real desktop build. This is a separate, explicit flag.
+const isDesktopBuild = process.env.VITE_DESKTOP_BUILD === 'true'
+
 /**
  * Emit /version.json holding this build's identity, and serve the same shape in dev.
  *
@@ -62,7 +68,10 @@ export default defineConfig({
     react(),
     tailwindcss(),
     versionJsonPlugin(),
-    VitePWA({
+    // Skip the service worker entirely for the Electron build: it's untested under a
+    // custom app:// origin, and update delivery there is the installer, not a SW swap —
+    // see useAppVersion.js. The normal web build (isDesktopBuild false) is unaffected.
+    ...(isDesktopBuild ? [] : [VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'icons.svg', 'pwa-192.png', 'pwa-512.png'],
       manifest: {
@@ -141,9 +150,13 @@ export default defineConfig({
       devOptions: {
         enabled: false,
       },
-    }),
+    })]),
   ],
   build: {
+    // Isolated from the web build's `dist/` (which wrangler.jsonc and `npm run deploy`
+    // read) so a desktop build can never be accidentally deployed to Cloudflare Pages,
+    // and a web build never ships inside the Electron installer.
+    outDir: isDesktopBuild ? 'dist-desktop' : 'dist',
     rollupOptions: {
       output: {
         manualChunks(id) {

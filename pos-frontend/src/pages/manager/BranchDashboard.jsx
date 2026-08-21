@@ -1030,7 +1030,7 @@ function ManagerBranchDashboard() {
       </div>
 
       {opsLoading ? (
-        <div className="mb-3.5 grid grid-cols-2 gap-3.5 max-[900px]:grid-cols-1">
+        <div className="mb-3.5 grid grid-cols-2 gap-3.5 max-[1550px]:grid-cols-1">
           {[0, 1].map((i) => (
             <div key={i} className="min-w-0 rounded-[10px] border border-brand-line bg-brand-card px-3.5 py-2.5">
               <Skeleton className="mb-3 h-2.5 w-32" />
@@ -1043,7 +1043,7 @@ function ManagerBranchDashboard() {
           ))}
         </div>
       ) : (
-        <div className="mb-3.5 grid grid-cols-2 gap-3.5 max-[900px]:grid-cols-1">
+        <div className="mb-3.5 grid grid-cols-2 gap-3.5 max-[1550px]:grid-cols-1">
           <StatTiles
             title="Payment & cash impact"
             subtitle={`${todayKey} · today`}

@@ -146,6 +146,85 @@ decide whether to delete it or repurpose it before relying on it again.
 
 ---
 
+## Windows desktop packaging (Electron)
+
+Same SPA, wrapped as a Windows desktop app — no separate frontend, no duplicated business
+logic. Online-only in this phase: the renderer is the same built React/Vite bundle talking
+to Supabase exactly as the web app does; there is no local database and no offline queue
+inside the desktop build yet.
+
+| Piece | File |
+|-------|------|
+| Main process (window, menu, security policy) | `electron/main.js` |
+| Preload (contextBridge surface) | `electron/preload.cjs` |
+| Forces `electron/*.js` to load as ESM regardless of the root `"type"` | `electron/package.json` |
+| electron-builder config (NSIS target, `files`, `appId`) | `package.json` → `build` |
+
+Build: `npm run build:desktop` sets `VITE_DESKTOP_BUILD=true` for the Vite build step, then
+runs `electron-builder --win nsis`. That env var is read only in `vite.config.js` (never
+folded into Vite's `mode`/`DEV`/`PROD`, which would also loosen Turnstile's dev-test-key
+fallback and the demo-mode fallback in `src/lib/supabase.js`) and does two things:
+
+- Routes `vite build`'s `outDir` to `dist-desktop/` instead of `dist/`, so a desktop build
+  can never be picked up by `npm run deploy` (`wrangler.jsonc` reads `./dist`), and a web
+  build never ends up inside the installer.
+- Drops the `VitePWA` plugin entirely for that build — no service worker, no manifest. The
+  web build (`npm run build` / `npm run dev`) is unaffected; PWA behavior there is unchanged.
+
+`src/hooks/useAppVersion.js` (the PWA-tab staleness poll + hard-reload) checks the same
+`import.meta.env.VITE_DESKTOP_BUILD` flag and no-ops its effects for the desktop build — its
+two call sites (`App.jsx`, `Shell.jsx`) are unmodified. Desktop update delivery is "install a
+new build of the app", not a live asset swap; `electron-updater` is a later phase.
+
+**Loading strategy**: `electron/main.js` serves `dist-desktop/` over a loopback HTTP server
+(`http://127.0.0.1:<ephemeral port>`, own minimal `node:http` static file server —
+`startRendererServer()`), not `file://` and not a custom scheme. A custom `app://calepos`
+scheme (via `electron-serve`) was tried first and reverted — Cloudflare Turnstile doesn't
+accept custom URL schemes as a domain at all (see Turnstile note below), which forced the
+loopback approach. The server binds `127.0.0.1` only (never `0.0.0.0`, not reachable from the
+network) and falls back to `index.html` for any request that doesn't resolve to a real file
+under `dist-desktop/`, giving `react-router-dom`'s `BrowserRouter` the same SPA-fallback
+semantics `wrangler.jsonc`'s `not_found_handling: single-page-application` gives the web
+deploy. Switching to `HashRouter` was deliberately avoided. The port is OS-assigned
+(`server.listen(0, '127.0.0.1', ...)`) and read back after bind, not hardcoded — `main.js`
+awaits it before creating the window, and both `win.loadURL` and the `will-navigate` origin
+check use that resolved `http://127.0.0.1:<port>` string.
+
+**Security defaults** in `main.js`: `contextIsolation: true`, `nodeIntegration: false`,
+`sandbox: true`, `webSecurity: true`; `preload.cjs` exposes a single non-sensitive
+`window.calepos.isDesktop` flag via `contextBridge` and nothing else (no IPC channels, no
+Node access). `.cjs`, not `.js`/ESM `import` — Electron's sandboxed preload loader is
+CommonJS-only regardless of `electron/package.json`'s `"type": "module"` (that only governs
+`main.js`, which isn't sandboxed); an ESM preload fails at load with "Cannot use import
+statement outside a module". `setWindowOpenHandler` denies new windows (hands real `https://`
+URLs to the OS browser instead); `will-navigate` blocks top-level navigation away from the
+app's own origin.
+Single-instance lock (`requestSingleInstanceLock`) prevents two windows against one session
+double-submitting a sale. No application menu (`Menu.setApplicationMenu(null)`) — it's a POS
+terminal, not a document editor.
+
+**Turnstile**: Cloudflare Turnstile doesn't support custom URL schemes as a domain at all —
+`app://calepos` was tried and failed with client-side error `110200` ("domain not authorized")
+even when the widget's own immediate host was on the allow-list, because Turnstile validates
+the **top-level** page's origin, not just whatever frame the widget script is running in (a
+hosted-iframe/`postMessage` workaround was tried for this reason and reverted — it still
+fails, since the top-level origin under that approach was still `app://calepos`). That's the
+whole reason the loopback-HTTP loading strategy above exists: with the app's real top-level
+origin as `http://127.0.0.1:<port>`, `src/components/shared/Turnstile.jsx` needs no
+desktop-specific branch at all — it's the exact same inline-widget code path as the web build.
+The one thing this still requires: `127.0.0.1` (or `localhost`) must be added to the
+production sitekey's **Hostname Management** allow-list in the Cloudflare Turnstile dashboard —
+Cloudflare does not auto-allow local hostnames for a production sitekey, confirmed via their
+docs, so this is a one-time manual dashboard step, not a code path. Also requires
+`VITE_TURNSTILE_SITEKEY` to be set at desktop build time same as the web prod build (desktop
+build is `import.meta.env.PROD`, so the dev-test-key fallback does not apply).
+
+Not affected by any of this: Capacitor/`android/` (untouched), `wrangler.jsonc` / `npm run
+deploy` (reads `dist/`, unaffected by `dist-desktop/`), `.env*` handling (same `VITE_*`
+build-time convention, no new secret category).
+
+---
+
 ## Major Routes
 
 | Path | Main file | Notes |

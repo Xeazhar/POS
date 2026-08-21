@@ -6,16 +6,19 @@
   "description": "CalePOS — offline-first multi-branch point of sale by Jazper Bustria",
   "author": "Jazper Bustria",
   "license": "UNLICENSED",
+  "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
-    "build": "npm run check:errors && vite build",
+    "build": "npm run check:errors && vite build --mode production",
     "lint": "eslint .",
     "preview": "vite preview",
     "check:errors": "node scripts/error-codes.mjs check",
     "docs:errors": "node scripts/error-codes.mjs docs",
     "setup:load-test": "node scripts/setup-load-test-users.mjs",
     "loadtest": "k6 run loadtest/pos-checkout.js",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "electron:start": "electron .",
+    "build:desktop": "cross-env VITE_DESKTOP_BUILD=true npm run build && electron-builder --win nsis"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",
@@ -42,11 +45,39 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "cross-env": "^10.1.0",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
     "eslint": "^10.6.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.7.0",
     "vite": "^8.1.1",
     "vite-plugin-pwa": "^1.3.0"
+  },
+  "build": {
+    "appId": "com.calepos.desktop",
+    "productName": "CalePOS",
+    "asar": true,
+    "artifactName": "CalePOS-Setup.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist-desktop/**/*",
+      "electron/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   }
 }
