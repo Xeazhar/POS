@@ -159,6 +159,7 @@ inside the desktop build yet.
 | Preload (contextBridge surface) | `electron/preload.cjs` |
 | Forces `electron/*.js` to load as ESM regardless of the root `"type"` | `electron/package.json` |
 | electron-builder config (NSIS target, `files`, `appId`) | `package.json` → `build` |
+| Window-state persistence | `electron/windowState.js` |
 
 Build: `npm run build:desktop` sets `VITE_DESKTOP_BUILD=true` for the Vite build step, then
 runs `electron-builder --win nsis`. That env var is read only in `vite.config.js` (never
@@ -222,6 +223,46 @@ build is `import.meta.env.PROD`, so the dev-test-key fallback does not apply).
 Not affected by any of this: Capacitor/`android/` (untouched), `wrangler.jsonc` / `npm run
 deploy` (reads `dist/`, unaffected by `dist-desktop/`), `.env*` handling (same `VITE_*`
 build-time convention, no new secret category).
+
+**Identity & icon**: `build.win.icon` (`package.json`) points electron-builder at
+`resources/icon.png` (the same 2732×2732 branding PNG Capacitor/Android already uses);
+electron-builder generates the multi-resolution `.ico` from it at build time — no separate
+`.ico` asset is checked in. `build.win.executableName` and `build.nsis.shortcutName` are
+pinned to `CalePOS` explicitly (electron-builder would default to `productName` anyway, but
+this makes it non-accidental). `app.setAppUserModelId('com.calepos.desktop')` in `main.js`
+keeps Windows' taskbar grouping/identity as "CalePOS" rather than "Electron", which matters
+most for unpackaged dev runs (`npm run electron:start`) since a packaged `.exe` already carries
+its own icon/identity resource. `resources/icon.png` itself is *not* bundled into the packaged
+app (not listed in `build.files`) — it's only read by electron-builder at package time and by
+`main.js` for the dev-mode `BrowserWindow` `icon` option.
+
+**Window-state persistence** (`electron/windowState.js`): remembers width/height/x/y (and
+maximized state) across launches in `<userData>/window-state.json` — never anything
+sale/session/credential-related. On load, a saved `x`/`y` is discarded (falling back to
+Electron's default centered placement) unless it still overlaps some currently-connected
+display's work area by at least 100px in both axes — covers a removed/resized/rearranged
+monitor. Saves are debounced 500ms on `resize`/`move`, plus an unconditional save on `close`.
+
+**Code signing (not yet configured)**: the current build is intentionally unsigned —
+`build.win` has no `certificateFile`/`certificatePassword`, and nothing sets
+`forceCodeSigning`, so `electron-builder` skips signing with a warning rather than failing.
+Nothing in the packaging config blocks adding it later: electron-builder reads a certificate
+either from `build.win.certificateFile` + `certificatePassword` or from the `CSC_LINK` /
+`CSC_KEY_PASSWORD` environment variables at build time, with no other config changes needed.
+Before a real production distribution, this needs: an OV or EV code-signing certificate
+(EV avoids Windows SmartScreen's "unknown publisher" warning on first run; OV is cheaper but
+takes longer to build reputation), and either committing the cert path/env-var wiring to CI or
+documenting the manual signing step for local builds.
+
+**Auto-update (not yet implemented)**: no `electron-updater` dependency and no
+`build.publish` config exist yet — updates today are "download and run a new
+`CalePOS-Setup.exe`" only. Before building real auto-update: (1) pick and configure a publish
+provider (`generic` HTTP feed, GitHub Releases, or S3/R2 — whichever CalePOS's existing hosting
+already supports is the natural choice; there is no update-feed hosting decided yet), (2) add
+`electron-updater` and wire its `checkForUpdatesAndNotify()`/download/install flow into
+`main.js`, (3) get code signing in place first — Windows' `electron-updater` NSIS differential
+updates are meaningfully more trustworthy (and avoid repeat SmartScreen prompts) when signed.
+None of this is started; this phase only documents the path.
 
 ---
 
