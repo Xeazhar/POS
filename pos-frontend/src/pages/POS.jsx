@@ -461,7 +461,7 @@ function POS() {
         </div>
       )}
       <div
-        className={`relative grid min-h-0 flex-1 gap-4 max-[800px]:grid-cols-1 max-[800px]:gap-3 max-[800px]:overflow-auto compact:grid-cols-1 compact:gap-3 compact:overflow-auto ${
+        className={`relative grid min-h-0 flex-1 gap-4 max-[800px]:grid-cols-1 max-[800px]:gap-3 max-[800px]:overflow-auto ${
           isRestaurant && manageMenu
             ? 'grid-cols-1'
             : barcodeTableMode
@@ -476,7 +476,7 @@ function POS() {
                 ? 'max-h-none'
                 : barcodeTableMode
                   ? 'h-auto'
-                  : 'h-full max-[800px]:min-h-[390px] max-[800px]:h-auto compact:min-h-[390px] compact:h-auto'
+                  : 'h-full max-[800px]:min-h-[390px] max-[800px]:h-auto'
             }`}
           >
           <div className="mb-3.5 flex min-w-0 flex-col gap-3">
@@ -624,7 +624,7 @@ function POS() {
               className={`grid min-h-0 flex-1 content-start gap-2 overflow-auto px-0.5 pt-1.5 pb-1 pr-1 ${
                 manageMenu && isRestaurant
                   ? 'grid-cols-4 max-[1050px]:grid-cols-3 max-[700px]:grid-cols-2'
-                  : 'grid-cols-6 max-[1200px]:grid-cols-5 max-[1050px]:grid-cols-4 max-[800px]:grid-cols-3 max-[800px]:max-h-[52vh] max-[520px]:grid-cols-2 compact:grid-cols-3 compact:max-h-[52vh]'
+                  : 'grid-cols-6 max-[1200px]:grid-cols-5 max-[1050px]:grid-cols-4 max-[800px]:grid-cols-3 max-[800px]:max-h-[52vh] max-[520px]:grid-cols-2'
               }`}
             >
               {!manageMenu &&

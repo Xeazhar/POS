@@ -292,6 +292,11 @@ migrate_day_end_cash_handoff.sql               -- day_ends.handoff_confirmed_by/
                                                 -- confirm_day_end_handoff() — manager confirms
                                                 -- receiving a closed day's cash; non-blocking,
                                                 -- no deadline
+migrate_recreate_adjust_shift_cash.sql         -- repair-only, run if SHIFT03 "Could not find
+                                                -- the function public.adjust_shift_cash" occurs
+                                                -- (migrate_shift_cash_accountability.sql applied
+                                                -- but this one function silently didn't); safe
+                                                -- no-op create-or-replace otherwise
 ```
 
 **Dev wipe (optional, non-user data only):** `wipe_non_user_data.sql` truncates sales/inventory/promos/shifts/drawer while **keeping** `staff`, `branches`, `roles`, `company_profile`, and Auth users. Run on DEV before cleanup if you want a clean slate.
